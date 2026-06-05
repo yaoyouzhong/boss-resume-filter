@@ -3121,7 +3121,8 @@ def main():
     babel_locale_dir = VENV_DIR / ("Lib" if IS_WIN else "lib") / "site-packages" / "babel" / "locale-data"
     if not babel_locale_dir.exists():
         import glob as _glob
-        matches = _glob.glob(str(babel_locale_dir))
+        # macOS venv 路径含 python3.X 层：pack_venv/lib/python3.12/site-packages/...
+        matches = _glob.glob(str(VENV_DIR / "lib" / "python*" / "site-packages" / "babel" / "locale-data"))
         babel_locale_dir = Path(matches[0]) if matches else None
 
     babel_locales = [
