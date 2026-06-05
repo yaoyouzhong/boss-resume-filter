@@ -3141,11 +3141,18 @@ def main():
         "zh.dat", "zh_Hans.dat", "zh_Hans_CN.dat",
         "zh_Hant.dat", "zh_Hant_TW.dat", "zh_Hant_HK.dat",
     ]
+    added_count = 0
     if babel_locale_dir and babel_locale_dir.exists():
         for loc in babel_locales:
             loc_file = babel_locale_dir / loc
             if loc_file.exists():
                 cmd += ['--add-data', f'{loc_file}{SEP}babel/locale-data']
+                added_count += 1
+        print(f"  [OK] babel locale-data: 已添加 {added_count}/{len(babel_locales)} 个文件 (来源: {babel_locale_dir})")
+    else:
+        print(f"  [警告] babel locale-data 未找到！tkcalendar 日期选择器将无法正常启动")
+        print(f"         搜索路径: {', '.join(_venv_site_globs)}")
+        print(f"         请确认 babel 已安装且虚拟环境目录正确")
 
     cmd += [
         '--hidden-import=tkinter',
