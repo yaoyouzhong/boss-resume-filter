@@ -3118,12 +3118,22 @@ def main():
     ]
 
     # babel locale-data: 只收集项目实际使用的语言（排除全部 1086 个 locale 文件，按需添加）
-    babel_locale_dir = VENV_DIR / ("Lib" if IS_WIN else "lib") / "site-packages" / "babel" / "locale-data"
-    if not babel_locale_dir.exists():
-        import glob as _glob
-        # macOS venv 路径含 python3.X 层：pack_venv/lib/python3.12/site-packages/...
-        matches = _glob.glob(str(VENV_DIR / "lib" / "python*" / "site-packages" / "babel" / "locale-data"))
-        babel_locale_dir = Path(matches[0]) if matches else None
+    # 虚拟环境可能是 pack_venv（本地）或 .venv-ci（CI），路径含 python3.X 层，用 glob 兼容
+    import glob as _glob
+    _venv_roots = [VENV_DIR, BASE_DIR / ".venv-ci"]
+    _venv_site_globs = [
+        str(root / "lib" / "python*" / "site-packages" / "babel" / "locale-data")  # macOS/Linux
+        for root in _venv_roots
+    ] + [
+        str(root / "Lib" / "site-packages" / "babel" / "locale-data")  # Windows
+        for root in _venv_roots
+    ]
+    babel_locale_dir = None
+    for pattern in _venv_site_globs:
+        matches = _glob.glob(pattern)
+        if matches:
+            babel_locale_dir = Path(matches[0])
+            break
 
     babel_locales = [
         "root.dat",
