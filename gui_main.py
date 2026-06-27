@@ -3651,7 +3651,7 @@ class BossFilterGUI:
 
         self.education_name_var = tk.StringVar()
         self.education_number_var = tk.StringVar()
-        self.education_status_var = tk.StringVar(value="等待选择图片")
+        self.education_status_var = tk.StringVar(value="等待选择证书")
         self.education_warning_var = tk.StringVar(value="")
 
         ttk.Label(form, text="姓名", font=self.font_label).pack(anchor="w")

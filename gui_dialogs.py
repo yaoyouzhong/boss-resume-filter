@@ -98,7 +98,7 @@ def show_about_dialog(gui, version):
     _s = gui.dpi_scale * gui.zoom_factor
     about_fs = gui.font_scale * 0.88
     dialog_width = max(580, int(580 * _s))
-    dialog_height = max(380, int(380 * _s))
+    dialog_height = max(420, int(420 * _s))
     gui._center_window(dialog, dialog_width, dialog_height)
 
     tk.Label(dialog, text="BOSS 简历筛选器",
@@ -111,7 +111,7 @@ def show_about_dialog(gui, version):
              bg=gui.colors['bg_main'],
              fg=gui.colors['text_secondary']).pack(pady=(0, int(15 * _s)))
 
-    tk.Label(dialog, text="智能候选人筛选 · 自动打招呼 · Excel 导出",
+    tk.Label(dialog, text="智能招聘需求解析 · 候选人评估筛选 · 自动打招呼 · 学历核验",
              font=(FONT_FAMILY, int(12 * about_fs)),
              bg=gui.colors['bg_main'],
              fg=gui.colors['text_primary']).pack(pady=(0, int(5 * _s)))
@@ -146,20 +146,31 @@ def show_about_dialog(gui, version):
     github_label.pack(side="left")
     github_label.bind("<Button-1>", lambda e: webbrowser.open(github_url))
 
-    issue_url = "https://github.com/yaoyouzhong/boss-resume-filter/issues"
-    issue_row = tk.Frame(links_card, bg=gui.colors['bg_card'])
-    issue_row.pack(fill="x", padx=link_pad_x, pady=(int(2 * _s), link_pad_y))
-    tk.Label(issue_row, text="反馈",
+    gitee_url = "https://gitee.com/yaoyouzhong/boss-resume-filter"
+    gitee_row = tk.Frame(links_card, bg=gui.colors['bg_card'])
+    gitee_row.pack(fill="x", padx=link_pad_x, pady=(int(2 * _s), int(2 * _s)))
+    tk.Label(gitee_row, text="镜像",
              font=(FONT_FAMILY, int(12 * about_fs)),
              bg=gui.colors['bg_card'],
              fg=gui.colors['text_secondary']).pack(side="left", padx=(0, int(10 * _s)))
-    issue_label = tk.Label(issue_row, text="问题反馈与建议",
+    gitee_label = tk.Label(gitee_row, text=gitee_url,
                            font=(FONT_FAMILY, int(12 * about_fs)),
                            bg=gui.colors['bg_card'],
                            fg=gui.colors['primary'],
                            cursor="hand2")
-    issue_label.pack(side="left")
-    issue_label.bind("<Button-1>", lambda e: webbrowser.open(issue_url))
+    gitee_label.pack(side="left")
+    gitee_label.bind("<Button-1>", lambda e: webbrowser.open(gitee_url))
+
+    author_row = tk.Frame(links_card, bg=gui.colors['bg_card'])
+    author_row.pack(fill="x", padx=link_pad_x, pady=(int(2 * _s), link_pad_y))
+    tk.Label(author_row, text="作者",
+             font=(FONT_FAMILY, int(12 * about_fs)),
+             bg=gui.colors['bg_card'],
+             fg=gui.colors['text_secondary']).pack(side="left", padx=(0, int(10 * _s)))
+    tk.Label(author_row, text="yaoyouzhong & Claude Code & Codex",
+             font=(FONT_FAMILY, int(12 * about_fs)),
+             bg=gui.colors['bg_card'],
+             fg=gui.colors['text_primary']).pack(side="left")
 
     btn_frame = tk.Frame(dialog, bg=gui.colors['bg_main'])
     btn_frame.pack(pady=(int(20 * _s), int(10 * _s)))

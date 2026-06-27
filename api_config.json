@@ -145,6 +145,7 @@
             "qwen-image-2.0-pro",
             "qwen-image-2.0-pro-2026-03-03",
             "qwen-image-2.0-pro-2026-04-22",
+            "qwen-image-2.0-pro-2026-06-22",
             "qwen-image-edit-max",
             "qwen-image-edit-max-2026-01-16",
             "qwen-image-edit-plus",
@@ -300,5 +301,11 @@
             "mimo-v2.5-pro",
             "mimo-v2.5-tts"
         ]
+    },
+    "llm_read_timeout": null,
+    "education_model_ref": {
+        "api_provider": "qwen",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen3.7-plus"
     }
 }
