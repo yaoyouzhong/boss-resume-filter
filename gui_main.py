@@ -4438,7 +4438,7 @@ class BossFilterGUI:
             # 阶段 1：截取验证码图片（需要浏览器锁）
             _emit("正在识别验证码...", "正在截取验证码图片")
             with self._education_browser_lock:
-                config = dict(self.api_config or {})
+                config = self._get_education_api_config()
                 vision_config = resolve_vision_api_config(config)
                 api_key = self._get_education_api_key(config)
                 data_url = capture_captcha_image(page)
