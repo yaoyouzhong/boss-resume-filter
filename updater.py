@@ -164,6 +164,7 @@ def check_github_release(repo="yaoyouzhong/boss-resume-filter"):
             'latest': str,  # 最新版本号
             'current': str,  # 当前版本号
             'has_update': bool,  # 是否有更新
+            'update_type': 'version' | None,  # 更新类型（GitHub 不支持 hash 比较）
             'release_info': dict,  # GitHub Release 信息
             'download_url': str,  # EXE 下载链接（Windows）
             'error': str  # 错误信息
@@ -173,6 +174,8 @@ def check_github_release(repo="yaoyouzhong/boss-resume-filter"):
         'latest': None,
         'current': get_current_version(),
         'has_update': False,
+        'update_type': None,
+        'content_changed': False,
         'release_info': None,
         'download_url': None,
         'download_url_fallback': None,
@@ -199,7 +202,9 @@ def check_github_release(repo="yaoyouzhong/boss-resume-filter"):
         current_tuple = _parse_version(result['current'])
         latest_tuple = _parse_version(latest_version)
 
-        result['has_update'] = latest_tuple > current_tuple
+        if latest_tuple > current_tuple:
+            result['has_update'] = True
+            result['update_type'] = 'version'
 
         # 查找下载链接
         if sys.platform == 'win32':
@@ -235,12 +240,16 @@ def check_gitee_latest(latest_json_url="https://gitee.com/yaoyouzhong/boss-resum
         latest_json_url: Gitee 上 latest.json 的 URL
 
     Returns:
-        dict: 与 check_github_release() 返回结构相同
+        dict: 与 check_github_release() 返回结构相同，额外包含：
+            - update_type: 'version' | 'content' | None
+            - content_changed: bool（版本号相同但文件内容不同）
     """
     result = {
         'latest': None,
         'current': get_current_version(),
         'has_update': False,
+        'update_type': None,
+        'content_changed': False,
         'release_info': None,
         'download_url': None,
         'download_url_fallback': None,
@@ -258,7 +267,23 @@ def check_gitee_latest(latest_json_url="https://gitee.com/yaoyouzhong/boss-resum
         # 比较版本号
         current_tuple = _parse_version(result['current'])
         latest_tuple = _parse_version(latest_version)
-        result['has_update'] = latest_tuple > current_tuple
+        version_is_newer = latest_tuple > current_tuple
+
+        if version_is_newer:
+            result['has_update'] = True
+            result['update_type'] = 'version'
+        elif latest_tuple == current_tuple:
+            # 版本号相同，检查文件内容是否变化（重新打包场景）
+            platform_key = 'windows' if sys.platform == 'win32' else 'macos'
+            assets = data.get('assets', {})
+            remote_sha256 = assets.get(platform_key, {}).get('sha256')
+
+            if remote_sha256:
+                local_sha256 = _get_current_exe_sha256()
+                if local_sha256 and local_sha256.lower() != str(remote_sha256).lower():
+                    result['has_update'] = True
+                    result['update_type'] = 'content'
+                    result['content_changed'] = True
 
         # 构造 release_info（兼容 GitHub 格式）
         result['release_info'] = {
@@ -296,6 +321,28 @@ def _file_sha256(path):
         for chunk in iter(lambda: f.read(1024 * 1024), b''):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+# 当前 EXE 的 SHA256 缓存（session 内只计算一次）
+_current_exe_sha256_cache: str | None = None
+
+
+def _get_current_exe_sha256() -> str | None:
+    """获取当前运行 EXE 的 SHA256，带 session 缓存。源码运行时返回 None。"""
+    global _current_exe_sha256_cache
+    if _current_exe_sha256_cache is not None:
+        return _current_exe_sha256_cache
+
+    exe_path = Path(sys.executable).resolve()
+    # 源码运行时 sys.executable 是 python.exe，不是打包后的 EXE
+    if not exe_path.suffix.lower() == '.exe':
+        return None
+
+    try:
+        _current_exe_sha256_cache = _file_sha256(exe_path)
+        return _current_exe_sha256_cache
+    except Exception:
+        return None
 
 
 def verify_downloaded_file(path, asset_info=None):
@@ -1061,10 +1108,15 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
     pad = lambda v: int(v * layout_scale)
     fs = lambda size: int(size * font_scale)
 
-    # 标题行（用 Semibold 字体族，不加 'bold' 修饰符，与主界面一致）
+    # 标题行：根据更新类型显示不同文字
+    update_type = result.get('update_type')
+    if update_type == 'content':
+        title_text = f"v{result['current']} 内容已更新"
+    else:
+        title_text = f"v{result['current']} → v{result['latest']}"
     tk.Label(
         dialog,
-        text=f"v{result['current']} → v{result['latest']}",
+        text=title_text,
         font=(font_family_bold, fs(13)),
         bg=colors['bg_card'], fg=colors['text_primary']
     ).pack(pady=(pad(15), pad(5)))
