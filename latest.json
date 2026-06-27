@@ -8,19 +8,19 @@
   },
   "assets": {
     "windows": {
-      "size": 38380375,
-      "sha256": "251e2888a1eefc53376343365c28ff84c3d31adcbed5bfefaacf003a0f0d4d79"
+      "size": 38380297,
+      "sha256": "9ee1d84175c7e08410fdab65c415810b13f502418d0f9c20d7dff0f4c9174f2b"
     },
     "macos_dmg": {
-      "size": 33190376,
-      "sha256": "4aa44dd845970f4b33b23993cbcbf8d70427ecba7ff8c0d4d330dd07cd96365e"
+      "size": 33025734,
+      "sha256": "def208abc7c6b39b5b199425393b7392ea9b7512811e1a5dec8d91f9905908b1"
     },
     "macos": {
-      "size": 34070638,
-      "sha256": "feca9ff477d2a1ed0fbcb42c77ff5bba610bf6f41cbd0fd67888f1f7df1fb414"
+      "size": 33927399,
+      "sha256": "ac8612da3b8b6eb2a9c8f1118fce6d287be2d96cb29bba4801efe7259e273a00"
     }
   },
-  "release_notes": "### 新增功能\n\n- **学历核验可指定独立模型**：系统设置的已保存模型列表中，右键可将某个模型设为学历核验专用模型，AI 评估继续使用全局模型，无需手动切换\n- **AI 评估超时可调**：运行控制页支持调节 AI 评估读取超时（10–300 秒），适配不同网络环境和模型响应速度\n\n### 体验优化\n\n- **已保存模型列表优化**：新增学历核验标记列，服务商、状态等列加宽显示更完整，超出时鼠标悬停显示完整内容\n- **关于弹窗更新**：功能描述更准确，新增 Gitee 镜像链接和作者信息\n- **学历核验界面优化**：状态提示文字更准确\n\n### 问题修复\n\n- **修复学历核验验证码识别失败**：配置独立学历核验模型后，验证码识别仍使用全局模型导致查询卡在「待人工验证」，现已修正为使用学历核验专用模型",
+  "release_notes": "### 新增功能\n\n- **学历核验可指定独立模型**：系统设置的已保存模型列表中，右键可将某个模型设为学历核验专用模型，AI 评估继续使用全局模型，无需手动切换\n- **AI 评估超时可调**：运行控制页支持调节 AI 评估读取超时（10–300 秒），适配不同网络环境和模型响应速度\n\n### 体验优化\n\n- **已保存模型列表优化**：新增学历核验标记列，服务商、状态等列加宽显示更完整，超出时鼠标悬停显示完整内容\n- **关于弹窗更新**：功能描述更准确，新增 Gitee 镜像链接和作者信息\n- **学历核验界面优化**：状态提示文字更准确",
   "downloads_cn": {
     "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.14.1/BOSS_ResumeFilter.exe",
     "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.14.1/BOSS_ResumeFilter.dmg",
