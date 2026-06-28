@@ -323,20 +323,29 @@ def _file_sha256(path):
     return digest.hexdigest()
 
 
-# 当前 EXE 的 SHA256 缓存（session 内只计算一次）
+# 当前更新目标文件的 SHA256 缓存（session 内只计算一次）
 _current_exe_sha256_cache: str | None = None
 
 
 def _get_current_exe_sha256() -> str | None:
-    """获取当前运行 EXE 的 SHA256，带 session 缓存。源码运行时返回 None。"""
+    """获取当前打包应用主程序的 SHA256，源码运行时返回 None。"""
     global _current_exe_sha256_cache
     if _current_exe_sha256_cache is not None:
         return _current_exe_sha256_cache
 
-    exe_path = Path(sys.executable).resolve()
-    # 源码运行时 sys.executable 是 python.exe，不是打包后的 EXE
-    if not exe_path.suffix.lower() == '.exe':
+    # 源码运行时 sys.executable 是 python.exe / python，不是可更新产物。
+    if not getattr(sys, 'frozen', False):
         return None
+
+    exe_path = Path(sys.executable).resolve()
+    if sys.platform == 'win32' and exe_path.suffix.lower() != '.exe':
+        return None
+    if sys.platform == 'darwin':
+        current_app = exe_path
+        while current_app.suffix != '.app' and current_app != current_app.parent:
+            current_app = current_app.parent
+        if current_app.suffix != '.app':
+            return None
 
     try:
         _current_exe_sha256_cache = _file_sha256(exe_path)

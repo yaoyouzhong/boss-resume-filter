@@ -2627,6 +2627,10 @@ def update_latest_json(version, release_notes, downloads_cn=None, quiet=False,
     if existing_data and existing_data.get("version") == version and existing_data.get("release_date"):
         release_date = existing_data["release_date"]
 
+    assets = asset_metadata or _release_asset_metadata()
+    if asset_metadata is None and existing_data and existing_data.get("version") == version:
+        assets = {**(existing_data.get("assets") or {}), **assets}
+
     latest_data = {
         "version": version,
         "release_date": release_date,
@@ -2635,7 +2639,7 @@ def update_latest_json(version, release_notes, downloads_cn=None, quiet=False,
             "macos": f"https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter_mac.zip",
             "macos_dmg": f"https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter.dmg"
         },
-        "assets": asset_metadata or _release_asset_metadata(),
+        "assets": assets,
         "release_notes": release_notes
     }
 

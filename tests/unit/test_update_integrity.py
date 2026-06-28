@@ -1107,6 +1107,36 @@ def test_update_latest_json_preserves_existing_release_date_for_same_version():
     assert data["release_date"] == "2026-01-02"
 
 
+def test_update_latest_json_preserves_same_version_other_platform_assets():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        dist_dir = tmp_path / "dist"
+        dist_dir.mkdir()
+        exe_path = dist_dir / "BOSS_ResumeFilter.exe"
+        exe_path.write_bytes(b"exe")
+        expected_exe_sha256 = build._sha256_file(exe_path)
+        existing = {
+            "version": "9.9.9",
+            "release_date": "2026-01-02",
+            "downloads": {},
+            "assets": {
+                "macos": {"size": 222, "sha256": "b" * 64},
+                "macos_dmg": {"size": 333, "sha256": "c" * 64},
+            },
+            "release_notes": "old",
+        }
+        (tmp_path / "latest.json").write_text(json.dumps(existing), encoding="utf-8")
+
+        with _with_build_context(tmp_path, dist_dir, is_win=True, is_mac=False):
+            build.update_latest_json("9.9.9", "notes", quiet=True)
+            data = json.loads((tmp_path / "latest.json").read_text(encoding="utf-8"))
+
+    assert data["assets"]["windows"]["size"] == 3
+    assert data["assets"]["windows"]["sha256"] == expected_exe_sha256
+    assert data["assets"]["macos"] == {"size": 222, "sha256": "b" * 64}
+    assert data["assets"]["macos_dmg"] == {"size": 333, "sha256": "c" * 64}
+
+
 def test_release_version_rules_reject_zero_patch_tags():
     assert build._is_valid_release_tag("v2.9") is True
     assert build._is_valid_release_tag("v2.9.1") is True
@@ -1345,3 +1375,73 @@ def test_windows_update_script_resets_pyinstaller_runtime_env():
     assert 'if exist "%OLD_EXE%.old" del' not in bat_content
     assert 'Previous version kept at %OLD_EXE%.old' in bat_content
     assert 'if exist "%FAILED_FILE%" del /f /q "%FAILED_FILE%"' in bat_content
+
+
+def test_current_exe_sha256_returns_none_in_source_mode():
+    original_frozen = getattr(updater.sys, "frozen", None)
+    original_cache = updater._current_exe_sha256_cache
+    try:
+        if hasattr(updater.sys, "frozen"):
+            delattr(updater.sys, "frozen")
+        updater._current_exe_sha256_cache = None
+
+        assert updater._get_current_exe_sha256() is None
+    finally:
+        if original_frozen is not None:
+            updater.sys.frozen = original_frozen
+        elif hasattr(updater.sys, "frozen"):
+            delattr(updater.sys, "frozen")
+        updater._current_exe_sha256_cache = original_cache
+
+
+def test_current_exe_sha256_hashes_windows_frozen_exe():
+    with tempfile.TemporaryDirectory() as tmp:
+        exe_path = Path(tmp) / "BOSS_ResumeFilter.exe"
+        exe_path.write_bytes(b"MZboss-app")
+
+        original_frozen = getattr(updater.sys, "frozen", None)
+        original_platform = updater.sys.platform
+        original_executable = updater.sys.executable
+        original_cache = updater._current_exe_sha256_cache
+        try:
+            updater.sys.frozen = True
+            updater.sys.platform = "win32"
+            updater.sys.executable = str(exe_path)
+            updater._current_exe_sha256_cache = None
+
+            assert updater._get_current_exe_sha256() == updater._file_sha256(exe_path)
+        finally:
+            if original_frozen is not None:
+                updater.sys.frozen = original_frozen
+            elif hasattr(updater.sys, "frozen"):
+                delattr(updater.sys, "frozen")
+            updater.sys.platform = original_platform
+            updater.sys.executable = original_executable
+            updater._current_exe_sha256_cache = original_cache
+
+
+def test_current_exe_sha256_hashes_macos_frozen_executable():
+    with tempfile.TemporaryDirectory() as tmp:
+        exe_path = Path(tmp) / "BOSS_ResumeFilter.app" / "Contents" / "MacOS" / "BOSS_ResumeFilter"
+        exe_path.parent.mkdir(parents=True)
+        exe_path.write_bytes(b"boss-macos-app")
+
+        original_frozen = getattr(updater.sys, "frozen", None)
+        original_platform = updater.sys.platform
+        original_executable = updater.sys.executable
+        original_cache = updater._current_exe_sha256_cache
+        try:
+            updater.sys.frozen = True
+            updater.sys.platform = "darwin"
+            updater.sys.executable = str(exe_path)
+            updater._current_exe_sha256_cache = None
+
+            assert updater._get_current_exe_sha256() == updater._file_sha256(exe_path)
+        finally:
+            if original_frozen is not None:
+                updater.sys.frozen = original_frozen
+            elif hasattr(updater.sys, "frozen"):
+                delattr(updater.sys, "frozen")
+            updater.sys.platform = original_platform
+            updater.sys.executable = original_executable
+            updater._current_exe_sha256_cache = original_cache
