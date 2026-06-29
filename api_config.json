@@ -302,7 +302,7 @@
             "mimo-v2.5-tts"
         ]
     },
-    "llm_read_timeout": null,
+    "llm_read_timeout": 60,
     "education_model_ref": {
         "api_provider": "qwen",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",

@@ -1,4 +1,6 @@
 import queue
+import sys
+import types
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -422,6 +424,44 @@ def test_education_browser_recovers_if_chrome_closes_before_new_tab():
 
     assert gui._get_education_tab("edu_1") is fresh_page
     assert gui.browser_page is fresh_page
+
+
+def test_education_browser_uses_auto_port_for_fresh_page():
+    gui = object.__new__(BossFilterGUI)
+    gui.standalone_education = False
+    live_page = Mock()
+    live_page.run_js.return_value = 1
+    created_options = []
+
+    class FakeChromiumOptions:
+        def __init__(self, read_file=True):
+            self.read_file = read_file
+            self.auto_port_called = False
+
+        def auto_port(self):
+            self.auto_port_called = True
+
+    def fake_chromium_page(options=None):
+        if options is None:
+            raise AssertionError("学历核验不应等待默认 9222 端口")
+        created_options.append(options)
+        return live_page
+
+    previous_module = sys.modules.get("DrissionPage")
+    sys.modules["DrissionPage"] = types.SimpleNamespace(
+        ChromiumOptions=FakeChromiumOptions,
+        ChromiumPage=fake_chromium_page,
+    )
+    try:
+        assert gui._create_fresh_browser_page() is live_page
+        assert len(created_options) == 1
+        assert created_options[0].read_file is False
+        assert created_options[0].auto_port_called is True
+    finally:
+        if previous_module is None:
+            sys.modules.pop("DrissionPage", None)
+        else:
+            sys.modules["DrissionPage"] = previous_module
 
 
 def test_education_queue_saves_manual_edits_to_current_item():

@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.14.1"
+__version__ = "2.14.2"
 
 import json
 import logging
@@ -4620,14 +4620,11 @@ class BossFilterGUI:
         """启动或连接新的 ChromiumPage，并验证连接。"""
         from DrissionPage import ChromiumOptions, ChromiumPage
 
-        if self.standalone_education:
-            # 独立工具不依赖登录态。使用 DrissionPage 自动分配空闲端口和临时
-            # profile，避免固定 9333 端口或上次遗留 Chrome profile 导致无法连接。
-            options = ChromiumOptions(read_file=False)
-            options.auto_port()
-            page = ChromiumPage(options)
-        else:
-            page = ChromiumPage()
+        # 学历核验不依赖 BOSS 登录态。没有可复用浏览器时直接使用临时
+        # Chrome，避免默认 9222 调试端口不可用时等待超时再报打开失败。
+        options = ChromiumOptions(read_file=False)
+        options.auto_port()
+        page = ChromiumPage(options)
         if not self._is_browser_page_alive(page):
             raise RuntimeError("Chrome 已启动，但页面连接失败")
         return page
