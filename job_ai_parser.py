@@ -89,6 +89,9 @@ def _build_messages(requirements_text: str, regex_config: dict[str, Any]) -> lis
         "1. '优先'、'加分'、'更佳'类条件进入 preferred_keywords_add，不进入 required_conditions_add。\n"
         "2. 只有'必须'、'硬性'、'必要条件'、'一票否决'等明确硬约束才进入 required_conditions_add；"
         "普通任职要求里的'具备/有/熟练掌握/精通 X 经验'进入 keywords_add。\n"
+        "2a. 技术栈提升为硬条件的标准：原文中出现'必须'、'需要'、'要求'等强约束词修饰的技术栈，"
+        "可以作为 OR 条件加入 required_conditions_add（如'必须熟悉 Spring Cloud 或 Dubbo'）。"
+        "但普通列举（如'熟悉 Spring Boot、MySQL'）不提升，只进 keywords_add。\n"
         "3. 'A、B、C 等'、'A/B'、'A 或 B'、'至少一种'通常解析为 OR："
         "{\"type\":\"or\",\"items\":[\"A\",\"B\",\"C\"]}。\n"
         "4. 只有出现'同时'、'均需'、'全部'才解析为 AND。\n"
@@ -336,6 +339,9 @@ def _merge_patch(regex_config: dict[str, Any], patch: dict[str, Any], requiremen
     )
 
     config["job_requirements"] = {new_title: job}
+    # 保留原始 source_map（AI 增强不重新生成溯源数据）
+    if "_source_map" in regex_config:
+        config["_source_map"] = regex_config["_source_map"]
     return config
 
 
@@ -596,6 +602,11 @@ def _keyword_name_set(keywords: Any) -> set[str]:
 
 
 def _is_keyword_requirement_condition(cond: Any, keyword_names: set[str]) -> bool:
+    """判断一个条件是否实质上是普通技能要求（应归入 keywords 而非 required_conditions）。
+
+    仅处理 string 条件：含技能动词 + 已知关键词 → True（如"具备 Java 开发经验"）。
+    dict 条件（OR/AND 技术栈组）不过滤——允许 AI 把核心技术栈提升为硬条件。
+    """
     if not isinstance(cond, str) or not keyword_names:
         return False
     compact = re.sub(r"\s+", "", cond).lower()

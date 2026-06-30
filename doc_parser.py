@@ -89,6 +89,10 @@ BONUS_DOMAIN_KEYWORDS = [
 ]
 
 HARD_HINT_RE = re.compile(r'必须|必需|要求|具备|需要|需|不低于|不少于|至少|硬性|必备|任职资格')
+# 强硬条件指示词（独立出现即可判 hard，不需要 section 上下文）
+HARD_STRONG_RE = re.compile(r'必须|必需|不低于|不少于|至少|硬性|必备|一票否决')
+# 弱硬条件指示词（仅在 hard section 内，或与学历/年龄等硬字段共现时才判 hard）
+HARD_WEAK_RE = re.compile(r'要求|具备|需要|需|任职资格')
 PREFERRED_HINT_RE = re.compile(r'优先|加分|更佳|优先考虑|优先录用')
 SKILL_HINT_RE = re.compile(r'熟悉|熟练|掌握|精通|了解|参与过|使用|开发|运维|建设')
 OR_HINT_RE = re.compile(r'或|或者|任一|其一|至少一种|至少一项|包括但不限于|等|[/／]')
@@ -113,11 +117,14 @@ def _strip_list_marker(line: str) -> str:
 def _structured_lines(text: str) -> list[dict]:
     """将招聘文本转换为行级结构，供后续字段抽取和条件分类复用。"""
     sections = {
-        'hard': re.compile(r'硬性条件|硬性要求|基本条件|必备条件|必须满足|必须条件|必要条件|任职资格'),
+        'hard': re.compile(r'硬性条件|硬性要求|基本条件|必备条件|必须满足|必须条件|必要条件|任职资格|应聘条件|岗位基本条件|基本要求'),
         'desc': re.compile(r'职位描述|岗位职责|工作内容|主要职责|工作职责'),
-        'req': re.compile(r'职位要求|任职要求|岗位要求|应聘要求|能力要求|我们希望你'),
-        'preferred': re.compile(r'软性条件|加分项|优先条件|加分条件|优先考虑'),
+        'req': re.compile(r'职位要求|任职要求|岗位要求|应聘要求|能力要求|我们希望你|期望你|我们期待'),
+        'preferred': re.compile(r'软性条件|加分项|优先条件|加分条件|优先考虑|优先录用'),
     }
+    # markdown 子标题：出现在 hard/req section 内时继承当前 section，
+    # 出现在 body 中时映射到 hard（如 ### 工作经验、### 学历要求）
+    _sub_heading_to_hard = re.compile(r'工作经验|学历要求|年龄要求|技能要求|专业要求|证书要求')
     current = 'body'
     rows = []
     for raw_line in text.split('\n'):
@@ -130,6 +137,11 @@ def _structured_lines(text: str) -> list[dict]:
             if pattern.fullmatch(heading) or pattern.search(heading):
                 matched_section = section
                 break
+        # markdown 子标题处理：如果主 sections 未匹配，检查是否为硬条件子标题
+        if matched_section is None and _sub_heading_to_hard.search(heading) and heading == _sub_heading_to_hard.search(heading).group(0):
+            if current in ('body', 'desc'):
+                matched_section = 'hard'
+            # 如果已在 hard/req/preferred section 内，子标题不改变 section
         if matched_section:
             current = matched_section
             continue
@@ -147,15 +159,39 @@ def _structured_lines(text: str) -> list[dict]:
 
 
 def _classify_requirement_line(line: str, section: str = "") -> str:
-    """粗分类单行需求：硬条件、优先项、普通技能或其他。"""
+    """粗分类单行需求：硬条件、优先项、普通技能或其他。
+
+    分类策略：
+    - preferred section 或含优先/加分关键词 → preferred
+    - hard section 内 → hard（section 本身即强信号）
+    - req section 内：强指示词 → hard；弱指示词 + 无技能词 → hard；否则按技能词判断
+    - body section：仅强指示词 → hard，其余按技能词判断
+    - desc section：按技能词判断
+    """
+    # 1. 优先项：section 或关键词命中
     if section == 'preferred' or PREFERRED_HINT_RE.search(line):
         return 'preferred'
+    # 2. 描述段：按技能词判断
     if section == 'desc':
         return 'skill' if (SKILL_HINT_RE.search(line) or _find_terms(line, TECH_SKILLS)) else 'other'
-    if section == 'hard' or HARD_HINT_RE.search(line):
+    # 3. 硬条件段：section 本身即硬条件信号，不再二次检查关键词
+    if section == 'hard':
         return 'hard'
-    if section == 'req' and (SKILL_HINT_RE.search(line) or _find_terms(line, TECH_SKILLS)):
-        return 'skill'
+    # 4. 要求段：区分硬条件和技能要求
+    if section == 'req':
+        has_strong = bool(HARD_STRONG_RE.search(line))
+        has_weak = bool(HARD_WEAK_RE.search(line))
+        has_skill = bool(SKILL_HINT_RE.search(line) or _find_terms(line, TECH_SKILLS))
+        if has_strong:
+            return 'hard'
+        if has_weak and not has_skill:
+            return 'hard'
+        if has_skill:
+            return 'skill'
+        return 'other'
+    # 5. body 或其他：仅强指示词判 hard，避免"需要/要求"等高频词误判
+    if HARD_STRONG_RE.search(line):
+        return 'hard'
     if SKILL_HINT_RE.search(line) or _find_terms(line, TECH_SKILLS):
         return 'skill'
     return 'other'
@@ -268,6 +304,22 @@ def _remove_education_preferred_phrases(text: str) -> str:
     for pattern in patterns:
         cleaned = re.sub(pattern, '', cleaned)
     return cleaned
+
+
+def _split_sentences(text: str) -> list[str]:
+    """按句号/分号/换行分割文本，保留非空句子。"""
+    parts = re.split(r'[；;。\n]', text or '')
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _is_edu_preferred_sentence(sentence: str) -> bool:
+    """判断一个句子是否是学历偏好语境（而非硬门槛）。
+
+    规则：句子同时包含学历关键词和优先/加分关键词 → 偏好句，应排除。
+    """
+    _edu_kw = re.compile(r'本科|学士|硕士|研究生|博士|博士后|大专|学历')
+    _pref_kw = re.compile(r'优先|加分|更佳|优先考虑|优先录用|者优先')
+    return bool(_edu_kw.search(sentence) and _pref_kw.search(sentence))
 
 
 def _hard_education_text(required_section: str, structured_rows: list[dict]) -> str:
@@ -531,6 +583,44 @@ def _extract_salary_range(text: str):
     return None, None
 
 
+def _find_source_line(text: str, keyword: str) -> str:
+    """在文本中找到包含关键词的行，返回该行（去列表标记后）。
+
+    支持归一化匹配：忽略空格差异（"Spring Boot" 匹配 "SpringBoot"）、
+    大小写、别名（"AI Agent" 匹配 "Al Agent"）。找不到返回空串。
+    """
+    keyword_lower = keyword.lower()
+    keyword_compact = re.sub(r'\s+', '', keyword_lower)
+    # 收集所有需要匹配的变体（原词 + 别名）
+    canonical = _canonical_skill_name(keyword)
+    aliases = SKILL_ALIASES.get(canonical, [keyword])
+    match_variants = {keyword_lower, keyword_compact}
+    for alias in aliases:
+        alias_lower = alias.lower()
+        match_variants.add(alias_lower)
+        match_variants.add(re.sub(r'\s+', '', alias_lower))
+
+    for line in text.split('\n'):
+        clean = _strip_list_marker(line).strip()
+        if not clean:
+            continue
+        clean_lower = clean.lower()
+        clean_compact = re.sub(r'\s+', '', clean_lower)
+        # 任一变体匹配即返回
+        for variant in match_variants:
+            if variant in clean_lower or variant in clean_compact:
+                return clean
+    return ""
+
+
+def _find_pattern_source_line(text: str, pattern: re.Pattern) -> str:
+    """在文本中找到匹配正则的行，返回该行。找不到返回空串。"""
+    for line in text.split('\n'):
+        if pattern.search(line):
+            return _strip_list_marker(line).strip()
+    return ""
+
+
 def parse_job_requirements(text: str) -> Dict:
     """
     从招聘需求文本中解析出关键信息
@@ -785,19 +875,21 @@ def parse_job_requirements(text: str) -> Dict:
                 found_edu = '不限'
                 break
 
-    # 学历加分/偏好语境排除列表（防止"博士优先"被当作最低学历门槛）
+    # 学历加分/偏好语境排除（防止"博士优先"被当作最低学历门槛）
+    # 策略：先用正则精确移除偏好短语，再按句过滤整句偏好，最后兜底正则
     _edu_bonus_patterns = [
         r'博士优先', r'博士后优先', r'硕士优先', r'研究生优先',
         r'博士学历加分', r'博士学历优先', r'硕士学历优先',
         r'有博士学历', r'有博士', r'有硕士', r'有研究生',
         r'博士及以上优先', r'硕士及以上优先',
         r'博士学历者', r'硕士学历者',
+        r'(?:本科|学士|硕士|研究生|博士|博士后|大专)(?:及以上)?学历(?:者)?(?:优先|加分|更佳|优先考虑)',
     ]
 
     # 如果没有找到明确字段，从必要条件部分提取学历关键词
     # 注意：最低学历应从低到高判断，因为"最低"意味着门槛，不应被加分项误导
     if found_edu is None and required_section:
-        # 先排除加分语境（如"博士优先"、"硕士优先"等）
+        # 用正则精确移除偏好短语（保留同句中的硬门槛，如"本科，博士优先"→"本科"）
         cleaned_section = required_section
         for pattern in _edu_bonus_patterns:
             cleaned_section = re.sub(pattern, '', cleaned_section)
@@ -837,7 +929,7 @@ def parse_job_requirements(text: str) -> Dict:
 
     # 最后从职位描述部分查找（优先级最低）
     if found_edu is None:
-        # 排除加分语境后再判断，从低到高
+        # 排除加分语境后再判断：正则精确移除偏好短语，从低到高
         cleaned_desc = job_desc_section
         for pattern in _edu_bonus_patterns:
             cleaned_desc = re.sub(pattern, '', cleaned_desc)
@@ -976,17 +1068,90 @@ def parse_job_requirements(text: str) -> Dict:
 
     # 返回解析结果
     salary_min, salary_max = _extract_salary_range(text)
+    work_location = _extract_work_location(text)
+
+    # 构建溯源数据：每个解析结果对应的原文片段
+    _source_map: Dict = {}
+
+    # 学历溯源
+    if edu_value != "不限":
+        _edu_search = required_section or position_req_section or job_desc_section or text
+        _source_map["edu"] = _find_source_line(_edu_search, edu_value)
+
+    # 经验溯源
+    if exp_value > 0:
+        _exp_pat = re.compile(rf'{exp_value}\s*年')
+        _source_map["min_exp"] = _find_pattern_source_line(
+            required_section or position_req_section or text, _exp_pat
+        ) or _find_pattern_source_line(text, _exp_pat)
+
+    # 薪资溯源
+    if salary_min is not None or salary_max is not None:
+        _salary_pat = re.compile(r'薪资|薪酬|待遇|月薪|年薪|底薪|工资')
+        _source_map["salary"] = _find_pattern_source_line(text, _salary_pat)
+
+    # 地点溯源
+    if work_location:
+        _source_map["work_location"] = _find_source_line(text, work_location)
+
+    # 年龄溯源
+    if max_age:
+        _age_pat = re.compile(rf'{max_age}\s*(?:岁|周岁)')
+        _source_map["max_age"] = _find_pattern_source_line(text, _age_pat)
+
+    # 技能溯源：为每个技能找到原文出处
+    _skills_source = []
+    _combined_text = required_section + "\n" + job_desc_section + "\n" + position_req_section
+    for skill in unique_soft_skills:
+        evidence = _find_source_line(_combined_text, skill) or _find_source_line(text, skill)
+        _skills_source.append({"name": skill, "evidence": evidence})
+    _source_map["skills"] = _skills_source
+
+    # 必要条件溯源
+    _required_source = []
+    for cond in required_conditions:
+        evidence = ""
+        if isinstance(cond, dict):
+            # OR/AND 条件：用第一个 item 搜索，合成文本需提取关键词
+            items = cond.get("items", [])
+            if items:
+                first_item = items[0]
+                evidence = _find_source_line(text, first_item)
+                # 合成文本（如"Java经验≥3年"）搜不到时，提取领域词重试
+                if not evidence and "经验≥" in first_item:
+                    domain = first_item.split("经验≥")[0]
+                    evidence = _find_source_line(text, domain)
+        elif isinstance(cond, str):
+            # 合成条件（如"年龄≤35岁"）用关键词回搜原文
+            if cond.startswith("年龄≤"):
+                _age_val = cond.replace("年龄≤", "").replace("岁", "")
+                evidence = _find_source_line(text, _age_val) if _age_val else ""
+            elif "经验≥" in cond:
+                # "Java经验≥3年" → 搜 "Java"
+                _domain = cond.split("经验≥")[0]
+                evidence = _find_source_line(text, _domain)
+            else:
+                evidence = _find_source_line(text, cond)
+        _required_source.append({"condition": cond, "evidence": evidence})
+    _source_map["required_conditions"] = _required_source
+
+    # 保留原始段落供 generate_config_from_text 追踪 preferred_keywords
+    _source_map["_raw_required_section"] = required_section
+    _source_map["_raw_job_desc"] = job_desc_section
+    _source_map["_raw_position_req"] = position_req_section
+
     return {
         "job_title": job_title,
         "min_exp": exp_value,
         "edu": edu_value,
-        "work_location": _extract_work_location(text),
+        "work_location": work_location,
         "salary_min": salary_min,
         "salary_max": salary_max,
         "max_age": max_age,
         "soft_skills": unique_soft_skills,  # 职位描述中的技能要求（用于评分）
         "required_conditions": required_conditions,
-        "tech_conditions": tech_condition_keywords  # 必要条件中的技术要求（只需满足其一）
+        "tech_conditions": tech_condition_keywords,  # 必要条件中的技术要求（只需满足其一）
+        "_source_map": _source_map,
     }
 
 
@@ -1174,6 +1339,26 @@ def generate_config_from_text(requirements_text: str, merge_existing: bool = Tru
         del existing_config["job_requirements"][existing_key_to_delete]
 
     existing_config["job_requirements"][normalized_job_title] = new_job_config
+
+    # 传递溯源数据供 GUI 展示
+    source_map = parsed.get("_source_map")
+    if source_map:
+        # 补充 preferred_keywords 的溯源（parse_job_requirements 不追踪 preferred）
+        _skills_source = source_map.get("skills", [])
+        _existing_names = {re.sub(r'\s+', '', s["name"]).lower() for s in _skills_source}
+        _combined_text = (parsed.get("_source_map", {}).get("_raw_required_section", "")
+                          + "\n" + parsed.get("_source_map", {}).get("_raw_job_desc", "")
+                          + "\n" + parsed.get("_source_map", {}).get("_raw_position_req", ""))
+        if not _combined_text.strip():
+            _combined_text = requirements_text
+        for pref in preferred_keywords:
+            name = pref.get("name", "") if isinstance(pref, dict) else str(pref)
+            key = re.sub(r'\s+', '', name).lower()
+            if key not in _existing_names:
+                evidence = _find_source_line(_combined_text, name) or _find_source_line(requirements_text, name)
+                _skills_source.append({"name": name, "evidence": evidence})
+        source_map["skills"] = _skills_source
+        existing_config["_source_map"] = source_map
 
     return existing_config
 

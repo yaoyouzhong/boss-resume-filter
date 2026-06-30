@@ -1901,17 +1901,19 @@ class BossFilterGUI:
         list_container.pack(fill="both", expand=True)
 
         # 使用 Treeview 显示技能列表
-        columns = ("name", "weight", "source")
-        tree_font = (FONT_FAMILY, int(13 * self.font_scale))
+        columns = ("name", "weight", "source", "evidence")
+        tree_font = (FONT_FAMILY, int(11 * self.font_scale))
 
         self.skills_tree = ttk.Treeview(list_container, columns=columns, show="headings", height=UI_CONFIG['treeview_height'])
         self.skills_tree.heading("name", text="技能名称")
         self.skills_tree.heading("weight", text="权重")
         self.skills_tree.heading("source", text="来源")
+        self.skills_tree.heading("evidence", text="原文出处")
         # 设置列 - 全部居中
-        self.skills_tree.column("name", width=250, anchor='center')
-        self.skills_tree.column("weight", width=70, anchor='center')
-        self.skills_tree.column("source", width=80, anchor='center')
+        self.skills_tree.column("name", width=200, anchor='center')
+        self.skills_tree.column("weight", width=60, anchor='center')
+        self.skills_tree.column("source", width=60, anchor='center')
+        self.skills_tree.column("evidence", width=280, anchor='w')
         # 设置颜色标记（带字体）- 覆盖所有情况
         self.skills_tree.tag_configure('high_weight', font=tree_font, background=self.colors['bg_tree_tag_high'])
         self.skills_tree.tag_configure('mid_weight', font=tree_font, background=self.colors['bg_tree_tag_mid'])
@@ -1926,6 +1928,45 @@ class BossFilterGUI:
         self.skills_tree.configure(yscrollcommand=skills_scroll.set)
         self.skills_tree.pack(side="left", fill="both", expand=True)
         skills_scroll.pack(side="right", fill="y")
+
+        # 技能表"原文出处"列 tooltip
+        self._skills_tooltip = None
+        self._skills_tooltip_item = None
+
+        def _on_skills_motion(event):
+            """鼠标悬停在 evidence 列时显示完整原文"""
+            item = self.skills_tree.identify_row(event.y)
+            column = self.skills_tree.identify_column(event.x)
+            if not item or column != "#4":  # evidence 是第4列
+                self._hide_skills_tooltip()
+                return
+            values = self.skills_tree.item(item, 'values')
+            if not values or len(values) < 4:
+                self._hide_skills_tooltip()
+                return
+            # 从 skills_data 获取完整 evidence（Treeview 中可能被截断）
+            idx = self.skills_tree.index(item)
+            if idx < len(self.skills_data):
+                full_text = self.skills_data[idx].get("evidence", "")
+            else:
+                full_text = str(values[3])
+            if not full_text:
+                self._hide_skills_tooltip()
+                return
+            tooltip_key = (item, column)
+            if tooltip_key == self._skills_tooltip_item and self._skills_tooltip and self._skills_tooltip.winfo_exists():
+                return
+            self._hide_skills_tooltip()
+            self._skills_tooltip_item = tooltip_key
+            x = self.root.winfo_pointerx() + 15
+            y = self.root.winfo_pointery() + 10
+            self._skills_tooltip = self._create_simple_tooltip(full_text, x, y)
+
+        def _on_skills_leave(event):
+            self._hide_skills_tooltip()
+
+        self.skills_tree.bind("<Motion>", _on_skills_motion)
+        self.skills_tree.bind("<Leave>", _on_skills_leave)
 
         # 选中技能编辑区
         edit_card = self._create_card(skills_right, "编辑选中技能",
@@ -2013,6 +2054,39 @@ class BossFilterGUI:
                                           font=self.font_label,
                                           borderwidth=1, highlightthickness=0)
         self.required_listbox.pack(fill="x", pady=int(10 * self.dpi_scale * self.zoom_factor))
+
+        # 必要条件 tooltip（显示原文出处）
+        self._req_tooltip = None
+        self._req_tooltip_idx = None
+
+        def _on_req_motion(event):
+            """鼠标悬停在必要条件上时显示原文出处"""
+            idx = self.required_listbox.nearest(event.y)
+            if idx < 0:
+                self._hide_req_tooltip()
+                return
+            if idx == self._req_tooltip_idx and self._req_tooltip and self._req_tooltip.winfo_exists():
+                return
+            self._hide_req_tooltip()
+            evidence = ""
+            if idx < len(self.required_conditions_data):
+                cond = self.required_conditions_data[idx]
+                if isinstance(cond, dict):
+                    evidence = cond.get("_evidence", "")
+                else:
+                    evidence = self._required_evidence_map.get(str(cond), "") if hasattr(self, '_required_evidence_map') else ""
+            if not evidence:
+                return
+            self._req_tooltip_idx = idx
+            x = self.root.winfo_pointerx() + 15
+            y = self.root.winfo_pointery() + 10
+            self._req_tooltip = self._create_simple_tooltip(evidence, x, y)
+
+        def _on_req_leave(event):
+            self._hide_req_tooltip()
+
+        self.required_listbox.bind("<Motion>", _on_req_motion)
+        self.required_listbox.bind("<Leave>", _on_req_leave)
 
         # 必要条件编辑 - 条件类型选择 + 关键词（逗号分隔）
         required_edit_frame = ttk.Frame(required_frame, style='TFrame')
@@ -7830,7 +7904,7 @@ class BossFilterGUI:
             self._req_placeholder_active = True
 
     def refresh_skills_tree(self):
-        """刷新技能树显示（带颜色标记）"""
+        """刷新技能树显示（带颜色标记 + 原文出处）"""
         for item in self.skills_tree.get_children():
             self.skills_tree.delete(item)
         for skill in self.skills_data:
@@ -7842,7 +7916,10 @@ class BossFilterGUI:
                 tag = 'mid_weight'   # 橙色
             else:
                 tag = 'low_weight'   # 灰色
-            self.skills_tree.insert("", "end", values=(skill["name"], weight, skill["source"]), tags=(tag,))
+            evidence = skill.get("evidence", "")
+            # 截断过长的原文，tooltip 显示完整内容
+            evidence_display = evidence[:60] + "…" if len(evidence) > 60 else evidence
+            self.skills_tree.insert("", "end", values=(skill["name"], weight, skill["source"], evidence_display), tags=(tag,))
         self._skills_tree_fingerprint = self._skills_data_fingerprint()
 
     def refresh_required_listbox(self):
@@ -8205,7 +8282,7 @@ class BossFilterGUI:
         return self.requirement_text.get("1.0", tk.END).strip()
 
     def parse_requirement(self):
-        """解析需求文档"""
+        """解析需求文档（两阶段：regex 即时 → AI 异步增强）"""
         self._hide_parse_hint()
         requirement_text = self._get_requirement_text()
         if not requirement_text:
@@ -8219,26 +8296,47 @@ class BossFilterGUI:
         if hasattr(self, "btn_parse_requirement"):
             self._parse_requirement_button_text = self.btn_parse_requirement.cget("text")
             self.btn_parse_requirement.config(state="disabled", text=" 解析中...")
-        if ai_key:
-            status = "正在解析：先提取基础信息，再利用AI增强解析补全。"
-        else:
-            status = "正在解析：使用本地规则提取岗位要求。"
-        self._set_parse_result_text(status, self.colors['warning'])
+        self._set_parse_result_text("正在解析：使用本地规则提取岗位要求…", self.colors['warning'])
         self._start_requirement_parse_progress(bool(ai_key))
+        # 跟踪用户手动修改的字段，AI 增强时不覆盖
+        self._dirty_fields = set()
+        self._ai_enhance_pending = bool(ai_key)
 
         def _worker():
             try:
-                result = self._build_requirement_parse_result(
-                    requirement_text, ai_provider, ai_base_url, ai_model, ai_key
-                )
-                self.root.after(0, lambda: self._apply_requirement_parse_result(result))
+                # 阶段 1：regex 解析（快速）
+                regex_result = self._build_regex_parse_result(requirement_text)
+                self.root.after(0, lambda: self._apply_requirement_parse_result(regex_result))
+
+                # 阶段 2：AI 增强（慢速，仅在有 key 时执行）
+                if ai_key:
+                    ai_result = self._build_ai_enhance_result(
+                        requirement_text, regex_result["config"],
+                        ai_provider, ai_base_url, ai_model, ai_key
+                    )
+                    self.root.after(0, lambda: self._apply_ai_enhance_result(ai_result))
+                else:
+                    # 无 AI key，恢复按钮
+                    self.root.after(0, self._finish_parse_button)
             except Exception as exc:
                 self.root.after(0, lambda e=exc: self._handle_requirement_parse_error(e))
 
         threading.Thread(target=_worker, daemon=True).start()
 
     def _build_requirement_parse_result(self, requirement_text, ai_provider, ai_base_url, ai_model, ai_key):
-        """后台线程中构建解析结果，不直接操作 Tk 控件。"""
+        """后台线程中构建解析结果（兼容旧调用路径）。"""
+        regex_result = self._build_regex_parse_result(requirement_text)
+        if ai_key:
+            ai_result = self._build_ai_enhance_result(
+                requirement_text, regex_result["config"],
+                ai_provider, ai_base_url, ai_model, ai_key
+            )
+            if ai_result.get("ai_success"):
+                return ai_result
+        return regex_result
+
+    def _build_regex_parse_result(self, requirement_text):
+        """阶段 1：正则解析（快速，毫秒级）。"""
         from doc_parser import generate_config_from_text, parse_job_requirements
 
         parsed_detail = parse_job_requirements(requirement_text)
@@ -8254,35 +8352,41 @@ class BossFilterGUI:
                 f.write(f"\n=== 原始需求文档 ===\n{requirement_text}\n")
 
         config = generate_config_from_text(requirement_text, merge_existing=False)
-        ai_parse_status = "正则解析"
-        ai_parse_warnings = []
-        if ai_key:
-            try:
-                from job_ai_parser import enhance_config_with_ai
-                ai_result = enhance_config_with_ai(
-                    requirement_text,
-                    config,
-                    {"api_provider": ai_provider, "base_url": ai_base_url, "model": ai_model},
-                    ai_key,
-                )
-                if ai_result.success:
-                    config = ai_result.config
-                    ai_parse_status = "本地规则 + AI 优化"
-                    ai_parse_warnings = ai_result.warnings or []
-                else:
-                    ai_parse_status = f"本地规则（AI 暂时不可用，已自动回退：{self._friendly_ai_parse_reason(ai_result.reason)}）"
-            except Exception as ai_exc:
-                ai_parse_status = f"本地规则（AI 暂时不可用，已自动回退：{self._friendly_ai_parse_reason(str(ai_exc))}）"
-        elif ai_provider and ai_base_url and ai_model:
-            ai_parse_status = "本地规则（当前模型还没配置密钥）"
-        else:
-            ai_parse_status = "本地规则"
-
         return {
             "config": config,
-            "ai_parse_status": ai_parse_status,
-            "ai_parse_warnings": ai_parse_warnings,
+            "ai_parse_status": "本地规则",
+            "ai_parse_warnings": [],
+            "source_map": config.get("_source_map", {}),
         }
+
+    def _build_ai_enhance_result(self, requirement_text, regex_config, ai_provider, ai_base_url, ai_model, ai_key):
+        """阶段 2：AI 增强（慢速，6-12 秒）。"""
+        from job_ai_parser import enhance_config_with_ai
+        try:
+            ai_result = enhance_config_with_ai(
+                requirement_text,
+                regex_config,
+                {"api_provider": ai_provider, "base_url": ai_base_url, "model": ai_model},
+                ai_key,
+            )
+            if ai_result.success:
+                return {
+                    "config": ai_result.config,
+                    "ai_parse_status": "本地规则 + AI 增强解析",
+                    "ai_parse_warnings": ai_result.warnings or [],
+                    "source_map": ai_result.config.get("_source_map", regex_config.get("_source_map", {})),
+                    "ai_success": True,
+                }
+            else:
+                return {
+                    "ai_parse_status": f"本地规则（AI 暂时不可用：{self._friendly_ai_parse_reason(ai_result.reason)}）",
+                    "ai_success": False,
+                }
+        except Exception as ai_exc:
+            return {
+                "ai_parse_status": f"本地规则（AI 暂时不可用：{self._friendly_ai_parse_reason(str(ai_exc))}）",
+                "ai_success": False,
+            }
 
     def _friendly_ai_parse_reason(self, reason):
         """把底层 AI 错误转成普通用户能理解的回退原因。"""
@@ -8348,6 +8452,7 @@ class BossFilterGUI:
             config = result["config"]
             ai_parse_status = result["ai_parse_status"]
             ai_parse_warnings = result["ai_parse_warnings"]
+            source_map = result.get("source_map", {})
             job_title = list(config["job_requirements"].keys())[0]
             job_config = config["job_requirements"][job_title]
 
@@ -8365,20 +8470,48 @@ class BossFilterGUI:
             self.salary_min_var.set(str(salary_min) if salary_min is not None else "")
             self.salary_max_var.set(str(salary_max) if salary_max is not None else "")
 
+            # 构建技能→原文出处的映射
+            _skills_evidence = {}
+            for item in source_map.get("skills", []):
+                _skills_evidence[item.get("name", "")] = item.get("evidence", "")
+
             self.skills_data = []
             for kw in job_config.get("keywords", []):
                 if isinstance(kw, dict):
-                    self.skills_data.append({"name": kw.get("name", ""), "weight": kw.get("weight", 1), "source": "解析"})
+                    name = kw.get("name", "")
+                    self.skills_data.append({"name": name, "weight": kw.get("weight", 1), "source": "解析", "evidence": _skills_evidence.get(name, "")})
                 else:
-                    self.skills_data.append({"name": kw, "weight": 1, "source": "解析"})
+                    self.skills_data.append({"name": kw, "weight": 1, "source": "解析", "evidence": _skills_evidence.get(kw, "")})
             for kw in job_config.get("preferred_keywords", []):
                 if isinstance(kw, dict):
-                    self.skills_data.append({"name": kw.get("name", ""), "weight": kw.get("bonus", kw.get("weight", 1)), "source": "优先"})
+                    name = kw.get("name", "")
+                    self.skills_data.append({"name": name, "weight": kw.get("bonus", kw.get("weight", 1)), "source": "优先", "evidence": _skills_evidence.get(name, "")})
                 else:
-                    self.skills_data.append({"name": kw, "weight": 1, "source": "优先"})
+                    self.skills_data.append({"name": kw, "weight": 1, "source": "优先", "evidence": _skills_evidence.get(kw, "")})
             self.refresh_skills_tree()
 
-            self.required_conditions_data = list(job_config.get("required_conditions", []))
+            # 构建必要条件→原文出处的映射
+            _req_evidence_map = {}
+            for item in source_map.get("required_conditions", []):
+                cond = item.get("condition")
+                evidence = item.get("evidence", "")
+                if isinstance(cond, dict):
+                    key = f"{cond.get('type','or')}:{','.join(cond.get('items',[]))}"
+                else:
+                    key = str(cond)
+                _req_evidence_map[key] = evidence
+
+            self.required_conditions_data = []
+            for cond in job_config.get("required_conditions", []):
+                if isinstance(cond, dict):
+                    key = f"{cond.get('type','or')}:{','.join(cond.get('items',[]))}"
+                else:
+                    key = str(cond)
+                entry = dict(cond) if isinstance(cond, dict) else cond
+                if isinstance(entry, dict):
+                    entry["_evidence"] = _req_evidence_map.get(key, "")
+                self.required_conditions_data.append(entry)
+            self._required_evidence_map = _req_evidence_map
             self.refresh_required_listbox()
 
             skills_count = len([s for s in self.skills_data if s.get("source") != "优先"])
@@ -8426,7 +8559,11 @@ class BossFilterGUI:
                     "2. 在下方「技能关键词」区域手工添加关键字"
                 )
             else:
-                self._set_parse_result_text(f"✓ 解析成功：{summary_base}", self.colors['success'])
+                if getattr(self, '_ai_enhance_pending', False):
+                    self._set_parse_result_text(f"✓ 本地规则解析成功：{summary_base}", self.colors['success'])
+                    self._start_ai_progress_animation()
+                else:
+                    self._set_parse_result_text(f"✓ 解析成功：{summary_base}", self.colors['success'])
                 if ai_parse_warnings:
                     friendly_warnings = [
                         self._humanize_ai_parse_warning(w)
@@ -8450,13 +8587,165 @@ class BossFilterGUI:
             else:
                 self._show_save_hint()
         finally:
-            if hasattr(self, "btn_parse_requirement"):
-                self.btn_parse_requirement.config(
-                    state="normal",
-                    text=getattr(self, "_parse_requirement_button_text", " 解析招聘需求"),
-                )
+            # 如果有 AI key，不恢复按钮（等 AI 增强完成后再恢复）
+            _ai_pending = getattr(self, '_ai_enhance_pending', False)
+            if not _ai_pending:
+                self._finish_parse_button()
+
+    def _apply_ai_enhance_result(self, result):
+        """阶段 2：AI 增强完成后，增量更新界面。"""
+        self._ai_enhance_pending = False
+        self._stop_ai_progress_animation()
+        self._stop_requirement_parse_progress()
+
+        if not result.get("ai_success"):
+            # AI 失败，只更新状态文字，保留 regex 结果
+            status = result.get("ai_parse_status", "本地规则")
+            self._set_parse_result_text(f"✓ 解析成功：{status}", self.colors['success'])
+            self._finish_parse_button()
+            return
+
+        # AI 成功，用 AI 结果更新界面（不覆盖用户已修改的字段）
+        try:
+            config = result["config"]
+            ai_parse_status = result["ai_parse_status"]
+            ai_parse_warnings = result.get("ai_parse_warnings", [])
+            source_map = result.get("source_map", {})
+            job_title = list(config["job_requirements"].keys())[0]
+            job_config = config["job_requirements"][job_title]
+            dirty = getattr(self, '_dirty_fields', set())
+
+            # 只更新非 dirty 字段
+            if 'edu' not in dirty:
+                self.edu_var.set(job_config.get("edu", "本科"))
+            if 'min_exp' not in dirty:
+                self.min_exp_var.set(str(job_config.get("min_exp", 0)))
+            if 'max_age' not in dirty:
+                self.max_age_var.set(_optional_int_to_entry(job_config.get("max_age", 35)))
+            if 'work_location' not in dirty:
+                self.work_location_var.set(job_config.get("work_location") or "")
+            if 'salary' not in dirty:
+                salary_min = job_config.get("salary_min")
+                salary_max = job_config.get("salary_max")
+                self.salary_min_var.set(str(salary_min) if salary_min is not None else "")
+                self.salary_max_var.set(str(salary_max) if salary_max is not None else "")
+
+            # 技能和必要条件：AI 增强可能新增/修改，合并而非覆盖
+            if 'skills' not in dirty:
+                _skills_evidence = {}
+                for item in source_map.get("skills", []):
+                    _skills_evidence[item.get("name", "")] = item.get("evidence", "")
+
+                # 保留原有来源：regex 阶段已有的技能保持原来源，AI 新增的标记为"AI新增"
+                _existing_sources = {}
+                for s in self.skills_data:
+                    key = re.sub(r'\s+', '', s.get("name", "")).lower()
+                    _existing_sources[key] = s.get("source", "解析")
+
+                new_skills = []
+                for kw in job_config.get("keywords", []):
+                    name = kw.get("name", "") if isinstance(kw, dict) else kw
+                    key = re.sub(r'\s+', '', name).lower()
+                    source = _existing_sources.get(key, "AI新增")
+                    if isinstance(kw, dict):
+                        new_skills.append({"name": name, "weight": kw.get("weight", 1), "source": source, "evidence": _skills_evidence.get(name, "")})
+                    else:
+                        new_skills.append({"name": kw, "weight": 1, "source": source, "evidence": _skills_evidence.get(kw, "")})
+                for kw in job_config.get("preferred_keywords", []):
+                    name = kw.get("name", "") if isinstance(kw, dict) else kw
+                    key = re.sub(r'\s+', '', name).lower()
+                    source = _existing_sources.get(key, "AI优先")
+                    if isinstance(kw, dict):
+                        new_skills.append({"name": name, "weight": kw.get("bonus", kw.get("weight", 1)), "source": source, "evidence": _skills_evidence.get(name, "")})
+                    else:
+                        new_skills.append({"name": kw, "weight": 1, "source": source, "evidence": _skills_evidence.get(kw, "")})
+                self.skills_data = new_skills
+                self.refresh_skills_tree()
+
+            if 'required_conditions' not in dirty:
+                _req_evidence_map = {}
+                for item in source_map.get("required_conditions", []):
+                    cond = item.get("condition")
+                    evidence = item.get("evidence", "")
+                    if isinstance(cond, dict):
+                        key = f"{cond.get('type','or')}:{','.join(cond.get('items',[]))}"
+                    else:
+                        key = str(cond)
+                    _req_evidence_map[key] = evidence
+
+                self.required_conditions_data = []
+                for cond in job_config.get("required_conditions", []):
+                    if isinstance(cond, dict):
+                        key = f"{cond.get('type','or')}:{','.join(cond.get('items',[]))}"
+                    else:
+                        key = str(cond)
+                    entry = dict(cond) if isinstance(cond, dict) else cond
+                    if isinstance(entry, dict):
+                        entry["_evidence"] = _req_evidence_map.get(key, "")
+                    self.required_conditions_data.append(entry)
+                self._required_evidence_map = _req_evidence_map
+                self.refresh_required_listbox()
+
+            # 更新状态
+            skills_count = len([s for s in self.skills_data if s.get("source") not in ("优先", "AI优先")])
+            preferred_count = len([s for s in self.skills_data if s.get("source") in ("优先", "AI优先")])
+            required_count = len(self.required_conditions_data)
+            preferred_part = f"，优先项={preferred_count}个" if preferred_count else ""
+            summary = (
+                f"技能={skills_count}个{preferred_part}，"
+                f"必要条件={required_count}条，方式={ai_parse_status}"
+            )
+            self._set_parse_result_text(f"✓ AI 增强解析完成：{summary}", self.colors['success'])
+
+            if ai_parse_warnings:
+                warnings_text = "\n".join(f"• {self._humanize_ai_parse_warning(w)}" for w in ai_parse_warnings[:5])
+                messagebox.showinfo("AI 解析提醒", f"AI 增强解析完成，以下内容需要确认：\n\n{warnings_text}")
+
+        except Exception:
+            self._set_parse_result_text("✓ AI 增强解析完成（部分字段更新失败）", self.colors['warning'])
+        finally:
+            self._finish_parse_button()
+
+    def _start_ai_progress_animation(self):
+        """启动 AI 增强进度动画（状态栏文字循环闪烁）"""
+        self._ai_anim_base = "\n⏳ AI 增强解析中"
+        self._ai_anim_dots = 0
+        self._ai_anim_running = True
+        # 更新按钮文字为 AI 进度
+        if hasattr(self, "btn_parse_requirement"):
+            self.btn_parse_requirement.config(state="disabled", text=" AI 增强中…")
+        self._tick_ai_animation()
+
+    def _tick_ai_animation(self):
+        """动画帧：循环显示 . / .. / ... / …"""
+        if not getattr(self, '_ai_anim_running', False):
+            return
+        self._ai_anim_dots = (self._ai_anim_dots + 1) % 4
+        dots = "." * self._ai_anim_dots if self._ai_anim_dots > 0 else "…"
+        # 在 parse_result_label 上追加动画后缀
+        current_text = self.parse_result_label.cget("text")
+        # 移除旧的动画后缀（支持换行分隔）
+        base = current_text.split("\n⏳ AI 增强")[0] if "\n⏳ AI 增强" in current_text else current_text
+        self.parse_result_label.config(text=f"{base}{self._ai_anim_base}{dots}")
+        self._ai_anim_after_id = self.root.after(500, self._tick_ai_animation)
+
+    def _stop_ai_progress_animation(self):
+        """停止 AI 增强进度动画"""
+        self._ai_anim_running = False
+        if hasattr(self, '_ai_anim_after_id'):
+            self.root.after_cancel(self._ai_anim_after_id)
+            self._ai_anim_after_id = None
+
+    def _finish_parse_button(self):
+        """恢复解析按钮状态"""
+        if hasattr(self, "btn_parse_requirement"):
+            self.btn_parse_requirement.config(
+                state="normal",
+                text=getattr(self, "_parse_requirement_button_text", " 解析招聘需求"),
+            )
 
     def _handle_requirement_parse_error(self, exc):
+        self._stop_ai_progress_animation()
         self._stop_requirement_parse_progress()
         if hasattr(self, "btn_parse_requirement"):
             self.btn_parse_requirement.config(
@@ -10178,6 +10467,33 @@ class BossFilterGUI:
             self._model_tooltip.destroy()
             self._model_tooltip = None
         self._model_tooltip_item = None
+
+    def _create_simple_tooltip(self, text, x, y):
+        """创建简单的浮动 tooltip，返回 Toplevel 对象。"""
+        tip = tk.Toplevel(self.root)
+        tip.wm_overrideredirect(True)
+        tip.wm_geometry(f'+{x}+{y}')
+        label = tk.Label(
+            tip, text=text, background='#FFFFE0', relief='solid', borderwidth=1,
+            font=(FONT_FAMILY, int(10 * self.dpi_scale * self.zoom_factor)),
+            padx=6, pady=3, wraplength=500
+        )
+        label.pack()
+        return tip
+
+    def _hide_skills_tooltip(self, event=None):
+        """隐藏技能表 tooltip"""
+        if self._skills_tooltip:
+            self._skills_tooltip.destroy()
+            self._skills_tooltip = None
+        self._skills_tooltip_item = None
+
+    def _hide_req_tooltip(self, event=None):
+        """隐藏必要条件 tooltip"""
+        if self._req_tooltip:
+            self._req_tooltip.destroy()
+            self._req_tooltip = None
+        self._req_tooltip_idx = None
 
     def _bind_detail_tree_tooltip(self, tree, filtered_ref):
         """为明细窗口 Treeview 绑定状态列 tooltip（截断时显示完整状态）。"""

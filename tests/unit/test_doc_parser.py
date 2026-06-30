@@ -1122,3 +1122,99 @@ def test_industry_experience_partial_sub_keywords():
     # "债券"主词应被提取（因为"债券"出现在文本中，且是_bond的别名之一）
     # 固收是债券的别名，所以"债券"主词会匹配
     assert "债券" in rc or "固收" in [k for k in rc], f"债券或固收应在必要条件中: {rc}"
+
+
+# ========== 行分类器重构：强/弱硬条件指示词 ==========
+
+def test_weak_hard_hint_in_req_section_as_skill():
+    """req section 中 '需要/要求' + 技能词 → skill，不是 hard"""
+    from doc_parser import _classify_requirement_line
+    # "需要有良好的沟通能力" — 含"需要"但无技能词 → hard（弱指示词 + 无技能词）
+    assert _classify_requirement_line("需要有良好的沟通能力", "req") == "hard"
+    # "要求熟悉 Java 开发" — 含"要求" + 技能词 → skill
+    assert _classify_requirement_line("要求熟悉 Java 开发", "req") == "skill"
+    # "需要掌握 Spring Boot" — 含"需要" + 技能词 → skill
+    assert _classify_requirement_line("需要掌握 Spring Boot", "req") == "skill"
+
+
+def test_strong_hard_hint_in_body_section():
+    """body section 中只有强指示词才判 hard"""
+    from doc_parser import _classify_requirement_line
+    # "必须本科以上学历" — 强指示词 → hard
+    assert _classify_requirement_line("必须本科以上学历", "body") == "hard"
+    # "要求本科以上学历" — 弱指示词在 body 中 → 不判 hard
+    assert _classify_requirement_line("要求本科以上学历", "body") == "other"
+
+
+def test_hard_section_always_hard():
+    """hard section 内的行一律判 hard"""
+    from doc_parser import _classify_requirement_line
+    assert _classify_requirement_line("本科以上学历", "hard") == "hard"
+    assert _classify_requirement_line("熟悉 Java", "hard") == "hard"
+    assert _classify_requirement_line("有良好的沟通能力", "hard") == "hard"
+
+
+# ========== 段落切分增强 ==========
+
+def test_fuzzy_section_heading_yingpin_tiaojian():
+    """'应聘条件' 应被识别为 hard section"""
+    text = "应聘条件\n统招本科，3年以上经验"
+    result = parse_job_requirements(text)
+    assert result["edu"] == "本科"
+    assert result["min_exp"] == 3
+
+
+def test_sub_heading_jingyan_in_body():
+    """'工作经验' 子标题在 body 中应映射到 hard section"""
+    text = "职位描述\n负责核心开发\n工作经验\n5年以上Java经验"
+    result = parse_job_requirements(text)
+    assert result["min_exp"] == 5
+
+
+# ========== 学历解析上下文隔离 ==========
+
+def test_education_same_sentence_hard_and_preferred():
+    """同一句中 '本科'（硬门槛）和 '博士优先'（偏好）共存"""
+    text = "## 硬性条件\n本科，博士优先"
+    result = parse_job_requirements(text)
+    assert result["edu"] == "本科"
+
+
+def test_education_xueli_youxian_whole_sentence():
+    """'硕士及以上学历优先考虑' 整句排除"""
+    text = "## 硬性条件\n硕士及以上学历优先考虑"
+    result = parse_job_requirements(text)
+    assert result["edu"] == "不限"
+
+
+# ========== 溯源数据 ==========
+
+def test_source_map_contains_edu_evidence():
+    """_source_map 包含学历的原文出处"""
+    text = "## 硬性条件\n统招本科，3年以上经验"
+    result = parse_job_requirements(text)
+    sm = result.get("_source_map", {})
+    assert "edu" in sm
+    assert "本科" in sm["edu"]
+
+
+def test_source_map_contains_skills_evidence():
+    """_source_map 包含技能的原文出处"""
+    text = "## 职位要求\n熟悉 Spring Boot、MySQL"
+    result = parse_job_requirements(text)
+    sm = result.get("_source_map", {})
+    skills = sm.get("skills", [])
+    names = [s["name"] for s in skills]
+    assert "Spring Boot" in names
+    # 找到 Spring Boot 的 evidence
+    sb = next(s for s in skills if s["name"] == "Spring Boot")
+    assert "Spring Boot" in sb["evidence"]
+
+
+def test_source_map_contains_exp_evidence():
+    """_source_map 包含经验的原文出处"""
+    text = "## 硬性条件\n5年以上 Java 开发经验"
+    result = parse_job_requirements(text)
+    sm = result.get("_source_map", {})
+    assert "min_exp" in sm
+    assert "5" in sm["min_exp"]
