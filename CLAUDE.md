@@ -108,15 +108,6 @@ boss-resume-filter/
 - **提示项**：条目质量、正向覆盖（CHANGELOG → 代码）、反向覆盖（代码 → CHANGELOG）、README 与 CHANGELOG 逐条一致、latest.json release_notes 同步默认只提示，避免启发式误报反复打断开发
 - **严格模式**：需要发布文案洁癖审查时运行 `python build.py --check --strict-changelog`，此时上述提示项升级为硬门禁
 
-#### 打包体积优化（当前 Windows 约 36.4MB，macOS ZIP/DMG 约 31-33MB）
-
-- **PIL**：精确 `--hidden-import` 仅收集 Image/ImageDraw/ImageTk，排除 `_avif`/`_webp`
-- **babel locale-data**：自定义 hook（`pyinstaller-hooks/hook-babel.py`）排除全部 1086 个 locale .dat，按需添加 9 个（zh/en 系列）
-- **排除模块**：保留 `scipy`、`lxml.objectify` 等无运行期入口模块；`pandas` 不再是直接打包依赖，Excel 导出保持 `openpyxl` 直写；`numpy`/`numpy.libs` 仅为 openpyxl 可选支持和环境残留，打包时应排除；**不要排除** `sqlite3`（DataRecorder/DrissionPage 顶层依赖）、`lxml.html`（DrissionPage 顶层依赖）
-- **体积判断**：Windows 使用 `--onefile` 单文件 EXE，通常比 macOS `--onedir` 后的 ZIP/DMG 大；不要用 macOS 32MB 反推 Windows 也必须接近 32MB。当前 Windows EXE 约 36.4MB、macOS ZIP/DMG 约 31-33MB 属正常范围。
-- 修改 build.py 时注意保持上述优化，避免体积回退
-- **CI 跨平台重建**：`build.py`、`pyinstaller-hooks/` 和核心源码/配置变更会触发对端平台 CI 重建；macOS 对端产物必须同时有 ZIP 和 DMG，否则 CI 需重建
-
 ## 代码规范
 
 - 使用 type hints
@@ -167,8 +158,6 @@ boss-resume-filter/
 - **API 读取限速**：API 直调默认约 2-4 秒随机间隔；单次最多读取 `API_CANDIDATE_LIMIT_DEFAULT`（默认 400，对应最多补全 20 页）人，达到上限停止继续翻页
 - **打招呼限速**：每 `GREET_BATCH_SIZE` 人暂停随机间隔；每轮上限 `AUTO_GREET_RUN_LIMIT`（默认 50）
 
-> **重要架构约束**：候选人集合必须以推荐页 DOM 滚动提取结果为准。Listener 和 API 直调可以补全结构化字段，但只能增强已经在 DOM 中出现、且 `geek_id` 一致的候选人，不能把接口额外返回的人直接加入筛选或打招呼队列。`srcdoc` iframe 无法稳定提供岗位 URL，因此接口分页地址优先来自 listener 捕获结果，缺失时再尝试页面身份信息。
-
 ### 去重机制
 
 - 基于 `(geek_id, job_name)` 复合键去重，保留分数高的记录，合并打招呼状态
@@ -182,19 +171,9 @@ boss-resume-filter/
 
 ### 候选人提取
 
-候选人提取使用 **DOM 滚动提取**（`_extract_cards_batch()`），通过滚动页面逐批加载候选人卡片并解析 DOM 结构。提取流程：
+候选人提取使用 **DOM 滚动提取**（`_extract_cards_batch()`），以页面可见候选人为准，接口仅补全已存在候选人的结构化字段。详细架构背景见 `.agent/notes.md`。
 
-1. 滚动页面触发懒加载
-2. 等待新卡片渲染
-3. 批量提取当前可见的所有卡片
-4. 去重合并到候选人列表
-5. 重复直到触底或达到轮次上限
-
-> **为什么仍以 DOM 为准？** Listener/API 返回结果可能与虚拟列表当前已渲染卡片不同步。系统因此先由 DOM 建立唯一候选人集合，再按 `geek_id` 合并 listener/API 的经验、年龄、薪资、城市等结构化字段；接口中未出现在 DOM 的候选人一律忽略。
-
-`filter_candidate()` 接受可选 `structured_fields` 参数，优先使用结构化值，fallback 到正则文本解析。薪资正则 `[kK]?` 末尾 K 可选，兼容 "15-25" 无后缀格式。
-
-API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求浪费 API 配额。
+`filter_candidate()` 接受可选 `structured_fields` 参数，优先使用结构化值，fallback 到正则文本解析。
 
 ### 滚动提前终止
 
@@ -287,9 +266,7 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 - **Windows**：下载 EXE → 校验 SHA256 → `update.bat` 替换重启；脚本须清理 `_PYI_*` 环境变量 + `PYINSTALLER_RESET_ENVIRONMENT=1` 防 DLL 缺失
 - **macOS**：.app 运行→下载 ZIP 替换重启；源码→`git pull`
 - `latest.json` 的 `assets` 记录产物 `size`/`sha256` 供校验
-- **Gitee Release 上传**：GitHub CI 只上传 GitHub Release；本地发布机将 CI 对端产物下载后同步 Gitee。macOS ZIP/DMG 使用最多 2 路并发流水传输，小文件最多 3 路并发；上传/下载超时 600s，4xx 不重试
-- **Gitee 完整性校验**：发布主流程只校验附件齐全和 size 与 GitHub 一致，不回下载大文件；需要逐文件 SHA256 时手动运行 `python build.py --verify-gitee-integrity X.Y.Z`
-- **Gitee Token**：本地使用环境变量 `GITEE_TOKEN`；GitHub Repository Secret 不参与当前发布流程
+- Gitee Release 上传/校验细节见 `.agent/notes.md`
 - 实现位置：`updater.py`（客户端），`build.py`（上传）
 
 ## 低频专项说明
