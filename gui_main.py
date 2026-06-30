@@ -827,6 +827,10 @@ class BossFilterGUI:
         self._home_stats_last_job = None
         self._skills_tree_fingerprint = None
         self._required_list_fingerprint = None
+
+        # AI评估状态跟踪（使用 geek_id 集合，refresh_results 后仍有效）
+        self._ai_evaluating_ids = set()
+        self._ai_eval_results = {}  # {geek_id: {'status': 'success'/'failed', 'message': '...', 'timestamp': ...}}
         self._api_ui_config_mtime = None
         self._api_key_resolve_thread = None
         self._pending_idle_tasks = set()
@@ -5571,7 +5575,7 @@ class BossFilterGUI:
                         self.refresh_home_stats()
                         self.refresh_results()
 
-                    context_menu_font = (FONT_FAMILY, int(12 * self.font_scale))
+                    context_menu_font = (FONT_FAMILY, int(11 * self.font_scale))
                     menu = tk.Menu(detail_window, tearoff=0, font=context_menu_font)
                     icon_export_menu = self.icons.button('export', self.colors['text_primary'])
                     icon_trash_menu = self.icons.button('trash', self.colors['text_primary'])
@@ -6000,7 +6004,7 @@ class BossFilterGUI:
                         self.refresh_results()
                         detail_window.lift()
 
-                    context_menu_font = (FONT_FAMILY, int(12 * self.font_scale))
+                    context_menu_font = (FONT_FAMILY, int(11 * self.font_scale))
                     menu = tk.Menu(detail_window, tearoff=0, font=context_menu_font)
                     icon_export_menu = self.icons.button('export', self.colors['text_primary'])
                     icon_trash_menu = self.icons.button('trash', self.colors['text_primary'])
@@ -10053,7 +10057,7 @@ class BossFilterGUI:
                 parent=self.root,
             )
 
-    def refresh_results(self):
+    def refresh_results(self, force=False):
         """刷新结果 - 增强版：支持表头排序、颜色标记和岗位+日期过滤"""
         # 如果结果页面尚未创建，直接返回
         if not hasattr(self, 'result_tree') or self.result_tree is None:
@@ -10066,7 +10070,13 @@ class BossFilterGUI:
         if CANDIDATES_PATH.exists():
             stat = CANDIDATES_PATH.stat()
             fingerprint = (stat.st_mtime, stat.st_size)
-            if fingerprint == self._result_tree_fingerprint and current_job == self._result_last_job and current_dates == self._result_last_dates and show_blacklist == self._result_last_show_blacklist:
+            if (
+                not force
+                and fingerprint == self._result_tree_fingerprint
+                and current_job == self._result_last_job
+                and current_dates == self._result_last_dates
+                and show_blacklist == self._result_last_show_blacklist
+            ):
                 return
             self._result_tree_fingerprint = fingerprint
             self._result_last_job = current_job
@@ -10150,11 +10160,27 @@ class BossFilterGUI:
                 self.result_tree.tag_configure('pending', background=self.colors['bg_tree_tag_low'])
                 self.result_tree.tag_configure('blacklisted', background='#F5F5F5', foreground='#C62828')
 
-                for c in sorted_candidates[:100]:
+                visible_count = 0
+                for c in sorted_candidates:
                     score = c.get('match_score', 0)
-                    if score < SCORE_THRESHOLD_PASS:
-                        continue  # 低于通过分不显示
-                    level = "强烈推荐" if score >= SCORE_THRESHOLD_STRONG else ("推荐" if score >= SCORE_THRESHOLD_RECOMMEND else "待定")
+                    geek_id = str(c.get('geek_id', ''))
+
+                    # 评估中或已完成 AI 评估的候选人，即使分数低于55分也显示
+                    is_evaluating = geek_id in self._ai_evaluating_ids
+                    is_just_evaluated = geek_id in self._ai_eval_results
+                    is_ai_evaluated = bool(c.get('llm_evaluated'))
+                    should_keep_low_score = is_evaluating or is_just_evaluated or is_ai_evaluated
+
+                    if score < SCORE_THRESHOLD_PASS and not should_keep_low_score:
+                        continue  # 低于通过分且没有 AI 评估上下文，不显示
+                    if visible_count >= 100 and score >= SCORE_THRESHOLD_PASS:
+                        continue  # 常规结果仍保留前100条，低分 AI 评估结果不被挤掉
+
+                    level = (
+                        "强烈推荐" if score >= SCORE_THRESHOLD_STRONG
+                        else ("推荐" if score >= SCORE_THRESHOLD_RECOMMEND
+                              else ("待定" if score >= SCORE_THRESHOLD_PASS else "未通过"))
+                    )
                     status = self._format_candidate_status(c)
 
                     # 根据推荐等级设置颜色标记
@@ -10209,6 +10235,7 @@ class BossFilterGUI:
                         company,
                     ), tags=(tag,))
                     self._item_to_candidate[item_id] = c
+                    visible_count += 1
 
                 # 存储原始数据用于排序和详情展示
                 self.result_tree_data = sorted_candidates[:100]
@@ -10585,7 +10612,7 @@ class BossFilterGUI:
         selection = self.result_tree.selection()
         # 多选时显示批量操作功能
         if len(selection) > 1:
-            context_menu_font = (FONT_FAMILY, int(12 * self.font_scale))
+            context_menu_font = (FONT_FAMILY, int(11 * self.font_scale))
             menu = tk.Menu(self.root, tearoff=0, font=context_menu_font)
             icon_export_menu = self.icons.button('export', self.colors['text_primary'])
             icon_trash_menu = self.icons.button('trash', self.colors['text_primary'])
@@ -10615,6 +10642,19 @@ class BossFilterGUI:
 
             menu.add_command(label=" 批量打招呼", image=icon_greet, compound=tk.LEFT,
                              command=lambda: self._greet_selected_candidates(selection, [self.result_tree_data], self.result_tree, parent=self.root))
+
+            # 批量AI评估选项
+            selected_candidates = []
+            for sel_item in selection:
+                c = self._find_candidate_by_tree_item(sel_item)
+                if c:
+                    selected_candidates.append(c)
+            if selected_candidates:
+                icon_ai_eval = self.icons.button('refresh', self.colors['primary'])
+                menu._icon_refs.append(icon_ai_eval)
+                menu.add_command(label=" 批量AI评估", image=icon_ai_eval, compound=tk.LEFT,
+                                 command=lambda: self._ai_eval_selected_candidates(selected_candidates))
+
             menu.add_command(label=" 移除选中", image=icon_trash_menu, compound=tk.LEFT,
                              command=remove_selected)
             menu.add_separator()
@@ -10643,7 +10683,7 @@ class BossFilterGUI:
                                        show_detail_fn, remove_fn, export_fn,
                                        refresh_fn, x_root, y_root):
         """构建候选人右键菜单（筛选结果页和详细列表窗口共用）。"""
-        context_menu_font = (FONT_FAMILY, int(12 * self.font_scale))
+        context_menu_font = (FONT_FAMILY, int(11 * self.font_scale))
         menu = tk.Menu(parent, tearoff=0, font=context_menu_font)
 
         icon_detail = self.icons.button('clipboard', self.colors['text_primary'])
@@ -10664,6 +10704,14 @@ class BossFilterGUI:
 
         menu.add_command(label=" 查看详情", image=icon_detail, compound=tk.LEFT,
                          command=show_detail_fn)
+
+        # AI评估选项：仅当未评估成功时显示
+        if not candidate.get('llm_evaluated'):
+            icon_ai_eval = self.icons.button('refresh', self.colors['primary'])
+            menu._icon_refs.append(icon_ai_eval)
+            menu.add_command(label=" AI评估", image=icon_ai_eval, compound=tk.LEFT,
+                             command=lambda: self._ai_eval_selected_candidates([candidate]))
+
         menu.add_command(label=" 导入简历", image=icon_document, compound=tk.LEFT,
                          command=lambda: self._import_resume(
                              None, candidate=candidate, parent=parent,
@@ -10798,6 +10846,25 @@ class BossFilterGUI:
 
     def _format_candidate_status(self, candidate):
         """生成结果表中的候选人状态文本。超过 3 段且列未拉伸时截断，完整文本存 _full_status。"""
+        # AI评估中状态（使用全局集合，refresh_results 后仍有效）
+        geek_id = str(candidate.get('geek_id', ''))
+        if geek_id in getattr(self, '_ai_evaluating_ids', set()):
+            return "AI评估中..."
+
+        # AI评估结果状态（显示约3秒后自动恢复）
+        ai_eval_results = getattr(self, '_ai_eval_results', {})
+        if geek_id in ai_eval_results:
+            result = ai_eval_results[geek_id]
+            # 检查是否在3秒内
+            if time.time() - result.get('timestamp', 0) < 3:
+                if result['status'] == 'success':
+                    return f"✓ {result['message']}"
+                else:
+                    return f"✗ {result['message']}"
+            else:
+                # 超过3秒，清除结果
+                del ai_eval_results[geek_id]
+
         followup_status = candidate.get('followup_status')
         if not followup_status:
             followup_status = "已打招呼" if candidate.get('greet_sent', False) else "未沟通"
@@ -11350,6 +11417,287 @@ class BossFilterGUI:
         self.refresh_results()
         self.refresh_home_stats()
         self.append_log(f"[撤销评估] {name}: 分数回退到 {reverted_score}")
+
+    # ===== 一键AI评估功能 =====
+
+    def _ai_eval_selected_candidates(self, candidates):
+        """对选中的候选人发起AI评估"""
+        if not candidates:
+            return
+
+        # 检查API配置
+        api_config = self.api_config
+        if not api_config or not api_config.get('api_provider'):
+            messagebox.showwarning("警告", "请先配置AI模型")
+            return
+
+        from security import get_api_key
+        api_key = get_api_key(api_config.get('api_provider', ''), api_config.get('base_url', ''))
+        if not api_key:
+            messagebox.showwarning("警告", "请先配置API Key")
+            return
+
+        # 获取岗位需求
+        job_requirement = self._get_job_requirement_for_candidates(candidates)
+        if not job_requirement:
+            messagebox.showwarning("警告", "无法获取岗位需求信息")
+            return
+
+        # 过滤已在评估中的候选人
+        candidates_to_eval = [c for c in candidates if str(c.get('geek_id', '')) not in self._ai_evaluating_ids]
+        if not candidates_to_eval:
+            messagebox.showinfo("提示", "选中的候选人正在评估中")
+            return
+
+        # 过滤已评估成功的候选人
+        already_evaluated = [c for c in candidates_to_eval if c.get('llm_evaluated')]
+        not_evaluated = [c for c in candidates_to_eval if not c.get('llm_evaluated')]
+
+        if already_evaluated and not not_evaluated:
+            # 全部已评估
+            messagebox.showinfo("提示", f"选中的 {len(already_evaluated)} 名候选人已全部评估过")
+            return
+
+        if already_evaluated:
+            # 部分已评估，提示跳过
+            skip_names = '、'.join(c.get('name', '?') for c in already_evaluated[:5])
+            suffix = f"等{len(already_evaluated)}人" if len(already_evaluated) > 5 else ""
+            messagebox.showinfo("提示",
+                f"{len(already_evaluated)} 名候选人已评估过，将跳过：{skip_names}{suffix}\n"
+                f"将对剩余 {len(not_evaluated)} 名候选人进行评估")
+            candidates_to_eval = not_evaluated
+
+        # 确认操作
+        count = len(candidates_to_eval)
+        if count > 1:
+            if not messagebox.askyesno("确认", f"确定要对 {count} 名候选人进行AI评估吗？"):
+                return
+
+        # 设置评估中标记（使用全局集合，refresh_results 后仍有效）
+        for c in candidates_to_eval:
+            self._ai_evaluating_ids.add(str(c.get('geek_id', '')))
+
+        # 立即刷新一次，显示"AI评估中..."
+        self.refresh_results(force=True)
+
+        # 启动后台线程
+        self._ai_eval_in_progress = True
+        self._ai_eval_total = len(candidates_to_eval)
+        self._ai_eval_done = 0
+
+        # 启动定时刷新
+        self._ai_eval_refresh_timer = self.root.after(1000, self._refresh_ai_eval_status)
+
+        threading.Thread(
+            target=self._do_ai_eval_batch,
+            args=(candidates_to_eval, job_requirement, api_config, api_key),
+            daemon=True
+        ).start()
+
+    def _get_job_requirement_for_candidates(self, candidates):
+        """根据候选人获取岗位需求文本"""
+        if not candidates:
+            return ""
+
+        # 获取第一个候选人的岗位名称
+        job_name = candidates[0].get('job_name', '')
+        if not job_name:
+            return ""
+
+        # 从job_config.json获取岗位需求
+        job_rules = self._get_job_rules_cached()
+        rule = job_rules.get(job_name, {})
+
+        job_requirement = rule.get('original_requirement', '')
+        if not job_requirement:
+            min_exp = rule.get('min_exp', 0)
+            edu = rule.get('edu', '不限')
+            job_requirement = f"岗位：{job_name}，{min_exp}年经验，{edu}学历"
+
+        return job_requirement
+
+    def _do_ai_eval_batch(self, candidates, job_requirement, api_config, api_key):
+        """后台执行AI评估"""
+        import sys
+        import io
+        from llm_eval import evaluate_batch
+
+        try:
+            def progress_callback(percentage, description):
+                self._ai_eval_done = int(percentage / 100 * self._ai_eval_total)
+
+            # 抑制 evaluate_batch 的 print 输出
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+
+            try:
+                # 执行评估
+                evaluate_batch(
+                    candidates, job_requirement, api_config, api_key,
+                    progress_callback=progress_callback
+                )
+            finally:
+                sys.stdout = old_stdout
+
+            # 记录评估结果状态
+            for c in candidates:
+                geek_id = str(c.get('geek_id', ''))
+                if c.get('llm_evaluated'):
+                    self._ai_eval_results[geek_id] = {
+                        'status': 'success',
+                        'message': f"评估完成，调整分：{'+' if c.get('llm_adjustment', 0) >= 0 else ''}{c.get('llm_adjustment', 0)}",
+                        'timestamp': time.time()
+                    }
+                else:
+                    self._ai_eval_results[geek_id] = {
+                        'status': 'failed',
+                        'message': c.get('llm_error', '评估失败'),
+                        'timestamp': time.time()
+                    }
+
+            # 保存结果
+            self._save_ai_eval_results(candidates)
+
+        except Exception as e:
+            # 记录异常
+            for c in candidates:
+                self._ai_eval_results[str(c.get('geek_id', ''))] = {
+                    'status': 'failed',
+                    'message': str(e),
+                    'timestamp': time.time()
+                }
+        finally:
+            self._ai_eval_in_progress = False
+            # 从评估中集合移除
+            for c in candidates:
+                self._ai_evaluating_ids.discard(str(c.get('geek_id', '')))
+            self.root.after(0, self._on_ai_eval_complete)
+
+    def _refresh_ai_eval_status(self):
+        """定时刷新AI评估状态"""
+        if self._ai_eval_in_progress:
+            self.refresh_results(force=True)
+            self._ai_eval_refresh_timer = self.root.after(1000, self._refresh_ai_eval_status)
+
+    def _on_ai_eval_complete(self):
+        """AI评估完成"""
+        self._ai_eval_in_progress = False
+        if hasattr(self, '_ai_eval_refresh_timer'):
+            self.root.after_cancel(self._ai_eval_refresh_timer)
+
+        # 记录需要滚动到的候选人 geek_id
+        scroll_to_geek_ids = set(self._ai_eval_results.keys())
+
+        self.refresh_results(force=True)
+        self.refresh_home_stats()
+
+        # 滚动到评估过的候选人位置
+        if scroll_to_geek_ids:
+            self._scroll_to_ai_evaluated_candidates(scroll_to_geek_ids)
+
+        # 启动定时刷新状态列（显示结果约3秒后自动恢复）
+        self._ai_eval_status_refresh_count = 0
+        self._refresh_ai_eval_result_status(scroll_to_geek_ids)
+
+    def _scroll_to_ai_evaluated_candidates(self, geek_ids):
+        """滚动到AI评估过的候选人位置"""
+        if not geek_ids:
+            return
+
+        target_ids = {str(geek_id) for geek_id in geek_ids}
+        # 找到第一个评估过的候选人在 Treeview 中的位置
+        for item in self.result_tree.get_children():
+            candidate = self._item_to_candidate.get(item)
+            if candidate and str(candidate.get('geek_id', '')) in target_ids:
+                # 滚动到该位置
+                self.result_tree.see(item)
+                # 选中该候选人
+                self.result_tree.selection_set(item)
+                self.result_tree.focus(item)
+                try:
+                    self.result_tree.focus_set()
+                except Exception:
+                    pass
+                return True
+        return False
+
+    def _refresh_ai_eval_result_status(self, highlight_geek_ids=None):
+        """定时刷新状态列显示AI评估结果（约3秒后自动恢复）"""
+        if not self._ai_eval_results:
+            return
+
+        self._ai_eval_status_refresh_count += 1
+
+        # 检查是否所有结果都超过3秒
+        now = time.time()
+        all_expired = all(
+            now - result.get('timestamp', 0) >= 3
+            for result in self._ai_eval_results.values()
+        )
+
+        if all_expired or self._ai_eval_status_refresh_count >= 4:
+            # 清除结果，恢复原状态
+            self._ai_eval_results.clear()
+            self.refresh_results(force=True)
+            if highlight_geek_ids:
+                self._scroll_to_ai_evaluated_candidates(highlight_geek_ids)
+        else:
+            # 继续刷新
+            self.refresh_results(force=True)
+            if highlight_geek_ids:
+                self._scroll_to_ai_evaluated_candidates(highlight_geek_ids)
+            # 启动下一次定时刷新
+            self._ai_eval_result_refresh_timer = self.root.after(
+                1000,
+                lambda: self._refresh_ai_eval_result_status(highlight_geek_ids),
+            )
+
+    def _save_ai_eval_results(self, candidates):
+        """保存AI评估结果到candidates.json"""
+        from storage import save_candidates_all
+
+        # 读取现有数据
+        if CANDIDATES_PATH.exists():
+            try:
+                with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
+                    all_candidates = json.load(f)
+            except Exception:
+                all_candidates = self.all_candidates if hasattr(self, 'all_candidates') else []
+        else:
+            all_candidates = self.all_candidates if hasattr(self, 'all_candidates') else []
+
+        # 更新评估结果
+        eval_map = {c.get('geek_id'): c for c in candidates}
+        for i, c in enumerate(all_candidates):
+            geek_id = c.get('geek_id')
+            if geek_id in eval_map:
+                eval_result = eval_map[geek_id]
+                all_candidates[i].update({
+                    'llm_evaluated': eval_result.get('llm_evaluated'),
+                    'llm_adjustment': eval_result.get('llm_adjustment'),
+                    'llm_reason': eval_result.get('llm_reason'),
+                    'llm_model': eval_result.get('llm_model'),
+                    'llm_error': eval_result.get('llm_error'),
+                    'match_score': eval_result.get('match_score'),
+                    'recommend_level': eval_result.get('recommend_level'),
+                    'rule_score': eval_result.get('rule_score'),
+                    'score_breakdown': eval_result.get('score_breakdown'),
+                    'llm_hard_condition_verdict': eval_result.get('llm_hard_condition_verdict'),
+                    'llm_hard_condition_findings': eval_result.get('llm_hard_condition_findings'),
+                    'qualification_status': eval_result.get('qualification_status'),
+                    'qualification_reasons': eval_result.get('qualification_reasons'),
+                    'qualification_evidence': eval_result.get('qualification_evidence'),
+                })
+
+        # 保存
+        save_candidates_all(all_candidates, CANDIDATES_PATH)
+
+        # 更新内存数据
+        if hasattr(self, 'all_candidates'):
+            for i, c in enumerate(self.all_candidates):
+                geek_id = c.get('geek_id')
+                if geek_id in eval_map:
+                    self.all_candidates[i].update(eval_map[geek_id])
 
     def _blacklist_candidate(self, item, candidate=None, parent=None):
         """把选中候选人加入黑名单。"""
