@@ -7908,6 +7908,65 @@ class BossFilterGUI:
             self.requirement_text.insert("1.0", self._req_placeholder_text, "placeholder")
             self._req_placeholder_active = True
 
+    def _populate_skills_from_config(self, job_config, source_map, source_override=None):
+        """从 job_config 构建 skills_data（含原文出处）。
+
+        source_override: 若提供，应为 {normalized_key: source_str} 映射，
+        用于 AI 增强阶段保留 regex 阶段的来源标记。未命中时 fallback 为 "AI新增"/"AI优先"。
+        """
+        evidence = {item.get("name", ""): item.get("evidence", "")
+                    for item in source_map.get("skills", [])}
+        self.skills_data = []
+        for kw in job_config.get("keywords", []):
+            name = kw.get("name", "") if isinstance(kw, dict) else kw
+            if source_override is not None:
+                key = re.sub(r'\s+', '', name).lower()
+                source = source_override.get(key, "AI新增")
+            else:
+                source = "解析"
+            self.skills_data.append({
+                "name": name,
+                "weight": kw.get("weight", 1) if isinstance(kw, dict) else 1,
+                "source": source,
+                "evidence": evidence.get(name, ""),
+            })
+        for kw in job_config.get("preferred_keywords", []):
+            name = kw.get("name", "") if isinstance(kw, dict) else kw
+            if source_override is not None:
+                key = re.sub(r'\s+', '', name).lower()
+                source = source_override.get(key, "AI优先")
+            else:
+                source = "优先"
+            self.skills_data.append({
+                "name": name,
+                "weight": kw.get("bonus", kw.get("weight", 1)) if isinstance(kw, dict) else 1,
+                "source": source,
+                "evidence": evidence.get(name, ""),
+            })
+        self.refresh_skills_tree()
+
+    def _populate_required_from_config(self, job_config, source_map):
+        """从 job_config 构建 required_conditions_data（含原文出处）。"""
+        evidence_map = {}
+        for item in source_map.get("required_conditions", []):
+            cond = item.get("condition")
+            ev = item.get("evidence", "")
+            if isinstance(cond, dict):
+                key = f"{cond.get('type','or')}:{','.join(cond.get('items',[]))}"
+            else:
+                key = str(cond)
+            evidence_map[key] = ev
+
+        self.required_conditions_data = []
+        for cond in job_config.get("required_conditions", []):
+            key = f"{cond.get('type','or')}:{','.join(cond.get('items',[]))}" if isinstance(cond, dict) else str(cond)
+            entry = dict(cond) if isinstance(cond, dict) else cond
+            if isinstance(entry, dict):
+                entry["_evidence"] = evidence_map.get(key, "")
+            self.required_conditions_data.append(entry)
+        self._required_evidence_map = evidence_map
+        self.refresh_required_listbox()
+
     def refresh_skills_tree(self):
         """刷新技能树显示（带颜色标记 + 原文出处）"""
         for item in self.skills_tree.get_children():
@@ -8366,18 +8425,6 @@ class BossFilterGUI:
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _build_requirement_parse_result(self, requirement_text, ai_provider, ai_base_url, ai_model, ai_key):
-        """后台线程中构建解析结果（兼容旧调用路径）。"""
-        regex_result = self._build_regex_parse_result(requirement_text)
-        if ai_key:
-            ai_result = self._build_ai_enhance_result(
-                requirement_text, regex_result["config"],
-                ai_provider, ai_base_url, ai_model, ai_key
-            )
-            if ai_result.get("ai_success"):
-                return ai_result
-        return regex_result
-
     def _build_regex_parse_result(self, requirement_text):
         """阶段 1：正则解析（快速，毫秒级）。"""
         from doc_parser import generate_config_from_text, parse_job_requirements
@@ -8514,48 +8561,8 @@ class BossFilterGUI:
             self.salary_max_var.set(str(salary_max) if salary_max is not None else "")
 
             # 构建技能→原文出处的映射
-            _skills_evidence = {}
-            for item in source_map.get("skills", []):
-                _skills_evidence[item.get("name", "")] = item.get("evidence", "")
-
-            self.skills_data = []
-            for kw in job_config.get("keywords", []):
-                if isinstance(kw, dict):
-                    name = kw.get("name", "")
-                    self.skills_data.append({"name": name, "weight": kw.get("weight", 1), "source": "解析", "evidence": _skills_evidence.get(name, "")})
-                else:
-                    self.skills_data.append({"name": kw, "weight": 1, "source": "解析", "evidence": _skills_evidence.get(kw, "")})
-            for kw in job_config.get("preferred_keywords", []):
-                if isinstance(kw, dict):
-                    name = kw.get("name", "")
-                    self.skills_data.append({"name": name, "weight": kw.get("bonus", kw.get("weight", 1)), "source": "优先", "evidence": _skills_evidence.get(name, "")})
-                else:
-                    self.skills_data.append({"name": kw, "weight": 1, "source": "优先", "evidence": _skills_evidence.get(kw, "")})
-            self.refresh_skills_tree()
-
-            # 构建必要条件→原文出处的映射
-            _req_evidence_map = {}
-            for item in source_map.get("required_conditions", []):
-                cond = item.get("condition")
-                evidence = item.get("evidence", "")
-                if isinstance(cond, dict):
-                    key = f"{cond.get('type','or')}:{','.join(cond.get('items',[]))}"
-                else:
-                    key = str(cond)
-                _req_evidence_map[key] = evidence
-
-            self.required_conditions_data = []
-            for cond in job_config.get("required_conditions", []):
-                if isinstance(cond, dict):
-                    key = f"{cond.get('type','or')}:{','.join(cond.get('items',[]))}"
-                else:
-                    key = str(cond)
-                entry = dict(cond) if isinstance(cond, dict) else cond
-                if isinstance(entry, dict):
-                    entry["_evidence"] = _req_evidence_map.get(key, "")
-                self.required_conditions_data.append(entry)
-            self._required_evidence_map = _req_evidence_map
-            self.refresh_required_listbox()
+            self._populate_skills_from_config(job_config, source_map)
+            self._populate_required_from_config(job_config, source_map)
 
             skills_count = len([s for s in self.skills_data if s.get("source") != "优先"])
             preferred_count = len([s for s in self.skills_data if s.get("source") == "优先"])
@@ -8678,59 +8685,12 @@ class BossFilterGUI:
 
             # 技能和必要条件：AI 增强可能新增/修改，合并而非覆盖
             if 'skills' not in dirty:
-                _skills_evidence = {}
-                for item in source_map.get("skills", []):
-                    _skills_evidence[item.get("name", "")] = item.get("evidence", "")
-
-                # 保留原有来源：regex 阶段已有的技能保持原来源，AI 新增的标记为"AI新增"
-                _existing_sources = {}
-                for s in self.skills_data:
-                    key = re.sub(r'\s+', '', s.get("name", "")).lower()
-                    _existing_sources[key] = s.get("source", "解析")
-
-                new_skills = []
-                for kw in job_config.get("keywords", []):
-                    name = kw.get("name", "") if isinstance(kw, dict) else kw
-                    key = re.sub(r'\s+', '', name).lower()
-                    source = _existing_sources.get(key, "AI新增")
-                    if isinstance(kw, dict):
-                        new_skills.append({"name": name, "weight": kw.get("weight", 1), "source": source, "evidence": _skills_evidence.get(name, "")})
-                    else:
-                        new_skills.append({"name": kw, "weight": 1, "source": source, "evidence": _skills_evidence.get(kw, "")})
-                for kw in job_config.get("preferred_keywords", []):
-                    name = kw.get("name", "") if isinstance(kw, dict) else kw
-                    key = re.sub(r'\s+', '', name).lower()
-                    source = _existing_sources.get(key, "AI优先")
-                    if isinstance(kw, dict):
-                        new_skills.append({"name": name, "weight": kw.get("bonus", kw.get("weight", 1)), "source": source, "evidence": _skills_evidence.get(name, "")})
-                    else:
-                        new_skills.append({"name": kw, "weight": 1, "source": source, "evidence": _skills_evidence.get(kw, "")})
-                self.skills_data = new_skills
-                self.refresh_skills_tree()
+                existing = {re.sub(r'\s+', '', s.get("name", "")).lower(): s.get("source", "解析")
+                           for s in self.skills_data}
+                self._populate_skills_from_config(job_config, source_map, source_override=existing)
 
             if 'required_conditions' not in dirty:
-                _req_evidence_map = {}
-                for item in source_map.get("required_conditions", []):
-                    cond = item.get("condition")
-                    evidence = item.get("evidence", "")
-                    if isinstance(cond, dict):
-                        key = f"{cond.get('type','or')}:{','.join(cond.get('items',[]))}"
-                    else:
-                        key = str(cond)
-                    _req_evidence_map[key] = evidence
-
-                self.required_conditions_data = []
-                for cond in job_config.get("required_conditions", []):
-                    if isinstance(cond, dict):
-                        key = f"{cond.get('type','or')}:{','.join(cond.get('items',[]))}"
-                    else:
-                        key = str(cond)
-                    entry = dict(cond) if isinstance(cond, dict) else cond
-                    if isinstance(entry, dict):
-                        entry["_evidence"] = _req_evidence_map.get(key, "")
-                    self.required_conditions_data.append(entry)
-                self._required_evidence_map = _req_evidence_map
-                self.refresh_required_listbox()
+                self._populate_required_from_config(job_config, source_map)
 
             # 更新状态
             skills_count = len([s for s in self.skills_data if s.get("source") not in ("优先", "AI优先")])

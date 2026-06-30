@@ -99,6 +99,13 @@ OR_HINT_RE = re.compile(r'或|或者|任一|其一|至少一种|至少一项|包
 AND_HINT_RE = re.compile(r'同时|均需|全部|均要|且|并且')
 REMOTE_LOCATION_RE = re.compile(r'远程|居家办公|线上办公|全国|不限地点|地点不限|不限制地点|混合办公')
 
+# 段落标题匹配（_structured_lines 使用）
+_SECTION_HARD_RE = re.compile(r'硬性条件|硬性要求|基本条件|必备条件|必须满足|必须条件|必要条件|任职资格|应聘条件|岗位基本条件|基本要求')
+_SECTION_DESC_RE = re.compile(r'职位描述|岗位职责|工作内容|主要职责|工作职责')
+_SECTION_REQ_RE = re.compile(r'职位要求|任职要求|岗位要求|应聘要求|能力要求|我们希望你|期望你|我们期待')
+_SECTION_PREFERRED_RE = re.compile(r'软性条件|加分项|优先条件|加分条件|优先考虑|优先录用')
+_SUB_HEADING_TO_HARD_RE = re.compile(r'工作经验|学历要求|年龄要求|技能要求|专业要求|证书要求')
+
 
 def _clean_job_title(title: str) -> str:
     """清理岗位标题中的序号/标签前缀和多余空白。"""
@@ -117,14 +124,11 @@ def _strip_list_marker(line: str) -> str:
 def _structured_lines(text: str) -> list[dict]:
     """将招聘文本转换为行级结构，供后续字段抽取和条件分类复用。"""
     sections = {
-        'hard': re.compile(r'硬性条件|硬性要求|基本条件|必备条件|必须满足|必须条件|必要条件|任职资格|应聘条件|岗位基本条件|基本要求'),
-        'desc': re.compile(r'职位描述|岗位职责|工作内容|主要职责|工作职责'),
-        'req': re.compile(r'职位要求|任职要求|岗位要求|应聘要求|能力要求|我们希望你|期望你|我们期待'),
-        'preferred': re.compile(r'软性条件|加分项|优先条件|加分条件|优先考虑|优先录用'),
+        'hard': _SECTION_HARD_RE,
+        'desc': _SECTION_DESC_RE,
+        'req': _SECTION_REQ_RE,
+        'preferred': _SECTION_PREFERRED_RE,
     }
-    # markdown 子标题：出现在 hard/req section 内时继承当前 section，
-    # 出现在 body 中时映射到 hard（如 ### 工作经验、### 学历要求）
-    _sub_heading_to_hard = re.compile(r'工作经验|学历要求|年龄要求|技能要求|专业要求|证书要求')
     current = 'body'
     rows = []
     for raw_line in text.split('\n'):
@@ -138,7 +142,8 @@ def _structured_lines(text: str) -> list[dict]:
                 matched_section = section
                 break
         # markdown 子标题处理：如果主 sections 未匹配，检查是否为硬条件子标题
-        if matched_section is None and _sub_heading_to_hard.search(heading) and heading == _sub_heading_to_hard.search(heading).group(0):
+        _sub_m = _SUB_HEADING_TO_HARD_RE.search(heading) if matched_section is None else None
+        if _sub_m and heading == _sub_m.group(0):
             if current in ('body', 'desc'):
                 matched_section = 'hard'
             # 如果已在 hard/req/preferred section 内，子标题不改变 section
@@ -304,22 +309,6 @@ def _remove_education_preferred_phrases(text: str) -> str:
     for pattern in patterns:
         cleaned = re.sub(pattern, '', cleaned)
     return cleaned
-
-
-def _split_sentences(text: str) -> list[str]:
-    """按句号/分号/换行分割文本，保留非空句子。"""
-    parts = re.split(r'[；;。\n]', text or '')
-    return [p.strip() for p in parts if p.strip()]
-
-
-def _is_edu_preferred_sentence(sentence: str) -> bool:
-    """判断一个句子是否是学历偏好语境（而非硬门槛）。
-
-    规则：句子同时包含学历关键词和优先/加分关键词 → 偏好句，应排除。
-    """
-    _edu_kw = re.compile(r'本科|学士|硕士|研究生|博士|博士后|大专|学历')
-    _pref_kw = re.compile(r'优先|加分|更佳|优先考虑|优先录用|者优先')
-    return bool(_edu_kw.search(sentence) and _pref_kw.search(sentence))
 
 
 def _hard_education_text(required_section: str, structured_rows: list[dict]) -> str:
