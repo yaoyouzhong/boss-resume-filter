@@ -1,29 +1,29 @@
 {
-  "version": "2.14.2",
-  "release_date": "2026-06-29",
+  "version": "2.15",
+  "release_date": "2026-06-30",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.14.2/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.14.2/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.14.2/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "windows": {
-      "size": 38381434,
-      "sha256": "641c409424d7687bb5590a0276af5addb9660598381486614eff7164bcc2db3c"
+      "size": 38401097,
+      "sha256": "44f73526978cd0e01c9e6b3904bf3edc8e073d5009c0f0e09eb0a8b4e376071e"
     },
     "macos_dmg": {
-      "size": 33207665,
-      "sha256": "16deb7abb6dba494019ed8070bc3280c13ee5c542ffc21795fe31854d6b284cf"
+      "size": 33247524,
+      "sha256": "078f3f78b3369f7c28be9835fc00d975033f43b7abd77a192953117105de8ef8"
     },
     "macos": {
-      "size": 34071508,
-      "sha256": "e343e1a6dff4bd80ec391106d48e47514eb76389d00303ae027148ff7ed0f6ff"
+      "size": 34090602,
+      "sha256": "6e6821d9a10b581837f3c1517aaf73f9b5fc961918303f52b083b501f66d4ac4"
     }
   },
-  "release_notes": "### 问题修复\n\n- **修复学历核验浏览器启动超时**：创建浏览器页面时统一使用自动端口分配，不再等待默认 9222 调试端口，避免端口占用时连接超时失败",
+  "release_notes": "### 新增功能\n\n- **岗位需求解析更准确**：硬约束识别拆分强/弱指示词，避免「需要」「要求」等高频词误判；支持段落标题模糊匹配（如「应聘条件」「基本要求」「期望你」）\n- **AI 增强解析异步化**：正则解析结果秒填界面，AI 后台增强完成后自动更新，解析过程显示动态进度指示器\n- **原文溯源**：技能关键词和必要条件列表可查看原文出处，鼠标悬停显示完整来源段落\n\n### 体验优化\n\n- **代码质量优化**：清理冗余代码、消除重复逻辑、提升解析效率\n\n### 问题修复\n\n- **修复配置保存异常**：保存岗位配置时自动剔除界面临时数据，防止溯源信息写入配置文件",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.14.2/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.14.2/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.14.2/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15/BOSS_ResumeFilter.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15/BOSS_ResumeFilter.dmg"
   }
 }
