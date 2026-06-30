@@ -1,5 +1,8 @@
+import json
 import queue
 import sys
+import tempfile
+import time
 import types
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -221,6 +224,41 @@ class _FakeTree:
         self.column_options[column] = kwargs
 
 
+class _FakeResultTree:
+    def __init__(self):
+        self.items = []
+        self.tags = {}
+        self.seen = []
+        self.selection = []
+        self.focused = None
+        self.focus_set_called = False
+
+    def get_children(self):
+        return tuple(range(len(self.items)))
+
+    def delete(self, item):
+        self.items.pop(item)
+
+    def tag_configure(self, tag, **kwargs):
+        self.tags[tag] = kwargs
+
+    def insert(self, parent, index, values=(), tags=()):
+        self.items.append({"values": values, "tags": tags})
+        return f"item-{len(self.items)}"
+
+    def see(self, item):
+        self.seen.append(item)
+
+    def selection_set(self, item):
+        self.selection = [item]
+
+    def focus(self, item):
+        self.focused = item
+
+    def focus_set(self):
+        self.focus_set_called = True
+
+
 def test_result_tree_columns_expand_only_when_space_is_available():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot()
@@ -308,6 +346,267 @@ def test_candidate_status_surfaces_pending_greeting_confirmation():
     }
 
     assert gui._format_candidate_status(candidate) == "未沟通｜发送待确认"
+
+
+def test_candidate_status_shows_temporary_ai_eval_state_and_expires():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidate = {"geek_id": 123, "followup_status": "未沟通"}
+    gui._ai_evaluating_ids = {"123"}
+    gui._ai_eval_results = {}
+
+    assert gui._format_candidate_status(candidate) == "AI评估中..."
+
+    gui._ai_evaluating_ids.clear()
+    gui._ai_eval_results["123"] = {
+        "status": "success",
+        "message": "评估完成，调整分：-3",
+        "timestamp": time.time(),
+    }
+    assert gui._format_candidate_status(candidate) == "✓ 评估完成，调整分：-3"
+
+    gui._ai_eval_results["123"]["timestamp"] = time.time() - 4
+    assert gui._format_candidate_status(candidate) == "未沟通"
+    assert "123" not in gui._ai_eval_results
+
+
+def test_refresh_results_force_rebuilds_for_transient_ai_status():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        candidates_path = Path(tmp_dir) / "candidates.json"
+        candidates_path.write_text(
+            json.dumps([{
+                "geek_id": "g1",
+                "name": "候选人",
+                "job_name": "Java 工程师",
+                "match_score": 70,
+                "followup_status": "未沟通",
+            }], ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+        gui.result_tree = _FakeResultTree()
+        gui.result_job_var = _FakeVar("全部岗位")
+        gui.result_show_blacklist_var = _FakeVar(False)
+        gui.result_stats_vars = {key: _FakeVar() for key in ("strong", "recommended", "pending", "greeted")}
+        gui.result_stats_greeted = {key: _FakeVar() for key in ("strong", "recommended", "pending", "greeted")}
+        gui.colors = {
+            "bg_tree_tag_high": "#fff",
+            "bg_tree_tag_mid": "#fff",
+            "bg_tree_tag_low": "#fff",
+        }
+        gui._ai_evaluating_ids = {"g1"}
+        gui._ai_eval_results = {}
+        gui._result_last_job = "全部岗位"
+        gui._result_last_dates = (None, None)
+        gui._result_last_show_blacklist = False
+        stat = candidates_path.stat()
+        gui._result_tree_fingerprint = (stat.st_mtime, stat.st_size)
+        gui._parse_salary_exp = Mock(return_value=("", ""))
+        gui._extract_extra_fields = Mock(return_value=("", "", "", "", ""))
+        gui._sort_bound = True
+        gui.append_log = Mock()
+
+        with patch("gui_main.CANDIDATES_PATH", candidates_path):
+            gui.refresh_results()
+            assert gui.result_tree.items == []
+
+            gui.refresh_results(force=True)
+
+        assert gui.result_tree.items[0]["values"][7] == "AI评估中..."
+
+
+def test_refresh_results_keeps_ai_evaluated_candidate_below_pass_score():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        candidates_path = Path(tmp_dir) / "candidates.json"
+        candidates_path.write_text(
+            json.dumps([{
+                "geek_id": "g1",
+                "name": "候选人",
+                "job_name": "Java 工程师",
+                "match_score": 52,
+                "followup_status": "未沟通",
+                "llm_evaluated": True,
+                "llm_adjustment": -3,
+            }], ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+        gui.result_tree = _FakeResultTree()
+        gui.result_job_var = _FakeVar("全部岗位")
+        gui.result_show_blacklist_var = _FakeVar(False)
+        gui.result_stats_vars = {key: _FakeVar() for key in ("strong", "recommended", "pending", "greeted")}
+        gui.result_stats_greeted = {key: _FakeVar() for key in ("strong", "recommended", "pending", "greeted")}
+        gui.colors = {
+            "bg_tree_tag_high": "#fff",
+            "bg_tree_tag_mid": "#fff",
+            "bg_tree_tag_low": "#fff",
+        }
+        gui._ai_evaluating_ids = set()
+        gui._ai_eval_results = {}
+        gui._result_tree_fingerprint = None
+        gui._result_last_job = None
+        gui._result_last_dates = None
+        gui._result_last_show_blacklist = False
+        gui._parse_salary_exp = Mock(return_value=("", ""))
+        gui._extract_extra_fields = Mock(return_value=("", "", "", "", ""))
+        gui._sort_bound = True
+        gui.append_log = Mock()
+
+        with patch("gui_main.CANDIDATES_PATH", candidates_path):
+            gui.refresh_results()
+
+        values = gui.result_tree.items[0]["values"]
+        assert values[4] == 52
+        assert values[5] == "-3"
+        assert values[6] == "未通过"
+        assert values[7] == "未沟通"
+
+
+def test_scroll_to_ai_evaluated_candidate_selects_row_by_geek_id_string():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.result_tree = _FakeResultTree()
+    gui.result_tree.items = [{}, {}]
+    gui._item_to_candidate = {
+        0: {"geek_id": 123},
+        1: {"geek_id": 456},
+    }
+
+    selected = gui._scroll_to_ai_evaluated_candidates({"123"})
+
+    assert selected is True
+    assert gui.result_tree.seen == [0]
+    assert gui.result_tree.selection == [0]
+    assert gui.result_tree.focused == 0
+    assert gui.result_tree.focus_set_called is True
+
+
+def test_ai_eval_batch_summary_formats_success_failure_and_skipped():
+    summary = {
+        "selected_count": 4,
+        "success": [
+            {"name": "候选人A", "adjustment": 3},
+            {"name": "候选人B", "adjustment": -2},
+        ],
+        "failed": [{"name": "候选人C", "reason": "API 请求超时"}],
+        "skipped": [{"name": "候选人D", "reason": "已评估过"}],
+    }
+
+    title, message, has_failure = BossFilterGUI._format_ai_eval_batch_summary(summary)
+
+    assert title == "AI 评估完成"
+    assert has_failure is True
+    assert "本次共选择 4 人" in message
+    assert "成功 2 人" in message
+    assert "失败 1 人" in message
+    assert "跳过 1 人" in message
+    assert "- 候选人C：API 请求超时" in message
+    assert "- 候选人D：已评估过" in message
+
+
+def test_ai_eval_batch_summary_caps_detail_size_for_large_batches():
+    summary = {
+        "selected_count": 80,
+        "success": [{"name": f"成功{i}", "adjustment": 0} for i in range(60)],
+        "failed": [
+            {
+                "name": f"失败候选人{i}姓名很长很长",
+                "reason": "接口返回超时，且错误详情非常长，可能包含多段网络诊断信息和重试结果",
+            }
+            for i in range(12)
+        ],
+        "skipped": [
+            {"name": f"跳过候选人{i}姓名很长很长", "reason": "已评估过，无需重复评估"}
+            for i in range(8)
+        ],
+    }
+
+    _, message, has_failure = BossFilterGUI._format_ai_eval_batch_summary(summary)
+
+    lines = message.splitlines()
+    assert has_failure is True
+    assert "本次共选择 80 人" in message
+    assert "成功 60 人" in message
+    assert "失败 12 人" in message
+    assert "跳过 8 人" in message
+    assert "另有 6 人失败" in message
+    assert "另有 5 人已跳过" in message
+    assert sum(1 for line in lines if line.startswith("- 失败候选人")) == 6
+    assert sum(1 for line in lines if line.startswith("- 跳过候选人")) == 3
+    assert max(len(line) for line in lines) <= 54
+    assert len(lines) <= 19
+
+
+def test_show_ai_eval_batch_summary_suppresses_single_candidate_popup():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = object()
+    gui._ai_eval_batch_summary = {
+        "enabled": False,
+        "selected_count": 1,
+        "success": [{"name": "候选人A", "adjustment": 1}],
+        "failed": [],
+        "skipped": [],
+    }
+
+    with patch("gui_main.messagebox.showinfo") as showinfo, \
+            patch("gui_main.messagebox.showwarning") as showwarning:
+        gui._show_ai_eval_batch_summary()
+
+    showinfo.assert_not_called()
+    showwarning.assert_not_called()
+    assert gui._ai_eval_batch_summary is None
+
+
+def test_show_ai_eval_batch_summary_uses_info_when_all_batch_items_succeed():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = object()
+    gui._ai_eval_batch_summary = {
+        "enabled": True,
+        "selected_count": 2,
+        "success": [
+            {"name": "候选人A", "adjustment": 1},
+            {"name": "候选人B", "adjustment": 0},
+        ],
+        "failed": [],
+        "skipped": [],
+    }
+
+    with patch("gui_main.messagebox.showinfo") as showinfo, \
+            patch("gui_main.messagebox.showwarning") as showwarning:
+        gui._show_ai_eval_batch_summary()
+
+    showwarning.assert_not_called()
+    showinfo.assert_called_once()
+    args, kwargs = showinfo.call_args
+    assert args[0] == "AI 评估完成"
+    assert "成功 2 人" in args[1]
+    assert kwargs["parent"] is gui.root
+    assert gui._ai_eval_batch_summary is None
+
+
+def test_show_ai_eval_batch_summary_uses_warning_when_batch_has_failures():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = object()
+    gui._ai_eval_batch_summary = {
+        "enabled": True,
+        "selected_count": 2,
+        "success": [{"name": "候选人A", "adjustment": 1}],
+        "failed": [{"name": "候选人B", "reason": "评估失败"}],
+        "skipped": [],
+    }
+
+    with patch("gui_main.messagebox.showinfo") as showinfo, \
+            patch("gui_main.messagebox.showwarning") as showwarning:
+        gui._show_ai_eval_batch_summary()
+
+    showinfo.assert_not_called()
+    showwarning.assert_called_once()
+    args, kwargs = showwarning.call_args
+    assert args[0] == "AI 评估完成"
+    assert "失败 1 人" in args[1]
+    assert "- 候选人B：评估失败" in args[1]
+    assert kwargs["parent"] is gui.root
+    assert gui._ai_eval_batch_summary is None
 
 
 def test_greet_confirmation_hint_explains_prepared_path_without_technical_terms():

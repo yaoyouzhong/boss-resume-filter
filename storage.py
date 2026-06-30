@@ -131,13 +131,17 @@ def save_candidates_all(candidates_all: list[dict[str, Any]], path: Optional[str
         candidate_path, backup_path = _candidate_paths(path)
         unique_candidates = _dedupe_candidates(candidates_all)
 
-        # 过滤低于通过分的候选人（有人工反馈或黑名单记录的低分候选人保留）
+        # 过滤低于通过分的候选人；已有业务动作/评估记录的低分候选人保留，便于复盘。
         unique_candidates = [
             c for c in unique_candidates
-            if c.get('match_score', 0) >= SCORE_THRESHOLD_PASS
-            and c.get('qualification_status') != 'rejected'
+            if (
+                c.get('match_score', 0) >= SCORE_THRESHOLD_PASS
+                and c.get('qualification_status') != 'rejected'
+            )
             or c.get('feedback_status')
             or c.get('blacklisted')
+            or c.get('llm_evaluated')
+            or c.get('resume_eval_adjustment') is not None
         ]
 
         if candidate_path.exists():

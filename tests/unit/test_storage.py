@@ -556,6 +556,24 @@ def test_save_excludes_high_score_rejected_candidate():
         assert load_candidates_all(target) == []
 
 
+def test_save_keeps_ai_evaluated_candidate_below_pass_score():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        save_candidates_all([{
+            "geek_id": "ai-low",
+            "job_name": "Java",
+            "match_score": 53,
+            "rule_score": 56,
+            "llm_evaluated": True,
+            "llm_adjustment": -3,
+        }], target)
+        loaded = load_candidates_all(target)
+        assert len(loaded) == 1
+        assert loaded[0]["geek_id"] == "ai-low"
+        assert loaded[0]["match_score"] == 53
+        assert loaded[0]["llm_adjustment"] == -3
+
+
 # ========== load_candidates_all 边界场景 ==========
 
 def test_load_happy_path_from_valid_file():

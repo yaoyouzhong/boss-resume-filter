@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.15"
+__version__ = "2.15.1"
 
 import json
 import logging
@@ -831,6 +831,7 @@ class BossFilterGUI:
         # AI评估状态跟踪（使用 geek_id 集合，refresh_results 后仍有效）
         self._ai_evaluating_ids = set()
         self._ai_eval_results = {}  # {geek_id: {'status': 'success'/'failed', 'message': '...', 'timestamp': ...}}
+        self._ai_eval_batch_summary = None
         self._api_ui_config_mtime = None
         self._api_key_resolve_thread = None
         self._pending_idle_tasks = set()
@@ -11443,6 +11444,8 @@ class BossFilterGUI:
             messagebox.showwarning("警告", "无法获取岗位需求信息")
             return
 
+        batch_requested = len(candidates) > 1
+
         # 过滤已在评估中的候选人
         candidates_to_eval = [c for c in candidates if str(c.get('geek_id', '')) not in self._ai_evaluating_ids]
         if not candidates_to_eval:
@@ -11484,6 +11487,14 @@ class BossFilterGUI:
         self._ai_eval_in_progress = True
         self._ai_eval_total = len(candidates_to_eval)
         self._ai_eval_done = 0
+        self._ai_eval_batch_summary = {
+            'enabled': batch_requested,
+            'selected_count': len(candidates),
+            'eval_count': len(candidates_to_eval),
+            'skipped': [{'name': c.get('name', '?'), 'reason': '已评估过'} for c in already_evaluated],
+            'success': [],
+            'failed': [],
+        }
 
         # 启动定时刷新
         self._ai_eval_refresh_timer = self.root.after(1000, self._refresh_ai_eval_status)
@@ -11540,32 +11551,44 @@ class BossFilterGUI:
                 sys.stdout = old_stdout
 
             # 记录评估结果状态
+            success_items = []
+            failed_items = []
             for c in candidates:
                 geek_id = str(c.get('geek_id', ''))
+                name = c.get('name') or '未命名候选人'
                 if c.get('llm_evaluated'):
+                    adjustment = c.get('llm_adjustment', 0)
                     self._ai_eval_results[geek_id] = {
                         'status': 'success',
-                        'message': f"评估完成，调整分：{'+' if c.get('llm_adjustment', 0) >= 0 else ''}{c.get('llm_adjustment', 0)}",
+                        'message': f"评估完成，调整分：{'+' if adjustment >= 0 else ''}{adjustment}",
                         'timestamp': time.time()
                     }
+                    success_items.append({'name': name, 'adjustment': adjustment})
                 else:
+                    error = c.get('llm_error', '评估失败')
                     self._ai_eval_results[geek_id] = {
                         'status': 'failed',
-                        'message': c.get('llm_error', '评估失败'),
+                        'message': error,
                         'timestamp': time.time()
                     }
+                    failed_items.append({'name': name, 'reason': error})
+            self._set_ai_eval_batch_outcome(success_items, failed_items)
 
             # 保存结果
             self._save_ai_eval_results(candidates)
 
         except Exception as e:
             # 记录异常
+            failed_items = []
             for c in candidates:
+                name = c.get('name') or '未命名候选人'
                 self._ai_eval_results[str(c.get('geek_id', ''))] = {
                     'status': 'failed',
                     'message': str(e),
                     'timestamp': time.time()
                 }
+                failed_items.append({'name': name, 'reason': str(e)})
+            self._set_ai_eval_batch_outcome([], failed_items)
         finally:
             self._ai_eval_in_progress = False
             # 从评估中集合移除
@@ -11595,9 +11618,75 @@ class BossFilterGUI:
         if scroll_to_geek_ids:
             self._scroll_to_ai_evaluated_candidates(scroll_to_geek_ids)
 
+        self._show_ai_eval_batch_summary()
+
         # 启动定时刷新状态列（显示结果约3秒后自动恢复）
         self._ai_eval_status_refresh_count = 0
         self._refresh_ai_eval_result_status(scroll_to_geek_ids)
+
+    def _set_ai_eval_batch_outcome(self, success_items, failed_items):
+        """记录批量 AI 评估结果；单人评估不弹汇总，但仍复用同一状态结构。"""
+        summary = getattr(self, '_ai_eval_batch_summary', None)
+        if not summary:
+            return
+        summary['success'] = success_items
+        summary['failed'] = failed_items
+
+    @staticmethod
+    def _format_ai_eval_batch_summary(summary):
+        """生成批量 AI 评估完成后的汇总弹窗文案。"""
+        def compact_text(value, max_chars):
+            text = str(value or "").strip()
+            if len(text) <= max_chars:
+                return text
+            return text[:max_chars - 1] + "…"
+
+        success = summary.get('success') or []
+        failed = summary.get('failed') or []
+        skipped = summary.get('skipped') or []
+        selected_count = summary.get('selected_count') or (len(success) + len(failed) + len(skipped))
+
+        lines = [
+            f"本次共选择 {selected_count} 人",
+            f"成功 {len(success)} 人",
+            f"失败 {len(failed)} 人",
+            f"跳过 {len(skipped)} 人",
+        ]
+
+        if failed:
+            lines.append("")
+            lines.append("失败候选人：")
+            for item in failed[:6]:
+                name = compact_text(item.get('name') or '?', 12)
+                reason = compact_text(item.get('reason') or '评估失败', 36)
+                lines.append(f"- {name}：{reason}")
+            if len(failed) > 6:
+                lines.append(f"- 另有 {len(failed) - 6} 人失败，请在状态列查看")
+
+        if skipped:
+            lines.append("")
+            lines.append("已跳过：")
+            for item in skipped[:3]:
+                name = compact_text(item.get('name') or '?', 12)
+                reason = compact_text(item.get('reason') or '已跳过', 24)
+                lines.append(f"- {name}：{reason}")
+            if len(skipped) > 3:
+                lines.append(f"- 另有 {len(skipped) - 3} 人已跳过")
+
+        return "AI 评估完成", "\n".join(lines), bool(failed)
+
+    def _show_ai_eval_batch_summary(self):
+        """批量 AI 评估结束后弹出一次汇总；单个候选人只用状态列反馈。"""
+        summary = getattr(self, '_ai_eval_batch_summary', None)
+        self._ai_eval_batch_summary = None
+        if not summary or not summary.get('enabled'):
+            return
+
+        title, message, has_failure = self._format_ai_eval_batch_summary(summary)
+        if has_failure:
+            messagebox.showwarning(title, message, parent=self.root)
+        else:
+            messagebox.showinfo(title, message, parent=self.root)
 
     def _scroll_to_ai_evaluated_candidates(self, geek_ids):
         """滚动到AI评估过的候选人位置"""
