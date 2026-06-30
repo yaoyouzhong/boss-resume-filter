@@ -7813,8 +7813,13 @@ class BossFilterGUI:
             except (json.JSONDecodeError, IOError):
                 pass
 
-        # 更新 job_requirements，保留其他顶层字段
-        existing["job_requirements"] = self.job_rules
+        # 更新 job_requirements，保留其他顶层字段；剔除解析溯源等 GUI 临时字段
+        existing = {
+            key: value
+            for key, value in existing.items()
+            if not str(key).startswith("_")
+        }
+        existing["job_requirements"] = self._strip_transient_fields(self.job_rules)
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
             json.dump(existing, f, ensure_ascii=False, indent=4)
 
@@ -7952,6 +7957,44 @@ class BossFilterGUI:
             if isinstance(cond, dict) else str(cond)
             for cond in getattr(self, 'required_conditions_data', [])
         )
+
+    @staticmethod
+    def _is_preferred_skill_source(source):
+        """Return True when a skill row belongs to preferred/additive scoring."""
+        return str(source or "") in {"优先", "AI优先"}
+
+    @staticmethod
+    def _strip_transient_fields(value):
+        """Remove GUI-only metadata before persisting business config."""
+        if isinstance(value, dict):
+            return {
+                key: BossFilterGUI._strip_transient_fields(item)
+                for key, item in value.items()
+                if not str(key).startswith("_")
+            }
+        if isinstance(value, list):
+            return [BossFilterGUI._strip_transient_fields(item) for item in value]
+        return value
+
+    def _snapshot_parse_edit_state(self):
+        """Capture the editable parse result state before AI enhancement returns."""
+        return {
+            "edu": self.edu_var.get(),
+            "min_exp": self.min_exp_var.get(),
+            "max_age": self.max_age_var.get(),
+            "work_location": self.work_location_var.get(),
+            "salary": (self.salary_min_var.get(), self.salary_max_var.get()),
+            "skills": self._skills_data_fingerprint(),
+            "required_conditions": self._required_conditions_fingerprint(),
+        }
+
+    def _dirty_fields_since_parse_snapshot(self):
+        """Detect user edits made while asynchronous AI enhancement was running."""
+        baseline = getattr(self, "_ai_parse_edit_snapshot", None)
+        if not baseline:
+            return set()
+        current = self._snapshot_parse_edit_state()
+        return {field for field, old_value in baseline.items() if current.get(field) != old_value}
 
     def _refresh_config_lists_if_needed(self):
         """Refresh config page lists only when the backing data changed."""
@@ -8586,6 +8629,8 @@ class BossFilterGUI:
                 self._bind_job_step_advance()
             else:
                 self._show_save_hint()
+            if getattr(self, '_ai_enhance_pending', False):
+                self._ai_parse_edit_snapshot = self._snapshot_parse_edit_state()
         finally:
             # 如果有 AI key，不恢复按钮（等 AI 增强完成后再恢复）
             _ai_pending = getattr(self, '_ai_enhance_pending', False)
@@ -8613,7 +8658,8 @@ class BossFilterGUI:
             source_map = result.get("source_map", {})
             job_title = list(config["job_requirements"].keys())[0]
             job_config = config["job_requirements"][job_title]
-            dirty = getattr(self, '_dirty_fields', set())
+            dirty = set(getattr(self, '_dirty_fields', set()))
+            dirty.update(self._dirty_fields_since_parse_snapshot())
 
             # 只更新非 dirty 字段
             if 'edu' not in dirty:
@@ -8908,16 +8954,19 @@ class BossFilterGUI:
         keywords = [
             {"name": s["name"], "weight": s["weight"]}
             for s in self.skills_data
-            if s.get("source") != "优先"
+            if not self._is_preferred_skill_source(s.get("source"))
         ]
         preferred_keywords = [
             {"name": s["name"], "bonus": s["weight"]}
             for s in self.skills_data
-            if s.get("source") == "优先"
+            if self._is_preferred_skill_source(s.get("source"))
         ]
 
         # 从 required_conditions_data 构建必要条件列表
-        required_conditions = list(self.required_conditions_data)  # 已是正确格式（str 或 dict）
+        required_conditions = [
+            self._strip_transient_fields(cond)
+            for cond in self.required_conditions_data
+        ]
 
         # 获取原始招聘需求（从需求文档解析框）
         original_requirement = self._get_requirement_text()
@@ -8987,6 +9036,9 @@ class BossFilterGUI:
         self.refresh_skills_tree()
         self.required_conditions_data = []
         self.refresh_required_listbox()
+        self._required_evidence_map = {}
+        self._dirty_fields = set()
+        self._ai_parse_edit_snapshot = None
         self.requirement_text.delete("1.0", tk.END)
         self.requirement_text.tag_remove("placeholder", "1.0", tk.END)
         self.requirement_text.insert("1.0", self._req_placeholder_text, "placeholder")

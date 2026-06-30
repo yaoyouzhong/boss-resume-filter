@@ -45,6 +45,106 @@ def test_humanize_ai_parse_warning_replaces_internal_field_names():
     assert "满足任一项" in text
 
 
+class _FakeVar:
+    def __init__(self, value=""):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
+
+
+class _FakeCombo(dict):
+    def __init__(self):
+        super().__init__()
+        self.current_value = ""
+
+    def set(self, value):
+        self.current_value = value
+
+
+def test_save_current_job_keeps_ai_preferred_keywords_as_preferred():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.job_name_var = _FakeVar("Python 工程师")
+    gui.min_exp_var = _FakeVar("3")
+    gui.max_age_var = _FakeVar("")
+    gui.edu_var = _FakeVar("本科")
+    gui.work_location_var = _FakeVar("")
+    gui.salary_min_var = _FakeVar("")
+    gui.salary_max_var = _FakeVar("")
+    gui.skills_data = [
+        {"name": "Python", "weight": 2, "source": "解析"},
+        {"name": "证券行业", "weight": 2, "source": "AI优先"},
+    ]
+    gui.required_conditions_data = []
+    gui.job_rules = {}
+    gui.config_job_combo = _FakeCombo()
+    gui._job_step_active = -1
+    gui._hide_save_hint = Mock()
+    gui._hide_job_step_bar = Mock()
+    gui._show_btn_add_hint = Mock()
+    gui._get_requirement_text = Mock(return_value="原始需求")
+    gui.save_config = Mock()
+
+    with patch("gui_main.messagebox.showinfo"), patch("gui_main.messagebox.showwarning"):
+        gui.save_current_job()
+
+    rule = gui.job_rules["Python 工程师"]
+    assert rule["keywords"] == [{"name": "Python", "weight": 2}]
+    assert rule["preferred_keywords"] == [{"name": "证券行业", "bonus": 2}]
+
+
+def test_save_current_job_strips_required_condition_evidence_metadata():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.job_name_var = _FakeVar("Java 工程师")
+    gui.min_exp_var = _FakeVar("5")
+    gui.max_age_var = _FakeVar("35")
+    gui.edu_var = _FakeVar("本科")
+    gui.work_location_var = _FakeVar("南京")
+    gui.salary_min_var = _FakeVar("")
+    gui.salary_max_var = _FakeVar("")
+    gui.skills_data = [{"name": "Java", "weight": 2, "source": "解析"}]
+    gui.required_conditions_data = [
+        {"type": "or", "items": ["债券", "基金"], "category": "金融投资行业经验", "_evidence": "原文"},
+        "统招本科",
+    ]
+    gui.job_rules = {}
+    gui.config_job_combo = _FakeCombo()
+    gui._job_step_active = -1
+    gui._hide_save_hint = Mock()
+    gui._hide_job_step_bar = Mock()
+    gui._show_btn_add_hint = Mock()
+    gui._get_requirement_text = Mock(return_value="")
+    gui.save_config = Mock()
+
+    with patch("gui_main.messagebox.showinfo"), patch("gui_main.messagebox.showwarning"):
+        gui.save_current_job()
+
+    required = gui.job_rules["Java 工程师"]["required_conditions"]
+    assert required[0] == {"type": "or", "items": ["债券", "基金"], "category": "金融投资行业经验"}
+    assert "_evidence" not in required[0]
+
+
+def test_parse_edit_snapshot_marks_user_changes_dirty_before_ai_result():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.edu_var = _FakeVar("本科")
+    gui.min_exp_var = _FakeVar("3")
+    gui.max_age_var = _FakeVar("35")
+    gui.work_location_var = _FakeVar("南京")
+    gui.salary_min_var = _FakeVar("15")
+    gui.salary_max_var = _FakeVar("25")
+    gui.skills_data = [{"name": "Python", "weight": 2, "source": "解析"}]
+    gui.required_conditions_data = [{"type": "or", "items": ["债券", "基金"]}]
+
+    gui._ai_parse_edit_snapshot = gui._snapshot_parse_edit_state()
+    gui.min_exp_var.set("5")
+    gui.skills_data.append({"name": "SQL", "weight": 1, "source": "手动"})
+
+    assert gui._dirty_fields_since_parse_snapshot() == {"min_exp", "skills"}
+
+
 def test_candidate_detail_groups_api_resume_sections():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     candidate = {
