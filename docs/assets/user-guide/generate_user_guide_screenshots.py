@@ -130,6 +130,11 @@ def build_demo_candidates() -> list[dict]:
 
 
 def capture_widget(widget: tk.Widget, filename: str) -> None:
+    try:
+        widget.lift()
+        widget.attributes("-topmost", True)
+    except tk.TclError:
+        pass
     widget.update_idletasks()
     widget.update()
     time.sleep(0.35)
@@ -138,6 +143,10 @@ def capture_widget(widget: tk.Widget, filename: str) -> None:
     w = widget.winfo_width()
     h = widget.winfo_height()
     ImageGrab.grab(bbox=(x, y, x + w, y + h)).save(OUT_DIR / filename)
+    try:
+        widget.attributes("-topmost", False)
+    except tk.TclError:
+        pass
 
 
 def capture_dialog(root: tk.Tk, title: str, filename: str) -> None:
@@ -159,6 +168,7 @@ def main() -> None:
     gui_main.CANDIDATES_PATH = DEMO_DATA_PATH
     gui_main.CANDIDATES_XLSX_PATH = OUT_DIR / "_demo-candidates-user-guide.xlsx"
     gui_main._enable_high_dpi_awareness()
+    gui_main.BossFilterGUI._load_startup_updater = lambda self: None
 
     root = tk.Tk()
     root.withdraw()
