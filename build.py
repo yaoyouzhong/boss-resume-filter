@@ -2256,8 +2256,47 @@ def _extract_changelog_release(version):
     return title, body
 
 
+def _update_latest_json_release_notes(release_notes):
+    """更新 latest.json 的 release_notes 字段，提交并提示用户推送。"""
+    latest_path = BASE_DIR / "latest.json"
+    if not latest_path.exists():
+        print("  [跳过] latest.json 不存在")
+        return
+
+    try:
+        data = json.loads(latest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"  [跳过] latest.json 读取失败: {e}")
+        return
+
+    old_notes = data.get("release_notes", "")
+    if old_notes.strip() == release_notes.strip():
+        print("  [跳过] latest.json release_notes 已是最新")
+        return
+
+    data["release_notes"] = release_notes
+    latest_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print("  [OK] latest.json release_notes 已更新")
+
+    try:
+        subprocess.run(
+            ["git", "add", "latest.json"],
+            cwd=BASE_DIR, check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", f"chore: sync release_notes v{data.get('version', '?')}"],
+            cwd=BASE_DIR, check=True, capture_output=True,
+        )
+        print("  [OK] latest.json 已提交，请手动 git push")
+    except subprocess.CalledProcessError as e:
+        print(f"  [警告] latest.json 提交失败: {e}")
+
+
 def _sync_release_notes():
-    """从 CHANGELOG.md 同步 Release 说明到 GitHub 和 Gitee，不重新打包。"""
+    """从 CHANGELOG.md 同步 Release 说明到 GitHub、Gitee 和 latest.json，不重新打包。"""
     version = _read_version()
     tag = f"v{version}"
     release_title, release_notes = _extract_changelog_release(version)
@@ -2293,7 +2332,10 @@ def _sync_release_notes():
     finally:
         _notes_file.unlink(missing_ok=True)
 
-    # 2. Gitee Release
+    # 2. latest.json（本地 + 推送，保证 GUI 远端说明一致）
+    _update_latest_json_release_notes(release_notes)
+
+    # 3. Gitee Release
     token = os.environ.get("GITEE_TOKEN", "")
     if not token:
         print("  [跳过] Gitee Release 更新：未设置 GITEE_TOKEN")
