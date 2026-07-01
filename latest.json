@@ -20,7 +20,7 @@
       "sha256": "15ed50e38cd1f7ad1bb9c65d49e536d27a5ed2248dea39fb9b9769015c865913"
     }
   },
-  "release_notes": "### 新增功能\n\n- **一键 AI 评估**：筛选结果页右键支持单个候选人 AI 评估、多个候选人批量 AI 评估（只适用未 AI 评估过的候选人）\n- **数据统计看板批量 AI 评估**：按岗位/按时间明细窗口多选右键菜单增加批量 AI 评估\n\n### 问题修复\n\n- **修复搜索框不自动滚动**：筛选结果页输入搜索关键词后，自动滚动到第一个匹配行并选中",
+  "release_notes": "### 新增功能\n\n- **一键 AI 评估**：筛选结果、数据统计看板右键支持单个候选人 AI 评估、多个候选人批量 AI 评估（只适用未 AI 评估过的候选人）\n\n### 问题修复\n\n- **修复搜索框不自动滚动**：筛选结果页输入搜索关键词后，自动滚动到第一个匹配行并选中",
   "downloads_cn": {
     "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15.1/BOSS_ResumeFilter.exe",
     "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15.1/BOSS_ResumeFilter.dmg",
