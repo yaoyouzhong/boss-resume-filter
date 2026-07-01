@@ -5584,6 +5584,19 @@ class BossFilterGUI:
                     menu._icon_refs = [icon_export_menu, icon_trash_menu, icon_greet]
                     menu.add_command(label=" 批量打招呼", image=icon_greet, compound=tk.LEFT,
                                      command=lambda: self._greet_selected_candidates(selection, filtered_ref, tree, parent=detail_window))
+                    # 批量AI评估选项
+                    selected_candidates = []
+                    for sel_item in selection:
+                        sv = tree.item(sel_item, 'values')
+                        for c in filtered_ref[0]:
+                            if c.get('name') == sv[0]:
+                                selected_candidates.append(c)
+                                break
+                    if selected_candidates:
+                        icon_ai_eval = self.icons.button('refresh', self.colors['primary'])
+                        menu._icon_refs.append(icon_ai_eval)
+                        menu.add_command(label=" 批量AI评估", image=icon_ai_eval, compound=tk.LEFT,
+                                         command=lambda: self._ai_eval_selected_candidates(selected_candidates))
                     menu.add_command(label=" 移除选中", image=icon_trash_menu, compound=tk.LEFT,
                                      command=remove_selected)
                     menu.add_separator()
@@ -6013,6 +6026,19 @@ class BossFilterGUI:
                     menu._icon_refs = [icon_export_menu, icon_trash_menu, icon_greet]
                     menu.add_command(label=" 批量打招呼", image=icon_greet, compound=tk.LEFT,
                                      command=lambda: self._greet_selected_candidates(selection, filtered_ref, tree, parent=detail_window))
+                    # 批量AI评估选项
+                    selected_candidates = []
+                    for sel_item in selection:
+                        sv = tree.item(sel_item, 'values')
+                        for c in filtered_ref[0]:
+                            if c.get('name') == sv[0]:
+                                selected_candidates.append(c)
+                                break
+                    if selected_candidates:
+                        icon_ai_eval = self.icons.button('refresh', self.colors['primary'])
+                        menu._icon_refs.append(icon_ai_eval)
+                        menu.add_command(label=" 批量AI评估", image=icon_ai_eval, compound=tk.LEFT,
+                                         command=lambda: self._ai_eval_selected_candidates(selected_candidates))
                     menu.add_command(label=" 移除选中", image=icon_trash_menu, compound=tk.LEFT,
                                      command=remove_selected)
                     menu.add_separator()
