@@ -6,32 +6,56 @@
         {
             "api_provider": "qwen",
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "model": "deepseek-v4-pro"
+            "model": "deepseek-v4-pro",
+            "capability": {
+                "status": "limited",
+                "output_mode": "json_text"
+            }
         },
         {
             "api_provider": "qwen",
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "model": "qwen3.7-max"
+            "model": "qwen3.7-max",
+            "capability": {
+                "status": "compatible",
+                "output_mode": "tool"
+            }
         },
         {
             "api_provider": "xiaomi",
             "base_url": "https://token-plan-cn.xiaomimimo.com/v1",
-            "model": "mimo-v2.5-pro"
+            "model": "mimo-v2.5-pro",
+            "capability": {
+                "status": "compatible",
+                "output_mode": "tool"
+            }
         },
         {
             "api_provider": "qwen",
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "model": "glm-5.2"
+            "model": "glm-5.2",
+            "capability": {
+                "status": "compatible",
+                "output_mode": "tool"
+            }
         },
         {
             "api_provider": "qwen",
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "model": "kimi-k2.7-code"
+            "model": "kimi-k2.7-code",
+            "capability": {
+                "status": "compatible",
+                "output_mode": "tool"
+            }
         },
         {
             "api_provider": "qwen",
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "model": "qwen3.7-plus"
+            "model": "qwen3.7-plus",
+            "capability": {
+                "status": "compatible",
+                "output_mode": "tool"
+            }
         },
         {
             "api_provider": "xiaomi",

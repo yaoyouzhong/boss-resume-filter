@@ -7,6 +7,7 @@ import types
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import gui_main
 import icons
 from gui_main import BossFilterGUI, _optional_int_to_entry, _parse_optional_int_entry
 
@@ -209,6 +210,7 @@ class _FakeTree:
         self._width = width
         self.displaycolumns = "#all"
         self.column_options = {}
+        self.items = {}
 
     def winfo_width(self):
         return self._width
@@ -222,6 +224,14 @@ class _FakeTree:
 
     def column(self, column, **kwargs):
         self.column_options[column] = kwargs
+
+    def exists(self, item):
+        return item in self.items
+
+    def item(self, item, **kwargs):
+        if kwargs:
+            self.items.setdefault(item, {})["values"] = kwargs["values"]
+        return self.items.get(item, {})
 
 
 class _FakeResultTree:
@@ -298,6 +308,129 @@ def test_result_tree_columns_expand_only_when_space_is_available():
         for options in gui.result_tree.column_options.values()
     )
     assert gui.result_tree.column_options["skills"]["width"] == 85
+
+
+def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = _FakeRoot(state="zoomed", width=3840, height=2000)
+    gui.model_list_tree = _FakeTree(1800)
+
+    gui._update_model_list_columns()
+
+    assert gui.model_list_tree.column_options["name"]["width"] == 320
+    assert gui.model_list_tree.column_options["provider"]["width"] == 280
+    assert gui.model_list_tree.column_options["compat"]["width"] == 170
+    assert gui.model_list_tree.column_options["edu_ref"]["width"] == 150
+
+    gui.root = _FakeRoot(width=1920, height=1040)
+    gui.model_list_tree = _FakeTree(920)
+    gui._update_model_list_columns()
+
+    widths_1080p = {
+        column: options["width"]
+        for column, options in gui.model_list_tree.column_options.items()
+    }
+    assert sum(widths_1080p.values()) <= 896
+    assert widths_1080p["provider"] < 240
+    assert widths_1080p["base_url"] >= 170
+
+    gui.root = _FakeRoot(width=2560, height=1400)
+    gui.model_list_tree = _FakeTree(980)
+    gui._update_model_list_columns()
+
+    widths_2k = {
+        column: options["width"]
+        for column, options in gui.model_list_tree.column_options.items()
+    }
+    assert sum(widths_2k.values()) <= 956
+    assert widths_2k["provider"] < 240
+
+
+def test_education_queue_columns_keep_status_visible_on_narrow_screens():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.education_queue_tree = _FakeTree(1300)
+
+    gui._update_education_queue_columns()
+
+    assert gui.education_queue_tree.column_options["file"]["width"] == 230
+    assert gui.education_queue_tree.column_options["major"]["width"] == 210
+    assert gui.education_queue_tree.column_options["status"]["width"] == 140
+
+    gui.education_queue_tree = _FakeTree(950)
+    gui._update_education_queue_columns()
+
+    widths_1080p = {
+        column: options["width"]
+        for column, options in gui.education_queue_tree.column_options.items()
+    }
+    assert sum(widths_1080p.values()) <= 926
+    assert widths_1080p["status"] >= 120
+    assert widths_1080p["major"] < 210
+
+    gui.education_queue_tree = _FakeTree(1030)
+    gui._update_education_queue_columns()
+
+    widths_2k = {
+        column: options["width"]
+        for column, options in gui.education_queue_tree.column_options.items()
+    }
+    assert sum(widths_2k.values()) <= 1006
+    assert widths_2k["status"] >= 120
+
+
+def test_model_list_status_update_changes_only_status_cell():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.model_list_tree = _FakeTree(1000)
+    gui.model_list_tree.items["row-1"] = {
+        "values": ("qwen3.5-plus", "通义千问 (Qwen)", "未检测", "", "https://example.test")
+    }
+
+    gui._set_model_list_item_status("row-1", "测试中...")
+
+    assert gui.model_list_tree.items["row-1"]["values"] == (
+        "qwen3.5-plus",
+        "通义千问 (Qwen)",
+        "测试中...",
+        "",
+        "https://example.test",
+    )
+
+
+def test_save_capability_to_model_matches_provider_base_url_and_model():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.saved_models = [
+        {
+            "api_provider": "qwen",
+            "base_url": "https://one.example/v1",
+            "model": "same-model",
+        },
+        {
+            "api_provider": "qwen",
+            "base_url": "https://two.example/v1",
+            "model": "same-model",
+        },
+    ]
+    gui.api_config = {"saved_models": gui.saved_models}
+    gui.load_saved_models_to_tree = Mock()
+    gui._mark_api_config_ui_current = Mock()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        config_path = Path(tmp_dir) / "api_config.json"
+        with patch.object(gui_main, "API_CONFIG_PATH", config_path):
+            gui._save_capability_to_model(
+                "same-model",
+                {"status": "compatible", "output_mode": "tool"},
+                provider_key="qwen",
+                base_url="https://two.example/v1",
+                refresh=False,
+            )
+
+    assert "capability" not in gui.saved_models[0]
+    assert gui.saved_models[1]["capability"] == {
+        "status": "compatible",
+        "output_mode": "tool",
+    }
+    gui.load_saved_models_to_tree.assert_not_called()
+    gui._mark_api_config_ui_current.assert_called_once()
 
 
 def test_latest_history_value_uses_latest_end_date_not_list_order():
