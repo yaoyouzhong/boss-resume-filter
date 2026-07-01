@@ -2581,6 +2581,30 @@ def send_greeting_with_context(
     return False, f"上下文打招呼失败: HTTP {result.get('status')} code={result.get('code')} {message}"
 
 
+def _dispatch_greeting(page, candidate, stop_event=None, captcha_callback=None, method_prefix="auto"):
+    """优先用 greet_context API 直发，回退 DOM 滚动定位。
+
+    Returns:
+        (success: bool|None, msg: str, method: str)
+    """
+    context = candidate.get('greet_context')
+    chat_start = (context or {}).get('chat_start') or {}
+    if chat_start.get('jid') and chat_start.get('securityId'):
+        success, msg = send_greeting_with_context(
+            page, context, stop_event=stop_event, captcha_callback=captcha_callback)
+        if success:
+            return True, msg, f"{method_prefix}_context"
+        # 字段缺失等配置问题可回退 DOM；风控/API 问题直接返回
+        if "缺少" not in msg and "字段" not in msg:
+            return False, msg, f"{method_prefix}_context"
+
+    # DOM 回退
+    success, msg = send_greeting_on_list_page(
+        page, candidate['geek_id'], stop_event=stop_event,
+        captcha_callback=captcha_callback)
+    return success, msg, f"{method_prefix}_list"
+
+
 def send_greeting_on_list_page(
     page,
     geek_id,
@@ -3708,9 +3732,9 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                     (iframe if iframe else page).run_js('window.scrollBy(0, 400)')
                     time.sleep(_human_delay(0.2, 0.15))
 
-                success, msg = send_greeting_on_list_page(
-                    page, candidate['geek_id'], stop_event=stop_event,
-                    captcha_callback=captcha_callback)
+                success, msg, greet_method = _dispatch_greeting(
+                    page, candidate, stop_event=stop_event,
+                    captcha_callback=captcha_callback, method_prefix="auto")
 
                 if success is None:
                     candidate['greet_sent'] = False
@@ -3728,7 +3752,7 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                     greet_success_count += 1
                     consecutive_failures = 0  # 重置连续失败计数
                     consecutive_uncertain = 0
-                    persist_candidate_greeted(candidate, "auto_list")
+                    persist_candidate_greeted(candidate, greet_method)
                     candidates_all.append(candidate)
                     greeted_in_this_run.append(candidate['geek_id'])
                     print(f"OK")
@@ -4045,7 +4069,9 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                             else:
                                 time.sleep(_human_delay(GREET_DELAY_CENTER, GREET_DELAY_SPREAD))
                         print(f"[{i+1}/{len(to_greet)}] 正在向 {name} 打招呼...", end=" ")
-                        success, msg = send_greeting_on_list_page(page, geek_id, stop_event=stop_event, captcha_callback=captcha_callback)
+                        success, msg, greet_method = _dispatch_greeting(
+                            page, c, stop_event=stop_event,
+                            captcha_callback=captcha_callback, method_prefix="regreet")
                         if success is None:
                             skip_count += 1
                             persist_candidate_greeting_pending(c, msg)
@@ -4058,7 +4084,7 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                         if success:
                             success_count += 1
                             consecutive_uncertain = 0
-                            persist_candidate_greeted(c, "regreet_list")
+                            persist_candidate_greeted(c, greet_method)
                             print("OK")
                         else:
                             fail_count += 1

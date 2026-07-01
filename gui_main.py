@@ -5580,7 +5580,7 @@ class BossFilterGUI:
                     menu = tk.Menu(detail_window, tearoff=0, font=context_menu_font)
                     icon_export_menu = self.icons.button('export', self.colors['text_primary'])
                     icon_trash_menu = self.icons.button('trash', self.colors['text_primary'])
-                    icon_greet = self.icons.button('play', self.colors['success'])
+                    icon_greet = self.icons.button('chat', self.colors['success'])
                     menu._icon_refs = [icon_export_menu, icon_trash_menu, icon_greet]
                     menu.add_command(label=" 批量打招呼", image=icon_greet, compound=tk.LEFT,
                                      command=lambda: self._greet_selected_candidates(selection, filtered_ref, tree, parent=detail_window))
@@ -5597,6 +5597,11 @@ class BossFilterGUI:
                         menu._icon_refs.append(icon_ai_eval)
                         menu.add_command(label=" 批量AI评估", image=icon_ai_eval, compound=tk.LEFT,
                                          command=lambda: self._ai_eval_selected_candidates(selected_candidates))
+                    if any(c.get('manual_review_required') for c in selected_candidates):
+                        icon_confirm = self.icons.button('stamp_check', self.colors['success'])
+                        menu._icon_refs.append(icon_confirm)
+                        menu.add_command(label=" 批量确认通过", image=icon_confirm, compound=tk.LEFT,
+                                         command=lambda: self._batch_confirm_manual_review(selected_candidates, parent=detail_window))
                     menu.add_command(label=" 移除选中", image=icon_trash_menu, compound=tk.LEFT,
                                      command=remove_selected)
                     menu.add_separator()
@@ -6022,7 +6027,7 @@ class BossFilterGUI:
                     menu = tk.Menu(detail_window, tearoff=0, font=context_menu_font)
                     icon_export_menu = self.icons.button('export', self.colors['text_primary'])
                     icon_trash_menu = self.icons.button('trash', self.colors['text_primary'])
-                    icon_greet = self.icons.button('play', self.colors['success'])
+                    icon_greet = self.icons.button('chat', self.colors['success'])
                     menu._icon_refs = [icon_export_menu, icon_trash_menu, icon_greet]
                     menu.add_command(label=" 批量打招呼", image=icon_greet, compound=tk.LEFT,
                                      command=lambda: self._greet_selected_candidates(selection, filtered_ref, tree, parent=detail_window))
@@ -6039,6 +6044,11 @@ class BossFilterGUI:
                         menu._icon_refs.append(icon_ai_eval)
                         menu.add_command(label=" 批量AI评估", image=icon_ai_eval, compound=tk.LEFT,
                                          command=lambda: self._ai_eval_selected_candidates(selected_candidates))
+                    if any(c.get('manual_review_required') for c in selected_candidates):
+                        icon_confirm = self.icons.button('stamp_check', self.colors['success'])
+                        menu._icon_refs.append(icon_confirm)
+                        menu.add_command(label=" 批量确认通过", image=icon_confirm, compound=tk.LEFT,
+                                         command=lambda: self._batch_confirm_manual_review(selected_candidates, parent=detail_window))
                     menu.add_command(label=" 移除选中", image=icon_trash_menu, compound=tk.LEFT,
                                      command=remove_selected)
                     menu.add_separator()
@@ -10648,7 +10658,7 @@ class BossFilterGUI:
             menu = tk.Menu(self.root, tearoff=0, font=context_menu_font)
             icon_export_menu = self.icons.button('export', self.colors['text_primary'])
             icon_trash_menu = self.icons.button('trash', self.colors['text_primary'])
-            icon_greet = self.icons.button('play', self.colors['success'])
+            icon_greet = self.icons.button('chat', self.colors['success'])
             menu._icon_refs = [icon_export_menu, icon_trash_menu, icon_greet]
 
             def remove_selected():
@@ -10686,6 +10696,11 @@ class BossFilterGUI:
                 menu._icon_refs.append(icon_ai_eval)
                 menu.add_command(label=" 批量AI评估", image=icon_ai_eval, compound=tk.LEFT,
                                  command=lambda: self._ai_eval_selected_candidates(selected_candidates))
+            if any(c.get('manual_review_required') for c in selected_candidates):
+                icon_confirm = self.icons.button('stamp_check', self.colors['success'])
+                menu._icon_refs.append(icon_confirm)
+                menu.add_command(label=" 批量确认通过", image=icon_confirm, compound=tk.LEFT,
+                                 command=lambda: self._batch_confirm_manual_review(selected_candidates, parent=self.root))
 
             menu.add_command(label=" 移除选中", image=icon_trash_menu, compound=tk.LEFT,
                              command=remove_selected)
@@ -10718,10 +10733,10 @@ class BossFilterGUI:
         context_menu_font = (FONT_FAMILY, int(11 * self.font_scale))
         menu = tk.Menu(parent, tearoff=0, font=context_menu_font)
 
-        icon_detail = self.icons.button('clipboard', self.colors['text_primary'])
+        icon_detail = self.icons.button('eye', self.colors['text_primary'])
         icon_document = self.icons.button('document', self.colors['primary'])
-        icon_greet = self.icons.button('play', self.colors['success'])
-        icon_followup = self.icons.button('chat', self.colors['primary'])
+        icon_greet = self.icons.button('chat', self.colors['success'])
+        icon_followup = self.icons.button('pencil', self.colors['primary'])
         icon_feedback = self.icons.button('check', self.colors['primary'])
         icon_blacklist = self.icons.button('close', self.colors['danger'])
         icon_unblacklist = self.icons.button('check', self.colors['success'])
@@ -10752,6 +10767,13 @@ class BossFilterGUI:
         if candidate.get('resume_eval_adjustment') is not None:
             menu.add_command(label=" 撤销简历评估", image=icon_undo, compound=tk.LEFT,
                              command=lambda: self._revert_resume_eval(
+                                 None, candidate=candidate, parent=parent))
+
+        if candidate.get('manual_review_required'):
+            icon_confirm = self.icons.button('stamp_check', self.colors['success'])
+            menu._icon_refs.append(icon_confirm)
+            menu.add_command(label=" 确认通过", image=icon_confirm, compound=tk.LEFT,
+                             command=lambda: self._confirm_manual_review(
                                  None, candidate=candidate, parent=parent))
 
         if not candidate.get('greet_sent', False):
@@ -11917,6 +11939,102 @@ class BossFilterGUI:
             save_candidates_all(candidates, CANDIDATES_PATH)
         return updated
 
+    def _clear_manual_review(self, geek_id):
+        """按 geek_id 清除人工确认标记，跨岗位生效。"""
+        if not CANDIDATES_PATH.exists():
+            return 0
+        with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
+            candidates = json.load(f)
+
+        updated = 0
+        for c in candidates:
+            if str(c.get('geek_id')) == str(geek_id):
+                if c.get('manual_review_required'):
+                    c['manual_review_required'] = False
+                    c['qualification_status'] = 'qualified'
+                    c.pop('auto_greet_blocked_reason', None)
+                    updated += 1
+
+        if updated:
+            save_candidates_all(candidates, CANDIDATES_PATH)
+        return updated
+
+    def _confirm_manual_review(self, item, candidate=None, parent=None):
+        """清除候选人的需人工确认标记。"""
+        candidate = self._resolve_candidate(item, candidate)
+        if not candidate:
+            messagebox.showerror("错误", "未找到候选人")
+            return
+
+        name = candidate.get('name', '该候选人')
+        risk_flags = candidate.get('risk_flags') or []
+        risk_text = "\n".join(f"- {flag}" for flag in risk_flags) if risk_flags else "无"
+        if not messagebox.askyesno(
+            "确认通过",
+            f"确认 {name} 的人工审查已通过？\n\n"
+            f"审查原因：\n{risk_text}\n\n"
+            f"确认后将清除「需人工确认」标记。如需联系此人，请直接右键打招呼。",
+            parent=parent or self.root
+        ):
+            return
+
+        try:
+            updated = self._clear_manual_review(candidate.get('geek_id'))
+            if not updated:
+                messagebox.showinfo("提示", f"{name} 已无需确认的标记",
+                                    parent=parent or self.root)
+                return
+            candidate['manual_review_required'] = False
+            candidate['qualification_status'] = 'qualified'
+            candidate.pop('auto_greet_blocked_reason', None)
+            self._regenerate_excel()
+            self.refresh_home_stats()
+            self.refresh_stats()
+            self.refresh_results()
+            messagebox.showinfo("成功", f"已确认通过：{name}",
+                                parent=parent or self.root)
+        except Exception as exc:
+            messagebox.showerror("错误", f"操作失败：{exc}",
+                                 parent=parent or self.root)
+
+    def _batch_confirm_manual_review(self, candidates, parent=None):
+        """批量清除候选人的需人工确认标记。"""
+        to_confirm = [c for c in candidates if c.get('manual_review_required')]
+        if not to_confirm:
+            messagebox.showinfo("提示", "选中候选人中无需确认的标记",
+                                parent=parent or self.root)
+            return
+        names = ", ".join(c.get('name', '?') for c in to_confirm[:5])
+        if len(to_confirm) > 5:
+            names += f" 等 {len(to_confirm)} 人"
+        if not messagebox.askyesno(
+            "批量确认通过",
+            f"确认以下 {len(to_confirm)} 人的人工审查已通过？\n\n{names}\n\n"
+            f"确认后将清除「需人工确认」标记。如需联系，请手动打招呼。",
+            parent=parent or self.root
+        ):
+            return
+
+        confirmed = 0
+        for c in to_confirm:
+            try:
+                updated = self._clear_manual_review(c.get('geek_id'))
+                if updated:
+                    c['manual_review_required'] = False
+                    c['qualification_status'] = 'qualified'
+                    c.pop('auto_greet_blocked_reason', None)
+                    confirmed += 1
+            except Exception:
+                continue
+
+        if confirmed:
+            self._regenerate_excel()
+            self.refresh_home_stats()
+            self.refresh_stats()
+            self.refresh_results()
+        messagebox.showinfo("完成", f"已确认通过 {confirmed}/{len(to_confirm)} 人",
+                            parent=parent or self.root)
+
     def _mark_candidate_followup(self, item, candidate=None, parent=None):
         """标记候选人的跟进状态和备注。"""
         candidate = self._resolve_candidate(item, candidate)
@@ -12701,6 +12819,11 @@ class BossFilterGUI:
                         candidate, greet_method
                     )
                     if persisted:
+                        # 手动打招呼成功 → 视为人工确认，清除标记
+                        if candidate.get('manual_review_required'):
+                            self._clear_manual_review(candidate.get('geek_id'))
+                            candidate['manual_review_required'] = False
+                            candidate['qualification_status'] = 'qualified'
                         self._regenerate_excel()
                     else:
                         self.append_log(
@@ -12894,6 +13017,10 @@ class BossFilterGUI:
                             self.append_log(f"[批量打招呼] ✅ {name} — {msg}")
                             persisted = self._update_greet_status(candidate, "manual_context")
                             if persisted:
+                                if candidate.get('manual_review_required'):
+                                    self._clear_manual_review(candidate.get('geek_id'))
+                                    candidate['manual_review_required'] = False
+                                    candidate['qualification_status'] = 'qualified'
                                 success_count += 1
                             else:
                                 self.append_log(f"[批量打招呼] ⚠️ {name} 已发送成功，但本地状态保存失败")
@@ -13023,6 +13150,10 @@ class BossFilterGUI:
                                 consecutive_uncertain = 0
                                 persisted = self._update_greet_status(candidate, "manual_list")
                                 if persisted:
+                                    if candidate.get('manual_review_required'):
+                                        self._clear_manual_review(candidate.get('geek_id'))
+                                        candidate['manual_review_required'] = False
+                                        candidate['qualification_status'] = 'qualified'
                                     success_count += 1
                                 else:
                                     self.append_log(f"[批量打招呼] ⚠️ {name} 已发送成功，但本地状态保存失败")

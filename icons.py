@@ -13,7 +13,7 @@ from PIL import Image, ImageDraw, ImageTk
 # 常量
 # ---------------------------------------------------------------------------
 STROKE_WIDTH = 2.0           # 基础描边宽度（缩放前）
-ICON_SIZE_BUTTON = 20        # 按钮图标基础尺寸（px）
+ICON_SIZE_BUTTON = 24        # 按钮图标基础尺寸（px）
 ICON_SIZE_NAV = 22           # 侧边栏导航图标基础尺寸（px）
 ICON_SIZE_LOGO = 35          # Logo 图标基础尺寸（px）
 ICON_SIZE_STAT = 40          # 统计卡片图标基础尺寸（px）
@@ -171,10 +171,8 @@ def _search(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
 
 
 def _search_color(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
-    """彩色放大镜 — BOSS 品牌 logo，高分辨率填充版"""
-    # 2x 超采样后缩放，消除锯齿
-    S2 = size_px * 2
-    img = Image.new('RGBA', (S2, S2), (0, 0, 0, 0))
+    """彩色放大镜 — BOSS 品牌 logo，填充版（超采样由 IconCache.get 统一处理）"""
+    img = Image.new('RGBA', (size_px, size_px), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
     brand = '#1E88E5'       # 品牌蓝
@@ -182,19 +180,19 @@ def _search_color(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     lens = '#BBDEFB'        # 浅蓝镜片
     highlight = '#E3F2FD'   # 高光
 
-    # 镜片中心 & 半径（2x 坐标系）
-    cx, cy = _s(9, S2), _s(9, S2)
-    r_outer = _s(8.5, S2)
-    r_inner = _s(6, S2)
+    S = size_px
+    # 镜片中心 & 半径
+    cx, cy = _s(9, S), _s(9, S)
+    r_outer = _s(8.5, S)
+    r_inner = _s(6, S)
 
     # 手柄：从镜片右下到右下角，圆头
-    # 手柄起点（45° 方向，在圆环外缘）
     h_angle = math.radians(45)
     hx1 = cx + r_outer * math.cos(h_angle)
     hy1 = cy + r_outer * math.sin(h_angle)
-    hx2 = _s(21, S2)
-    hy2 = _s(21, S2)
-    handle_w = _s(4, S2)
+    hx2 = _s(21, S)
+    hy2 = _s(21, S)
+    handle_w = _s(4, S)
     d.line([hx1, hy1, hx2, hy2], fill=brand_dark, width=int(handle_w))
     # 手柄末端圆头
     r_cap = handle_w / 2
@@ -202,38 +200,31 @@ def _search_color(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
 
     # 镜片：填充浅蓝 + 品牌蓝粗边框
     d.ellipse([cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer],
-              fill=lens, outline=brand, width=int(_s(3.5, S2)))
+              fill=lens, outline=brand, width=int(_s(3.5, S)))
 
     # 高光反射弧（左上角，白色短弧）
-    hi_r = _s(5, S2)
+    hi_r = _s(5, S)
     d.arc([cx - hi_r, cy - hi_r, cx + hi_r, cy + hi_r],
-          start=200, end=280, fill=highlight, width=int(_s(2.5, S2)))
+          start=200, end=280, fill=highlight, width=int(_s(2.5, S)))
 
-    # 缩回目标尺寸（抗锯齿）
-    img = img.resize((size_px, size_px), Image.LANCZOS)
     return img
 
 
 def _pencil(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
+    """铅笔 — 编辑/更新，水平构图，左尾右尖"""
     img = Image.new('RGBA', (size_px, size_px), bg)
     d = ImageDraw.Draw(img)
     S = size_px
-    # 旋转45度的铅笔：用多边形
-    # 笔身（矩形，倾斜）
-    points = [
-        (_s(18, S), _s(3, S)),   # 顶部
-        (_s(22, S), _s(7, S)),   # 右
-        (_s(8, S), _s(21, S)),   # 底部
-        (_s(4, S), _s(17, S)),   # 左
-    ]
-    d.polygon([(p[0], p[1]) for p in points], outline=fill, width=sw)
-    # 笔尖三角
-    tip_points = [
-        (_s(22, S), _s(7, S)),
-        (_s(21, S), _s(13, S)),
-        (_s(15, S), _s(7, S)),
-    ]
-    d.polygon([(p[0], p[1]) for p in tip_points], fill=fill)
+    top = _s(8, S)
+    bot = _s(16, S)
+    # 笔身：水平矩形（左→右）
+    body = [(_s(3, S), top), (_s(17, S), top), (_s(17, S), bot), (_s(3, S), bot)]
+    d.polygon(body, fill=fill, outline=fill, width=sw)
+    # 笔尖：右侧三角
+    tip = [(_s(17, S), top), (_s(21, S), _s(12, S)), (_s(17, S), bot)]
+    d.polygon(tip, fill=fill)
+    # 笔尾橡皮擦：左侧短横线
+    d.line([(_s(3, S), top), (_s(3, S), bot)], fill=fill, width=sw + 1)
     return img
 
 
@@ -702,6 +693,22 @@ def _close(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     return img
 
 
+def _stamp_check(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
+    """圆形印章 + 勾号 — 审核通过"""
+    img = Image.new('RGBA', (size_px, size_px), bg)
+    d = ImageDraw.Draw(img)
+    S = size_px
+    # 外圆（印章边框）
+    cx, cy = _s(12, S), _s(12, S)
+    r = _s(9, S)
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=fill, width=sw + 1)
+    # 内勾号
+    check_sw = sw + 1
+    d.line([_s(7, S), _s(12.5, S), _s(10.5, S), _s(16.5, S)], fill=fill, width=check_sw)
+    d.line([_s(10.5, S), _s(16.5, S), _s(17, S), _s(8, S)], fill=fill, width=check_sw)
+    return img
+
+
 # ---------------------------------------------------------------------------
 # 图标注册表
 # ---------------------------------------------------------------------------
@@ -742,6 +749,7 @@ ICON_REGISTRY: Dict[str, Callable] = {
     'close':        _close,
     'document':     _document,
     'shield_check': _shield_check,
+    'stamp_check':  _stamp_check,
 }
 
 
@@ -765,7 +773,11 @@ class IconCache:
             sw = max(1, int(STROKE_WIDTH * self._scale))
             # 空字符串 → 透明背景（RGBA 四元组）
             bg_resolved = bg if bg else (0, 0, 0, 0)
-            pil_img = drawer(size_px, fill, bg_resolved, sw)
+            # 2x 超采样 + LANCZOS 缩回，消除 ImageDraw 锯齿
+            super_px = size_px * 2
+            super_sw = max(1, sw * 2)
+            pil_img = drawer(super_px, fill, bg_resolved, super_sw)
+            pil_img = pil_img.resize((size_px, size_px), Image.LANCZOS)
             self._cache[key] = ImageTk.PhotoImage(pil_img)
         return self._cache[key]
 
