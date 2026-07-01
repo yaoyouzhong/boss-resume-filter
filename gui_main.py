@@ -10410,8 +10410,8 @@ class BossFilterGUI:
                 tags.remove('search_match')
                 self.result_tree.item(item_id, tags=tuple(tags))
 
-        # 匹配项：深青加粗高亮 tag
-        self.result_tree.tag_configure('search_match', foreground='#00695C', font=(FONT_FAMILY, int(12 * self.font_scale), 'bold'))
+        # 匹配项：深青加粗高亮 tag（bold 继承 self.font_table 基础字号，避免行高不一致）
+        self.result_tree.tag_configure('search_match', foreground='#00695C', font=(*self.font_table, 'bold'))
         for item_id, _ in matched_with_type:
             tags = list(self.result_tree.item(item_id, 'tags') or ())
             if 'search_match' not in tags:
