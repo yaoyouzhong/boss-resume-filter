@@ -1524,7 +1524,7 @@ class BossFilterGUI:
                                background=self.colors['bg_card'])
         title_label.pack(anchor="w")
 
-        subtitle_label = ttk.Label(header_frame, text="智能解析、智能匹配、AI 评估、自动打招呼、人工反馈、跟进状态、数据复盘",
+        subtitle_label = ttk.Label(header_frame, text="智能解析、智能匹配、AI 评估、自动打招呼、学历核验、人工反馈、跟进状态、数据复盘",
                                    font=self.font_label, foreground=self.colors['text_secondary'],
                                    background=self.colors['bg_card'])
         subtitle_label.pack(anchor="w", pady=(int(10 * self.dpi_scale * self.zoom_factor), 0))
