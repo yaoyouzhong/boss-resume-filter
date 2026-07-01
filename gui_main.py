@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.15.1"
+__version__ = "2.15.2"
 
 import json
 import logging
@@ -1311,6 +1311,8 @@ class BossFilterGUI:
             self._update_config_page_dynamic_heights()
         elif current_page == 3:
             self._update_result_tree_columns()
+        elif current_page == 4:
+            self._update_education_queue_columns()
 
     def _is_window_maximized(self) -> bool:
         """Return True when the main window is maximized or effectively fullscreen."""
@@ -2792,6 +2794,11 @@ class BossFilterGUI:
 
         self.model_list_tree.bind("<Motion>", _on_model_motion)
         self.model_list_tree.bind("<Leave>", _on_model_leave)
+        self.model_list_tree.bind(
+            "<Configure>",
+            lambda _event: self._update_model_list_columns(),
+            add="+",
+        )
 
         # 初始化模型列表
         self.saved_models = []
@@ -3025,25 +3032,94 @@ class BossFilterGUI:
             return
 
     def _update_model_list_columns(self):
-        """显示模型名称、服务商、状态、学历核验、Base URL 列；最大化时所有列拉伸"""
+        """Fit saved-model columns while preserving the wider 4K layout."""
         if not hasattr(self, 'model_list_tree'):
             return
         display = ("name", "provider", "compat", "edu_ref", "base_url")
         current = tuple(self.model_list_tree.cget("displaycolumns"))
         if current != display:
             self.model_list_tree.configure(displaycolumns=display)
+
         if self._is_window_maximized():
-            self.model_list_tree.column("name", width=320, stretch=False)
-            self.model_list_tree.column("provider", width=280, stretch=False)
-            self.model_list_tree.column("compat", width=170, stretch=False)
-            self.model_list_tree.column("edu_ref", width=150, stretch=False)
-            self.model_list_tree.column("base_url", width=200, stretch=True)
+            base_widths = {
+                "name": 320, "provider": 280, "compat": 170,
+                "edu_ref": 150, "base_url": 200,
+            }
         else:
-            self.model_list_tree.column("name", width=260, stretch=False)
-            self.model_list_tree.column("provider", width=240, stretch=False)
-            self.model_list_tree.column("compat", width=140, stretch=False)
-            self.model_list_tree.column("edu_ref", width=130, stretch=False)
-            self.model_list_tree.column("base_url", width=200, stretch=True)
+            base_widths = {
+                "name": 260, "provider": 240, "compat": 140,
+                "edu_ref": 130, "base_url": 200,
+            }
+
+        min_widths = {
+            "name": 180, "provider": 160, "compat": 90,
+            "edu_ref": 80, "base_url": 170,
+        }
+        widths = dict(base_widths)
+        try:
+            available_width = max(0, int(self.model_list_tree.winfo_width()) - 24)
+        except (tk.TclError, ValueError):
+            available_width = 0
+
+        overflow = sum(widths.values()) - available_width
+        if available_width > 0 and overflow > 0:
+            for column in ("provider", "edu_ref", "compat", "name"):
+                reducible = max(0, widths[column] - min_widths[column])
+                reduction = min(reducible, overflow)
+                widths[column] -= reduction
+                overflow -= reduction
+                if overflow <= 0:
+                    break
+            if overflow > 0:
+                widths["base_url"] = max(
+                    min_widths["base_url"], widths["base_url"] - overflow
+                )
+
+        for column in display:
+            self.model_list_tree.column(
+                column,
+                width=widths[column],
+                minwidth=min_widths[column],
+                stretch=column == "base_url",
+            )
+
+    def _update_education_queue_columns(self):
+        """Keep the education queue status column visible on 1080p screens."""
+        if not hasattr(self, 'education_queue_tree'):
+            return
+
+        base_widths = {
+            "file": 230, "name": 120, "number": 160,
+            "school": 175, "major": 210, "status": 140,
+        }
+        min_widths = {
+            "file": 150, "name": 80, "number": 130,
+            "school": 130, "major": 150, "status": 120,
+        }
+        widths = dict(base_widths)
+        try:
+            available_width = max(0, int(self.education_queue_tree.winfo_width()) - 24)
+        except (tk.TclError, ValueError):
+            available_width = 0
+
+        overflow = sum(widths.values()) - available_width
+        if available_width > 0 and overflow > 0:
+            for column in ("major", "file", "school", "name", "number", "status"):
+                reducible = max(0, widths[column] - min_widths[column])
+                reduction = min(reducible, overflow)
+                widths[column] -= reduction
+                overflow -= reduction
+                if overflow <= 0:
+                    break
+
+        for column in ("file", "name", "number", "school", "major", "status"):
+            self.education_queue_tree.column(
+                column,
+                width=widths[column],
+                minwidth=min_widths[column],
+                anchor="w" if column == "file" else "center",
+                stretch=column in ("file", "number", "school", "major"),
+            )
 
     def create_run_page(self):
         """创建运行控制页面 - 增强版：浏览器状态检测 + 进度条 + 滚动支持"""
@@ -3674,6 +3750,11 @@ class BossFilterGUI:
         self.education_queue_tree.bind("<Leave>", self._hide_tooltip, add="+")
         self.education_queue_tree.bind(
             "<Button-3>", self._show_education_queue_context_menu
+        )
+        self.education_queue_tree.bind(
+            "<Configure>",
+            lambda _event: self._update_education_queue_columns(),
+            add="+",
         )
         self.education_queue_menu = tk.Menu(
             self.root, tearoff=0,
@@ -6564,7 +6645,7 @@ class BossFilterGUI:
             messagebox.showerror("错误", f"未找到模型 '{model_name}' 的配置信息")
 
     def test_saved_model_connectivity(self):
-        """测试已保存模型列表中选中模型的连通性（支持多选，后台并行执行）"""
+        """测试已保存模型连通性，结果直接回写到列表状态列。"""
         selection = self.model_list_tree.selection()
         if not selection:
             messagebox.showwarning("警告", "请先选择要测试的模型（Ctrl+点击多选）")
@@ -6589,6 +6670,7 @@ class BossFilterGUI:
             base_url = model_config.get("base_url", "").strip()
             api_key = get_api_key(provider_key, base_url)
             models_to_test.append({
+                "item_id": item_id,
                 "model_name": model_name,
                 "provider_display": provider_display,
                 "provider_key": provider_key,
@@ -6602,14 +6684,13 @@ class BossFilterGUI:
             return
 
         total = len(models_to_test)
-        self._update_api_status(text=f"⏳ 正在测试 {total} 个模型...", foreground=self.colors['warning'])
+        self._update_api_status(text=f"正在测试 {total} 个模型...", foreground=self.colors['warning'])
+        for entry in models_to_test:
+            self._set_model_list_item_status(entry["item_id"], "测试中...")
 
-        # 并行测试
-        results = {}
-        results_lock = threading.Lock()
+        progress = {"done": 0, "success": 0, "fail": 0}
 
         def _test_one(entry):
-            model_name = entry["model_name"]
             if not entry["api_key"]:
                 result = {"status": "error", "msg": "API Key 未配置"}
             elif not entry["base_url"]:
@@ -6631,58 +6712,82 @@ class BossFilterGUI:
                 except Exception as e:
                     result = {"status": "error", "msg": f"异常: {str(e)[:80]}"}
 
-            with results_lock:
-                results[model_name] = result
+            self.run_on_ui(
+                lambda entry=entry, result=result: self._apply_model_connectivity_result(
+                    entry, result, progress, total
+                )
+            )
 
-        threads = []
         for entry in models_to_test:
             t = threading.Thread(target=_test_one, args=(entry,), daemon=True)
-            threads.append(t)
             t.start()
 
-        def _wait_and_show():
-            for t in threads:
-                t.join()
-            self.root.after(0, lambda: self._show_batch_connectivity_results(models_to_test, results))
+    def _set_model_list_item_status(self, item_id, status_text):
+        """Update only the saved-model status cell."""
+        if not hasattr(self, 'model_list_tree'):
+            return
+        try:
+            if not self.model_list_tree.exists(item_id):
+                return
+            values = list(self.model_list_tree.item(item_id).get('values', ()))
+            if len(values) < 3:
+                return
+            values[2] = status_text
+            self.model_list_tree.item(item_id, values=tuple(values))
+        except tk.TclError:
+            return
 
-        threading.Thread(target=_wait_and_show, daemon=True).start()
-
-    def _show_batch_connectivity_results(self, models_to_test, results):
-        """显示批量连通性测试结果"""
-        success_lines = []
-        fail_lines = []
-        for entry in models_to_test:
-            name = entry["model_name"]
-            provider = entry["provider_display"]
-            result = results.get(name, {"status": "error", "msg": "超时"})
-            if result["status"] == "success":
-                cap = result.get("capability", {})
-                compat = "完整兼容" if cap.get("status") == "compatible" else "兼容模式"
-                mode = "工具调用" if cap.get("output_mode") == "tool" else "JSON 纠错"
-                success_lines.append(f"✓ {name} ({provider}) — {compat} / {mode} ({result['time']:.1f}s)")
-                # 回写 capability
-                self._save_capability_to_model(name, cap)
-            else:
-                fail_lines.append(f"✗ {name} ({provider}) — {result.get('msg', '未知错误')}")
-
-        # 状态栏显示摘要
-        s_count = len(success_lines)
-        f_count = len(fail_lines)
-        if f_count == 0:
-            self._update_api_status(text=f"✓ {s_count} 个模型测试通过", foreground=self.colors['success'])
-        elif s_count == 0:
-            self._update_api_status(text=f"✗ {f_count} 个模型测试失败", foreground=self.colors['danger'])
+    def _apply_model_connectivity_result(self, entry, result, progress, total):
+        """Apply one connectivity result on the Tk UI thread."""
+        progress["done"] += 1
+        if result["status"] == "success":
+            progress["success"] += 1
+            capability = result.get("capability", {})
+            status = capability.get("status", "")
+            label = "可用" if status == "compatible" else "兼容"
+            elapsed = result.get("time", 0)
+            self._set_model_list_item_status(
+                entry["item_id"], f"✓ {label} {elapsed:.1f}s"
+            )
+            self._save_capability_to_model(
+                entry["model_name"],
+                capability,
+                provider_key=entry["provider_key"],
+                base_url=entry["base_url"],
+                refresh=False,
+            )
         else:
-            self._update_api_status(text=f"{s_count} 通过 / {f_count} 失败", foreground=self.colors['warning'])
+            progress["fail"] += 1
+            msg = result.get("msg", "未知错误")
+            self._set_model_list_item_status(entry["item_id"], f"✗ {msg}")
 
-        # 弹窗显示详情
-        detail = "\n".join(success_lines + fail_lines)
-        if f_count == 0:
-            messagebox.showinfo("测试完成", f"全部 {s_count} 个模型测试通过\n\n{detail}")
+        if progress["done"] < total:
+            self._update_api_status(
+                text=f"模型测试中：{progress['done']}/{total} 完成，"
+                     f"{progress['success']} 通过 / {progress['fail']} 失败",
+                foreground=self.colors['warning'],
+            )
+            return
+
+        if progress["fail"] == 0:
+            self._update_api_status(
+                text=f"✓ {progress['success']} 个模型测试通过",
+                foreground=self.colors['success'],
+            )
+        elif progress["success"] == 0:
+            self._update_api_status(
+                text=f"✗ {progress['fail']} 个模型测试失败",
+                foreground=self.colors['danger'],
+            )
         else:
-            messagebox.showwarning("测试完成", f"{s_count} 通过 / {f_count} 失败\n\n{detail}")
+            self._update_api_status(
+                text=f"{progress['success']} 通过 / {progress['fail']} 失败",
+                foreground=self.colors['warning'],
+            )
 
-    def _save_capability_to_model(self, model_name, capability):
+    def _save_capability_to_model(
+        self, model_name, capability, provider_key=None, base_url=None, refresh=True
+    ):
         """将探测到的 capability 回写到 saved_models 并持久化到磁盘"""
         if not hasattr(self, 'saved_models'):
             return
@@ -6693,9 +6798,14 @@ class BossFilterGUI:
         }
         updated = False
         for m in self.saved_models:
-            if m.get("model") == model_name:
-                m["capability"] = cap_slim
-                updated = True
+            if m.get("model") != model_name:
+                continue
+            if provider_key is not None and m.get("api_provider") != provider_key:
+                continue
+            if base_url is not None and (m.get("base_url", "").strip() != base_url.strip()):
+                continue
+            m["capability"] = cap_slim
+            updated = True
         if not updated:
             return
         # 同步到 api_config 并原子写盘
@@ -6711,8 +6821,9 @@ class BossFilterGUI:
                 os.remove(API_CONFIG_PATH.with_suffix('.json.tmp'))
             except OSError:
                 pass
-        # 刷新列表显示
-        self.load_saved_models_to_tree()
+        self._mark_api_config_ui_current()
+        if refresh:
+            self.load_saved_models_to_tree()
 
     def save_api_config(self):
         """保存 API 配置 - API Key 按服务商加密存储到系统钥匙串"""
