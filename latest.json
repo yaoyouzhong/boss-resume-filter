@@ -1,29 +1,29 @@
 {
-  "version": "2.15.1",
-  "release_date": "2026-06-30",
+  "version": "2.15.2",
+  "release_date": "2026-07-01",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15.1/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15.1/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15.1/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15.2/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15.2/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15.2/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "windows": {
-      "size": 38419998,
-      "sha256": "d547a5e2cf673e3d87467b30a9d76894a23016bd403918842a59edf61d41833a"
+      "size": 38429565,
+      "sha256": "23b29508c22cce7d4e14ed433051fbf02f3a12c80d3565703a2453528730f5db"
     },
     "macos_dmg": {
-      "size": 33254421,
-      "sha256": "ee4ad06d1451e5f3f06ddc2c596312108e952e2d83ef0d4dffc0e4f633b44570"
+      "size": 33258884,
+      "sha256": "46de21a071df6d00a0fe789850033905d53c9342d658b9aa86ced840f9b59fe8"
     },
     "macos": {
-      "size": 34109481,
-      "sha256": "15ed50e38cd1f7ad1bb9c65d49e536d27a5ed2248dea39fb9b9769015c865913"
+      "size": 34119562,
+      "sha256": "3cf84c3cf5c76b024c4b3ed02b633fbd6c4a61c4de51b2e2961d9e77809d5cab"
     }
   },
-  "release_notes": "### 新增功能\n\n- **一键 AI 评估**：筛选结果、数据统计看板右键支持单个候选人 AI 评估、多个候选人批量 AI 评估（只适用未 AI 评估过的候选人）\n\n### 问题修复\n\n- **修复搜索框不自动滚动**：筛选结果页输入搜索关键词后，自动滚动到第一个匹配行并选中",
+  "release_notes": "### 新增功能\n\n- **命令行打招呼优先使用上下文直发**：命令行模式打招呼优先使用已缓存的候选人上下文（jid/lid/securityId）直接发送，减少页面依赖；需人工确认的候选人支持清除待确认状态重新操作\n\n### 体验优化\n\n- **按钮图标尺寸优化**：按钮图标从 20px 增大至 24px，视觉更清晰；图标超采样逻辑统一由缓存层处理\n- **搜索高亮样式优化**：搜索匹配高亮改为深青加粗，替代原来的红色文字，视觉效果更清晰\n\n### 问题修复\n\n- **首页描述补充学历核验**：首页功能特性说明补充学历证书核验功能描述\n- **搜索高亮行高一致**：搜索匹配高亮的加粗字号继承表格基础字体，避免行高不一致",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15.1/BOSS_ResumeFilter.exe",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15.1/BOSS_ResumeFilter.dmg",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15.1/BOSS_ResumeFilter_mac.zip"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15.2/BOSS_ResumeFilter.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15.2/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15.2/BOSS_ResumeFilter.dmg"
   }
 }
