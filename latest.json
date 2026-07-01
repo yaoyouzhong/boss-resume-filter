@@ -8,19 +8,19 @@
   },
   "assets": {
     "windows": {
-      "size": 38419523,
-      "sha256": "06ae4ae461433535d11563ac558c3d8de02e69b8bbd52c5a22f905e5d347eeff"
+      "size": 38419998,
+      "sha256": "d547a5e2cf673e3d87467b30a9d76894a23016bd403918842a59edf61d41833a"
     },
     "macos_dmg": {
-      "size": 33262432,
-      "sha256": "27cbcd8669e24eab739b1d6ef311d7ae92ab08e7d01a97bbf730b41ad734843c"
+      "size": 33254421,
+      "sha256": "ee4ad06d1451e5f3f06ddc2c596312108e952e2d83ef0d4dffc0e4f633b44570"
     },
     "macos": {
-      "size": 34107740,
-      "sha256": "715e88107b0d87ac8b37e519b9efb05902799a489cfaefc5ce3a40617c13284d"
+      "size": 34109481,
+      "sha256": "15ed50e38cd1f7ad1bb9c65d49e536d27a5ed2248dea39fb9b9769015c865913"
     }
   },
-  "release_notes": "### 新增功能\n\n- **一键 AI 评估**：筛选结果表支持多选候选人后右键批量 AI 评估，完成后弹窗汇总成功/失败/跳过人数及失败原因；已评估的低分候选人不再被自动清理，便于后续复盘",
+  "release_notes": "### 新增功能\n\n- **一键 AI 评估**：筛选结果页右键支持单个候选人 AI 评估、多个候选人批量 AI 评估（只适用未 AI 评估过的候选人）\n- **数据统计看板批量 AI 评估**：按岗位/按时间明细窗口多选右键菜单增加批量 AI 评估\n\n### 问题修复\n\n- **修复搜索框不自动滚动**：筛选结果页输入搜索关键词后，自动滚动到第一个匹配行并选中",
   "downloads_cn": {
     "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15.1/BOSS_ResumeFilter.exe",
     "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.15.1/BOSS_ResumeFilter.dmg",
