@@ -10426,6 +10426,11 @@ class BossFilterGUI:
         for item_id in unmatched:
             self.result_tree.reattach(item_id, '', 'end')
 
+        # 滚动到第一个匹配项
+        if matched_with_type:
+            self.result_tree.see(matched_with_type[0][0])
+            self.result_tree.selection_set(matched_with_type[0][0])
+
     def _bind_treeview_context_menu(self):
         """绑定 Treeview 右键菜单和双击"""
         self.result_tree.bind('<Button-3>', self._show_context_menu)
