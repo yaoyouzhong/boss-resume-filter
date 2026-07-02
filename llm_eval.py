@@ -1093,8 +1093,12 @@ def evaluate_with_resume(
     """Perform second-round LLM evaluation using full resume text.
 
     Updates candidate dict in-place with resume_eval_* fields and
-    recalculates match_score cumulatively:
-        final = clamp(rule_score + llm_adjustment + resume_adjustment, 0, 100)
+    recalculates match_score. Resume evaluation replaces first-round
+    adjustment (not stacked):
+        final = clamp(rule_score + resume_adjustment, 0, 100)
+
+    First-round hard condition findings (qualification_status, llm_hard_condition_findings)
+    are preserved — only the score adjustment is replaced.
 
     Returns LLMEvalResult with the round-2 adjustment.
     """
@@ -1108,14 +1112,13 @@ def evaluate_with_resume(
         candidate["resume_eval_model"] = result.model
         candidate["resume_eval_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Recalculate cumulative score
+        # Resume evaluation replaces first-round adjustment (not stacked)
         rule_score = candidate.get("rule_score", candidate.get("match_score", 0))
-        llm_adj = candidate.get("llm_adjustment", 0) or 0
-        new_score = max(0, min(100, rule_score + llm_adj + result.adjustment))
+        new_score = max(0, min(100, rule_score + result.adjustment))
         candidate["match_score"] = new_score
         candidate["recommend_level"] = _recalc_recommend_level(new_score)
 
-        # Update score_breakdown
+        # Update score_breakdown: resume replaces ai_adjustment in total
         breakdown = candidate.get("score_breakdown")
         if isinstance(breakdown, dict):
             breakdown["resume_adjustment"] = result.adjustment
