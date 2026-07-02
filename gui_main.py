@@ -5816,24 +5816,14 @@ class BossFilterGUI:
                 level = "强烈推荐" if score >= SCORE_THRESHOLD_STRONG else ("推荐" if score >= SCORE_THRESHOLD_RECOMMEND else "待定")
                 status = self._format_candidate_status(c)
                 salary, exp = self._parse_salary_exp(c.get('summary', ''), c.get('structured'))
-                # AI 评估调整值（一次 + 二次）
+                # AI 评估调整值：有简历时显示简历评估（替代一次评估），否则显示一次评估
                 ai_adj = c.get('llm_adjustment')
                 resume_adj = c.get('resume_eval_adjustment')
 
-                if ai_adj is not None and c.get('llm_evaluated'):
-                    if resume_adj is not None:
-                        # 两次评估：显示净调整 + 明细
-                        net = ai_adj + resume_adj
-                        sign = "+" if net > 0 else ""
-                        r1_str = f"+{ai_adj}" if ai_adj > 0 else str(ai_adj)
-                        r2_str = f"+{resume_adj}" if resume_adj > 0 else str(resume_adj)
-                        ai_text = f"{sign}{net}({r1_str}{r2_str})"
-                    else:
-                        # 只有一次评估
-                        ai_text = f"+{ai_adj}" if ai_adj > 0 else str(ai_adj)
-                elif resume_adj is not None:
-                    # 只有二次评估（边界情况）
+                if resume_adj is not None:
                     ai_text = f"+{resume_adj}" if resume_adj > 0 else str(resume_adj)
+                elif ai_adj is not None and c.get('llm_evaluated'):
+                    ai_text = f"+{ai_adj}" if ai_adj > 0 else str(ai_adj)
                 else:
                     ai_text = "—"
 
@@ -6004,24 +5994,14 @@ class BossFilterGUI:
                 level = "强烈推荐" if score >= SCORE_THRESHOLD_STRONG else ("推荐" if score >= SCORE_THRESHOLD_RECOMMEND else "待定")
                 status = self._format_candidate_status(c)
                 salary, exp = self._parse_salary_exp(c.get('summary', ''), c.get('structured'))
-                # AI 评估调整值（一次 + 二次）
+                # AI 评估调整值：有简历时显示简历评估（替代一次评估），否则显示一次评估
                 ai_adj = c.get('llm_adjustment')
                 resume_adj = c.get('resume_eval_adjustment')
 
-                if ai_adj is not None and c.get('llm_evaluated'):
-                    if resume_adj is not None:
-                        # 两次评估：显示净调整 + 明细
-                        net = ai_adj + resume_adj
-                        sign = "+" if net > 0 else ""
-                        r1_str = f"+{ai_adj}" if ai_adj > 0 else str(ai_adj)
-                        r2_str = f"+{resume_adj}" if resume_adj > 0 else str(resume_adj)
-                        ai_text = f"{sign}{net}({r1_str}{r2_str})"
-                    else:
-                        # 只有一次评估
-                        ai_text = f"+{ai_adj}" if ai_adj > 0 else str(ai_adj)
-                elif resume_adj is not None:
-                    # 只有二次评估（边界情况）
+                if resume_adj is not None:
                     ai_text = f"+{resume_adj}" if resume_adj > 0 else str(resume_adj)
+                elif ai_adj is not None and c.get('llm_evaluated'):
+                    ai_text = f"+{ai_adj}" if ai_adj > 0 else str(ai_adj)
                 else:
                     ai_text = "—"
 
@@ -10344,24 +10324,14 @@ class BossFilterGUI:
                     # 从 summary 中解析工作年限和薪资
                     salary, exp = self._parse_salary_exp(c.get('summary', ''), c.get('structured'))
 
-                    # AI 评估调整值（一次 + 二次）
+                    # AI 评估调整值：有简历时显示简历评估（替代一次评估），否则显示一次评估
                     ai_adj = c.get('llm_adjustment')
                     resume_adj = c.get('resume_eval_adjustment')
 
-                    if ai_adj is not None and c.get('llm_evaluated'):
-                        if resume_adj is not None:
-                            # 两次评估：显示净调整 + 明细
-                            net = ai_adj + resume_adj
-                            sign = "+" if net > 0 else ""
-                            r1_str = f"+{ai_adj}" if ai_adj > 0 else str(ai_adj)
-                            r2_str = f"+{resume_adj}" if resume_adj > 0 else str(resume_adj)
-                            ai_text = f"{sign}{net}({r1_str}{r2_str})"
-                        else:
-                            # 只有一次评估
-                            ai_text = f"+{ai_adj}" if ai_adj > 0 else str(ai_adj)
-                    elif resume_adj is not None:
-                        # 只有二次评估（边界情况）
+                    if resume_adj is not None:
                         ai_text = f"+{resume_adj}" if resume_adj > 0 else str(resume_adj)
+                    elif ai_adj is not None and c.get('llm_evaluated'):
+                        ai_text = f"+{ai_adj}" if ai_adj > 0 else str(ai_adj)
                     else:
                         ai_text = "—"
 
