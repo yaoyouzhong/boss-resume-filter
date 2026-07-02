@@ -825,3 +825,73 @@ def test_batch_rejects_salary_borderline(mock_call, mock_sleep):
         rule={'salary_max': 20},
     )
     assert result[0]['qualification_status'] == 'rejected'
+
+
+# === 维度评分解析 ===
+
+def test_parse_response_with_dimension_scores():
+    text = json.dumps({
+        "adjustment": 5,
+        "reason": "匹配良好",
+        "hard_condition_verdict": "pass",
+        "hard_condition_findings": [],
+        "dimension_scores": {
+            "skill_depth": 8,
+            "experience_quality": 7,
+            "industry_fit": 6,
+            "growth_potential": 9,
+        },
+    }, ensure_ascii=False)
+    result = _parse_response(text)
+    assert result['dimension_scores']['skill_depth'] == 8
+    assert result['dimension_scores']['experience_quality'] == 7
+    assert result['dimension_scores']['industry_fit'] == 6
+    assert result['dimension_scores']['growth_potential'] == 9
+
+
+def test_parse_response_dimension_scores_clamped():
+    text = json.dumps({
+        "adjustment": 0,
+        "reason": "ok",
+        "hard_condition_verdict": "unknown",
+        "hard_condition_findings": [],
+        "dimension_scores": {
+            "skill_depth": 15,
+            "experience_quality": 0,
+            "industry_fit": -5,
+            "growth_potential": 10,
+        },
+    }, ensure_ascii=False)
+    result = _parse_response(text)
+    assert result['dimension_scores']['skill_depth'] == 10
+    assert result['dimension_scores']['experience_quality'] == 1
+    assert result['dimension_scores']['industry_fit'] == 1
+    assert result['dimension_scores']['growth_potential'] == 10
+
+
+def test_parse_response_dimension_scores_missing():
+    text = json.dumps({
+        "adjustment": 0,
+        "reason": "ok",
+        "hard_condition_verdict": "unknown",
+        "hard_condition_findings": [],
+    }, ensure_ascii=False)
+    result = _parse_response(text)
+    assert result['dimension_scores'] == {}
+
+
+@patch('llm_eval.time.sleep')
+@patch('llm_eval._call_llm_api')
+def test_batch_stores_dimension_scores(mock_call, mock_sleep):
+    mock_call.return_value = LLMEvalResult(
+        success=True, adjustment=5, reason="匹配", model="m",
+        dimension_scores={"skill_depth": 8, "experience_quality": 7, "industry_fit": 6, "growth_potential": 9},
+    )
+    candidates = [{'name': '张三', 'match_score': 65, 'recommend_level': '推荐', 'summary': '5年Java'}]
+    result = quiet_evaluate_batch(candidates, "岗位", {'base_url': 'x', 'model': 'y'}, "key")
+    dims = result[0].get('llm_dimension_scores')
+    assert dims is not None
+    assert dims['skill_depth'] == 8
+    assert dims['experience_quality'] == 7
+    assert dims['industry_fit'] == 6
+    assert dims['growth_potential'] == 9

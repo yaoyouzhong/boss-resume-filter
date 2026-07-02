@@ -12613,6 +12613,21 @@ class BossFilterGUI:
                 lines.append(f"  资格审查：{status_label}")
                 for reason_item in qual_reasons:
                     lines.append(f"    - {reason_item}")
+
+            # AI 维度评估
+            dim_scores = c.get('llm_dimension_scores') or {}
+            if dim_scores:
+                from llm_eval import _DIMENSION_LABELS
+                lines.append("")
+                lines.append("  维度评估：")
+                for key in ('skill_depth', 'experience_quality', 'industry_fit', 'growth_potential'):
+                    val = dim_scores.get(key)
+                    if val is None:
+                        continue
+                    label = _DIMENSION_LABELS.get(key, key)
+                    filled = round(val / 10 * 8)
+                    bar = "█" * filled + "░" * (8 - filled)
+                    lines.append(f"    {label}：{val}/10 {bar}")
         else:
             lines.append("【AI 一次评估】未启用")
 

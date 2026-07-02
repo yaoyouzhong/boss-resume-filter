@@ -119,15 +119,33 @@ _EVALUATION_TOOL = {
                         "required": ["condition", "verdict", "evidence", "confidence"],
                     },
                 },
+                "dimension_scores": {
+                    "type": "object",
+                    "properties": {
+                        "skill_depth": {"type": "integer", "minimum": 1, "maximum": 10, "description": "技能掌握深度"},
+                        "experience_quality": {"type": "integer", "minimum": 1, "maximum": 10, "description": "经验质量"},
+                        "industry_fit": {"type": "integer", "minimum": 1, "maximum": 10, "description": "行业匹配"},
+                        "growth_potential": {"type": "integer", "minimum": 1, "maximum": 10, "description": "发展潜力"},
+                    },
+                    "required": ["skill_depth", "experience_quality", "industry_fit", "growth_potential"],
+                },
             },
             "required": [
                 "adjustment",
                 "reason",
                 "hard_condition_verdict",
                 "hard_condition_findings",
+                "dimension_scores",
             ],
         },
     },
+}
+
+_DIMENSION_LABELS = {
+    "skill_depth": "技能深度",
+    "experience_quality": "经验质量",
+    "industry_fit": "行业匹配",
+    "growth_potential": "发展潜力",
 }
 
 
@@ -140,6 +158,7 @@ class LLMEvalResult:
     model: str = ""
     hard_condition_verdict: str = "unknown"
     hard_condition_findings: list[dict[str, Any]] | None = None
+    dimension_scores: dict[str, int] | None = None
 
 
 _SYSTEM_PROMPT = (
@@ -147,6 +166,7 @@ _SYSTEM_PROMPT = (
     "返回严格的 JSON 对象（不要包含其他文字）：\n"
     '{"adjustment": 整数(-15到+15), "hard_condition_verdict": "pass|fail|unknown", '
     '"hard_condition_findings": [{"condition":"条件","verdict":"fail","evidence":"候选人原文","confidence":"high|medium|low"}], '
+    '"dimension_scores": {"skill_depth": 1-10, "experience_quality": 1-10, "industry_fit": 1-10, "growth_potential": 1-10}, '
     '"reason": "100字以内评估理由"}\n'
     "硬条件结论必须引用候选人原文；推测、大概率、疑似只能返回 unknown，不能返回 fail。\n"
     "评分标准：\n"
@@ -156,7 +176,12 @@ _SYSTEM_PROMPT = (
     "0: 基本匹配，无特别加减分\n"
     "-1~-5: 存在不匹配之处\n"
     "-6~-10: 明显不匹配\n"
-    "-11~-15: 严重不匹配"
+    "-11~-15: 严重不匹配\n"
+    "维度评分标准（各维度 1-10）：\n"
+    "- skill_depth：技能掌握深度（1=了解概念，5=熟练应用，10=专家级）\n"
+    "- experience_quality：经验质量（1=水经验，5=正常，10=顶级项目）\n"
+    "- industry_fit：行业匹配（1=完全跨行，5=相关行业，10=同行业）\n"
+    "- growth_potential：发展潜力（1=停滞，5=稳定，10=快速上升）"
 )
 
 _USER_TEMPLATE = (
@@ -544,11 +569,21 @@ def _parse_response(text: str) -> dict:
                 'confidence': confidence if confidence in {'high', 'medium', 'low'} else 'low',
             })
 
+    # Extract and validate dimension scores
+    raw_dims = data.get('dimension_scores', {})
+    dimension_scores = {}
+    if isinstance(raw_dims, dict):
+        for key in ('skill_depth', 'experience_quality', 'industry_fit', 'growth_potential'):
+            val = raw_dims.get(key)
+            if isinstance(val, (int, float)):
+                dimension_scores[key] = max(1, min(10, int(val)))
+
     return {
         'adjustment': adjustment,
         'reason': reason,
         'hard_condition_verdict': verdict,
         'hard_condition_findings': findings,
+        'dimension_scores': dimension_scores,
     }
 
 
@@ -733,6 +768,7 @@ def _call_llm_api(messages: list, api_config: dict, api_key: str,
                         model=model,
                         hard_condition_verdict=parsed['hard_condition_verdict'],
                         hard_condition_findings=parsed['hard_condition_findings'],
+                        dimension_scores=parsed.get('dimension_scores'),
                     )
                 elif response.status_code == 429:
                     # Rate limited — respect Retry-After header, fallback to 5/15/30s
@@ -993,6 +1029,7 @@ def evaluate_batch(
                     candidate['llm_model'] = result.model
                     candidate['llm_hard_condition_verdict'] = result.hard_condition_verdict
                     candidate['llm_hard_condition_findings'] = result.hard_condition_findings or []
+                    candidate['llm_dimension_scores'] = result.dimension_scores or {}
                     validated_failures = _validated_hard_failures(
                         candidate, result.hard_condition_findings, hard_conditions, rule
                     )

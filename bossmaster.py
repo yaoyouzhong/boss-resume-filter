@@ -429,16 +429,15 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
             f"学历{breakdown.get('education', 0)}",
             f"优先{breakdown.get('preferred', 0)}",
         ]
-        # AI 调整分（LLM 评估后追加）
+        # AI 调整分：有简历时只显示简历调整值（替代一次评估）
         ai_adj = breakdown.get('ai_adjustment')
-        if ai_adj is not None and ai_adj != 0:
-            sign = "+" if ai_adj > 0 else ""
-            parts.append(f"AI{sign}{ai_adj}")
-        # 简历二次评估调整分
         resume_adj = breakdown.get('resume_adjustment')
         if resume_adj is not None and resume_adj != 0:
             sign = "+" if resume_adj > 0 else ""
             parts.append(f"简历{sign}{resume_adj}")
+        elif ai_adj is not None and ai_adj != 0:
+            sign = "+" if ai_adj > 0 else ""
+            parts.append(f"AI{sign}{ai_adj}")
         parts.append(f"总分{breakdown.get('total', c.get('match_score', 0))}")
         return " / ".join(parts)
 
@@ -591,6 +590,11 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
                     else ''
                 ),
                 '简历评估理由': c.get('resume_eval_reason', ''),
+                # ④b AI 维度评估
+                '技能深度': (c.get('llm_dimension_scores') or {}).get('skill_depth', ''),
+                '经验质量': (c.get('llm_dimension_scores') or {}).get('experience_quality', ''),
+                '行业匹配': (c.get('llm_dimension_scores') or {}).get('industry_fit', ''),
+                '发展潜力': (c.get('llm_dimension_scores') or {}).get('growth_potential', ''),
                 # ⑤ 跟进
                 '是否打招呼': '是' if c.get('greet_sent', False) else '否',
                 '跟进状态': c.get('followup_status') or ('已打招呼' if c.get('greet_sent', False) else '未沟通'),
@@ -613,7 +617,7 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
             '序号', '岗位', '姓名', 'geek_id',
             '年龄', '工作年限', '学历', '学历明细', '薪资', '求职状态', '城市', '最近公司', '技能',
             '匹配分', '推荐指数', '技能匹配', '评分拆解', '评分解释', '命中证据',
-            '简历评估', '简历评估理由',
+            '简历评估', '简历评估理由', '技能深度', '经验质量', '行业匹配', '发展潜力',
             '是否打招呼', '跟进状态', '跟进备注', '跟进时间',
             '人工反馈', '反馈备注', '反馈时间',
             '是否需人工确认', '风险提示', '自动打招呼阻断原因',
@@ -734,18 +738,22 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
                 'S': 55,  # 命中证据
                 'T': 10,  # 简历评估
                 'U': 55,  # 简历评估理由
-                'V': 12,  # 是否打招呼
-                'W': 12,  # 跟进状态
-                'X': 30,  # 跟进备注
-                'Y': 16,  # 跟进时间
-                'Z': 10,  # 人工反馈
-                'AA': 30, # 反馈备注
-                'AB': 16, # 反馈时间
-                'AC': 16, # 是否需人工确认
-                'AD': 30, # 风险提示
-                'AE': 28, # 自动打招呼阻断原因
-                'AF': 16, # 批次
-                'AG': 80, # 详细信息
+                'V': 10,  # 技能深度
+                'W': 10,  # 经验质量
+                'X': 10,  # 行业匹配
+                'Y': 10,  # 发展潜力
+                'Z': 12,  # 是否打招呼
+                'AA': 12, # 跟进状态
+                'AB': 30, # 跟进备注
+                'AC': 16, # 跟进时间
+                'AD': 10, # 人工反馈
+                'AE': 30, # 反馈备注
+                'AF': 16, # 反馈时间
+                'AG': 16, # 是否需人工确认
+                'AH': 30, # 风险提示
+                'AI': 28, # 自动打招呼阻断原因
+                'AJ': 16, # 批次
+                'AK': 80, # 详细信息
             }
             for col, width in column_widths.items():
                 if col in ws.column_dimensions:
