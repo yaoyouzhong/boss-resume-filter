@@ -12612,6 +12612,36 @@ class BossFilterGUI:
             lines.append(f"  AI评估：")
             reason = c.get('llm_reason', '无').replace('\n', ' ').replace('\r', '').strip()
             lines.append(f"    {reason}")
+
+            # AI 硬条件复核详情
+            hc_verdict = c.get('llm_hard_condition_verdict', 'unknown')
+            hc_findings = c.get('llm_hard_condition_findings') or []
+            if hc_verdict != 'unknown' or hc_findings:
+                verdict_label = {'pass': '通过', 'fail': '不通过', 'unknown': '未判定'}.get(hc_verdict, hc_verdict)
+                lines.append("")
+                lines.append(f"  硬条件复核：{verdict_label}")
+                for finding in hc_findings:
+                    if not isinstance(finding, dict):
+                        continue
+                    cond = finding.get('condition', '')
+                    f_verdict = finding.get('verdict', 'unknown')
+                    f_conf = finding.get('confidence', 'low')
+                    evidence = finding.get('evidence', '')
+                    icon = {'pass': '✓', 'fail': '✗', '?': '?'}.get(f_verdict, '?')
+                    conf_label = {'high': '高置信', 'medium': '中置信', 'low': '低置信'}.get(f_conf, f_conf)
+                    lines.append(f"    {icon} {cond}（{conf_label}）")
+                    if evidence:
+                        lines.append(f"      证据：{evidence}")
+
+            # 资格审查状态
+            qual_status = c.get('qualification_status', 'qualified')
+            qual_reasons = c.get('qualification_reasons') or []
+            if qual_status != 'qualified' or qual_reasons:
+                status_label = {'qualified': '合格', 'rejected': '淘汰', 'manual_review': '待人工确认'}.get(qual_status, qual_status)
+                lines.append("")
+                lines.append(f"  资格审查：{status_label}")
+                for reason_item in qual_reasons:
+                    lines.append(f"    - {reason_item}")
         else:
             lines.append("【AI 一次评估】未启用")
 
