@@ -67,12 +67,12 @@ def test_parse_response_repairs_missing_commas_between_lines():
 
 def test_parse_response_adjustment_clamped_high():
     result = _parse_response('{"adjustment": 99, "reason": "极好"}')
-    assert result['adjustment'] == 10
+    assert result['adjustment'] == 15
 
 
 def test_parse_response_adjustment_clamped_low():
     result = _parse_response('{"adjustment": -50, "reason": "极差"}')
-    assert result['adjustment'] == -10
+    assert result['adjustment'] == -15
 
 
 def test_parse_response_float_adjustment_to_int():

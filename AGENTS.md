@@ -216,11 +216,11 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 
 ### AI 辅助评估
 
-- 对 ≥55 分候选人 LLM 二次评估，按规则评分降序处理，调整分 ±10 叠加规则评分
+- 对 ≥55 分候选人 LLM 二次评估，按规则评分降序处理，调整分 ±15 叠加规则评分
 - 调整后重算推荐等级；默认并发 5 路 + 429 限流退避；默认不再限制 50 人；实现位置：`llm_eval.py`
 - **AI 响应超时**：`api_config.json` 的 `llm_read_timeout` 字段，GUI 运行控制页可调（步长 10s）；连接超时固定 10 秒；默认值按服务商自动区分（官方 API 60s，中转服务 120s）
 - **AI 硬条件复核**：LLM 评估同时检查硬条件（学历、经验、年龄、薪资、地点、求职状态），返回结论和原文证据；高置信度淘汰发现经规则二次验证（`_validated_hard_failures()`）后执行淘汰，证据不足或低置信度转 `manual_review`
-- **简历二次评估**：导入候选人简历（PDF/Word/TXT/MD/RTF/HTML）后，基于完整简历做第二轮 LLM 评估（再调 ±10），三次评估叠加：`final = rule_score + llm_adjustment + resume_adjustment`；GUI 支持导入简历、撤回评估；Excel 新增"简历评估"和"简历评估理由"列
+- **简历二次评估**：导入候选人简历（PDF/Word/TXT/MD/RTF/HTML）后，基于完整简历做第二轮 LLM 评估（再调 ±15），三次评估叠加：`final = rule_score + llm_adjustment + resume_adjustment`；GUI 支持导入简历、撤回评估；Excel 新增"简历评估"和"简历评估理由"列
 
 ### 必要条件
 

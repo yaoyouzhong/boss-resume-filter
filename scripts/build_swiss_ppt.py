@@ -62,7 +62,7 @@ SLIDES = r"""
         </div>
         <div class="stat-card accent-top">
           <span class="stat-label"><i data-lucide="brain" style="width:1.2vw;height:1.2vw;vertical-align:-.2em;color:var(--accent)"></i> 03 · AI 二次评估</span>
-          <p class="stat-note">大模型对通过筛选者做 ±10 分调整，50 人/次，并发 3 路 + 限流退避</p>
+          <p class="stat-note">大模型对通过筛选者做 ±15 分调整，50 人/次，并发 3 路 + 限流退避</p>
         </div>
         <div class="stat-card accent-top">
           <span class="stat-label"><i data-lucide="mouse-pointer-click" style="width:1.2vw;height:1.2vw;vertical-align:-.2em;color:var(--accent)"></i> 04 · 自动滚动提取</span>

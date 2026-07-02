@@ -94,7 +94,7 @@ _EVALUATION_TOOL = {
         "parameters": {
             "type": "object",
             "properties": {
-                "adjustment": {"type": "integer", "minimum": -10, "maximum": 10},
+                "adjustment": {"type": "integer", "minimum": -15, "maximum": 15},
                 "reason": {"type": "string"},
                 "hard_condition_verdict": {
                     "type": "string",
@@ -135,7 +135,7 @@ _EVALUATION_TOOL = {
 class LLMEvalResult:
     """Result of a single LLM evaluation call."""
     success: bool
-    adjustment: int = 0       # -10 ~ +10
+    adjustment: int = 0       # -15 ~ +15
     reason: str = ""          # ≤50 chars
     model: str = ""
     hard_condition_verdict: str = "unknown"
@@ -145,16 +145,18 @@ class LLMEvalResult:
 _SYSTEM_PROMPT = (
     "你是一个资深技术招聘助手。根据岗位需求评估候选人的匹配程度。\n"
     "返回严格的 JSON 对象（不要包含其他文字）：\n"
-    '{"adjustment": 整数(-10到+10), "hard_condition_verdict": "pass|fail|unknown", '
+    '{"adjustment": 整数(-15到+15), "hard_condition_verdict": "pass|fail|unknown", '
     '"hard_condition_findings": [{"condition":"条件","verdict":"fail","evidence":"候选人原文","confidence":"high|medium|low"}], '
     '"reason": "100字以内评估理由"}\n'
     "硬条件结论必须引用候选人原文；推测、大概率、疑似只能返回 unknown，不能返回 fail。\n"
     "评分标准：\n"
-    "+8~+10: 高度匹配，有明显优势\n"
-    "+3~+7: 较为匹配，有加分项\n"
+    "+12~+15: 高度匹配，有明显优势\n"
+    "+5~+11: 较为匹配，有加分项\n"
+    "+1~+4: 略有加分\n"
     "0: 基本匹配，无特别加减分\n"
     "-1~-5: 存在不匹配之处\n"
-    "-6~-10: 明显不匹配"
+    "-6~-10: 明显不匹配\n"
+    "-11~-15: 严重不匹配"
 )
 
 _USER_TEMPLATE = (
@@ -171,13 +173,15 @@ _RESUME_SYSTEM_PROMPT = (
     "你是一个资深技术招聘助手。你已获得候选人的完整简历，请基于简历内容进行深度评估。\n"
     "重点关注：项目经历的深度和技术复杂度、量化成果、技能匹配度、职业发展轨迹。\n"
     "返回严格的 JSON 对象（不要包含其他文字）：\n"
-    '{"adjustment": 整数(-10到+10), "reason": "200字以内详细评估，含优势与顾虑"}\n'
+    '{"adjustment": 整数(-15到+15), "reason": "200字以内详细评估，含优势与顾虑"}\n'
     "评分标准：\n"
-    "+8~+10: 简历展现出色的项目深度和成果量化\n"
-    "+3~+7: 简历有明确的加分信息\n"
+    "+12~+15: 简历展现出色的项目深度和成果量化\n"
+    "+5~+11: 简历有明确的加分信息\n"
+    "+1~+4: 简历略有加分\n"
     "0: 简历未提供显著新信息\n"
     "-1~-5: 简历暴露不匹配之处\n"
-    "-6~-10: 简历显示明显不适合"
+    "-6~-10: 简历显示明显不适合\n"
+    "-11~-15: 简历显示严重不适合"
 )
 
 _RESUME_USER_TEMPLATE = (
@@ -479,7 +483,7 @@ def _parse_response(text: str) -> dict:
     """Parse LLM response text into a normalized evaluation dict.
 
     Handles: plain JSON, markdown code blocks, Chinese punctuation.
-    Clamps adjustment to [-10, +10].
+    Clamps adjustment to [-15, +15].
     Raises ValueError if unparseable.
     """
     if not text or not text.strip():
@@ -514,8 +518,8 @@ def _parse_response(text: str) -> dict:
         except (TypeError, ValueError):
             adjustment = 0
     adjustment = int(adjustment)
-    # Clamp to [-10, +10]
-    adjustment = max(-10, min(10, adjustment))
+    # Clamp to [-15, +15]
+    adjustment = max(-15, min(15, adjustment))
 
     # Extract and validate reason
     reason = str(data.get('reason', '')).strip()
