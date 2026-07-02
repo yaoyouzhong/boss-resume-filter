@@ -936,3 +936,51 @@ def test_evaluate_with_resume_preserves_existing_rule_score(mock_call, mock_slee
     assert candidate['rule_score'] == 65, "已固化的 rule_score 不应被覆盖"
     assert candidate['match_score'] == 70  # 替代：65 + 5，而非 65+8+5
     assert candidate['resume_eval_adjustment'] == 5
+
+
+# === 简历二次评估的维度评分（独立字段，不覆盖一次评估的）===
+
+@patch('llm_eval.time.sleep')
+@patch('llm_eval._call_llm_api')
+def test_evaluate_with_resume_stores_resume_dimension_scores(mock_call, mock_sleep):
+    """简历评估的维度评分存到独立字段 resume_eval_dimension_scores，不覆盖一次评估的 llm_dimension_scores。"""
+    mock_call.return_value = LLMEvalResult(
+        success=True, adjustment=5, reason="匹配", model="m",
+        dimension_scores={"skill_depth": 9, "experience_quality": 8, "industry_fit": 7, "growth_potential": 9},
+    )
+    round1_dims = {"skill_depth": 5, "experience_quality": 5, "industry_fit": 5, "growth_potential": 5}
+    candidate = {
+        'name': '张三', 'match_score': 73, 'recommend_level': '推荐',
+        'rule_score': 65, 'llm_adjustment': 8, 'llm_evaluated': True,
+        'llm_dimension_scores': dict(round1_dims),
+        'summary': '5年Java',
+        'score_breakdown': {'base': 25, 'skill': 30, 'experience': 5, 'education': 5, 'preferred': 0,
+                            'ai_adjustment': 8, 'total': 73},
+    }
+    evaluate_with_resume(candidate, "简历文本", "岗位", {'base_url': 'x', 'model': 'y'}, "key")
+    assert candidate['resume_eval_dimension_scores'] == {
+        "skill_depth": 9, "experience_quality": 8, "industry_fit": 7, "growth_potential": 9,
+    }
+    # 一次评估的维度评分必须保留，供撤回简历评估时还原
+    assert candidate['llm_dimension_scores'] == round1_dims
+
+
+@patch('llm_eval.time.sleep')
+@patch('llm_eval._call_llm_api')
+def test_evaluate_with_resume_no_dimension_scores_keeps_round1(mock_call, mock_sleep):
+    """简历评估未返回维度评分时不设 resume_eval_dimension_scores，显示回退到一次评估的。"""
+    mock_call.return_value = LLMEvalResult(
+        success=True, adjustment=5, reason="匹配", model="m",
+        dimension_scores={},
+    )
+    round1_dims = {"skill_depth": 5, "experience_quality": 5, "industry_fit": 5, "growth_potential": 5}
+    candidate = {
+        'name': '张三', 'match_score': 73, 'rule_score': 65, 'llm_adjustment': 8,
+        'llm_dimension_scores': dict(round1_dims),
+        'summary': '5年Java',
+        'score_breakdown': {'base': 25, 'skill': 30, 'experience': 5, 'education': 5, 'preferred': 0,
+                            'ai_adjustment': 8, 'total': 73},
+    }
+    evaluate_with_resume(candidate, "简历文本", "岗位", {'base_url': 'x', 'model': 'y'}, "key")
+    assert 'resume_eval_dimension_scores' not in candidate
+    assert candidate['llm_dimension_scores'] == round1_dims

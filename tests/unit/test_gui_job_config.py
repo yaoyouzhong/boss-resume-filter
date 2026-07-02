@@ -1555,3 +1555,44 @@ def test_detail_ai_eval_block_adjusted_score_uses_rule_plus_llm_with_resume():
             break
     else:
         raise AssertionError(f"未找到调整后分数行：{detail}")
+
+
+# === 维度评分替代显示（regression: 简历评估的维度评分应替代一次评估的显示）===
+
+def test_detail_dim_scores_prefer_resume_over_round1():
+    """有简历评估维度评分时，详情弹窗显示简历评估的（替代一次评估的）。"""
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidate = {
+        'name': '张三', 'job_name': 'Java', 'geek_id': 'g-dim',
+        'match_score': 70, 'rule_score': 65,
+        'llm_evaluated': True, 'llm_adjustment': 5, 'llm_model': 'm', 'llm_reason': '匹配',
+        'resume_eval_adjustment': 5,
+        'llm_dimension_scores': {'skill_depth': 4, 'experience_quality': 4, 'industry_fit': 4, 'growth_potential': 4},
+        'resume_eval_dimension_scores': {'skill_depth': 9, 'experience_quality': 8, 'industry_fit': 7, 'growth_potential': 9},
+        'summary': '本科\n5 年 Java',
+        'score_breakdown': {'base': 25, 'skill': 30, 'experience': 5, 'education': 5, 'preferred': 0,
+                            'ai_adjustment': 5, 'resume_adjustment': 5, 'total': 70},
+    }
+    detail = gui._format_candidate_detail(candidate)
+    dim_lines = [l for l in detail.splitlines() if '技能深度' in l]
+    assert dim_lines, f"未找到维度评估行：{detail}"
+    assert "9/10" in dim_lines[0], f"应显示简历评估的技能深度 9，实：{dim_lines[0]}"
+    assert "4/10" not in dim_lines[0], f"不应显示一次评估的 4：{dim_lines[0]}"
+
+
+def test_detail_dim_scores_fallback_to_round1_without_resume():
+    """无简历评估维度评分时，详情弹窗回退显示一次评估的。"""
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidate = {
+        'name': '张三', 'job_name': 'Java', 'geek_id': 'g-dim2',
+        'match_score': 73, 'rule_score': 65,
+        'llm_evaluated': True, 'llm_adjustment': 8, 'llm_model': 'm', 'llm_reason': '匹配',
+        'llm_dimension_scores': {'skill_depth': 6, 'experience_quality': 5, 'industry_fit': 5, 'growth_potential': 5},
+        'summary': '本科\n5 年 Java',
+        'score_breakdown': {'base': 25, 'skill': 30, 'experience': 5, 'education': 5, 'preferred': 0,
+                            'ai_adjustment': 8, 'total': 73},
+    }
+    detail = gui._format_candidate_detail(candidate)
+    dim_lines = [l for l in detail.splitlines() if '技能深度' in l]
+    assert dim_lines, f"未找到维度评估行：{detail}"
+    assert "6/10" in dim_lines[0]

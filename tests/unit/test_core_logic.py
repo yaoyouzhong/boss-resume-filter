@@ -1831,3 +1831,38 @@ def test_export_excel_breakdown_no_resume_shows_ai():
     assert "AI+8" in line
     assert "简历" not in line
     assert _breakdown_parts_sum(line) == 73, f"拆解各项合计 != 总分 73：{line}"
+
+
+# === Excel 维度列替代显示（regression: 简历评估的维度评分应替代一次评估的）===
+
+def _export_dim_cell(c: dict) -> object:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output = os.path.join(tmpdir, "c.xlsx")
+        bossmaster.export_to_excel([c], output)
+        from openpyxl import load_workbook
+        wb = load_workbook(output)
+        sheet = wb["全部候选人"]
+        headers = [cell.value for cell in sheet[1]]
+        col = headers.index("技能深度") + 1
+        return sheet.cell(row=2, column=col).value
+
+
+def test_export_excel_dim_scores_prefer_resume_over_round1():
+    """Excel 维度列有简历评估时显示简历评估的值（替代一次评估的）。"""
+    val = _export_dim_cell({
+        'geek_id': 'g', 'name': '赵六', 'summary': '本科\n5年Java', 'job_name': 'Java',
+        'match_score': 70, 'recommend_level': '推荐',
+        'llm_dimension_scores': {'skill_depth': 4, 'experience_quality': 4, 'industry_fit': 4, 'growth_potential': 4},
+        'resume_eval_dimension_scores': {'skill_depth': 9, 'experience_quality': 8, 'industry_fit': 7, 'growth_potential': 9},
+    })
+    assert val == 9, f"应显示简历评估的技能深度 9，实：{val}"
+
+
+def test_export_excel_dim_scores_fallback_to_round1_without_resume():
+    """无简历评估维度评分时，Excel 维度列回退显示一次评估的。"""
+    val = _export_dim_cell({
+        'geek_id': 'g', 'name': '赵六', 'summary': '本科\n5年Java', 'job_name': 'Java',
+        'match_score': 73, 'recommend_level': '推荐',
+        'llm_dimension_scores': {'skill_depth': 6, 'experience_quality': 5, 'industry_fit': 5, 'growth_potential': 5},
+    })
+    assert val == 6, f"应回退显示一次评估的技能深度 6，实：{val}"

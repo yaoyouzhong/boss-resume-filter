@@ -198,7 +198,7 @@ _RESUME_SYSTEM_PROMPT = (
     "你是一个资深技术招聘助手。你已获得候选人的完整简历，请基于简历内容进行深度评估。\n"
     "重点关注：项目经历的深度和技术复杂度、量化成果、技能匹配度、职业发展轨迹。\n"
     "返回严格的 JSON 对象（不要包含其他文字）：\n"
-    '{"adjustment": 整数(-15到+15), "reason": "200字以内详细评估，含优势与顾虑"}\n'
+    '{"adjustment": 整数(-15到+15), "dimension_scores": {"skill_depth": 1-10, "experience_quality": 1-10, "industry_fit": 1-10, "growth_potential": 1-10}, "reason": "200字以内详细评估，含优势与顾虑"}\n'
     "评分标准：\n"
     "+12~+15: 简历展现出色的项目深度和成果量化\n"
     "+5~+11: 简历有明确的加分信息\n"
@@ -206,7 +206,12 @@ _RESUME_SYSTEM_PROMPT = (
     "0: 简历未提供显著新信息\n"
     "-1~-5: 简历暴露不匹配之处\n"
     "-6~-10: 简历显示明显不适合\n"
-    "-11~-15: 简历显示严重不适合"
+    "-11~-15: 简历显示严重不适合\n"
+    "维度评分标准（各维度 1-10，基于简历内容判断，替代一次评估的维度评分）：\n"
+    "- skill_depth：技能掌握深度（1=了解概念，5=熟练应用，10=专家级）\n"
+    "- experience_quality：经验质量（1=水经验，5=正常，10=顶级项目）\n"
+    "- industry_fit：行业匹配（1=完全跨行，5=相关行业，10=同行业）\n"
+    "- growth_potential：发展潜力（1=停滞，5=稳定，10=快速上升）"
 )
 
 _RESUME_USER_TEMPLATE = (
@@ -1148,6 +1153,9 @@ def evaluate_with_resume(
         candidate["resume_eval_reason"] = result.reason.replace("\n", " ").replace("\r", "").strip()
         candidate["resume_eval_model"] = result.model
         candidate["resume_eval_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 简历二次评估的维度评分（基于完整简历，替代一次评估的维度评分显示）；非空才存
+        if result.dimension_scores:
+            candidate["resume_eval_dimension_scores"] = result.dimension_scores
 
         # Resume evaluation replaces first-round adjustment (not stacked)
         rule_score = candidate.get("rule_score", candidate.get("match_score", 0))

@@ -562,6 +562,8 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
                 summary_info['city'] = structured['city']
             if structured.get('job_status'):
                 summary_info['job_status'] = structured['job_status']
+            # 维度评分：有简历二次评估时优先用简历评估的（替代一次评估）
+            dims = c.get('resume_eval_dimension_scores') or c.get('llm_dimension_scores') or {}
             row = {
                 # ① 身份
                 '序号': i + 1,
@@ -593,10 +595,10 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
                 ),
                 '简历评估理由': c.get('resume_eval_reason', ''),
                 # ④b AI 维度评估
-                '技能深度': (c.get('llm_dimension_scores') or {}).get('skill_depth', ''),
-                '经验质量': (c.get('llm_dimension_scores') or {}).get('experience_quality', ''),
-                '行业匹配': (c.get('llm_dimension_scores') or {}).get('industry_fit', ''),
-                '发展潜力': (c.get('llm_dimension_scores') or {}).get('growth_potential', ''),
+                '技能深度': dims.get('skill_depth', ''),
+                '经验质量': dims.get('experience_quality', ''),
+                '行业匹配': dims.get('industry_fit', ''),
+                '发展潜力': dims.get('growth_potential', ''),
                 # ⑤ 跟进
                 '是否打招呼': '是' if c.get('greet_sent', False) else '否',
                 '跟进状态': c.get('followup_status') or ('已打招呼' if c.get('greet_sent', False) else '未沟通'),

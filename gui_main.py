@@ -11561,7 +11561,8 @@ class BossFilterGUI:
 
         # 清空简历相关字段
         for field in ('resume_file', 'resume_imported_at', 'resume_eval_adjustment',
-                      'resume_eval_reason', 'resume_eval_model', 'resume_eval_at'):
+                      'resume_eval_reason', 'resume_eval_model', 'resume_eval_at',
+                      'resume_eval_dimension_scores'):
             candidate.pop(field, None)
 
         # 回退分数和推荐等级
@@ -12649,8 +12650,8 @@ class BossFilterGUI:
                 for reason_item in qual_reasons:
                     lines.append(f"    - {reason_item}")
 
-            # AI 维度评估
-            dim_scores = c.get('llm_dimension_scores') or {}
+            # AI 维度评估（有简历二次评估时优先显示简历评估的维度评分）
+            dim_scores = c.get('resume_eval_dimension_scores') or c.get('llm_dimension_scores') or {}
             if dim_scores:
                 from llm_eval import _DIMENSION_LABELS
                 lines.append("")
