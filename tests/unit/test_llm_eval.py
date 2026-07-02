@@ -620,3 +620,208 @@ def test_batch_progress_callback(mock_call, mock_sleep):
     assert "AI 评估中" in progress_calls[0][1]
     assert "0/2" in progress_calls[0][1]  # 初始进度
     assert "AI 评估中" in progress_calls[1][1]  # 第一个完成
+
+
+# === P0: 扩展硬条件复核（年龄/薪资/求职状态/地点）===
+
+@patch('llm_eval.time.sleep')
+@patch('llm_eval._call_llm_api')
+def test_batch_rejects_age_exceeding_max(mock_call, mock_sleep):
+    """AI 发现候选人年龄超限，经规则复核后淘汰"""
+    finding = {
+        "condition": "年龄超过岗位上限",
+        "verdict": "fail",
+        "evidence": "候选人35岁，岗位要求≤32岁",
+        "confidence": "high",
+    }
+    mock_call.return_value = LLMEvalResult(
+        success=True,
+        adjustment=-5,
+        reason="年龄超限",
+        model="m",
+        hard_condition_verdict="fail",
+        hard_condition_findings=[finding],
+    )
+    candidates = [{
+        'name': '大龄候选人',
+        'match_score': 70,
+        'recommend_level': '推荐',
+        'summary': '候选人35岁，岗位要求≤32岁',
+        'qualification_status': 'qualified',
+    }]
+    result = quiet_evaluate_batch(
+        candidates, "岗位", {'base_url': 'x', 'model': 'y'}, "key",
+        hard_conditions="## 筛选硬条件\n- 年龄：≤32岁\n",
+        rule={'max_age': 32},
+    )
+    assert result[0]['qualification_status'] == 'rejected'
+    assert result[0]['recommend_level'] == '已淘汰'
+
+
+@patch('llm_eval.time.sleep')
+@patch('llm_eval._call_llm_api')
+def test_batch_rejects_salary_exceeding_max(mock_call, mock_sleep):
+    """AI 发现候选人期望薪资超限，经规则复核后淘汰"""
+    finding = {
+        "condition": "期望薪资超过岗位上限",
+        "verdict": "fail",
+        "evidence": "期望薪资25K，岗位最高20K",
+        "confidence": "high",
+    }
+    mock_call.return_value = LLMEvalResult(
+        success=True,
+        adjustment=-3,
+        reason="薪资不匹配",
+        model="m",
+        hard_condition_verdict="fail",
+        hard_condition_findings=[finding],
+    )
+    candidates = [{
+        'name': '高薪候选人',
+        'match_score': 68,
+        'recommend_level': '推荐',
+        'summary': '期望薪资25K，岗位最高20K',
+        'qualification_status': 'qualified',
+    }]
+    result = quiet_evaluate_batch(
+        candidates, "岗位", {'base_url': 'x', 'model': 'y'}, "key",
+        hard_conditions="## 筛选硬条件\n- 薪资上限：20K\n",
+        rule={'salary_max': 20},
+    )
+    assert result[0]['qualification_status'] == 'rejected'
+    assert result[0]['recommend_level'] == '已淘汰'
+
+
+@patch('llm_eval.time.sleep')
+@patch('llm_eval._call_llm_api')
+def test_batch_rejects_job_status_not_considering(mock_call, mock_sleep):
+    """AI 发现候选人暂不考虑新机会，经规则复核后淘汰"""
+    finding = {
+        "condition": "求职状态暂不考虑",
+        "verdict": "fail",
+        "evidence": "暂不考虑新机会",
+        "confidence": "high",
+    }
+    mock_call.return_value = LLMEvalResult(
+        success=True,
+        adjustment=-8,
+        reason="暂不考虑",
+        model="m",
+        hard_condition_verdict="fail",
+        hard_condition_findings=[finding],
+    )
+    candidates = [{
+        'name': '暂不考虑候选人',
+        'match_score': 72,
+        'recommend_level': '推荐',
+        'summary': '暂不考虑新机会',
+        'qualification_status': 'qualified',
+    }]
+    result = quiet_evaluate_batch(
+        candidates, "岗位", {'base_url': 'x', 'model': 'y'}, "key",
+        hard_conditions="## 筛选硬条件\n",
+        rule={},
+    )
+    assert result[0]['qualification_status'] == 'rejected'
+    assert result[0]['recommend_level'] == '已淘汰'
+
+
+@patch('llm_eval.time.sleep')
+@patch('llm_eval._call_llm_api')
+def test_batch_rejects_location_mismatch(mock_call, mock_sleep):
+    """AI 发现候选人期望城市不匹配，经规则复核后淘汰"""
+    finding = {
+        "condition": "期望城市与岗位不符",
+        "verdict": "fail",
+        "evidence": "候选人期望北京，岗位要求上海",
+        "confidence": "high",
+    }
+    mock_call.return_value = LLMEvalResult(
+        success=True,
+        adjustment=-4,
+        reason="地点不匹配",
+        model="m",
+        hard_condition_verdict="fail",
+        hard_condition_findings=[finding],
+    )
+    candidates = [{
+        'name': '异地候选人',
+        'match_score': 66,
+        'recommend_level': '推荐',
+        'summary': '候选人期望北京，岗位要求上海',
+        'qualification_status': 'qualified',
+    }]
+    result = quiet_evaluate_batch(
+        candidates, "岗位", {'base_url': 'x', 'model': 'y'}, "key",
+        hard_conditions="## 筛选硬条件\n- 地点：上海\n",
+        rule={'work_location': '上海'},
+    )
+    assert result[0]['qualification_status'] == 'rejected'
+    assert result[0]['recommend_level'] == '已淘汰'
+
+
+@patch('llm_eval.time.sleep')
+@patch('llm_eval._call_llm_api')
+def test_batch_keeps_age_within_limit(mock_call, mock_sleep):
+    """AI 发现候选人年龄在限内，不淘汰"""
+    finding = {
+        "condition": "年龄在岗位上限内",
+        "verdict": "pass",
+        "evidence": "候选人28岁，岗位要求≤32岁",
+        "confidence": "high",
+    }
+    mock_call.return_value = LLMEvalResult(
+        success=True,
+        adjustment=3,
+        reason="匹配良好",
+        model="m",
+        hard_condition_verdict="pass",
+        hard_condition_findings=[finding],
+    )
+    candidates = [{
+        'name': '年轻候选人',
+        'match_score': 70,
+        'recommend_level': '推荐',
+        'summary': '候选人28岁，岗位要求≤32岁',
+        'qualification_status': 'qualified',
+    }]
+    result = quiet_evaluate_batch(
+        candidates, "岗位", {'base_url': 'x', 'model': 'y'}, "key",
+        hard_conditions="## 筛选硬条件\n- 年龄：≤32岁\n",
+        rule={'max_age': 32},
+    )
+    assert result[0]['qualification_status'] == 'qualified'
+    assert result[0]['match_score'] == 73
+
+
+@patch('llm_eval.time.sleep')
+@patch('llm_eval._call_llm_api')
+def test_batch_rejects_salary_borderline(mock_call, mock_sleep):
+    """薪资恰好超 1K 淘汰（salary_max=20, 期望21K）"""
+    finding = {
+        "condition": "期望薪资超过岗位上限",
+        "verdict": "fail",
+        "evidence": "期望薪资21K，岗位最高20K",
+        "confidence": "high",
+    }
+    mock_call.return_value = LLMEvalResult(
+        success=True,
+        adjustment=-2,
+        reason="薪资略高",
+        model="m",
+        hard_condition_verdict="fail",
+        hard_condition_findings=[finding],
+    )
+    candidates = [{
+        'name': '薪资边界候选人',
+        'match_score': 65,
+        'recommend_level': '推荐',
+        'summary': '期望薪资21K，岗位最高20K',
+        'qualification_status': 'qualified',
+    }]
+    result = quiet_evaluate_batch(
+        candidates, "岗位", {'base_url': 'x', 'model': 'y'}, "key",
+        hard_conditions="## 筛选硬条件\n- 薪资上限：20K\n",
+        rule={'salary_max': 20},
+    )
+    assert result[0]['qualification_status'] == 'rejected'

@@ -3523,18 +3523,18 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
         # 按规则评分降序排列，确保 AI 评估优先处理最有价值的候选人
         passed_candidates.sort(key=lambda x: x.get('match_score', 0), reverse=True)
 
-        # 构建硬条件摘要，供 LLM 评估时参考
+        # 构建硬条件摘要，供 LLM 评估时参考（带具体阈值，方便 AI 精确判断）
         hard_parts = []
         if rule.get('min_exp'):
-            hard_parts.append(f"- 经验：≥{rule['min_exp']}年")
+            hard_parts.append(f"- 经验：要求≥{rule['min_exp']}年，候选人需满足")
         if rule.get('edu') and rule.get('edu') != '不限':
-            hard_parts.append(f"- 学历：{rule['edu']}")
+            hard_parts.append(f"- 学历：要求{rule['edu']}")
         if rule.get('max_age'):
-            hard_parts.append(f"- 年龄：≤{rule['max_age']}岁")
+            hard_parts.append(f"- 年龄：上限{rule['max_age']}岁")
         if rule.get('work_location'):
-            hard_parts.append(f"- 地点：{rule['work_location']}")
+            hard_parts.append(f"- 地点：要求{rule['work_location']}，候选人期望城市需匹配")
         if rule.get('salary_max'):
-            hard_parts.append(f"- 薪资上限：{rule['salary_max']}K")
+            hard_parts.append(f"- 薪资：岗位最高{rule['salary_max']}K，候选人期望不应超过")
         req_conds = rule.get('required_conditions', [])
         if req_conds:
             cond_names = [c if isinstance(c, str) else c.get('name', str(c)) for c in req_conds]
@@ -3544,6 +3544,7 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
         passed_candidates = evaluate_batch(
             passed_candidates, job_requirement, api_config, api_key,
             hard_conditions=hard_conditions,
+            rule=rule,
             progress_callback=progress_callback,
             stop_event=stop_event,
         )

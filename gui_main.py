@@ -11603,7 +11603,7 @@ class BossFilterGUI:
             return
 
         # 获取岗位需求
-        job_requirement = self._get_job_requirement_for_candidates(candidates)
+        job_requirement, rule = self._get_job_requirement_for_candidates(candidates)
         if not job_requirement:
             messagebox.showwarning("警告", "无法获取岗位需求信息")
             return
@@ -11665,19 +11665,19 @@ class BossFilterGUI:
 
         threading.Thread(
             target=self._do_ai_eval_batch,
-            args=(candidates_to_eval, job_requirement, api_config, api_key),
+            args=(candidates_to_eval, job_requirement, rule, api_config, api_key),
             daemon=True
         ).start()
 
     def _get_job_requirement_for_candidates(self, candidates):
-        """根据候选人获取岗位需求文本"""
+        """根据候选人获取岗位需求文本和规则。返回 (job_requirement, rule)。"""
         if not candidates:
-            return ""
+            return "", {}
 
         # 获取第一个候选人的岗位名称
         job_name = candidates[0].get('job_name', '')
         if not job_name:
-            return ""
+            return "", {}
 
         # 从job_config.json获取岗位需求
         job_rules = self._get_job_rules_cached()
@@ -11689,9 +11689,9 @@ class BossFilterGUI:
             edu = rule.get('edu', '不限')
             job_requirement = f"岗位：{job_name}，{min_exp}年经验，{edu}学历"
 
-        return job_requirement
+        return job_requirement, rule
 
-    def _do_ai_eval_batch(self, candidates, job_requirement, api_config, api_key):
+    def _do_ai_eval_batch(self, candidates, job_requirement, rule, api_config, api_key):
         """后台执行AI评估"""
         import sys
         import io
@@ -11701,6 +11701,24 @@ class BossFilterGUI:
             def progress_callback(percentage, description):
                 self._ai_eval_done = int(percentage / 100 * self._ai_eval_total)
 
+            # 构建硬条件摘要，供 LLM 评估时参考
+            hard_parts = []
+            if rule.get('min_exp'):
+                hard_parts.append(f"- 经验：要求≥{rule['min_exp']}年，候选人需满足")
+            if rule.get('edu') and rule.get('edu') != '不限':
+                hard_parts.append(f"- 学历：要求{rule['edu']}")
+            if rule.get('max_age'):
+                hard_parts.append(f"- 年龄：上限{rule['max_age']}岁")
+            if rule.get('work_location'):
+                hard_parts.append(f"- 地点：要求{rule['work_location']}，候选人期望城市需匹配")
+            if rule.get('salary_max'):
+                hard_parts.append(f"- 薪资：岗位最高{rule['salary_max']}K，候选人期望不应超过")
+            req_conds = rule.get('required_conditions', [])
+            if req_conds:
+                cond_names = [c if isinstance(c, str) else c.get('name', str(c)) for c in req_conds]
+                hard_parts.append(f"- 必要条件：{'、'.join(cond_names)}")
+            hard_conditions = "## 筛选硬条件\n" + "\n".join(hard_parts) + "\n\n" if hard_parts else ""
+
             # 抑制 evaluate_batch 的 print 输出
             old_stdout = sys.stdout
             sys.stdout = io.StringIO()
@@ -11709,7 +11727,9 @@ class BossFilterGUI:
                 # 执行评估
                 evaluate_batch(
                     candidates, job_requirement, api_config, api_key,
-                    progress_callback=progress_callback
+                    hard_conditions=hard_conditions,
+                    rule=rule,
+                    progress_callback=progress_callback,
                 )
             finally:
                 sys.stdout = old_stdout

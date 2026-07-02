@@ -552,6 +552,7 @@ def _validated_hard_failures(
     candidate: dict[str, Any],
     findings: list[dict[str, Any]] | None,
     hard_conditions: str,
+    rule: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Validate high-confidence LLM findings with deterministic text rules."""
     from filtering import parse_experience_months
@@ -566,6 +567,14 @@ def _validated_hard_failures(
         "第一学历为大专", "第一学历为专科",
         "2年制本科", "两年制本科", "二年制本科", "3年制本科", "三年制本科",
     )
+
+    # 从 rule 提取阈值，用于年龄/薪资/地点验证
+    max_age = rule.get('max_age') if rule else None
+    salary_max = rule.get('salary_max') if rule else None
+    required_locations: list[str] = []
+    if rule and rule.get('work_location'):
+        required_locations = [loc.strip() for loc in re.split(r'[/、]', rule['work_location']) if loc.strip()]
+
     validated = []
     for finding in findings or []:
         if finding.get('verdict') != 'fail' or finding.get('confidence') != 'high':
@@ -583,6 +592,23 @@ def _validated_hard_failures(
                 any(term in evidence for term in explicit_non_regular)
                 or re.search(r'(?:大专|专科).{0,40}(?:后修|后续|在读|取得|升读).{0,20}本科', evidence)
             ):
+                validated.append(finding)
+        elif '年龄' in condition and max_age is not None:
+            age_match = re.search(r'(\d+)\s*岁', evidence)
+            if age_match and int(age_match.group(1)) > max_age:
+                validated.append(finding)
+        elif ('薪资' in condition or '薪' in condition) and salary_max is not None:
+            salary_match = re.search(r'(\d+)\s*[kK]', evidence)
+            if salary_match and int(salary_match.group(1)) >= salary_max + 1:
+                validated.append(finding)
+        elif '求职状态' in condition or '不考虑' in condition:
+            if '暂不考虑' in evidence or '不考虑' in evidence:
+                validated.append(finding)
+        elif ('地点' in condition or '城市' in condition) and required_locations:
+            # 从 evidence 提取候选人期望城市（"期望北京" 或 "候选人北京"）
+            city_match = re.search(r'(?:期望|候选人.{0,4})([一-龥]{2,4}(?:市)?)', evidence)
+            candidate_city = city_match.group(1).replace('市', '') if city_match else evidence.replace('市', '')
+            if not any(loc in candidate_city for loc in required_locations):
                 validated.append(finding)
     return validated
 
@@ -849,6 +875,7 @@ def evaluate_batch(
     api_key: str,
     *,
     hard_conditions: str = "",
+    rule: dict[str, Any] | None = None,
     max_candidates: int | None = None,
     progress_callback=None,
     stop_event: Optional[threading.Event] = None,
@@ -862,6 +889,7 @@ def evaluate_batch(
         api_config: dict with 'base_url' and 'model'
         api_key: API key string
         hard_conditions: optional hard-condition summary for LLM context
+        rule: job_config rule dict for deterministic hard-condition validation
         max_candidates: max number of candidates to evaluate (None = no limit)
         progress_callback: callable(percentage, description)
         stop_event: threading.Event for cancellation
@@ -962,7 +990,7 @@ def evaluate_batch(
                     candidate['llm_hard_condition_verdict'] = result.hard_condition_verdict
                     candidate['llm_hard_condition_findings'] = result.hard_condition_findings or []
                     validated_failures = _validated_hard_failures(
-                        candidate, result.hard_condition_findings, hard_conditions
+                        candidate, result.hard_condition_findings, hard_conditions, rule
                     )
                     if validated_failures:
                         candidate['qualification_status'] = 'rejected'
