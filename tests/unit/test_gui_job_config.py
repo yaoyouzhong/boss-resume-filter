@@ -15,8 +15,8 @@ from gui_main import (
     _optional_int_to_entry,
     _parse_optional_int_entry,
     _candidate_has_ai_eval,
-    _resolve_rule_score,
 )
+from llm_eval import _resolve_rule_score
 
 
 def test_optional_max_age_none_displays_as_blank():
@@ -1516,8 +1516,36 @@ def test_resolve_rule_score_uses_rule_score_when_present():
     assert _resolve_rule_score({'rule_score': 65}) == 65
 
 
+def test_resolve_rule_score_fresh_candidate_uses_match_score():
+    """无拆解的候选人：退到 match_score（从未被 AI 评估时 match_score 即规则分）。"""
+    assert _resolve_rule_score({'match_score': 100}) == 100
+
+
+def test_resolve_rule_score_clamp_not_inflated_by_part_sum():
+    """规则分被 clamp 到 100 时（五分项和=105），返回 min(100,105)=100，不得返回 105。"""
+    bd = {'base': 25, 'skill': 50, 'experience': 15, 'education': 10, 'preferred': 5, 'total': 100}
+    assert _resolve_rule_score({'match_score': 100, 'score_breakdown': bd}) == 100
+
+
+def test_resolve_rule_score_legacy_resume_via_part_sum():
+    """简历评估过但 rule_score 未固化（旧数据）：从五分项求和还原（match_score 已被污染为 rule+resume_adj，不可用）。"""
+    bd = {'base': 25, 'skill': 30, 'experience': 5, 'education': 5, 'preferred': 0,
+          'resume_adjustment': 5, 'total': 70}
+    # match_score=70 是 rule+resume_adj；正确 rule = min(100, 25+30+5+5+0) = 65
+    assert _resolve_rule_score({'match_score': 70, 'score_breakdown': bd}) == 65
+
+
+def test_resolve_rule_score_legacy_resume_clamped_total():
+    """resume 评估后 total 被 clamp 到 100 时，不得用 total-resume_adj（会算低）；用五分项求和。"""
+    # rule=100（已 clamp，五分项和=105），resume +8 → total = min(100, 108) = 100
+    bd = {'base': 25, 'skill': 50, 'experience': 15, 'education': 10, 'preferred': 5,
+          'resume_adjustment': 8, 'total': 100}
+    # 正确 rule = min(100, 105) = 100；total-resume_adj 会错算成 92
+    assert _resolve_rule_score({'match_score': 100, 'score_breakdown': bd}) == 100
+
+
 def test_resolve_rule_score_from_breakdown_when_missing():
-    """rule_score 缺失时从评分拆解各项求和还原（基础+技能+经验+学历+优先）。"""
+    """异常兜底：rule_score/match_score 全缺失时从拆解五分项求和 + clamp。"""
     bd = {'base': 25, 'skill': 30, 'experience': 5, 'education': 5, 'preferred': 0}
     assert _resolve_rule_score({'score_breakdown': bd}) == 65
 
@@ -1527,7 +1555,7 @@ def test_resolve_rule_score_zero_when_nothing_available():
 
 
 def test_resolve_rule_score_handles_none_rule_score():
-    """rule_score 显式为 None 时回退到拆解求和（兼容脏数据）。"""
+    """rule_score 显式为 None 时走分层回退。"""
     bd = {'base': 25, 'skill': 30, 'experience': 5, 'education': 5, 'preferred': 0}
     assert _resolve_rule_score({'rule_score': None, 'score_breakdown': bd}) == 65
 

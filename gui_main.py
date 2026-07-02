@@ -141,20 +141,7 @@ def _candidate_has_ai_eval(c: dict) -> bool:
     return bool(c.get('llm_evaluated')) or c.get('resume_eval_adjustment') is not None
 
 
-def _resolve_rule_score(candidate: dict) -> int:
-    """还原真实规则分（未含任何 AI 调整的分）。
-
-    优先取 rule_score；候选人从未跑过一次 AI 评估却导入了简历时 rule_score 缺失，
-    此时从 score_breakdown 各分项求和还原（基础+技能+经验+学历+优先 = 规则分）。
-    """
-    rule_score = candidate.get('rule_score')
-    if rule_score is None:
-        bd = candidate.get('score_breakdown') or {}
-        rule_score = sum(bd.get(k, 0) or 0 for k in ('base', 'skill', 'experience', 'education', 'preferred'))
-    try:
-        return int(rule_score or 0)
-    except (TypeError, ValueError):
-        return 0
+# _resolve_rule_score 已挪到 llm_eval（evaluate_batch 与撤回流程共用，统一规则分还原逻辑）
 
 
 def get_font_family():
@@ -11553,8 +11540,9 @@ class BossFilterGUI:
                 self.append_log(f"[撤销评估] 删除简历文件失败：{e}")
 
         # 回退分数：match_score = rule_score + llm_adjustment
-        # rule_score 缺失时（候选人未跑过一次评估却导入简历）从评分拆解各项求和还原，
+        # rule_score 缺失时（候选人未跑过一次评估却导入简历）由 _resolve_rule_score 还原，
         # 否则会落到含 resume_adj 的 match_score 上，撤销后 resume 调整值未被扣除
+        from llm_eval import _resolve_rule_score
         rule_score = _resolve_rule_score(candidate)
         llm_adj = candidate.get('llm_adjustment', 0) or 0
         reverted_score = max(0, min(100, rule_score + llm_adj))

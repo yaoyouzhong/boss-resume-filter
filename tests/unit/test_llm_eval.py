@@ -984,3 +984,68 @@ def test_evaluate_with_resume_no_dimension_scores_keeps_round1(mock_call, mock_s
     evaluate_with_resume(candidate, "简历文本", "岗位", {'base_url': 'x', 'model': 'y'}, "key")
     assert 'resume_eval_dimension_scores' not in candidate
     assert candidate['llm_dimension_scores'] == round1_dims
+
+
+# === evaluate_batch 基线读取（regression: 张力1——用真实 rule_score，不读 match_score；有简历评估不改写最终分）===
+
+@patch('llm_eval.time.sleep')
+@patch('llm_eval._call_llm_api')
+def test_batch_does_not_overwrite_resume_score(mock_call, mock_sleep):
+    """已有简历二次评估的候选人跑一次评估时，不得改写最终分（resume 替代语义）；
+    一次评估仅记录 llm_adjustment/维度评分/硬条件复核，match_score 保持 rule+resume_adj。"""
+    mock_call.return_value = LLMEvalResult(
+        success=True, adjustment=8, reason="匹配", model="m",
+        dimension_scores={"skill_depth": 7, "experience_quality": 6, "industry_fit": 5, "growth_potential": 7},
+    )
+    # rule=65，简历评估 +5 → match_score=70；现在再跑一次评估 +8
+    candidates = [{
+        'name': '张三', 'match_score': 70, 'recommend_level': '推荐',
+        'rule_score': 65,
+        'resume_eval_adjustment': 5,
+        'summary': '5年Java',
+        'score_breakdown': {'base': 25, 'skill': 30, 'experience': 5, 'education': 5, 'preferred': 0,
+                            'resume_adjustment': 5, 'total': 70},
+    }]
+    result = quiet_evaluate_batch(
+        candidates, "岗位", {'base_url': 'x', 'model': 'y'}, "key",
+    )
+    c = result[0]
+    # 最终分不变（resume 替代，不叠一次评估的 +8）
+    assert c['match_score'] == 70, f"一次评估不得改写简历评估的最终分：{c['match_score']}"
+    # 一次评估元数据已记录
+    assert c['llm_evaluated'] is True
+    assert c['llm_adjustment'] == 8
+    assert c['llm_dimension_scores'] == {"skill_depth": 7, "experience_quality": 6, "industry_fit": 5, "growth_potential": 7}
+    # rule_score 保持原值（不被污染为 match_score）
+    assert c['rule_score'] == 65
+    # breakdown: ai_adjustment 记一次评估值，total 保持 70（= rule+resume_adj，拆解合计=总分）
+    assert c['score_breakdown']['ai_adjustment'] == 8
+    assert c['score_breakdown']['total'] == 70
+    assert c['score_breakdown']['resume_adjustment'] == 5
+
+
+@patch('llm_eval.time.sleep')
+@patch('llm_eval._call_llm_api')
+def test_batch_uses_pristine_rule_score_no_stacking(mock_call, mock_sleep):
+    """对已有一次评估的候选人重跑一次评估：用已固化的 rule_score 作基线，不叠加旧调整值。"""
+    mock_call.return_value = LLMEvalResult(
+        success=True, adjustment=-3, reason="略差", model="m",
+    )
+    # rule=65，旧一次评估 +8 → match_score=73；现在重跑一次评估 -3
+    candidates = [{
+        'name': '李四', 'match_score': 73, 'recommend_level': '推荐',
+        'rule_score': 65, 'llm_evaluated': True, 'llm_adjustment': 8,
+        'summary': '5年Java',
+        'score_breakdown': {'base': 25, 'skill': 30, 'experience': 5, 'education': 5, 'preferred': 0,
+                            'ai_adjustment': 8, 'total': 73},
+    }]
+    result = quiet_evaluate_batch(
+        candidates, "岗位", {'base_url': 'x', 'model': 'y'}, "key",
+    )
+    c = result[0]
+    # 新分 = rule(65) + (-3) = 62，不是 73 + (-3) = 70（不叠加旧 +8）
+    assert c['match_score'] == 62, f"应用 rule_score 作基线，不应叠加旧调整：{c['match_score']}"
+    assert c['llm_adjustment'] == -3
+    assert c['rule_score'] == 65  # 不被覆写为 73
+    assert c['score_breakdown']['ai_adjustment'] == -3
+    assert c['score_breakdown']['total'] == 62

@@ -889,6 +889,44 @@ def _recalc_recommend_level(score: int) -> str:
     return "已淘汰"
 
 
+def _resolve_rule_score(candidate: dict) -> int:
+    """还原真实规则分（未含任何 AI 调整、已 clamp 到 100 的最终规则分）。
+
+    规则分定义：min(100, base+skill+experience+education+preferred)（见 filtering.py）。
+    这五个分项不被任何 AI 评估改动，所以从它们求和 + clamp 总能还原原始规则分。
+
+    分层解析（确保撤回/二次评估读到原始规则分而非被 AI 改写过的 match_score）：
+    1. 优先取已固化的 rule_score（一次评估或简历评估时固化）；
+    2. 从拆解五分项求和后 clamp 到 100（兼容旧数据：简历评估过但 rule_score 未固化，
+       此时 match_score = rule+resume_adj 已被污染，total 也可能被 resume clamp，都不可用）；
+    3. 无拆解时退到 match_score（从未被 AI 评估的候选人，match_score 即规则分）；
+    4. 兜底 0。
+
+    注意：不能用 total-resume_adj——resume 评估后 total 可能被 clamp 到 100，会算低；
+    也不能用各项裸求和——可能 >100。
+    """
+    rule_score = candidate.get('rule_score')
+    if rule_score is not None:
+        try:
+            return int(rule_score)
+        except (TypeError, ValueError):
+            pass
+    bd = candidate.get('score_breakdown') or {}
+    parts = [bd.get(k) for k in ('base', 'skill', 'experience', 'education', 'preferred')]
+    if any(p is not None for p in parts):
+        try:
+            return min(100, sum(int(p or 0) for p in parts))
+        except (TypeError, ValueError):
+            pass
+    match_score = candidate.get('match_score')
+    if match_score is not None:
+        try:
+            return int(match_score)
+        except (TypeError, ValueError):
+            pass
+    return 0
+
+
 def _evaluate_single(index: int, candidate: dict, job_requirement: str,
                      api_config: dict, api_key: str, hard_conditions: str = "",
                      stop_event=None) -> tuple:
@@ -1006,18 +1044,25 @@ def evaluate_batch(
             try:
                 idx, result, candidate = future.result()
                 name = candidate.get('name', '?')
-                rule_score = candidate.get('match_score', 0)
+                # 取真实规则分（未含任何 AI 调整、已 clamp）：优先已固化的 rule_score
+                rule_score = _resolve_rule_score(candidate)
 
                 if result.success:
-                    # Store original score
+                    # 固化规则分（幂等：已存在则写回相同值，确保后续撤回/二次评估可还原）
                     candidate['rule_score'] = rule_score
 
-                    # Apply adjustment and clamp
-                    new_score = max(0, min(100, rule_score + result.adjustment))
+                    # 简历二次评估已存在时，一次评估的调整值不计入最终分（resume 替代语义）；
+                    # 一次评估仅记录元数据 + 硬条件复核 + 维度评分，不改写 match_score
+                    has_resume = candidate.get('resume_eval_adjustment') is not None
+                    if has_resume:
+                        new_score = candidate.get('match_score', rule_score)
+                    else:
+                        new_score = max(0, min(100, rule_score + result.adjustment))
                     candidate['match_score'] = new_score
                     candidate['recommend_level'] = _recalc_recommend_level(new_score)
 
-                    # 同步更新 score_breakdown，让拆解合计与总分一致
+                    # 同步 score_breakdown：ai_adjustment 记一次评估值；total 为最终分
+                    # （有简历评估时 total = rule+resume_adj = match_score，拆解合计仍=总分）
                     breakdown = candidate.get('score_breakdown')
                     if isinstance(breakdown, dict):
                         breakdown['ai_adjustment'] = result.adjustment
@@ -1051,10 +1096,16 @@ def evaluate_batch(
 
                     sign = "+" if result.adjustment > 0 else ""
                     log_summary = _format_ai_log_summary(candidate, clean_reason, new_score)
-                    print(
-                        f"  [{idx+1}/{total}] {name}：{rule_score} → {new_score} "
-                        f"（{sign}{result.adjustment}）｜{log_summary}"
-                    )
+                    if has_resume:
+                        print(
+                            f"  [{idx+1}/{total}] {name}：规则分 {rule_score}，最终分 {new_score}"
+                            f"（一次评估 {sign}{result.adjustment} 不计入，简历评估替代）｜{log_summary}"
+                        )
+                    else:
+                        print(
+                            f"  [{idx+1}/{total}] {name}：{rule_score} → {new_score} "
+                            f"（{sign}{result.adjustment}）｜{log_summary}"
+                        )
                 else:
                     candidate['llm_evaluated'] = False
                     candidate['llm_error'] = result.reason
