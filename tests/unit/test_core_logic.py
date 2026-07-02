@@ -1761,3 +1761,73 @@ def test_extract_summary_info_status_with_company():
     info = extract_summary_info("在职-阿里巴巴集团")
     assert info['job_status'] == '在职'
     assert info['company'] == '阿里巴巴集团'
+
+
+# === Excel 评分拆解与简历评估的替代关系（regression: resume_adj=0 时不得回退显示 AI 调整值）===
+
+def _export_breakdown_cell(breakdown: dict, score: int) -> str:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output = os.path.join(tmpdir, "c.xlsx")
+        bossmaster.export_to_excel([{
+            "geek_id": "g-brk",
+            "name": "赵六",
+            "summary": "本科\n5 年 Java",
+            "job_name": "Java",
+            "match_score": score,
+            "recommend_level": "推荐",
+            "score_breakdown": breakdown,
+        }], output)
+        from openpyxl import load_workbook
+        wb = load_workbook(output)
+        sheet = wb["全部候选人"]
+        headers = [cell.value for cell in sheet[1]]
+        col = headers.index("评分拆解") + 1
+        return sheet.cell(row=2, column=col).value
+
+
+def _breakdown_parts_sum(line: str) -> int:
+    """评分拆解行中各项（除'总分'外）的数值合计；同时识别 CJK 与拉丁（AI）标签。"""
+    import re as _re
+    pairs = _re.findall(r'([A-Za-z一-鿿]{2,})([-+]?\d+)', line)
+    s = 0
+    for label, num in pairs:
+        if '总分' in label:
+            continue
+        s += int(num)
+    return s
+
+
+def test_export_excel_breakdown_resume_adj_zero_hides_ai():
+    """resume_adj=0 时 Excel 评分拆解不回退显示一次评估 AI 值，合计 = 总分。"""
+    breakdown = {
+        "base": 25, "skill": 30, "experience": 5, "education": 5, "preferred": 0,
+        "ai_adjustment": 8, "resume_adjustment": 0, "total": 65,
+    }
+    line = _export_breakdown_cell(breakdown, 65)
+    assert "AI" not in line, f"resume_adj=0 时不应回退显示 AI 调整值：{line}"
+    assert "简历" not in line, f"resume_adj=0 时不应显示简历0：{line}"
+    assert _breakdown_parts_sum(line) == 65, f"拆解各项合计 != 总分 65：{line}"
+
+
+def test_export_excel_breakdown_resume_adj_nonzero_shows_resume_only():
+    """resume_adj≠0 时 Excel 拆解只显示简历调整值，合计 = 总分。"""
+    breakdown = {
+        "base": 25, "skill": 30, "experience": 5, "education": 5, "preferred": 0,
+        "ai_adjustment": 8, "resume_adjustment": 5, "total": 70,
+    }
+    line = _export_breakdown_cell(breakdown, 70)
+    assert "简历+5" in line
+    assert "AI" not in line, f"有简历评估时不应显示一次评估 AI 值：{line}"
+    assert _breakdown_parts_sum(line) == 70, f"拆解各项合计 != 总分 70：{line}"
+
+
+def test_export_excel_breakdown_no_resume_shows_ai():
+    """无简历评估时 Excel 拆解显示一次评估 AI 值，合计 = 总分。"""
+    breakdown = {
+        "base": 25, "skill": 30, "experience": 5, "education": 5, "preferred": 0,
+        "ai_adjustment": 8, "total": 73,
+    }
+    line = _export_breakdown_cell(breakdown, 73)
+    assert "AI+8" in line
+    assert "简历" not in line
+    assert _breakdown_parts_sum(line) == 73, f"拆解各项合计 != 总分 73：{line}"

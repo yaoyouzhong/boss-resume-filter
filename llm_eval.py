@@ -1151,6 +1151,9 @@ def evaluate_with_resume(
 
         # Resume evaluation replaces first-round adjustment (not stacked)
         rule_score = candidate.get("rule_score", candidate.get("match_score", 0))
+        # 固化规则分，供撤回简历评估时还原（候选人未跑过一次评估时 rule_score 此前缺失）
+        if "rule_score" not in candidate:
+            candidate["rule_score"] = rule_score
         new_score = max(0, min(100, rule_score + result.adjustment))
         candidate["match_score"] = new_score
         candidate["recommend_level"] = _recalc_recommend_level(new_score)

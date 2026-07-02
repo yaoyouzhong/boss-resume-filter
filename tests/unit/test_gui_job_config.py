@@ -1,5 +1,6 @@
 import json
 import queue
+import re
 import sys
 import tempfile
 import time
@@ -9,7 +10,13 @@ from unittest.mock import Mock, patch
 
 import gui_main
 import icons
-from gui_main import BossFilterGUI, _optional_int_to_entry, _parse_optional_int_entry
+from gui_main import (
+    BossFilterGUI,
+    _optional_int_to_entry,
+    _parse_optional_int_entry,
+    _candidate_has_ai_eval,
+    _resolve_rule_score,
+)
 
 
 def test_optional_max_age_none_displays_as_blank():
@@ -1364,3 +1371,187 @@ def test_education_render_shows_text_placeholder_for_pdf():
     assert kwargs.get("image") == ""
     assert "PDF" in kwargs.get("text", "")
     assert label._image_ref is None
+
+
+# === 评分拆解与简历评估的替代关系（regression: resume_adj=0 时不得回退显示 AI 调整值）===
+
+def _breakdown_parts_sum(line: str) -> int:
+    """评分拆解行中各项（除'总分'外）的数值合计。
+
+    兼容 gui_main 的 ' + '/'优先项' 与 bossmaster 的 ' / '/'优先' 两种格式，
+    且同时识别 CJK 标签（基础/简历）与拉丁标签（AI）。
+    """
+    pairs = re.findall(r'([A-Za-z一-鿿]{2,})([-+]?\d+)', line)
+    s = 0
+    for label, num in pairs:
+        if '总分' in label:
+            continue
+        s += int(num)
+    return s
+
+
+def _detail_breakdown_line(candidate: dict) -> str:
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    detail = gui._format_candidate_detail(candidate)
+    for line in detail.splitlines():
+        if line.startswith("  评分拆解："):
+            return line
+    raise AssertionError(f"未找到评分拆解行：{detail}")
+
+
+def _base_candidate_with_breakdown(breakdown: dict, score: int) -> dict:
+    return {
+        "name": "张三",
+        "job_name": "Java 工程师",
+        "geek_id": "g-brk",
+        "match_score": score,
+        "summary": "本科\n5 年 Java",
+        "score_breakdown": breakdown,
+    }
+
+
+def test_detail_breakdown_resume_adj_zero_hides_ai():
+    """resume_adj=0 时拆解不显示一次评估 AI 值，各项合计 = 总分。"""
+    breakdown = {
+        "base": 25, "skill": 30, "experience": 5, "education": 5, "preferred": 0,
+        "ai_adjustment": 8, "resume_adjustment": 0, "total": 65,
+    }
+    line = _detail_breakdown_line(_base_candidate_with_breakdown(breakdown, 65))
+    assert "AI" not in line, f"resume_adj=0 时不应回退显示 AI 调整值：{line}"
+    assert "简历" not in line, f"resume_adj=0 时不应显示简历0：{line}"
+    assert _breakdown_parts_sum(line) == 65, f"拆解各项合计 != 总分 65：{line}"
+
+
+def test_detail_breakdown_resume_adj_nonzero_shows_resume_only():
+    """resume_adj≠0 时只显示简历调整值，不显示一次评估 AI 值，合计 = 总分。"""
+    breakdown = {
+        "base": 25, "skill": 30, "experience": 5, "education": 5, "preferred": 0,
+        "ai_adjustment": 8, "resume_adjustment": 5, "total": 70,
+    }
+    line = _detail_breakdown_line(_base_candidate_with_breakdown(breakdown, 70))
+    assert "简历+5" in line
+    assert "AI" not in line, f"有简历评估时不应显示一次评估 AI 值：{line}"
+    assert _breakdown_parts_sum(line) == 70, f"拆解各项合计 != 总分 70：{line}"
+
+
+def test_detail_breakdown_no_resume_shows_ai():
+    """无简历评估（resume_adjustment 缺失）时显示一次评估 AI 值，合计 = 总分。"""
+    breakdown = {
+        "base": 25, "skill": 30, "experience": 5, "education": 5, "preferred": 0,
+        "ai_adjustment": 8, "total": 73,
+    }
+    line = _detail_breakdown_line(_base_candidate_with_breakdown(breakdown, 73))
+    assert "AI+8" in line
+    assert "简历" not in line
+    assert _breakdown_parts_sum(line) == 73, f"拆解各项合计 != 总分 73：{line}"
+
+
+# === _save_ai_eval_results 落盘白名单（regression: llm_dimension_scores 等字段必须随评估结果写盘）===
+
+def test_save_ai_eval_results_persists_dimension_scores_and_hard_fields():
+    """AI 评估写入的 llm_dimension_scores / manual_review_required / auto_greet_blocked_reason
+    必须随 _save_ai_eval_results 持久化到 candidates.json，否则关闭程序后丢失。"""
+    import json
+    import tempfile
+    from pathlib import Path
+
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cand_path = Path(tmpdir) / "candidates.json"
+        disk_cand = {"geek_id": "g-dim", "name": "张三", "match_score": 70, "job_name": "Java"}
+        cand_path.write_text(json.dumps([disk_cand], ensure_ascii=False), encoding="utf-8")
+        gui.all_candidates = [dict(disk_cand)]
+
+        # 模拟 evaluate_batch 原地写入的评估字段
+        evaluated = dict(disk_cand)
+        evaluated.update({
+            "llm_evaluated": True,
+            "llm_adjustment": 5,
+            "match_score": 75,
+            "recommend_level": "推荐",
+            "rule_score": 70,
+            "llm_dimension_scores": {
+                "skill_depth": 8, "experience_quality": 7,
+                "industry_fit": 6, "growth_potential": 9,
+            },
+            "qualification_status": "rejected",
+            "manual_review_required": False,
+            "auto_greet_blocked_reason": "硬条件不符合",
+        })
+
+        with patch.object(gui_main, "CANDIDATES_PATH", cand_path):
+            gui._save_ai_eval_results([evaluated])
+
+        saved = json.loads(cand_path.read_text(encoding="utf-8"))
+        assert saved[0]["llm_dimension_scores"] == {
+            "skill_depth": 8, "experience_quality": 7,
+            "industry_fit": 6, "growth_potential": 9,
+        }, "llm_dimension_scores 未落盘（_save_ai_eval_results 白名单遗漏）"
+        assert saved[0]["manual_review_required"] is False
+        assert saved[0]["auto_greet_blocked_reason"] == "硬条件不符合"
+        assert saved[0]["qualification_status"] == "rejected"
+
+
+# === _candidate_has_ai_eval 守卫（regression: 已导入简历的候选人不得再跑一次评估，否则叠加两次调整）===
+
+def test_candidate_has_ai_eval_helper():
+    assert _candidate_has_ai_eval({'llm_evaluated': True}) is True
+    assert _candidate_has_ai_eval({'resume_eval_adjustment': 5}) is True
+    assert _candidate_has_ai_eval({'resume_eval_adjustment': 0}) is True  # 0 也是已评估
+    assert _candidate_has_ai_eval({}) is False
+    assert _candidate_has_ai_eval({'llm_evaluated': False}) is False
+    assert _candidate_has_ai_eval({'llm_evaluated': None}) is False
+
+
+def test_ai_eval_batch_guard_uses_has_ai_eval_helper():
+    """批量评估守卫必须调用 _candidate_has_ai_eval，否则已导入简历的候选人会被重复评估、
+    叠加两次调整并污染 rule_score（guard 在 _ai_eval_selected_candidates 内，难以端到端测试，用源码断言固化）。"""
+    source = Path(gui_main.__file__).read_text(encoding="utf-8")
+    assert "_candidate_has_ai_eval(c)" in source, "守卫未调用 _candidate_has_ai_eval(c)"
+
+
+# === _resolve_rule_score 还原真实规则分（regression: 未跑一次评估却导入简历时撤回还原）===
+
+def test_resolve_rule_score_uses_rule_score_when_present():
+    assert _resolve_rule_score({'rule_score': 65}) == 65
+
+
+def test_resolve_rule_score_from_breakdown_when_missing():
+    """rule_score 缺失时从评分拆解各项求和还原（基础+技能+经验+学历+优先）。"""
+    bd = {'base': 25, 'skill': 30, 'experience': 5, 'education': 5, 'preferred': 0}
+    assert _resolve_rule_score({'score_breakdown': bd}) == 65
+
+
+def test_resolve_rule_score_zero_when_nothing_available():
+    assert _resolve_rule_score({}) == 0
+
+
+def test_resolve_rule_score_handles_none_rule_score():
+    """rule_score 显式为 None 时回退到拆解求和（兼容脏数据）。"""
+    bd = {'base': 25, 'skill': 30, 'experience': 5, 'education': 5, 'preferred': 0}
+    assert _resolve_rule_score({'rule_score': None, 'score_breakdown': bd}) == 65
+
+
+# === 详情弹窗【AI 一次评估】调整后分数（regression: 简历评估存在时不得显示被替代后的最终分）===
+
+def test_detail_ai_eval_block_adjusted_score_uses_rule_plus_llm_with_resume():
+    """简历二次评估存在时，【AI 一次评估】的'调整后分数'应为 rule_score+llm_adjustment，
+    而非被简历替代后的 match_score（否则区块内'原始规则分 + AI调整值 ≠ 调整后分数'）。"""
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidate = {
+        'name': '张三', 'job_name': 'Java', 'geek_id': 'g-r1',
+        'match_score': 70,  # 65(rule) + 5(resume)，被简历替代后的最终分
+        'rule_score': 65,
+        'llm_evaluated': True, 'llm_adjustment': 8, 'llm_model': 'm', 'llm_reason': '匹配',
+        'resume_eval_adjustment': 5,
+        'summary': '本科\n5 年 Java',
+        'score_breakdown': {'base': 25, 'skill': 30, 'experience': 5, 'education': 5, 'preferred': 0,
+                            'ai_adjustment': 8, 'resume_adjustment': 5, 'total': 70},
+    }
+    detail = gui._format_candidate_detail(candidate)
+    for line in detail.splitlines():
+        if line.startswith("  调整后分数："):
+            assert line == "  调整后分数：73", f"应为 rule(65)+llm(8)=73，实：{line}"
+            break
+    else:
+        raise AssertionError(f"未找到调整后分数行：{detail}")

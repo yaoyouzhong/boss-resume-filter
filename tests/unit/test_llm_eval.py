@@ -16,6 +16,7 @@ from llm_eval import (
     _recalc_recommend_level,
     _use_forced_function_output,
     evaluate_batch,
+    evaluate_with_resume,
     _resolve_eval_workers,
     _resolve_request_timeout,
 )
@@ -895,3 +896,43 @@ def test_batch_stores_dimension_scores(mock_call, mock_sleep):
     assert dims['experience_quality'] == 7
     assert dims['industry_fit'] == 6
     assert dims['growth_potential'] == 9
+
+
+# === 简历二次评估固化 rule_score（regression: 未跑一次评估却导入简历时 rule_score 缺失，撤回时无法还原）===
+
+@patch('llm_eval.time.sleep')
+@patch('llm_eval._call_llm_api')
+def test_evaluate_with_resume_captures_rule_score_when_missing(mock_call, mock_sleep):
+    """候选人未跑过一次 AI 评估（rule_score 缺失）时，简历评估须固化 rule_score 供撤回还原。"""
+    mock_call.return_value = LLMEvalResult(
+        success=True, adjustment=5, reason="匹配", model="m",
+    )
+    candidate = {
+        'name': '张三', 'match_score': 65, 'recommend_level': '推荐',
+        'summary': '5年Java',
+        'score_breakdown': {'base': 25, 'skill': 30, 'experience': 5, 'education': 5, 'preferred': 0, 'total': 65},
+    }
+    evaluate_with_resume(candidate, "简历文本", "岗位", {'base_url': 'x', 'model': 'y'}, "key")
+    assert candidate['rule_score'] == 65, "简历评估应固化 rule_score=65（评估前的真实规则分）"
+    assert candidate['match_score'] == 70  # 65 + 5（替代，不叠加）
+    assert candidate['resume_eval_adjustment'] == 5
+
+
+@patch('llm_eval.time.sleep')
+@patch('llm_eval._call_llm_api')
+def test_evaluate_with_resume_preserves_existing_rule_score(mock_call, mock_sleep):
+    """候选人已跑过一次评估（rule_score 已存在）时，简历评估不得覆盖 rule_score。"""
+    mock_call.return_value = LLMEvalResult(
+        success=True, adjustment=5, reason="匹配", model="m",
+    )
+    candidate = {
+        'name': '李四', 'match_score': 73, 'recommend_level': '推荐',  # 65(rule) + 8(一次评估)
+        'rule_score': 65, 'llm_adjustment': 8, 'llm_evaluated': True,
+        'summary': '5年Java',
+        'score_breakdown': {'base': 25, 'skill': 30, 'experience': 5, 'education': 5, 'preferred': 0,
+                            'ai_adjustment': 8, 'total': 73},
+    }
+    evaluate_with_resume(candidate, "简历文本", "岗位", {'base_url': 'x', 'model': 'y'}, "key")
+    assert candidate['rule_score'] == 65, "已固化的 rule_score 不应被覆盖"
+    assert candidate['match_score'] == 70  # 替代：65 + 5，而非 65+8+5
+    assert candidate['resume_eval_adjustment'] == 5

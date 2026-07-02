@@ -430,11 +430,13 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
             f"优先{breakdown.get('preferred', 0)}",
         ]
         # AI 调整分：有简历时只显示简历调整值（替代一次评估）
+        # resume_adj=0 时不追加任何项，保证拆解各项合计 = 总分（total 仅含 resume_adjustment）
         ai_adj = breakdown.get('ai_adjustment')
         resume_adj = breakdown.get('resume_adjustment')
-        if resume_adj is not None and resume_adj != 0:
-            sign = "+" if resume_adj > 0 else ""
-            parts.append(f"简历{sign}{resume_adj}")
+        if resume_adj is not None:
+            if resume_adj != 0:
+                sign = "+" if resume_adj > 0 else ""
+                parts.append(f"简历{sign}{resume_adj}")
         elif ai_adj is not None and ai_adj != 0:
             sign = "+" if ai_adj > 0 else ""
             parts.append(f"AI{sign}{ai_adj}")

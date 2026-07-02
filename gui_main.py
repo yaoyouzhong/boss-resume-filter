@@ -132,6 +132,31 @@ def _parse_optional_int_entry(value, field_name):
         raise ValueError(f"{field_name}必须为数字") from exc
 
 
+def _candidate_has_ai_eval(c: dict) -> bool:
+    """候选人是否已有任意一轮 AI 评估（一次评估或简历二次评估）。
+
+    用于批量 AI 评估前过滤——简历二次评估已替代一次评估的调整值，
+    对已导入简历的候选人再跑一次评估会污染 rule_score（叠加两次调整）。
+    """
+    return bool(c.get('llm_evaluated')) or c.get('resume_eval_adjustment') is not None
+
+
+def _resolve_rule_score(candidate: dict) -> int:
+    """还原真实规则分（未含任何 AI 调整的分）。
+
+    优先取 rule_score；候选人从未跑过一次 AI 评估却导入了简历时 rule_score 缺失，
+    此时从 score_breakdown 各分项求和还原（基础+技能+经验+学历+优先 = 规则分）。
+    """
+    rule_score = candidate.get('rule_score')
+    if rule_score is None:
+        bd = candidate.get('score_breakdown') or {}
+        rule_score = sum(bd.get(k, 0) or 0 for k in ('base', 'skill', 'experience', 'education', 'preferred'))
+    try:
+        return int(rule_score or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def get_font_family():
     """获取字体 - 支持跨平台降级"""
     # 优先使用微软雅黑，macOS/Linux 降级到系统字体
@@ -11528,7 +11553,9 @@ class BossFilterGUI:
                 self.append_log(f"[撤销评估] 删除简历文件失败：{e}")
 
         # 回退分数：match_score = rule_score + llm_adjustment
-        rule_score = candidate.get('rule_score', candidate.get('match_score', 0))
+        # rule_score 缺失时（候选人未跑过一次评估却导入简历）从评分拆解各项求和还原，
+        # 否则会落到含 resume_adj 的 match_score 上，撤销后 resume 调整值未被扣除
+        rule_score = _resolve_rule_score(candidate)
         llm_adj = candidate.get('llm_adjustment', 0) or 0
         reverted_score = max(0, min(100, rule_score + llm_adj))
 
@@ -11586,9 +11613,10 @@ class BossFilterGUI:
             messagebox.showinfo("提示", "选中的候选人正在评估中")
             return
 
-        # 过滤已评估成功的候选人
-        already_evaluated = [c for c in candidates_to_eval if c.get('llm_evaluated')]
-        not_evaluated = [c for c in candidates_to_eval if not c.get('llm_evaluated')]
+        # 过滤已评估成功的候选人（一次评估或简历二次评估任一即视为已评估；
+        # 对已导入简历的候选人再跑一次评估会叠加两次调整、污染 rule_score）
+        already_evaluated = [c for c in candidates_to_eval if _candidate_has_ai_eval(c)]
+        not_evaluated = [c for c in candidates_to_eval if not _candidate_has_ai_eval(c)]
 
         if already_evaluated and not not_evaluated:
             # 全部已评估
@@ -11927,9 +11955,12 @@ class BossFilterGUI:
                     'score_breakdown': eval_result.get('score_breakdown'),
                     'llm_hard_condition_verdict': eval_result.get('llm_hard_condition_verdict'),
                     'llm_hard_condition_findings': eval_result.get('llm_hard_condition_findings'),
+                    'llm_dimension_scores': eval_result.get('llm_dimension_scores'),
                     'qualification_status': eval_result.get('qualification_status'),
                     'qualification_reasons': eval_result.get('qualification_reasons'),
                     'qualification_evidence': eval_result.get('qualification_evidence'),
+                    'manual_review_required': eval_result.get('manual_review_required'),
+                    'auto_greet_blocked_reason': eval_result.get('auto_greet_blocked_reason'),
                 })
 
         # 保存
@@ -12485,10 +12516,12 @@ class BossFilterGUI:
             ]
             ai_adj = breakdown.get('ai_adjustment')
             resume_adj = breakdown.get('resume_adjustment')
-            if resume_adj is not None and resume_adj != 0:
+            if resume_adj is not None:
                 # 有简历评估时只显示简历调整值（替代一次评估）
-                sign = "+" if resume_adj > 0 else ""
-                parts.append(f"简历{sign}{resume_adj}")
+                # resume_adj=0 时不追加任何项，保证拆解各项合计 = 总分（total 仅含 resume_adjustment）
+                if resume_adj != 0:
+                    sign = "+" if resume_adj > 0 else ""
+                    parts.append(f"简历{sign}{resume_adj}")
             elif ai_adj is not None and ai_adj != 0:
                 sign = "+" if ai_adj > 0 else ""
                 parts.append(f"AI{sign}{ai_adj}")
@@ -12577,7 +12610,9 @@ class BossFilterGUI:
             adj = c.get('llm_adjustment', 0)
             sign = "+" if adj > 0 else ""
             lines.append(f"  AI 调整值：{sign}{adj}")
-            lines.append(f"  调整后分数：{score}")
+            # 调整后分数 = 规则分 + 一次评估调整值；不读 match_score（简历二次评估已替代为 rule+resume_adj）
+            r1_score = max(0, min(100, (c.get('rule_score', 0) or 0) + adj))
+            lines.append(f"  调整后分数：{r1_score}")
             lines.append(f"  评估模型：{c.get('llm_model', '未知')}")
             lines.append("")
             lines.append(f"  AI评估：")
