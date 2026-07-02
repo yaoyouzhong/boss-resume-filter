@@ -12484,13 +12484,14 @@ class BossFilterGUI:
                 f"优先项{breakdown.get('preferred', 0)}",
             ]
             ai_adj = breakdown.get('ai_adjustment')
-            if ai_adj is not None and ai_adj != 0:
-                sign = "+" if ai_adj > 0 else ""
-                parts.append(f"AI{sign}{ai_adj}")
             resume_adj = breakdown.get('resume_adjustment')
             if resume_adj is not None and resume_adj != 0:
+                # 有简历评估时只显示简历调整值（替代一次评估）
                 sign = "+" if resume_adj > 0 else ""
                 parts.append(f"简历{sign}{resume_adj}")
+            elif ai_adj is not None and ai_adj != 0:
+                sign = "+" if ai_adj > 0 else ""
+                parts.append(f"AI{sign}{ai_adj}")
             lines.append(f"  评分拆解：{' + '.join(parts)}")
         if c.get('greet_sent'):
             lines.append(f"  状态：已打招呼")
