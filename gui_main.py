@@ -6460,36 +6460,50 @@ class BossFilterGUI:
             print(f"保存配置失败：{e}")
 
     def delete_selected_model(self):
-        """删除选中的模型"""
+        """删除选中的模型（支持多选）"""
         selection = self.model_list_tree.selection()
         if not selection:
             messagebox.showwarning("警告", "请先选择要删除的模型")
             return
 
-        if not messagebox.askyesno("确认", "确定要删除选中的模型吗？"):
+        # 收集所有选中模型的信息
+        deleted = []  # [(model_name, provider_key), ...]
+        for item_id in selection:
+            item = self.model_list_tree.item(item_id)
+            model_name = item['values'][0]
+            provider_display = item['values'][1]
+            provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
+            deleted.append((model_name, provider_key))
+
+        # 去重（同一模型可能被重复选中）
+        deleted = list(dict.fromkeys(deleted))
+
+        count = len(deleted)
+        prompt = f"确定要删除选中的 {count} 个模型吗？\n\n" + "\n".join(
+            f"  • {name} ({provider})" for name, provider in deleted
+        )
+        if not messagebox.askyesno("确认", prompt):
             return
 
-        # 获取选中的模型信息
-        item = self.model_list_tree.item(selection[0])
-        model_name = item['values'][0]
-        provider_display = item['values'][1]
-        provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
+        deleted_names = {name for name, _ in deleted}
 
-        # 从列表移除
+        # 从 saved_models 移除所有被选中的模型
         if hasattr(self, 'saved_models'):
-            self.saved_models = [m for m in self.saved_models if m.get("model") != model_name]
+            self.saved_models = [m for m in self.saved_models if m.get("model") not in deleted_names]
 
         # 如果删除的是学历核验模型，清除配置
         if hasattr(self, 'api_config') and self.api_config:
             edu_ref = self.api_config.get("education_model_ref")
-            if edu_ref and edu_ref.get("model") == model_name and edu_ref.get("api_provider") == provider_key:
-                self.api_config.pop("education_model_ref", None)
+            if edu_ref:
+                for name, provider_key in deleted:
+                    if edu_ref.get("model") == name and edu_ref.get("api_provider") == provider_key:
+                        self.api_config.pop("education_model_ref", None)
+                        break
 
-        # 同步更新 api_config 并持久化到文件
-        if hasattr(self, 'api_config') and self.api_config:
+            # 同步更新 api_config 并持久化到文件
             # 检查是否删除了当前正在使用的模型
             current_model = self.api_config.get("model", "")
-            if current_model == model_name:
+            if current_model in deleted_names:
                 # 清空当前模型配置
                 self.api_config["model"] = ""
                 self.api_config["api_provider"] = ""
@@ -6501,6 +6515,7 @@ class BossFilterGUI:
                 self.api_base_url_var.set("")
                 self.api_model_var.set("")
                 self.update_current_model_display()
+
             self.api_config["saved_models"] = self.saved_models
             try:
                 save_config = self._sanitize_config_for_save(self.api_config)
@@ -6512,7 +6527,11 @@ class BossFilterGUI:
 
         # 刷新显示
         self.load_saved_models_to_tree()
-        self._update_api_status(text=f"✓ 已删除模型 {model_name}", foreground=self.colors['success'])
+        if count == 1:
+            status_text = f"✓ 已删除模型 {deleted[0][0]}"
+        else:
+            status_text = f"✓ 已删除 {count} 个模型"
+        self._update_api_status(text=status_text, foreground=self.colors['success'])
 
     def _update_api_status(self, text, foreground=None):
         """更新 API 状态标签，同时清理之前的可点击标签"""
