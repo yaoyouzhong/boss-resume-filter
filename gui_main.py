@@ -6500,22 +6500,6 @@ class BossFilterGUI:
                         self.api_config.pop("education_model_ref", None)
                         break
 
-            # 同步更新 api_config 并持久化到文件
-            # 检查是否删除了当前正在使用的模型
-            current_model = self.api_config.get("model", "")
-            if current_model in deleted_names:
-                # 清空当前模型配置
-                self.api_config["model"] = ""
-                self.api_config["api_provider"] = ""
-                self.api_config["api_key"] = ""
-                self.api_config["base_url"] = ""
-                # 清空 UI 输入
-                self.api_provider_var.set(self.PROVIDER_DISPLAY["qwen"])
-                self.api_key_var.set("")
-                self.api_base_url_var.set("")
-                self.api_model_var.set("")
-                self.update_current_model_display()
-
             self.api_config["saved_models"] = self.saved_models
             try:
                 save_config = self._sanitize_config_for_save(self.api_config)
