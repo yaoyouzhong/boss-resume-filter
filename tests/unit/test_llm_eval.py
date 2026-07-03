@@ -241,8 +241,9 @@ def test_call_llm_api_success(mock_requests):
     assert result.model == 'test-model'
 
 
+@patch('llm_eval.load_capability', return_value=None)
 @patch('llm_eval.requests')
-def test_call_llm_api_qwen37_uses_function_arguments(mock_requests):
+def test_call_llm_api_qwen37_uses_function_arguments(mock_requests, _mock_cap):
     import requests as real_requests
     mock_requests.exceptions = real_requests.exceptions
     mock_response = MagicMock()
