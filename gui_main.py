@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.16"
+__version__ = "2.16.1"
 
 import json
 import logging
@@ -3949,7 +3949,7 @@ class BossFilterGUI:
                         f"当前模型「{model_name}」可能不支持图片输入。\n\n"
                         "图片识别需要多模态视觉模型，如：\n"
                         "  国外：GPT-4o / GPT-4.1、Claude Sonnet 4、Gemini 2.5 Pro\n"
-                        "  国内：qwen3.7-plus、mimo-v2.5、GLM-5、Kimi K2、MiniMax-M2.7\n\n"
+                        "  国内：qwen3.7-plus、mimo-v2.5、GLM-5V、Kimi K2.5、MiniMax-M2.7\n\n"
                         "PDF 文件使用文本提取，不受此限制。\n\n"
                         "请在「API 配置」中切换支持图片的模型后再识别。",
                         parent=self.root,
@@ -4247,7 +4247,7 @@ class BossFilterGUI:
                     f"当前学历核验模型「{model_name}」可能不支持图片输入。\n\n"
                     "图片识别需要多模态视觉模型，如：\n"
                     "  国外：GPT-4o / GPT-4.1、Claude Sonnet 4、Gemini 2.5 Pro\n"
-                    "  国内：qwen3.7-plus、mimo-v2.5、GLM-5、Kimi K2、MiniMax-M2.7\n\n"
+                    "  国内：qwen3.7-plus、mimo-v2.5、GLM-5V、Kimi K2.5、MiniMax-M2.7\n\n"
                     "PDF 文件使用文本提取，不受此限制。\n\n"
                     "可在系统设置的已保存模型列表中右键指定学历核验专用模型。\n\n"
                     "是否仍要尝试识别？",
@@ -4312,16 +4312,28 @@ class BossFilterGUI:
                     if not queue_item:
                         continue
                     if result is not None:
-                        queue_item["name"] = result.name
-                        queue_item["certificate_number"] = result.certificate_number
-                        queue_item["school"] = result.school
-                        queue_item["major"] = result.major
-                        queue_item["auto_rotation"] = result.rotation
-                        queue_item["status"] = "已识别"
-                        queue_item["detail"] = (
-                            f"识别完成 · 置信度 {result.confidence}% · {result.model}"
-                        )
-                        queue_item["warnings"] = "；".join(result.warnings)
+                        # 识别成功判定：模型置信度 > 0 且至少识别出姓名或证书编号；
+                        # 否则视为识别失败（如"未检测到任何图片"、字段全空、confidence=0），
+                        # 避免失败结果被误标为"已识别"
+                        if result.confidence > 0 and (result.name or result.certificate_number):
+                            queue_item["name"] = result.name
+                            queue_item["certificate_number"] = result.certificate_number
+                            queue_item["school"] = result.school
+                            queue_item["major"] = result.major
+                            queue_item["auto_rotation"] = result.rotation
+                            queue_item["status"] = "已识别"
+                            queue_item["detail"] = (
+                                f"识别完成 · 置信度 {result.confidence}% · {result.model}"
+                            )
+                            queue_item["warnings"] = "；".join(result.warnings)
+                        else:
+                            # LLM 正常返回但识别失败：保留 warnings（含模型给出的失败原因）
+                            queue_item["status"] = "识别失败"
+                            queue_item["detail"] = "识别失败"
+                            warnings_text = "；".join(result.warnings)
+                            if not warnings_text:
+                                warnings_text = f"置信度 {result.confidence}%，未识别出姓名或证书编号"
+                            queue_item["warnings"] = warnings_text
                     else:
                         queue_item["status"] = "识别失败"
                         queue_item["detail"] = "识别失败"
@@ -6829,8 +6841,10 @@ class BossFilterGUI:
             model_name = self.api_model_var.get().strip()
             api_key = self.api_key_var.get().strip()
             base_url = self.api_base_url_var.get().strip()
+            # 对话框多选暂存：非空表示批量加入列表（输入框不参与），空表示单选/手输
+            pending = list(getattr(self, '_pending_models_to_add', []) or [])
 
-            if not model_name:
+            if not model_name and not pending:
                 messagebox.showwarning("警告", "请输入模型名称")
                 return
             if not api_key:
@@ -6843,38 +6857,62 @@ class BossFilterGUI:
             # 按服务商 + Base URL 组合存储 API Key（区分同一服务商的不同接入方式）
             save_api_key(provider, api_key, base_url)
 
-            # 构建当前配置（保留 education_model_ref）
+            # 顶层当前活动模型：保存按钮不切换，仅在首次配置（顶层无活动模型）时兜底设一次
+            # 切换当前活动模型由双击「已保存模型」列表项完成（use_selected_model）
             edu_ref = (self.api_config or {}).get("education_model_ref")
+            current_model = (self.api_config or {}).get("model", "")
+            if not current_model:
+                # 首次配置：输入框有值用它，否则用 pending 第一个
+                top_provider, top_base_url = provider, base_url
+                top_model = model_name or (pending[0] if pending else "")
+            else:
+                top_provider = (self.api_config or {}).get("api_provider", provider)
+                top_base_url = (self.api_config or {}).get("base_url", base_url)
+                top_model = current_model
+
             self.api_config = {
-                "api_provider": provider,
-                "base_url": base_url,
-                "model": model_name,
+                "api_provider": top_provider,
+                "base_url": top_base_url,
+                "model": top_model,
                 "saved_models": getattr(self, 'saved_models', []),
-                "providers": self.api_config.get("providers", {}),
-                "fetched_models": self.api_config.get("fetched_models", {}),
+                "providers": (self.api_config or {}).get("providers", {}),
+                "fetched_models": (self.api_config or {}).get("fetched_models", {}),
                 "llm_read_timeout": self.llm_read_timeout_var.get() if hasattr(self, 'llm_read_timeout_var') else 60,
             }
             if edu_ref:
                 self.api_config["education_model_ref"] = edu_ref
 
-            # 检查当前模型是否已存在于列表
-            model_exists = False
-            for m in self.api_config["saved_models"]:
-                if m.get("model") == model_name and m.get("api_provider") == provider:
-                    # 更新已存在模型的配置，保留 capability 字段
-                    m["api_provider"] = provider
-                    m["base_url"] = base_url
-                    # capability 字段保留，不覆盖
-                    model_exists = True
-                    break
+            # 待批量添加的模型集合
+            # - 多选：pending 含全部选中模型（输入框不参与，多选不改输入框）
+            # - 单选/手输：pending 为空，处理输入框的当前模型名
+            # 同服务商共享 API Key / Base URL，仅 model 名不同
+            if not pending:
+                pending = [model_name]
 
-            if not model_exists:
-                # 添加新模型
-                self.api_config["saved_models"].append({
-                    "api_provider": provider,
-                    "base_url": base_url,
-                    "model": model_name
-                })
+            added_count = 0
+            updated_count = 0
+            for model_name_to_add in pending:
+                model_exists = False
+                for m in self.api_config["saved_models"]:
+                    if m.get("model") == model_name_to_add and m.get("api_provider") == provider:
+                        # 更新已存在模型的配置，保留 capability 字段
+                        m["api_provider"] = provider
+                        m["base_url"] = base_url
+                        model_exists = True
+                        break
+                if not model_exists:
+                    # 添加新模型
+                    self.api_config["saved_models"].append({
+                        "api_provider": provider,
+                        "base_url": base_url,
+                        "model": model_name_to_add
+                    })
+                    added_count += 1
+                else:
+                    updated_count += 1
+
+            # 批量保存意图已消费，清空暂存
+            self._pending_models_to_add = []
 
             with open(API_CONFIG_PATH, 'w', encoding='utf-8') as f:
                 json.dump(self._sanitize_config_for_save(self.api_config), f, ensure_ascii=False, indent=4)
@@ -6898,7 +6936,11 @@ class BossFilterGUI:
                 self.reconfig_card.destroy()
                 self.reconfig_card = None
 
-            messagebox.showinfo("成功", f"API 配置已保存\n模型 {provider}/{model_name} 已添加到已保存模型列表\n\nAPI Key 已按服务商加密存储（同一服务商的模型共享）")
+            if len(pending) > 1:
+                summary = f"已保存 {len(pending)} 个模型到列表（新增 {added_count}，更新 {updated_count}）"
+            else:
+                summary = f"模型 {provider}/{model_name} 已添加到已保存模型列表"
+            messagebox.showinfo("成功", f"API 配置已保存\n{summary}\n\nAPI Key 已按服务商加密存储（同一服务商的模型共享）")
         except Exception as e:
             self._update_api_status(text=f"✗ 保存失败：{e}", foreground=self.colors['danger'])
             messagebox.showerror("错误", f"保存 API 配置失败：{e}")
@@ -7414,14 +7456,29 @@ class BossFilterGUI:
 
                             def on_select(event=None):
                                 selection = listbox.curselection()
-                                if selection:
-                                    selected_model = _get_model_name(selection[0])
-                                    self.api_model_var.set(selected_model)
-                                    self._update_api_status(
-                                        text=f"✓ 已选择 {selected_model}",
-                                        foreground=self.colors['success']
-                                    )
-                                    _close_dialog()
+                                if not selection:
+                                    return
+                                selected_models = [_get_model_name(i) for i in selection]
+                                if len(selected_models) == 1:
+                                    # 单选：回填输入框准备保存（保存不切换顶层活动模型）
+                                    self.api_model_var.set(selected_models[0])
+                                    self._pending_models_to_add = []
+                                else:
+                                    # 多选：不改输入框（不切换当前活动模型），暂存待批量加入列表
+                                    self._pending_models_to_add = selected_models
+                                if len(selected_models) == 1:
+                                    status_text = f"✓ 已选择 {selected_models[0]}"
+                                else:
+                                    # 多选：列出模型名，超过 5 个截断
+                                    preview = "、".join(selected_models[:5])
+                                    if len(selected_models) > 5:
+                                        preview += f" 等 {len(selected_models)} 个"
+                                    status_text = f"✓ 已选择 {len(selected_models)} 个模型：{preview}"
+                                self._update_api_status(
+                                    text=status_text,
+                                    foreground=self.colors['success']
+                                )
+                                _close_dialog()
 
                             def on_double_click(event):
                                 selection = listbox.curselection()

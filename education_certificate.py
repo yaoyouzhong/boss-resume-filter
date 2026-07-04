@@ -87,12 +87,13 @@ def resolve_vision_api_config(api_config: dict[str, Any]) -> dict[str, Any]:
 # 已知支持图片输入的模型名称关键词（小写匹配）
 _VISION_MODEL_KEYWORDS: tuple[str, ...] = (
     "vision", "-vl", "vl-", "_vl", "vl2", "omni",
-    "gpt-4o", "gpt-4-turbo", "o1", "o3", "o4",
+    "gpt-4o", "gpt-4-turbo", "gpt-4.1", "o1", "o3", "o4",
     "claude-3", "claude-4", "claude-sonnet-4", "claude-opus-4",
     "mimo-v2.5", "mimo-v2.5-vl",
     "qwen-vl", "qwen2.5-vl", "qwen3-vl",
     "qwen3.5", "qwen3.6", "qwen3.7",
     "glm-4v", "glm-5v",
+    "kimi-k2.5", "kimi-k2.6",
     "minimax-vl", "minimax-m2",
     "step-1v", "step-2v",
     "gemini", "gemma",
