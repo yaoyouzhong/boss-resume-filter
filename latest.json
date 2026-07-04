@@ -1,29 +1,29 @@
 {
-  "version": "2.16",
-  "release_date": "2026-07-02",
+  "version": "2.16.1",
+  "release_date": "2026-07-04",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.16/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.16/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.16/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.16.1/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.16.1/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.16.1/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "windows": {
-      "size": 38437684,
-      "sha256": "9ebcf6da8cb5344da627c0c08556c168682e2f2f507432b0028458004961be91"
+      "size": 38436064,
+      "sha256": "674fd07f9bbae65a5acc28f118c0d3515e11656957426adb295df72fca6f4465"
     },
     "macos_dmg": {
-      "size": 33143410,
-      "sha256": "9a691e446622d6740142f425589b4e9c93576b63b7f4619afa877dc87b7aa33b"
+      "size": 33143993,
+      "sha256": "38dcf035bf690f1c0a736b1429d4c2f073af863bc5c60857f0064585ad13eaa1"
     },
     "macos": {
-      "size": 33983513,
-      "sha256": "1e1be6bb2499a5023288d81910cd2a495fd66eca9a48f61726c735569cf6f1ed"
+      "size": 33986624,
+      "sha256": "1d3457c98a86ceaa7df17143a55e48e13b966923bca486e495affafa4e5d03be"
     }
   },
-  "release_notes": "### 新增功能\n\n- **AI 硬条件复核扩展**：AI 评估同步复核学历、经验、年龄、薪资、工作地点、求职状态 6 个维度；复核结论和原文证据在候选人详情弹窗展示，方便核查 AI 判断依据\n- **AI 多维度评分**：新增技能深度、经验质量、行业匹配、发展潜力 4 个评分维度，详情弹窗可查看各维度得分\n- **AI 评估调整幅度扩大**：AI 对规则评分的调整范围从 ±10 扩大至 ±15，对候选人质量的区分度更高\n- **简历评估替代一次评估**：导入完整简历后，二次评估直接替代一次评估的调整值（不再累加），以简历评估结果为准；详情弹窗的维度评分同步展示简历二次评估结果",
+  "release_notes": "### 问题修复\n\n- **多选模型批量保存**：系统设置中选择多个模型后，点击保存可一次性将全部选中模型加入已保存列表，此前仅保存其中一个；保存只追加到列表，不切换当前正在使用的模型，需要切换时双击列表项\n- **多选删除批量执行**：系统设置多选模型删除时一次性删除全部选中项，此前只删除其中一个\n- **删除模型保留当前配置**：删除已保存模型时不再误清空当前正在使用的模型配置\n- **学历核验识别失败状态修正**：模型未能识别出证书内容时状态正确标记为识别失败，此前会误显示为已识别\n- **学历核验模型提示一致性**：选择学历核验模型时，视觉模型推荐列表与实际判定保持一致，推荐智谱 GLM-5V、Kimi K2.5 等真正支持图片识别的模型，避免误配文本模型后无法识别",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.16/BOSS_ResumeFilter.exe",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.16/BOSS_ResumeFilter.dmg",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.16/BOSS_ResumeFilter_mac.zip"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.16.1/BOSS_ResumeFilter.exe",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.16.1/BOSS_ResumeFilter.dmg",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.16.1/BOSS_ResumeFilter_mac.zip"
   }
 }
