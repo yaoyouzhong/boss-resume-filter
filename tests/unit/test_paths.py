@@ -78,6 +78,40 @@ def test_config_path_constant():
     assert paths.CONFIG_PATH.name == "job_config.json"
 
 
+def test_api_config_path_reads_default_before_local_exists():
+    """源码模式下无本机配置时读取发布默认模板。"""
+    with tempfile.TemporaryDirectory() as tmpdir, \
+            patch.object(sys, 'frozen', False, create=True):
+        result = paths.get_api_config_path(Path(tmpdir))
+        assert result.name == "api_config.json"
+
+
+def test_api_config_path_writes_local_in_source_mode():
+    """源码模式下用户配置写入 ignored 本机文件，避免污染发布模板。"""
+    with tempfile.TemporaryDirectory() as tmpdir, \
+            patch.object(sys, 'frozen', False, create=True):
+        result = paths.get_api_config_path(Path(tmpdir), for_write=True)
+        assert result.name == "api_config.local.json"
+
+
+def test_api_config_path_uses_local_when_present():
+    """源码模式下本机配置存在后，后续读取优先使用它。"""
+    with tempfile.TemporaryDirectory() as tmpdir, \
+            patch.object(sys, 'frozen', False, create=True):
+        local_path = Path(tmpdir) / "api_config.local.json"
+        local_path.write_text("{}", encoding="utf-8")
+        result = paths.get_api_config_path(Path(tmpdir))
+        assert result == local_path
+
+
+def test_api_config_path_uses_default_in_frozen_mode():
+    """打包后仍使用可写目录旁的 api_config.json。"""
+    with tempfile.TemporaryDirectory() as tmpdir, \
+            patch.object(sys, 'frozen', True, create=True):
+        result = paths.get_api_config_path(Path(tmpdir), for_write=True)
+        assert result.name == "api_config.json"
+
+
 def test_candidates_path_constant():
     """CANDIDATES_PATH 指向 candidates_all.json"""
     assert isinstance(paths.CANDIDATES_PATH, Path)

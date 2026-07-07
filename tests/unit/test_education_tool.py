@@ -22,8 +22,8 @@ from gui_main import BossFilterGUI
 def test_fixed_api_config_uses_supported_vision_model():
     assert EDUCATION_TOOL_API_CONFIG == {
         "api_provider": "qwen",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "model": "qwen3.7-plus",
+        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        "model": "kimi-k2.6",
     }
 
 

@@ -55,6 +55,23 @@ def ensure_config_files(base_dir: Path) -> None:
                     print(f"无法复制配置文件 {fname}：{e}。如果从 DMG 运行，请将应用拖到 Applications 文件夹后重试。")
 
 
+def get_api_config_path(base_dir: Path | None = None, *, for_write: bool = False) -> Path:
+    """Return the runtime API config path.
+
+    In source mode, user edits go to ignored api_config.local.json so the
+    tracked api_config.json can stay a release/default template. Frozen builds
+    keep using api_config.json next to the executable.
+    """
+    root = base_dir or BASE_DIR
+    default_path = root / "api_config.json"
+    local_path = root / "api_config.local.json"
+    if getattr(sys, 'frozen', False):
+        return default_path
+    if for_write or local_path.exists():
+        return local_path
+    return default_path
+
+
 # 便捷常量
 BASE_DIR = get_base_dir()
 SELECTORS_PATH = BASE_DIR / "selectors.json"

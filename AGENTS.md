@@ -9,6 +9,7 @@ boss-resume-filter/
 ├── llm_eval.py           # LLM 辅助评估模块（prompt 构建、API 调用、批量评估）
 ├── ai_adapter.py         # 多服务商接口适配与模型能力验证
 ├── job_ai_parser.py      # 岗位需求 AI 增强解析模块（基于正则初稿补充优化）
+├── job_config_diagnostics.py # 岗位配置保存前体检模块
 ├── storage.py            # 候选人数据持久化模块（去重、原子写入、备份恢复）
 ├── gui_main.py           # 图形界面主程序（v2.16.1）
 ├── gui_dialogs.py        # 独立对话框模块（更新日志、关于弹窗、CHANGELOG 渲染）
@@ -28,7 +29,7 @@ boss-resume-filter/
 ├── build_education_tool.py # 独立学历证书核验助手打包脚本
 ├── latest.json           # 版本清单（Gitee 更新源，build.py --release 自动维护）
 ├── job_config.json       # 岗位筛选规则配置
-├── api_config.json       # AI 模型配置（不含明文 Key）
+├── api_config.json       # 发布默认 AI 模型配置模板（不含明文 Key）
 ├── selectors.json        # 页面选择器配置（CSS/XPath/关键词，DOM 变化时修改）
 ├── ui_config.json        # UI 尺寸与缩放配置
 ├── tests/                # 测试脚本目录
@@ -126,7 +127,7 @@ boss-resume-filter/
 
 - .env 文件不进 git
 - 候选人数据含个人隐私，本地存储要加密
-- API Key 加密存储在系统钥匙串（Windows DPAPI / macOS Keychain），`api_config.json` 不含明文
+- API Key 加密存储在系统钥匙串（Windows DPAPI / macOS Keychain），`api_config.json` / `api_config.local.json` 不含明文
 - API Key 按 provider + base_url 组合存储，同一服务商不同接入方式（API / Token Plan）独立管理
 
 ## 核心逻辑
@@ -260,7 +261,8 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 
 ### 配置管理
 
-- api_config.json 存储多服务商配置（不含明文 Key），API Key 加密存储在系统钥匙串
+- `api_config.json` 是发布默认模板；源码运行时用户配置写入 ignored 的 `api_config.local.json`，避免模型列表刷新和本机模型切换污染发布 diff
+- API Key 加密存储在系统钥匙串，配置文件只保存 provider/base_url/model 等非密钥信息
 - 支持动态获取模型列表、双击切换已保存模型、测试连接（并行双策略）
 - 新电脑部署：首次启动检测 API Key 缺失并引导重新配置
 
@@ -274,7 +276,8 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 ### 学历核验模型独立配置
 
 - 已保存模型列表右键菜单可「设为学历核验模型」/「取消学历核验模型」，指定后学历核验功能使用独立模型，AI 评估继续使用全局模型
-- `api_config.json` 的 `education_model_ref` 字段存储指定模型（`{api_provider, base_url, model}`），未设置时回退全局模型
+- `api_config.local.json` / 打包后的 `api_config.json` 的 `education_model_ref` 字段存储指定模型（`{api_provider, base_url, model}`），未设置时回退全局模型
+- 独立学历证书核验助手固定使用 `token-plan.cn-beijing.maas.aliyuncs.com` 的 `kimi-k2.6`
 - 删除已保存模型时自动清除对应的学历核验配置
 - 实现位置：`gui_main.py:_set_education_model()`、`gui_main.py:_get_education_api_config()`
 

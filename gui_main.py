@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 import icons
 
 logger = logging.getLogger(__name__)
+from job_config_diagnostics import diagnose_job_config, summarize_job_config_diagnostics
 from constants import (
     API_CANDIDATE_LIMIT_DEFAULT,
     SCORE_THRESHOLD_PASS,
@@ -44,13 +45,13 @@ import gui_dialogs
 
 # ========== 路径常量 - 解决相对路径问题 ==========
 # PyInstaller --onefile 模式下 __file__ 指向临时解压目录，需特殊处理
-from paths import BASE_DIR, get_base_dir, ensure_config_files
+from paths import BASE_DIR, get_base_dir, ensure_config_files, get_api_config_path
 
 CONFIG_PATH = BASE_DIR / "job_config.json"
 CANDIDATES_PATH = BASE_DIR / "candidates_all.json"
 CANDIDATES_XLSX_PATH = BASE_DIR / "candidates_all.xlsx"
 CONFIG_BACKUP_PATH = BASE_DIR / "job_config.json.bak"
-API_CONFIG_PATH = BASE_DIR / "api_config.json"
+API_CONFIG_PATH = get_api_config_path()
 CHROME_DEBUG_PORT_FILE = BASE_DIR / ".chrome_debug_port"
 
 FEEDBACK_STATUS_OPTIONS = ["合适", "误推", "误杀", "放弃"]
@@ -2866,7 +2867,8 @@ class BossFilterGUI:
     def _api_config_file_mtime(self):
         """Return a stable file fingerprint for api_config.json."""
         try:
-            return API_CONFIG_PATH.stat().st_mtime_ns if API_CONFIG_PATH.exists() else 0
+            path = get_api_config_path()
+            return path.stat().st_mtime_ns if path.exists() else 0
         except OSError:
             return 0
 
@@ -6321,9 +6323,10 @@ class BossFilterGUI:
 
     def load_api_config(self, resolve_keys=True):
         """加载 API 配置 - 从系统钥匙串读取加密的 API Key（按服务商管理）"""
-        if API_CONFIG_PATH.exists():
+        api_config_path = get_api_config_path()
+        if api_config_path.exists():
             try:
-                with open(API_CONFIG_PATH, 'r', encoding='utf-8') as f:
+                with open(api_config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
                     # 确保所有必要字段都存在（兼容旧版本配置文件）
                     self.api_config = {
@@ -6466,7 +6469,7 @@ class BossFilterGUI:
         if not hasattr(self, 'api_config') or not self.api_config:
             return
         try:
-            with open(API_CONFIG_PATH, 'w', encoding='utf-8') as f:
+            with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as f:
                 json.dump(self._sanitize_config_for_save(self.api_config), f, ensure_ascii=False, indent=4)
         except Exception as e:
             print(f"保存配置失败：{e}")
@@ -6515,7 +6518,7 @@ class BossFilterGUI:
             self.api_config["saved_models"] = self.saved_models
             try:
                 save_config = self._sanitize_config_for_save(self.api_config)
-                with open(API_CONFIG_PATH, 'w', encoding='utf-8') as f:
+                with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as f:
                     json.dump(save_config, f, ensure_ascii=False, indent=4)
                 self._mark_api_config_ui_current()
             except Exception as e:
@@ -6639,7 +6642,7 @@ class BossFilterGUI:
             # 保存到文件（排除 api_key，Key 仅存 keyring）
             try:
                 save_config = self._sanitize_config_for_save(self.api_config)
-                with open(API_CONFIG_PATH, 'w', encoding='utf-8') as f:
+                with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as f:
                     json.dump(save_config, f, ensure_ascii=False, indent=4)
                 self._mark_api_config_ui_current()
             except Exception as e:
@@ -6818,14 +6821,15 @@ class BossFilterGUI:
         # 同步到 api_config 并原子写盘
         self.api_config["saved_models"] = self.saved_models
         try:
-            tmp_path = API_CONFIG_PATH.with_suffix('.json.tmp')
+            write_path = get_api_config_path(for_write=True)
+            tmp_path = write_path.with_suffix('.json.tmp')
             with open(tmp_path, 'w', encoding='utf-8') as f:
                 json.dump(self._sanitize_config_for_save(self.api_config), f, ensure_ascii=False, indent=4)
-            os.replace(tmp_path, API_CONFIG_PATH)
+            os.replace(tmp_path, write_path)
         except Exception:
             # 写盘失败不影响内存状态，清理临时文件
             try:
-                os.remove(API_CONFIG_PATH.with_suffix('.json.tmp'))
+                os.remove(get_api_config_path(for_write=True).with_suffix('.json.tmp'))
             except OSError:
                 pass
         self._mark_api_config_ui_current()
@@ -6914,7 +6918,7 @@ class BossFilterGUI:
             # 批量保存意图已消费，清空暂存
             self._pending_models_to_add = []
 
-            with open(API_CONFIG_PATH, 'w', encoding='utf-8') as f:
+            with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as f:
                 json.dump(self._sanitize_config_for_save(self.api_config), f, ensure_ascii=False, indent=4)
             self._mark_api_config_ui_current()
 
@@ -7122,7 +7126,7 @@ class BossFilterGUI:
                             self.api_config["fetched_models"] = {}
                         self.api_config["fetched_models"][provider] = models
                         try:
-                            with open(API_CONFIG_PATH, 'w', encoding='utf-8') as _f:
+                            with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as _f:
                                 json.dump(self._sanitize_config_for_save(self.api_config), _f, ensure_ascii=False, indent=4)
                             self._mark_api_config_ui_current()
                         except Exception:
@@ -9089,6 +9093,134 @@ class BossFilterGUI:
                 self.reset_job_form()
                 self._hide_job_step_bar()
 
+    def _build_current_job_rule_preview(self):
+        """Build an unsaved job config from the current form for diagnostics."""
+        job_name = self.job_name_var.get().strip()
+        normalized_job_name = re.sub(r'\s+', ' ', job_name).strip()
+
+        keywords = [
+            {"name": s["name"], "weight": s["weight"]}
+            for s in self.skills_data
+            if not self._is_preferred_skill_source(s.get("source"))
+        ]
+        preferred_keywords = [
+            {"name": s["name"], "bonus": s["weight"]}
+            for s in self.skills_data
+            if self._is_preferred_skill_source(s.get("source"))
+        ]
+        required_conditions = [
+            self._strip_transient_fields(cond)
+            for cond in self.required_conditions_data
+        ]
+
+        salary_min = None
+        salary_max = None
+        salary_min_str = self.salary_min_var.get().strip()
+        salary_max_str = self.salary_max_var.get().strip()
+        if salary_min_str:
+            try:
+                salary_min = int(salary_min_str)
+            except ValueError:
+                raise ValueError("薪资范围最低值必须为数字（如：12）")
+        if salary_max_str:
+            try:
+                salary_max = int(salary_max_str)
+            except ValueError:
+                raise ValueError("薪资范围最高值必须为数字（如：15）")
+
+        try:
+            min_exp = int(self.min_exp_var.get())
+            max_age = _parse_optional_int_entry(self.max_age_var.get(), "最大年龄")
+        except ValueError as e:
+            raise ValueError(str(e))
+
+        return normalized_job_name, {
+            "min_exp": min_exp,
+            "edu": self.edu_var.get(),
+            "max_age": max_age,
+            "work_location": self.work_location_var.get().strip() or None,
+            "salary_min": salary_min,
+            "salary_max": salary_max,
+            "keywords": keywords,
+            "preferred_keywords": preferred_keywords,
+            "required_conditions": required_conditions,
+            "original_requirement": self._get_requirement_text() or None,
+        }
+
+    def _confirm_job_config_diagnostics(self, job_name, rule):
+        """Run save-time diagnostics and return True when saving may continue."""
+        issues = diagnose_job_config(job_name, rule)
+        if not issues:
+            return True
+
+        has_error = any(issue.severity == "error" for issue in issues)
+        text = summarize_job_config_diagnostics(job_name, rule)
+        return self._show_job_config_diagnostics_dialog(text, has_error)
+
+    def _show_job_config_diagnostics_dialog(self, text, has_error=False):
+        """Show diagnostics in a scrollable dialog and return whether to continue."""
+        result = {"continue": False}
+        win = tk.Toplevel(self.root)
+        win.title("岗位配置体检")
+        win.transient(self.root)
+        win.grab_set()
+
+        scale = self.dpi_scale * self.zoom_factor
+        width = int(720 * scale)
+        height = int(520 * scale)
+        try:
+            x = self.root.winfo_rootx() + max(40, (self.root.winfo_width() - width) // 2)
+            y = self.root.winfo_rooty() + max(40, (self.root.winfo_height() - height) // 2)
+            win.geometry(f"{width}x{height}+{x}+{y}")
+        except Exception:
+            win.geometry(f"{width}x{height}")
+
+        body = ttk.Frame(win, padding=int(16 * scale))
+        body.pack(fill="both", expand=True)
+
+        summary_text = "发现严重问题，请返回修改后再保存。" if has_error else "发现一些提醒项，可返回修改，也可确认后继续保存。"
+        ttk.Label(
+            body,
+            text=summary_text,
+            font=self.font_label,
+            foreground=self.colors['danger'] if has_error else self.colors['warning'],
+        ).pack(anchor="w", pady=(0, int(8 * scale)))
+
+        text_widget = tk.Text(
+            body,
+            wrap="word",
+            font=self.font_log,
+            bg="#FFFFFF",
+            fg=self.colors['text_primary'],
+            borderwidth=1,
+            relief="solid",
+        )
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=text_widget.yview)
+        text_widget.configure(yscrollcommand=scrollbar.set)
+        text_widget.insert("1.0", text)
+        text_widget.configure(state="disabled")
+        text_widget.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        btn_row = ttk.Frame(win, padding=(int(16 * scale), 0, int(16 * scale), int(16 * scale)))
+        btn_row.pack(fill="x")
+
+        def _continue():
+            result["continue"] = True
+            win.destroy()
+
+        ttk.Button(btn_row, text="返回修改", command=win.destroy).pack(side="right")
+        if not has_error:
+            ttk.Button(btn_row, text="仍然保存", command=_continue).pack(
+                side="right", padx=(0, int(8 * scale))
+            )
+
+        try:
+            win.wait_window()
+        except Exception:
+            return False
+        return result["continue"]
+
     def save_current_job(self):
         """保存当前岗位配置"""
         self._hide_save_hint()
@@ -9110,68 +9242,23 @@ class BossFilterGUI:
 
         if existing_key_to_delete and existing_key_to_delete != job_name:
             if messagebox.askyesno("岗位已存在", f"检测到重复岗位：'{existing_key_to_delete}'\n是否覆盖更新？"):
-                del self.job_rules[existing_key_to_delete]
+                pass
             else:
                 return
 
-        # 从 skills_data 构建带权重的 keywords / preferred_keywords 列表
-        keywords = [
-            {"name": s["name"], "weight": s["weight"]}
-            for s in self.skills_data
-            if not self._is_preferred_skill_source(s.get("source"))
-        ]
-        preferred_keywords = [
-            {"name": s["name"], "bonus": s["weight"]}
-            for s in self.skills_data
-            if self._is_preferred_skill_source(s.get("source"))
-        ]
-
-        # 从 required_conditions_data 构建必要条件列表
-        required_conditions = [
-            self._strip_transient_fields(cond)
-            for cond in self.required_conditions_data
-        ]
-
-        # 获取原始招聘需求（从需求文档解析框）
-        original_requirement = self._get_requirement_text()
-
-        # 验证薪资输入格式（非空则必须为数字）
-        salary_min = None
-        salary_max = None
-        salary_min_str = self.salary_min_var.get().strip()
-        salary_max_str = self.salary_max_var.get().strip()
-        if salary_min_str:
-            try:
-                salary_min = int(salary_min_str)
-            except ValueError:
-                messagebox.showwarning("警告", "薪资范围最低值必须为数字（如：12）")
-                return
-        if salary_max_str:
-            try:
-                salary_max = int(salary_max_str)
-            except ValueError:
-                messagebox.showwarning("警告", "薪资范围最高值必须为数字（如：15）")
-                return
-
         try:
-            min_exp = int(self.min_exp_var.get())
-            max_age = _parse_optional_int_entry(self.max_age_var.get(), "最大年龄")
+            normalized_job_name, rule = self._build_current_job_rule_preview()
         except ValueError as e:
             messagebox.showwarning("警告", str(e))
             return
 
-        self.job_rules[normalized_job_name] = {
-            "min_exp": min_exp,
-            "edu": self.edu_var.get(),
-            "max_age": max_age,
-            "work_location": self.work_location_var.get().strip() or None,
-            "salary_min": salary_min,
-            "salary_max": salary_max,
-            "keywords": keywords,
-            "preferred_keywords": preferred_keywords,
-            "required_conditions": required_conditions,
-            "original_requirement": original_requirement if original_requirement else None
-        }
+        if not self._confirm_job_config_diagnostics(normalized_job_name, rule):
+            return
+
+        if existing_key_to_delete and existing_key_to_delete != normalized_job_name:
+            del self.job_rules[existing_key_to_delete]
+
+        self.job_rules[normalized_job_name] = rule
 
         self.save_config()
         self.config_job_combo['values'] = list(self.job_rules.keys())
@@ -10091,7 +10178,7 @@ class BossFilterGUI:
                     # 超时值变更时持久化到 api_config.json
                     if _timeout_changed:
                         try:
-                            with open(API_CONFIG_PATH, 'w', encoding='utf-8') as _f:
+                            with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as _f:
                                 json.dump(self._sanitize_config_for_save(self.api_config), _f, ensure_ascii=False, indent=4)
                         except Exception:
                             pass
