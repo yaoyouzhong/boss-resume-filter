@@ -232,6 +232,21 @@ def check_github_release(repo="yaoyouzhong/boss-resume-filter"):
     return result
 
 
+def _get_gitee_latest_response(latest_json_url):
+    """Fetch Gitee latest.json, retrying once for cold raw-file timeouts."""
+    last_timeout = None
+    for attempt in range(2):
+        try:
+            return requests.get(latest_json_url, timeout=UPDATE_TIMEOUT_GITEE)
+        except requests.exceptions.Timeout as exc:
+            last_timeout = exc
+            if attempt == 0:
+                continue
+            raise
+    if last_timeout:
+        raise last_timeout
+
+
 def check_gitee_latest(latest_json_url="https://gitee.com/yaoyouzhong/boss-resume-filter/raw/master/latest.json"):
     """
     从 Gitee 检查最新版本（国内备用源）
@@ -257,7 +272,7 @@ def check_gitee_latest(latest_json_url="https://gitee.com/yaoyouzhong/boss-resum
     }
 
     try:
-        response = requests.get(latest_json_url, timeout=UPDATE_TIMEOUT_GITEE)
+        response = _get_gitee_latest_response(latest_json_url)
         response.raise_for_status()
 
         data = response.json()
@@ -916,7 +931,8 @@ def check_and_update_gui(root: tk.Tk, silent: bool = False, on_complete=None, gu
 
         if result['error']:
             # Gitee 请求失败，回退到 GitHub
-            print(f"[更新] Gitee 检查失败: {result['error']}，尝试 GitHub...")
+            if not silent:
+                print(f"[更新] Gitee 检查失败: {result['error']}，尝试 GitHub...")
             result = check_github_release()
         elif not result['has_update']:
             # Gitee 返回成功但无更新，用 GitHub 复核（防止 Gitee 镜像同步延迟）

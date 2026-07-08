@@ -13213,41 +13213,44 @@ class BossFilterGUI:
     def _build_greet_queue_item(self, candidate, source="manual"):
         key = self._greet_queue_key(candidate)
         method = self._greet_queue_method_label(candidate)
-        status = "待发送"
-        message = ""
-        if not candidate.get('geek_id'):
-            status = "已跳过"
-            message = "缺少候选人标识"
-        elif candidate.get('greet_sent'):
-            status = "已发送"
-            message = "本地已标记为已沟通"
-        elif candidate.get('greet_confirmation_pending'):
-            status = "待确认"
-            message = candidate.get('greet_confirmation_reason') or "上次发送结果待确认"
-        elif candidate.get('manual_review_required'):
-            status = "需人工确认"
-            message = candidate.get('auto_greet_blocked_reason') or "需人工确认后再联系"
         return {
             "queue_id": f"{int(time.time() * 1000)}_{len(self.greet_queue_items)}_{key}",
             "key": key,
             "candidate": candidate,
-            "status": status,
-            "message": message,
+            "status": "待发送",
+            "message": "",
             "method": method,
             "source": source,
             "attempts": 0,
             "updated_at": datetime.now().strftime("%H:%M:%S"),
         }
 
+    @staticmethod
+    def _greet_queue_skip_reason(candidate):
+        if not candidate.get('geek_id'):
+            return "缺少候选人标识"
+        if candidate.get('blacklisted'):
+            return "已加入黑名单"
+        if candidate.get('greet_sent'):
+            return "已打招呼"
+        if candidate.get('greet_confirmation_pending'):
+            return "发送结果待确认"
+        if candidate.get('manual_review_required'):
+            return "需人工确认"
+        return ""
+
     def _add_candidates_to_greet_queue(self, candidates, parent=None, source="manual", open_dialog=True):
         _parent = parent or self.root
         existing_keys = {item.get('key') for item in self.greet_queue_items}
         added = 0
-        skipped = 0
+        skipped_reasons = {}
         for candidate in candidates:
             key = self._greet_queue_key(candidate)
-            if not key or key in existing_keys:
-                skipped += 1
+            skip_reason = self._greet_queue_skip_reason(candidate)
+            if not skip_reason and key in existing_keys:
+                skip_reason = "已在队列"
+            if skip_reason:
+                skipped_reasons[skip_reason] = skipped_reasons.get(skip_reason, 0) + 1
                 continue
             self.greet_queue_items.append(self._build_greet_queue_item(candidate, source=source))
             existing_keys.add(key)
@@ -13255,10 +13258,19 @@ class BossFilterGUI:
         if open_dialog:
             self._show_greet_queue_dialog(parent=_parent)
         if added:
-            self.append_log(f"[打招呼队列] 已加入 {added} 人" + (f"，跳过重复 {skipped} 人" if skipped else ""))
-        elif skipped:
-            messagebox.showinfo("打招呼队列", "选中的候选人已在队列中", parent=_parent)
+            skip_text = self._format_greet_queue_skip_summary(skipped_reasons)
+            self.append_log(f"[打招呼队列] 已加入 {added} 人" + (f"，已跳过 {sum(skipped_reasons.values())} 人" if skipped_reasons else ""))
+            if skip_text:
+                messagebox.showinfo("打招呼队列", f"已加入 {added} 人\n\n已跳过：\n{skip_text}", parent=_parent)
+        elif skipped_reasons:
+            messagebox.showinfo("打招呼队列", f"没有可加入队列的候选人。\n\n已跳过：\n{self._format_greet_queue_skip_summary(skipped_reasons)}", parent=_parent)
         return added
+
+    @staticmethod
+    def _format_greet_queue_skip_summary(skipped_reasons):
+        if not skipped_reasons:
+            return ""
+        return "\n".join(f"- {reason}：{count} 人" for reason, count in skipped_reasons.items())
 
     def _collect_selected_candidates_for_queue(self, selection, filtered_ref, tree):
         candidates = []
@@ -13270,8 +13282,7 @@ class BossFilterGUI:
             score = sv[4]
             for candidate in filtered_ref[0]:
                 if candidate.get('name') == name and str(candidate.get('match_score', '')) == str(score):
-                    if not candidate.get('greet_sent', False):
-                        candidates.append(candidate)
+                    candidates.append(candidate)
                     break
         return candidates
 

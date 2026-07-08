@@ -925,7 +925,18 @@ def test_batch_greet_context_menu_adds_to_queue_instead_of_direct_send():
     assert "_add_candidates_to_greet_queue" in source
 
 
-def test_greet_queue_item_classifies_context_pending_and_manual_review():
+def test_greet_queue_add_filters_before_enqueue():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    add_block = source[source.index("def _add_candidates_to_greet_queue"):]
+    add_block = add_block[:add_block.index("\n    @staticmethod\n    def _format_greet_queue_skip_summary")]
+
+    assert "self._greet_queue_skip_reason(candidate)" in add_block
+    assert 'skip_reason = "已在队列"' in add_block
+    assert "self._build_greet_queue_item(candidate" in add_block
+    assert "没有可加入队列的候选人" in add_block
+
+
+def test_greet_queue_item_builds_only_sendable_pending_items():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.greet_queue_items = []
 
@@ -934,25 +945,35 @@ def test_greet_queue_item_classifies_context_pending_and_manual_review():
         "job_name": "Java",
         "greet_context": {"chat_start": {"jid": "j1", "securityId": "s1"}},
     })
-    pending = gui._build_greet_queue_item({
-        "geek_id": "g2",
-        "job_name": "Go",
-        "greet_confirmation_pending": True,
-        "greet_confirmation_reason": "按钮未变化",
-    })
-    manual = gui._build_greet_queue_item({
-        "geek_id": "g3",
-        "job_name": "Python",
-        "manual_review_required": True,
-        "auto_greet_blocked_reason": "硬条件待确认",
-    })
 
     assert direct["status"] == "待发送"
     assert direct["method"] == "可直接发送"
-    assert pending["status"] == "待确认"
-    assert pending["message"] == "按钮未变化"
-    assert manual["status"] == "需人工确认"
-    assert manual["message"] == "硬条件待确认"
+    assert direct["message"] == ""
+
+
+def test_greet_queue_skip_reason_filters_non_sendable_candidates():
+    assert BossFilterGUI._greet_queue_skip_reason({}) == "缺少候选人标识"
+    assert BossFilterGUI._greet_queue_skip_reason({"geek_id": "g1", "blacklisted": True}) == "已加入黑名单"
+    assert BossFilterGUI._greet_queue_skip_reason({"geek_id": "g1", "greet_sent": True}) == "已打招呼"
+    assert BossFilterGUI._greet_queue_skip_reason({
+        "geek_id": "g1",
+        "greet_confirmation_pending": True,
+    }) == "发送结果待确认"
+    assert BossFilterGUI._greet_queue_skip_reason({
+        "geek_id": "g1",
+        "manual_review_required": True,
+    }) == "需人工确认"
+    assert BossFilterGUI._greet_queue_skip_reason({"geek_id": "g1"}) == ""
+
+
+def test_greet_queue_skip_summary_is_user_readable():
+    summary = BossFilterGUI._format_greet_queue_skip_summary({
+        "已打招呼": 2,
+        "需人工确认": 3,
+    })
+
+    assert "- 已打招呼：2 人" in summary
+    assert "- 需人工确认：3 人" in summary
 
 
 def test_greet_queue_dialog_has_status_filter_and_double_click_detail():
