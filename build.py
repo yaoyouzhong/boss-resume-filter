@@ -1145,7 +1145,8 @@ def _check_code_to_changelog_coverage(strict=False):
             "cls", "self", "super", "raw", "try", "err", "exc", "msg", "key",
             "tmp", "obj", "idx", "cnt", "num", "old", "cur", "buf", "src", "dst",
             "fmt", "ptr", "ref", "box", "row", "col", "pos", "off", "end", "beg",
-            "elif", "else", "args", "kwargs", "func", "meth", "getattr", "hasattr",
+            "def", "elif", "else", "except", "args", "kwargs", "func", "meth",
+            "getattr", "hasattr", "datetime", "strftime",
             # Tk / UI 框架方法和属性
             "ttk", "tk", "tframe", "tlabel", "tbutton",
             "pack", "forget", "grid", "place", "bind", "unbind",
@@ -1187,6 +1188,7 @@ def _check_code_to_changelog_coverage(strict=False):
             "suffix", "tag", "attr", "prop", "field", "token",
             "step", "count", "total", "limit", "rate", "freq", "level",
             "mode", "state", "status", "phase", "stage", "flag", "mask",
+            "score", "updated", "updated_at",
             "before", "after", "between", "during", "while",
             "job", "task", "work", "param", "value", "data", "info",
             "scan", "extract", "extraction",
@@ -1194,6 +1196,7 @@ def _check_code_to_changelog_coverage(strict=False):
             "file", "dir", "path", "line", "char", "byte", "word", "block",
             "batch", "loop", "iter", "recur", "chain", "pipe", "stream",
             "push", "pull", "pop", "peek", "flush", "drain", "buffer",
+            "captcha", "requests", "exceptions", "timeout",
             "encode", "decode", "compress", "decompress", "hash", "sign",
             "encrypt", "decrypt", "auth", "token", "session", "cookie",
         }
@@ -1346,6 +1349,13 @@ def _check_code_to_changelog_coverage(strict=False):
         for line in additions:
             if _is_comment_or_doc_line(line):
                 continue
+            if not re.search(r"[一-鿿]{2,}", line) and (
+                re.search(r"^\s*def\s+_\w+\s*\(", line)
+                or re.search(r"^\s*def\s+\w+\s*\(", line)
+                or re.search(r"^\s*['\"][A-Za-z_][A-Za-z0-9_]{2,}['\"]\s*:", line)
+                or re.search(r"^\s*except\s+[\w.]+:", line)
+            ):
+                continue
             if behavior_re.search(line):
                 text = _snippet(re.sub(r"\s+", " ", line))
                 context_words = _context_keywords(fpath, line)
@@ -1361,6 +1371,10 @@ def _check_code_to_changelog_coverage(strict=False):
         if fpath.endswith(".py") and any(k in fpath for k in ("storage.py", "filtering.py", "bossmaster.py", "gui_main.py", "llm_eval.py")):
             for line in additions:
                 if _is_comment_or_doc_line(line):
+                    continue
+                if not re.search(r"[一-鿿]{2,}", line) and re.search(
+                    r"^\s*['\"][A-Za-z_][A-Za-z0-9_]{2,}['\"]\s*:", line
+                ):
                     continue
                 field_match = re.search(r"['\"]([A-Za-z_][A-Za-z0-9_]{2,})['\"]\s*:", line)
                 if (

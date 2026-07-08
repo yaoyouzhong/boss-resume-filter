@@ -11,7 +11,7 @@ boss-resume-filter/
 ├── job_ai_parser.py      # 岗位需求 AI 增强解析模块（基于正则初稿补充优化）
 ├── job_config_diagnostics.py # 岗位配置保存前体检模块
 ├── storage.py            # 候选人数据持久化模块（去重、原子写入、备份恢复）
-├── gui_main.py           # 图形界面主程序（v2.16.1）
+├── gui_main.py           # 图形界面主程序（v2.17）
 ├── gui_dialogs.py        # 独立对话框模块（更新日志、关于弹窗、CHANGELOG 渲染）
 ├── changelog_parser.py   # CHANGELOG 解析模块（版本段落提取、标题解析）
 ├── updater.py            # 自动更新模块（Gitee/GitHub 双源检查、下载替换、完整性校验、启动时自动检查）
@@ -140,7 +140,7 @@ boss-resume-filter/
 - 智能滚动定位 `_find_card_by_scroll()` 三阶段搜索；沟通上限检测 `_detect_limit_popup()`
 - 列表页点击后由 `verify_greeting_success()` 确认按钮变为“继续沟通”或出现明确成功标记；无法确认时返回待确认，不落盘为已沟通并停止本轮连续发送
 - 沟通上限只接受明确耗尽文案，或可见升级弹窗中的“升级动作 + 次数语境”组合；“今日剩余 N 次”不能单独判定为耗尽
-- **打招呼队列**：筛选结果页提供打招呼队列入口；多选候选人后右键加入队列，队列展示发送方式、执行状态和最近结果。有 `greet_context` 的候选人可直接发送，无上下文的候选人需要浏览器在对应岗位的推荐牛人页面；队列支持暂停、移除选中和失败重试
+- **打招呼队列**：筛选结果页提供打招呼队列入口；多选候选人后右键加入队列，加入前过滤已沟通、需人工确认、分数不足或状态不适合自动发送的候选人，并给出跳过汇总。队列展示发送方式、执行状态和最近结果。有 `greet_context` 的候选人可直接发送，无上下文的候选人需要浏览器在对应岗位的推荐牛人页面；队列支持暂停、移除选中和失败重试
 
 ### 停止机制
 
@@ -285,7 +285,7 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 ## 自动更新
 
 - 启动时延迟 12 秒检查（updater 模块延迟加载避免阻塞冷启动），**自适应冷却**（发现新版本 24h / 无更新 4h / 失败 15min 指数退避）；Gitee 优先 → GitHub fallback（Gitee "无更新"时 GitHub 复核防漏报）
-- **Gitee 源**（8s 超时）：`latest.json`；**GitHub 源**（10s 超时）：GitHub Releases API
+- **Gitee 源**（8s 超时，超时后立即重试一次）：`latest.json`；**GitHub 源**（10s 超时）：GitHub Releases API；启动静默检查中 Gitee 短暂失败但 fallback 成功时不打印报错式提示
 - 下载链接：`latest.json` 的 `downloads_cn` 优先（国内快）；弹窗支持「立即更新」和「稍后提醒」
 - **Windows**：下载 EXE → 校验 SHA256 → `update.bat` 替换重启；脚本须清理 `_PYI_*` 环境变量 + `PYINSTALLER_RESET_ENVIRONMENT=1` 防 DLL 缺失
 - **macOS**：.app 运行→下载 ZIP 替换重启；源码→`git pull`

@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.16.1"
+__version__ = "2.17"
 
 import json
 import logging
@@ -16,6 +16,7 @@ import threading
 import time
 import tkinter as tk
 import queue
+import random
 import socket
 import subprocess
 from datetime import datetime, timedelta
@@ -26,6 +27,7 @@ from urllib.parse import urlparse
 import icons
 
 logger = logging.getLogger(__name__)
+from collections import Counter
 from job_config_diagnostics import diagnose_job_config, summarize_job_config_diagnostics
 from constants import (
     API_CANDIDATE_LIMIT_DEFAULT,
@@ -5048,19 +5050,24 @@ class BossFilterGUI:
         self.stats_tree.bind("<Double-Button-1>", lambda e: self._show_selected_job_review())
         self.stats_tree.bind("<Button-3>", self._show_stats_context_menu)
 
-    def _load_stats_candidates(self):
-        """Load candidates with the current stats filters applied."""
+    def _load_stats_candidates(self, job_name=None):
+        """Load candidates with the current stats filters applied.
+
+        When *job_name* is provided it overrides the stats dropdown filter,
+        avoiding a redundant second filter pass in callers like job review.
+        """
         if not CANDIDATES_PATH.exists():
             return []
         with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
             candidates = json.load(f)
         candidates = [c for c in candidates if not c.get('blacklisted')]
 
-        selected_job = self.stats_job_var.get() if hasattr(self, 'stats_job_var') else "全部岗位"
-        if selected_job != "全部岗位":
+        if job_name is None:
+            job_name = self.stats_job_var.get() if hasattr(self, 'stats_job_var') else "全部岗位"
+        if job_name != "全部岗位":
             candidates = [
                 c for c in candidates
-                if c.get('job_name', '').replace(" ", "") == selected_job.replace(" ", "")
+                if c.get('job_name', '').replace(" ", "") == job_name.replace(" ", "")
             ]
 
         time_range = self.stats_time_var.get() if hasattr(self, 'stats_time_var') else "全部"
@@ -5113,10 +5120,7 @@ class BossFilterGUI:
         if not job_name:
             messagebox.showinfo("岗位复盘", "请先在岗位明细中选择一个岗位，或在岗位过滤中选择具体岗位。")
             return
-        candidates = [
-            c for c in self._load_stats_candidates()
-            if c.get('job_name', '').replace(" ", "") == job_name.replace(" ", "")
-        ]
+        candidates = self._load_stats_candidates(job_name=job_name)
         if not candidates:
             messagebox.showinfo("岗位复盘", f"{job_name} 在当前时间范围内没有可复盘候选人。")
             return
@@ -5134,8 +5138,6 @@ class BossFilterGUI:
 
     def _build_job_review_text(self, job_name, candidates):
         """Build a text review for one job from structured feedback and outcomes."""
-        from collections import Counter
-
         qualified = [c for c in candidates if c.get('match_score', 0) >= SCORE_THRESHOLD_PASS]
         feedback_candidates = [c for c in qualified if c.get('feedback_status') in FEEDBACK_STATUS_OPTIONS]
         status_counts = Counter(c.get('feedback_status') for c in feedback_candidates)
@@ -5203,6 +5205,15 @@ class BossFilterGUI:
         ]
         return "\n".join(lines)
 
+    _REASON_SUGGESTIONS = {
+        "规则过宽": "- 多人反馈规则过宽：补充硬性约束或提高核心技能关键词质量。",
+        "规则过窄": "- 多人反馈规则过窄：放宽必要条件，长句条件拆成短关键词。",
+        "技能不匹配": "- 技能不匹配出现较多：复核关键词是否过泛、权重是否偏高。",
+        "行业经验不符": "- 行业经验不符出现较多：把行业经验放入优先项或必要条件，取决于是否硬性要求。",
+        "AI 高估": "- 存在 AI 高估：复核 AI 评估提示词和硬条件复核证据。",
+        "AI 低估": "- 存在 AI 低估：检查简历摘要是否信息不足，必要时使用完整简历二次评估。",
+    }
+
     @staticmethod
     def _build_job_review_suggestions(status_counts, reason_counts, feedback_count):
         if feedback_count == 0:
@@ -5216,18 +5227,9 @@ class BossFilterGUI:
         if false_negative * 2 >= feedback_count and false_negative > 0:
             suggestions.append("- 误杀占比较高：优先检查必要条件是否过严、简单关键词是否写成长句。")
 
-        if reason_counts.get("规则过宽", 0) > 0:
-            suggestions.append("- 多人反馈规则过宽：补充硬性约束或提高核心技能关键词质量。")
-        if reason_counts.get("规则过窄", 0) > 0:
-            suggestions.append("- 多人反馈规则过窄：放宽必要条件，长句条件拆成短关键词。")
-        if reason_counts.get("技能不匹配", 0) > 0:
-            suggestions.append("- 技能不匹配出现较多：复核关键词是否过泛、权重是否偏高。")
-        if reason_counts.get("行业经验不符", 0) > 0:
-            suggestions.append("- 行业经验不符出现较多：把行业经验放入优先项或必要条件，取决于是否硬性要求。")
-        if reason_counts.get("AI 高估", 0) > 0:
-            suggestions.append("- 存在 AI 高估：复核 AI 评估提示词和硬条件复核证据。")
-        if reason_counts.get("AI 低估", 0) > 0:
-            suggestions.append("- 存在 AI 低估：检查简历摘要是否信息不足，必要时使用完整简历二次评估。")
+        for reason, suggestion in BossFilterGUI._REASON_SUGGESTIONS.items():
+            if reason_counts.get(reason, 0) > 0:
+                suggestions.append(suggestion)
 
         return suggestions or ["- 暂无明确规则调整方向；继续积累结构化反馈后再复盘。"]
 
@@ -7067,7 +7069,7 @@ class BossFilterGUI:
         except Exception:
             # 写盘失败不影响内存状态，清理临时文件
             try:
-                os.remove(get_api_config_path(for_write=True).with_suffix('.json.tmp'))
+                os.remove(write_path.with_suffix('.json.tmp'))
             except OSError:
                 pass
         self._mark_api_config_ui_current()
@@ -9392,7 +9394,7 @@ class BossFilterGUI:
             return True
 
         has_error = any(issue.severity == "error" for issue in issues)
-        text = summarize_job_config_diagnostics(job_name, rule)
+        text = summarize_job_config_diagnostics(job_name, rule, issues=issues)
         return self._show_job_config_diagnostics_dialog(text, has_error)
 
     def _show_job_config_diagnostics_dialog(self, text, has_error=False):
@@ -9402,16 +9404,9 @@ class BossFilterGUI:
         win.title("岗位配置体检")
         win.transient(self.root)
         win.grab_set()
+        win.withdraw()
 
         scale = self.dpi_scale * self.zoom_factor
-        width = int(720 * scale)
-        height = int(520 * scale)
-        try:
-            x = self.root.winfo_rootx() + max(40, (self.root.winfo_width() - width) // 2)
-            y = self.root.winfo_rooty() + max(40, (self.root.winfo_height() - height) // 2)
-            win.geometry(f"{width}x{height}+{x}+{y}")
-        except Exception:
-            win.geometry(f"{width}x{height}")
 
         body = ttk.Frame(win, padding=int(16 * scale))
         body.pack(fill="both", expand=True)
@@ -9453,6 +9448,9 @@ class BossFilterGUI:
                 side="right", padx=(0, int(8 * scale))
             )
 
+        _place_window_centered(win, int(720 * scale), int(520 * scale), parent=self.root)
+        win.deiconify()
+
         try:
             win.wait_window()
         except Exception:
@@ -9467,8 +9465,12 @@ class BossFilterGUI:
             messagebox.showwarning("警告", "岗位名称不能为空")
             return
 
-        # 规范化岗位名称：去除多余空格
-        normalized_job_name = re.sub(r'\s+', ' ', job_name).strip()
+        # 先验证表单输入（薪资、经验、年龄等），再弹交互提示
+        try:
+            normalized_job_name, rule = self._build_current_job_rule_preview()
+        except ValueError as e:
+            messagebox.showwarning("警告", str(e))
+            return
 
         # 检查是否已存在相同（规范化后）的岗位
         existing_key_to_delete = None
@@ -9478,17 +9480,11 @@ class BossFilterGUI:
                 existing_key_to_delete = key
                 break
 
-        if existing_key_to_delete and existing_key_to_delete != job_name:
+        if existing_key_to_delete and existing_key_to_delete != normalized_job_name:
             if messagebox.askyesno("岗位已存在", f"检测到重复岗位：'{existing_key_to_delete}'\n是否覆盖更新？"):
                 pass
             else:
                 return
-
-        try:
-            normalized_job_name, rule = self._build_current_job_rule_preview()
-        except ValueError as e:
-            messagebox.showwarning("警告", str(e))
-            return
 
         if not self._confirm_job_config_diagnostics(normalized_job_name, rule):
             return
@@ -13206,9 +13202,12 @@ class BossFilterGUI:
         return f"{geek_id}|{job_name}"
 
     @staticmethod
+    def _has_direct_send_context(candidate):
+        return bool((candidate.get('greet_context') or {}).get('chat_start'))
+
+    @staticmethod
     def _greet_queue_method_label(candidate):
-        context = candidate.get('greet_context') or {}
-        return "可直接发送" if (context.get('chat_start') or {}) else "需要页面支持"
+        return "可直接发送" if BossFilterGUI._has_direct_send_context(candidate) else "需要页面支持"
 
     def _build_greet_queue_item(self, candidate, source="manual"):
         key = self._greet_queue_key(candidate)
@@ -13493,7 +13492,7 @@ class BossFilterGUI:
     def _confirm_start_greet_queue(self, pending):
         direct = sum(
             1 for item in pending
-            if (((item.get('candidate') or {}).get('greet_context') or {}).get('chat_start') or {})
+            if self._has_direct_send_context(item.get('candidate') or {})
         )
         list_page = len(pending) - direct
         pending_confirm = sum(1 for item in self.greet_queue_items if item.get('status') == "待确认")
@@ -13582,29 +13581,32 @@ class BossFilterGUI:
             return False, current_url, page_text, "当前页面不是 BOSS 直聘页面"
         return True, current_url, page_text, ""
 
+    def _reconnect_browser_or_warn(self, parent, log_prefix, warn_title, warn_text):
+        """Try to reconnect the browser; return True on success."""
+        self.append_log(f"[打招呼队列] {log_prefix}，正在尝试重连...")
+        if not self._try_reconnect_browser():
+            self.root.after(0, lambda: messagebox.showwarning(
+                warn_title, warn_text, parent=parent,
+            ))
+            return False
+        self.append_log("[打招呼队列] 浏览器重连成功")
+        return True
+
     def _ensure_greet_queue_browser(self, parent):
         if not self.browser_page:
-            self.append_log("[打招呼队列] 浏览器未连接，正在尝试重连...")
-            if not self._try_reconnect_browser():
-                self.root.after(0, lambda: messagebox.showwarning(
-                    "浏览器未连接",
-                    "无法连接到 Chrome 浏览器。\n请切换到「运行控制」页点击「检测/连接浏览器」。",
-                    parent=parent,
-                ))
+            if not self._reconnect_browser_or_warn(
+                parent, "浏览器未连接", "浏览器未连接",
+                "无法连接到 Chrome 浏览器。\n请切换到「运行控制」页点击「检测/连接浏览器」。",
+            ):
                 return False
-            self.append_log("[打招呼队列] 浏览器重连成功")
         try:
             self.browser_page.run_js('return 1')
         except Exception:
-            self.append_log("[打招呼队列] 浏览器连接已断开，正在尝试重连...")
-            if not self._try_reconnect_browser():
-                self.root.after(0, lambda: messagebox.showwarning(
-                    "浏览器连接断开",
-                    "浏览器连接已断开且无法自动重连。\n请切换到「运行控制」页点击「检测/连接浏览器」。",
-                    parent=parent,
-                ))
+            if not self._reconnect_browser_or_warn(
+                parent, "浏览器连接已断开", "浏览器连接断开",
+                "浏览器连接已断开且无法自动重连。\n请切换到「运行控制」页点击「检测/连接浏览器」。",
+            ):
                 return False
-            self.append_log("[打招呼队列] 浏览器重连成功")
         ok, current_url, _page_text, reason = self._get_greet_queue_page_state()
         if not ok:
             self.append_log(f"[打招呼队列] {reason}")
@@ -13619,7 +13621,7 @@ class BossFilterGUI:
 
         pending_items = [item for item in self.greet_queue_items if item.get('status') == "待发送"]
         needs_list_page = any(
-            not (((item.get('candidate') or {}).get('greet_context') or {}).get('chat_start') or {})
+            not self._has_direct_send_context(item.get('candidate') or {})
             for item in pending_items
         )
         if needs_list_page and not self._is_boss_recommend_url(current_url):
@@ -13635,7 +13637,6 @@ class BossFilterGUI:
         return True
 
     def _run_greet_queue_worker(self):
-        import random
         connection_lock_acquired = False
         parent = self.root
         success_count = 0
@@ -13680,7 +13681,7 @@ class BossFilterGUI:
                 self.append_log(f"[打招呼队列] 正在向 {name} 打招呼...")
 
                 context = candidate.get('greet_context') or {}
-                if (context.get('chat_start') or {}):
+                if self._has_direct_send_context(candidate):
                     success, msg = send_greeting_with_context(
                         self.browser_page,
                         context,
@@ -14215,7 +14216,6 @@ class BossFilterGUI:
                         # 打招呼间隔，避免触发风控
                         if self.stop_event.is_set():
                             break
-                        import random
                         time.sleep(random.uniform(2, 4))
 
                 # 再处理没有 greet_context 的候选人（需要页面支持）
@@ -14313,7 +14313,6 @@ class BossFilterGUI:
                                         "停止批量打招呼并请人工核实"
                                     )
                                     break
-                                import random
                                 time.sleep(random.uniform(2, 4))
                                 continue
                             if success:
@@ -14349,7 +14348,6 @@ class BossFilterGUI:
                             # 打招呼间隔，避免触发风控
                             if self.stop_event.is_set():
                                 break
-                            import random
                             time.sleep(random.uniform(2, 4))
 
                 # 完成后刷新结果

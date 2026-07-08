@@ -234,17 +234,13 @@ def check_github_release(repo="yaoyouzhong/boss-resume-filter"):
 
 def _get_gitee_latest_response(latest_json_url):
     """Fetch Gitee latest.json, retrying once for cold raw-file timeouts."""
-    last_timeout = None
     for attempt in range(2):
         try:
             return requests.get(latest_json_url, timeout=UPDATE_TIMEOUT_GITEE)
-        except requests.exceptions.Timeout as exc:
-            last_timeout = exc
+        except requests.exceptions.Timeout:
             if attempt == 0:
                 continue
             raise
-    if last_timeout:
-        raise last_timeout
 
 
 def check_gitee_latest(latest_json_url="https://gitee.com/yaoyouzhong/boss-resume-filter/raw/master/latest.json"):

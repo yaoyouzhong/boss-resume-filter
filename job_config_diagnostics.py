@@ -75,9 +75,18 @@ def diagnose_job_config(job_name: str, rule: dict[str, Any]) -> list[JobConfigIs
     return issues
 
 
-def summarize_job_config_diagnostics(job_name: str, rule: dict[str, Any]) -> str:
-    """Format diagnosis result for GUI display."""
-    issues = diagnose_job_config(job_name, rule)
+def summarize_job_config_diagnostics(
+    job_name: str,
+    rule: dict[str, Any],
+    issues: list[JobConfigIssue] | None = None,
+) -> str:
+    """Format diagnosis result for GUI display.
+
+    When *issues* is provided the expensive ``diagnose_job_config`` call is
+    skipped — useful when the caller already computed the issues list.
+    """
+    if issues is None:
+        issues = diagnose_job_config(job_name, rule)
     title = _clean_text(job_name) or "当前岗位"
     if not issues:
         return f"{title} 配置体检通过。\n\n未发现明显配置冲突。"
