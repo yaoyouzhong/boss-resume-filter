@@ -55,6 +55,21 @@ API_CONFIG_PATH = get_api_config_path()
 CHROME_DEBUG_PORT_FILE = BASE_DIR / ".chrome_debug_port"
 
 FEEDBACK_STATUS_OPTIONS = ["合适", "误推", "误杀", "放弃"]
+FEEDBACK_REASON_OPTIONS = [
+    "技能不匹配",
+    "行业经验不符",
+    "年限判断偏差",
+    "学历/学校不符",
+    "薪资不合适",
+    "地点不合适",
+    "求职状态不合适",
+    "AI 高估",
+    "AI 低估",
+    "规则过宽",
+    "规则过窄",
+    "简历信息不足",
+    "其他",
+]
 FOLLOWUP_STATUS_OPTIONS = ["未沟通", "已打招呼", "已回复", "待约面", "已约面", "不合适", "已归档"]
 
 # 服务商显示名称映射（内部键 -> 显示名称）
@@ -5016,6 +5031,229 @@ class BossFilterGUI:
         tree_scroll_x.grid(row=1, column=0, sticky="ew", padx=int(15 * self.dpi_scale * self.zoom_factor))
         table_container.grid_rowconfigure(0, weight=1)
         table_container.grid_columnconfigure(0, weight=1)
+        self.stats_tree.bind("<Double-Button-1>", lambda e: self._show_selected_job_review())
+        self.stats_tree.bind("<Button-3>", self._show_stats_context_menu)
+
+    def _load_stats_candidates(self):
+        """Load candidates with the current stats filters applied."""
+        if not CANDIDATES_PATH.exists():
+            return []
+        with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
+            candidates = json.load(f)
+        candidates = [c for c in candidates if not c.get('blacklisted')]
+
+        selected_job = self.stats_job_var.get() if hasattr(self, 'stats_job_var') else "全部岗位"
+        if selected_job != "全部岗位":
+            candidates = [
+                c for c in candidates
+                if c.get('job_name', '').replace(" ", "") == selected_job.replace(" ", "")
+            ]
+
+        time_range = self.stats_time_var.get() if hasattr(self, 'stats_time_var') else "全部"
+        if time_range != "全部":
+            cutoff = self._stats_time_cutoff(time_range)
+            if cutoff:
+                cutoff_str = cutoff.strftime("%Y%m%d_%H%M%S")
+                candidates = [c for c in candidates if c.get('batch_timestamp', '') >= cutoff_str]
+        return candidates
+
+    @staticmethod
+    def _stats_time_cutoff(time_range):
+        now = datetime.now()
+        if time_range == "今天":
+            return now.replace(hour=0, minute=0, second=0, microsecond=0)
+        if time_range == "本周":
+            days_since_monday = now.weekday()
+            return (now - timedelta(days=days_since_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
+        if time_range == "本月":
+            return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return None
+
+    def _show_stats_context_menu(self, event):
+        item = self.stats_tree.identify_row(event.y)
+        if not item:
+            return
+        self.stats_tree.selection_set(item)
+        menu = tk.Menu(self.root, tearoff=0, font=(FONT_FAMILY, int(11 * self.font_scale)))
+        icon_review = self.icons.button('clipboard', self.colors['text_primary'])
+        menu._icon_refs = [icon_review]
+        menu.add_command(
+            label=" 岗位复盘",
+            image=icon_review,
+            compound=tk.LEFT,
+            command=self._show_selected_job_review,
+        )
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _selected_stats_job_name(self):
+        selection = self.stats_tree.selection() if hasattr(self, 'stats_tree') else ()
+        if selection:
+            values = self.stats_tree.item(selection[0], 'values')
+            if values:
+                return str(values[0])
+        selected_job = self.stats_job_var.get() if hasattr(self, 'stats_job_var') else "全部岗位"
+        return selected_job if selected_job != "全部岗位" else ""
+
+    def _show_selected_job_review(self):
+        job_name = self._selected_stats_job_name()
+        if not job_name:
+            messagebox.showinfo("岗位复盘", "请先在岗位明细中选择一个岗位，或在岗位过滤中选择具体岗位。")
+            return
+        candidates = [
+            c for c in self._load_stats_candidates()
+            if c.get('job_name', '').replace(" ", "") == job_name.replace(" ", "")
+        ]
+        if not candidates:
+            messagebox.showinfo("岗位复盘", f"{job_name} 在当前时间范围内没有可复盘候选人。")
+            return
+        text = self._build_job_review_text(job_name, candidates)
+        self._show_text_dialog(f"岗位复盘 - {job_name}", text, width=760, height=560)
+
+    @staticmethod
+    def _feedback_reasons(candidate):
+        reasons = candidate.get('feedback_reasons') or []
+        if isinstance(reasons, str):
+            reasons = [r.strip() for r in re.split(r'[,，、/;；]', reasons) if r.strip()]
+        if not isinstance(reasons, list):
+            return []
+        return [str(r).strip() for r in reasons if str(r).strip()]
+
+    def _build_job_review_text(self, job_name, candidates):
+        """Build a text review for one job from structured feedback and outcomes."""
+        from collections import Counter
+
+        qualified = [c for c in candidates if c.get('match_score', 0) >= SCORE_THRESHOLD_PASS]
+        feedback_candidates = [c for c in qualified if c.get('feedback_status') in FEEDBACK_STATUS_OPTIONS]
+        status_counts = Counter(c.get('feedback_status') for c in feedback_candidates)
+        reason_counts = Counter()
+        false_positive_reasons = Counter()
+        false_negative_reasons = Counter()
+        ai_bias_counts = Counter()
+
+        for c in feedback_candidates:
+            reasons = self._feedback_reasons(c)
+            reason_counts.update(reasons)
+            if c.get('feedback_status') == "误推":
+                false_positive_reasons.update(reasons)
+            elif c.get('feedback_status') == "误杀":
+                false_negative_reasons.update(reasons)
+            for reason in reasons:
+                if reason in {"AI 高估", "AI 低估"}:
+                    ai_bias_counts[reason] += 1
+
+        greeted = sum(1 for c in qualified if c.get('greet_sent'))
+        replied_statuses = {"已回复", "待约面", "已约面"}
+        replied = sum(1 for c in qualified if c.get('followup_status') in replied_statuses)
+        interviewed = sum(1 for c in qualified if c.get('followup_status') == "已约面")
+        avg_score = sum(c.get('match_score', 0) for c in qualified) / len(qualified) if qualified else 0
+
+        def fmt_counter(counter, empty="暂无"):
+            if not counter:
+                return [f"- {empty}"]
+            return [f"- {name}: {count}" for name, count in counter.most_common(8)]
+
+        suggestions = self._build_job_review_suggestions(
+            status_counts,
+            reason_counts,
+            len(feedback_candidates),
+        )
+
+        lines = [
+            f"{job_name} 岗位复盘",
+            "",
+            "【样本概览】",
+            f"- 通过筛选：{len(qualified)} 人",
+            f"- 已打招呼：{greeted} 人",
+            f"- 已回复：{replied} 人",
+            f"- 已约面：{interviewed} 人",
+            f"- 平均分：{avg_score:.1f}" if qualified else "- 平均分：暂无",
+            f"- 已反馈：{len(feedback_candidates)} 人",
+            "",
+            "【反馈分布】",
+            *fmt_counter(status_counts, "暂无反馈状态"),
+            "",
+            "【结构化原因 Top】",
+            *fmt_counter(reason_counts, "暂无结构化原因"),
+            "",
+            "【误推原因】",
+            *fmt_counter(false_positive_reasons, "暂无误推原因"),
+            "",
+            "【误杀原因】",
+            *fmt_counter(false_negative_reasons, "暂无误杀原因"),
+            "",
+            "【AI 偏差】",
+            *fmt_counter(ai_bias_counts, "暂无 AI 偏差反馈"),
+            "",
+            "【建议调整方向】",
+            *suggestions,
+        ]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_job_review_suggestions(status_counts, reason_counts, feedback_count):
+        if feedback_count == 0:
+            return ["- 先积累反馈样本；没有结构化反馈时不建议调整岗位规则。"]
+
+        suggestions = []
+        false_positive = status_counts.get("误推", 0)
+        false_negative = status_counts.get("误杀", 0)
+        if false_positive * 2 >= feedback_count and false_positive > 0:
+            suggestions.append("- 误推占比较高：优先检查核心技能是否过泛、必要条件是否缺失。")
+        if false_negative * 2 >= feedback_count and false_negative > 0:
+            suggestions.append("- 误杀占比较高：优先检查必要条件是否过严、简单关键词是否写成长句。")
+
+        if reason_counts.get("规则过宽", 0) > 0:
+            suggestions.append("- 多人反馈规则过宽：补充硬性约束或提高核心技能关键词质量。")
+        if reason_counts.get("规则过窄", 0) > 0:
+            suggestions.append("- 多人反馈规则过窄：放宽必要条件，长句条件拆成短关键词。")
+        if reason_counts.get("技能不匹配", 0) > 0:
+            suggestions.append("- 技能不匹配出现较多：复核关键词是否过泛、权重是否偏高。")
+        if reason_counts.get("行业经验不符", 0) > 0:
+            suggestions.append("- 行业经验不符出现较多：把行业经验放入优先项或必要条件，取决于是否硬性要求。")
+        if reason_counts.get("AI 高估", 0) > 0:
+            suggestions.append("- 存在 AI 高估：复核 AI 评估提示词和硬条件复核证据。")
+        if reason_counts.get("AI 低估", 0) > 0:
+            suggestions.append("- 存在 AI 低估：检查简历摘要是否信息不足，必要时使用完整简历二次评估。")
+
+        return suggestions or ["- 暂无明确规则调整方向；继续积累结构化反馈后再复盘。"]
+
+    def _show_text_dialog(self, title, text, width=700, height=520):
+        win = tk.Toplevel(self.root)
+        win.title(title)
+        win.transient(self.root)
+        win.grab_set()
+        win.withdraw()
+        scale = self.dpi_scale * self.zoom_factor
+
+        body = ttk.Frame(win, style='Page.TFrame', padding=int(16 * scale))
+        body.pack(fill="both", expand=True)
+        text_widget = tk.Text(
+            body,
+            wrap="word",
+            font=self.font_log,
+            bg="#FFFFFF",
+            fg=self.colors['text_primary'],
+            relief="solid",
+            bd=1,
+        )
+        scroll = ttk.Scrollbar(body, orient="vertical", command=text_widget.yview)
+        text_widget.configure(yscrollcommand=scroll.set)
+        text_widget.insert("1.0", text)
+        text_widget.configure(state="disabled")
+        text_widget.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        btn_row = ttk.Frame(win, style='Page.TFrame', padding=(0, 0, int(16 * scale), int(12 * scale)))
+        btn_row.pack(fill="x")
+
+        def close():
+            win.grab_release()
+            win.destroy()
+
+        ttk.Button(btn_row, text="关闭", command=close).pack(side="right")
+        win.protocol("WM_DELETE_WINDOW", close)
+        _place_window_centered(win, int(width * scale), int(height * scale), parent=self.root)
+        win.deiconify()
 
     def refresh_stats(self):
         """刷新数据统计页面 - 按岗位维度聚合"""
@@ -5036,35 +5274,7 @@ class BossFilterGUI:
             self._stats_tree_fingerprint = None
 
         try:
-            if not CANDIDATES_PATH.exists():
-                return
-
-            with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                candidates = json.load(f)
-            candidates = [c for c in candidates if not c.get('blacklisted')]
-
-            # 岗位过滤
-            selected_job = self.stats_job_var.get()
-            if selected_job != "全部岗位":
-                candidates = [c for c in candidates if c.get('job_name', '') == selected_job.replace(" ", "")]
-
-            # 时间范围过滤
-            time_range = self.stats_time_var.get()
-            if time_range != "全部":
-                now = datetime.now()
-                if time_range == "今天":
-                    cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                elif time_range == "本周":
-                    days_since_monday = now.weekday()
-                    cutoff = (now - timedelta(days=days_since_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
-                elif time_range == "本月":
-                    cutoff = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-                else:
-                    cutoff = None
-
-                if cutoff:
-                    cutoff_str = cutoff.strftime("%Y%m%d_%H%M%S")
-                    candidates = [c for c in candidates if c.get('batch_timestamp', '') >= cutoff_str]
+            candidates = self._load_stats_candidates()
 
             # 汇总统计（只计通过分的候选人）
             qualified = [c for c in candidates if c.get('match_score', 0) >= SCORE_THRESHOLD_PASS]
@@ -12416,7 +12626,7 @@ class BossFilterGUI:
         _place_window_centered(win, int(460 * self.dpi_scale * self.zoom_factor), int(360 * self.dpi_scale * self.zoom_factor), parent=_parent)
         win.deiconify()
 
-    def _update_candidate_feedback(self, geek_id, job_name, status, note):
+    def _update_candidate_feedback(self, geek_id, job_name, status, reasons, note):
         """更新候选人的人工反馈。"""
         if not CANDIDATES_PATH.exists():
             return False
@@ -12428,6 +12638,7 @@ class BossFilterGUI:
         for c in candidates:
             if c.get('geek_id') == geek_id and c.get('job_name', '').replace(" ", "") == job_name.replace(" ", ""):
                 c['feedback_status'] = status
+                c['feedback_reasons'] = reasons
                 c['feedback_note'] = note.strip()
                 c['feedback_updated_at'] = feedback_time
                 updated = True
@@ -12452,20 +12663,24 @@ class BossFilterGUI:
         win.withdraw()
         win.configure(bg=self.colors['bg_main'])
 
-        pad = int(18 * self.dpi_scale * self.zoom_factor)
+        scale = self.dpi_scale * self.zoom_factor
+        field_width = 30
+        pad = int(16 * scale)
         frame = ttk.Frame(win, style='Page.TFrame', padding=pad)
         frame.pack(fill="both", expand=True)
+        content = ttk.Frame(frame, style='Page.TFrame')
+        content.pack(anchor='w', fill="x", expand=False)
 
         ttk.Label(
-            frame,
+            content,
             text=f"{candidate.get('name', '未知')}｜{candidate.get('job_name', '未知')}",
             font=(FONT_FAMILY, int(13 * self.font_scale)),
             foreground=self.colors['primary'],
             background=self.colors['bg_main']
-        ).pack(anchor='w', pady=(0, int(12 * self.dpi_scale * self.zoom_factor)))
+        ).pack(anchor='w', pady=(0, int(14 * scale)))
 
         ttk.Label(
-            frame,
+            content,
             text="反馈状态",
             font=(FONT_FAMILY, int(12 * self.font_scale)),
             style='Page.TLabel'
@@ -12473,25 +12688,62 @@ class BossFilterGUI:
 
         status_var = tk.StringVar(value=candidate.get('feedback_status') or FEEDBACK_STATUS_OPTIONS[0])
         status_combo = ttk.Combobox(
-            frame,
+            content,
             textvariable=status_var,
             values=FEEDBACK_STATUS_OPTIONS,
             state='readonly',
             font=(FONT_FAMILY, int(12 * self.font_scale)),
-            width=18
+            width=field_width
         )
-        status_combo.pack(anchor='w', fill='x', pady=(int(5 * self.dpi_scale * self.zoom_factor), int(12 * self.dpi_scale * self.zoom_factor)))
+        status_combo.pack(anchor='w', fill='x', pady=(int(5 * scale), int(10 * scale)))
 
         ttk.Label(
-            frame,
+            content,
+            text="结构化原因（可多选）",
+            font=(FONT_FAMILY, int(12 * self.font_scale)),
+            style='Page.TLabel'
+        ).pack(anchor='w')
+
+        reasons_frame = ttk.Frame(content, style='Page.TFrame')
+        reasons_frame.pack(anchor='w', pady=(int(6 * scale), int(10 * scale)))
+        reason_columns = 3
+        for col in range(reason_columns):
+            reasons_frame.grid_columnconfigure(col, weight=0)
+        existing_reasons = set(self._feedback_reasons(candidate))
+        reason_vars = {}
+        reason_style = ttk.Style()
+        reason_style.configure(
+            "FeedbackReason.TCheckbutton",
+            font=(FONT_FAMILY, int(11 * self.font_scale)),
+        )
+        for idx, reason in enumerate(FEEDBACK_REASON_OPTIONS):
+            var = tk.BooleanVar(value=reason in existing_reasons)
+            reason_vars[reason] = var
+            cb = ttk.Checkbutton(
+                reasons_frame,
+                text=reason,
+                variable=var,
+                style="FeedbackReason.TCheckbutton",
+            )
+            cb.grid(
+                row=idx // reason_columns,
+                column=idx % reason_columns,
+                sticky='w',
+                padx=(0, int(10 * scale)),
+                pady=int(2 * scale),
+            )
+
+        ttk.Label(
+            content,
             text="备注",
             font=(FONT_FAMILY, int(12 * self.font_scale)),
             style='Page.TLabel'
         ).pack(anchor='w')
 
         note_text = tk.Text(
-            frame,
-            height=5,
+            content,
+            height=3,
+            width=field_width,
             wrap='word',
             font=(FONT_FAMILY, int(12 * self.font_scale)),
             bg=self.colors['bg_card'],
@@ -12499,7 +12751,7 @@ class BossFilterGUI:
             relief='solid',
             bd=1
         )
-        note_text.pack(fill='both', expand=True, pady=(int(5 * self.dpi_scale * self.zoom_factor), int(14 * self.dpi_scale * self.zoom_factor)))
+        note_text.pack(anchor='w', fill='x', expand=False, pady=(int(5 * scale), int(18 * scale)))
         if candidate.get('feedback_note'):
             note_text.insert('1.0', candidate.get('feedback_note', ''))
 
@@ -12512,6 +12764,7 @@ class BossFilterGUI:
 
         def save_feedback():
             status = status_var.get().strip()
+            reasons = [reason for reason, var in reason_vars.items() if var.get()]
             note = note_text.get('1.0', 'end').strip()
             if status not in FEEDBACK_STATUS_OPTIONS:
                 messagebox.showerror("错误", "请选择有效的反馈状态")
@@ -12521,12 +12774,14 @@ class BossFilterGUI:
                     candidate.get('geek_id'),
                     candidate.get('job_name', ''),
                     status,
+                    reasons,
                     note
                 )
                 if not updated:
                     messagebox.showerror("错误", "保存反馈失败：未找到候选人")
                     return
                 candidate['feedback_status'] = status
+                candidate['feedback_reasons'] = reasons
                 candidate['feedback_note'] = note
                 candidate['feedback_updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
                 self._regenerate_excel()
@@ -12539,7 +12794,7 @@ class BossFilterGUI:
         ttk.Button(btn_frame, text="取消", command=close).pack(side='left')
 
         win.protocol("WM_DELETE_WINDOW", close)
-        _place_window_centered(win, int(460 * self.dpi_scale * self.zoom_factor), int(360 * self.dpi_scale * self.zoom_factor), parent=_parent)
+        _place_window_centered(win, int(440 * scale), int(485 * scale), parent=_parent)
         win.deiconify()
 
     def _format_candidate_detail(self, c):
@@ -12697,6 +12952,9 @@ class BossFilterGUI:
             lines.append("")
             lines.append("【人工反馈】")
             lines.append(f"  状态：{c.get('feedback_status')}")
+            reasons = self._feedback_reasons(c)
+            if reasons:
+                lines.append(f"  原因：{'、'.join(reasons)}")
             if c.get('feedback_updated_at'):
                 lines.append(f"  时间：{c.get('feedback_updated_at')}")
             if c.get('feedback_note'):

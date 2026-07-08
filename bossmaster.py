@@ -529,6 +529,14 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
                 return "、".join(tags)
         return summary_info_skills
 
+    def _format_feedback_reasons(c: dict[str, Any]) -> str:
+        reasons = c.get('feedback_reasons') or []
+        if isinstance(reasons, str):
+            return reasons
+        if isinstance(reasons, list):
+            return "、".join(str(r).strip() for r in reasons if str(r).strip())
+        return ""
+
     try:
         # 按匹配分从高到低排序
         visible_candidates = [c for c in candidates if not c.get('blacklisted')]
@@ -605,6 +613,7 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
                 '跟进备注': c.get('followup_note', ''),
                 '跟进时间': c.get('followup_updated_at', ''),
                 '人工反馈': c.get('feedback_status', ''),
+                '反馈原因': _format_feedback_reasons(c),
                 '反馈备注': c.get('feedback_note', ''),
                 '反馈时间': c.get('feedback_updated_at', ''),
                 '是否需人工确认': '是' if c.get('manual_review_required') else '否',
@@ -623,7 +632,7 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
             '匹配分', '推荐指数', '技能匹配', '评分拆解', '评分解释', '命中证据',
             '简历评估', '简历评估理由', '技能深度', '经验质量', '行业匹配', '发展潜力',
             '是否打招呼', '跟进状态', '跟进备注', '跟进时间',
-            '人工反馈', '反馈备注', '反馈时间',
+            '人工反馈', '反馈原因', '反馈备注', '反馈时间',
             '是否需人工确认', '风险提示', '自动打招呼阻断原因',
             '批次', '详细信息',
         ]

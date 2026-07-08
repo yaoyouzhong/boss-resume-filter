@@ -129,6 +129,7 @@ def test_dedupe_preserves_feedback_from_old_to_new():
             "job_name": "Java",
             "match_score": 70,
             "feedback_status": "误推",
+            "feedback_reasons": ["技能不匹配", "规则过宽"],
             "feedback_note": "项目深度不足",
             "feedback_updated_at": "20260608_100000",
         },
@@ -137,6 +138,7 @@ def test_dedupe_preserves_feedback_from_old_to_new():
     assert len(result) == 1
     assert result[0]["match_score"] == 80
     assert result[0]["feedback_status"] == "误推"
+    assert result[0]["feedback_reasons"] == ["技能不匹配", "规则过宽"]
     assert result[0]["feedback_note"] == "项目深度不足"
 
 
@@ -149,6 +151,7 @@ def test_dedupe_preserves_feedback_from_new_to_old():
             "job_name": "Java",
             "match_score": 70,
             "feedback_status": "合适",
+            "feedback_reasons": ["行业经验不符"],
             "feedback_note": "可约面",
             "feedback_updated_at": "20260608_110000",
         },
@@ -156,6 +159,7 @@ def test_dedupe_preserves_feedback_from_new_to_old():
     assert len(result) == 1
     assert result[0]["match_score"] == 80
     assert result[0]["feedback_status"] == "合适"
+    assert result[0]["feedback_reasons"] == ["行业经验不符"]
     assert result[0]["feedback_note"] == "可约面"
 
 

@@ -967,6 +967,65 @@ def test_stats_page_greeted_uses_chat_icon_consistently():
     assert '("mail", "已打招呼", "greeted"' not in stats_block
 
 
+def test_stats_page_review_entry_is_row_level_not_toolbar_button():
+    """岗位复盘保留在岗位行双击/右键，避免统计页顶部按钮噪音。"""
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    create_block = source[source.index("def create_stats_page"):]
+    create_block = create_block[:create_block.index("\n    def _load_stats_candidates")]
+
+    assert "btn_job_review" not in create_block
+    assert 'self.stats_tree.bind("<Double-Button-1>", lambda e: self._show_selected_job_review())' in create_block
+    assert 'self.stats_tree.bind("<Button-3>", self._show_stats_context_menu)' in create_block
+
+
+def test_feedback_dialog_status_control_stays_inside_form_content():
+    """反馈状态下拉框必须和标签在同一表单容器内，避免被 pack 到弹窗底部。"""
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    feedback_block = source[source.index("def _mark_candidate_feedback"):]
+    feedback_block = feedback_block[:feedback_block.index("\n    def _format_candidate_detail")]
+
+    assert "status_combo = ttk.Combobox(\n            content," in feedback_block
+    assert "status_combo.pack(anchor='w', fill='x'" in feedback_block
+    assert "note_text.pack(anchor='w', fill='x'" in feedback_block
+    assert 'text="结构化原因（可多选）",\n            font=(FONT_FAMILY, int(12 * self.font_scale))' in feedback_block
+
+
+def test_job_review_text_aggregates_structured_feedback_reasons():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidates = [
+        {
+            "job_name": "Java",
+            "match_score": 80,
+            "greet_sent": True,
+            "followup_status": "已回复",
+            "feedback_status": "误推",
+            "feedback_reasons": ["技能不匹配", "规则过宽"],
+        },
+        {
+            "job_name": "Java",
+            "match_score": 76,
+            "feedback_status": "误杀",
+            "feedback_reasons": ["规则过窄", "AI 低估"],
+        },
+        {
+            "job_name": "Java",
+            "match_score": 60,
+            "feedback_status": "合适",
+            "feedback_reasons": ["行业经验不符"],
+        },
+    ]
+
+    text = gui._build_job_review_text("Java", candidates)
+
+    assert "Java 岗位复盘" in text
+    assert "- 已反馈：3 人" in text
+    assert "- 技能不匹配: 1" in text
+    assert "- 规则过宽: 1" in text
+    assert "- 规则过窄: 1" in text
+    assert "误推占比较高" not in text
+    assert "规则过宽" in text
+
+
 def test_education_browser_reuses_live_page():
     gui = object.__new__(BossFilterGUI)
     live_tab = Mock()

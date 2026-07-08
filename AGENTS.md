@@ -208,7 +208,7 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 - 淘汰原因排序：学历→经验→年龄→地点→薪资→评分→其他
 - 硬条件检查顺序：学历→经验→年龄→地点→薪资→必要条件→技术关键词
 - 评分输出：`score_breakdown`（各项分拆）、`score_explanation`（文本解释）、`keyword_evidence`（命中证据含原文片段）
-- 人工反馈：`feedback_status`（合适/误推/误杀/放弃）、`feedback_note`、`feedback_updated_at`；去重时保留反馈字段
+- 人工反馈：`feedback_status`（合适/误推/误杀/放弃）、`feedback_reasons`（结构化原因列表）、`feedback_note`、`feedback_updated_at`；去重时保留反馈字段
 - 跟进状态：`followup_status`（未沟通/已打招呼/已回复/待约面/已约面/不合适/已归档）、`followup_note`、`followup_updated_at`；去重时保留
 - 黑名单：`blacklisted`、`blacklist_reason`、`blacklisted_at`；按 `geek_id` 跨岗位屏蔽，后续扫描、统计和 Excel 导出跳过，清空候选人时保留
 - 打招呼上下文：`greet_context`、`greet_context_updated_at`；去重时保留（高分新记录覆盖其他字段时不丢失上下文）
@@ -242,6 +242,7 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 - 明细 Treeview 9 列精简展示：岗位名称、筛选分布（总数+强推/推荐/待定）、已打招呼(率)、已反馈、合适率、误推率、已回复(率)、已约面(率)、平均分
 - 合适率/误推率只按有效人工反馈计算（合适/误推/误杀/放弃）；已回复/已约面列内嵌百分比（按已打招呼及后续状态计算）
 - 明细 Treeview 与汇总卡片共用同一套日期过滤逻辑（`_get_result_date_filter`），口径一致
+- 岗位明细支持岗位级复盘，汇总结构化反馈原因、误推/误杀原因和建议调整方向；复盘只给建议，不自动修改岗位配置
 
 ### 页面选择器配置（selectors.json）
 

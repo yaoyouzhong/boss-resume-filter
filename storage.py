@@ -19,6 +19,7 @@ _CANDIDATES_FILE_LOCK = threading.RLock()
 CANDIDATES_FILE = "candidates_all.json"
 _FEEDBACK_FIELDS = (
     'feedback_status',
+    'feedback_reasons',
     'feedback_note',
     'feedback_updated_at',
     'followup_status',
@@ -51,7 +52,7 @@ _FEEDBACK_FIELDS = (
 # 有时间戳的字段组：(时间戳字段, (关联数据字段...))
 # 合并时比较时间戳，取更新的一组值
 _TIMESTAMP_FIELD_GROUPS = (
-    ('feedback_updated_at', ('feedback_status', 'feedback_note')),
+    ('feedback_updated_at', ('feedback_status', 'feedback_reasons', 'feedback_note')),
     ('followup_updated_at', ('followup_status', 'followup_note')),
     ('blacklisted_at', ('blacklisted', 'blacklist_reason')),
     ('greet_context_updated_at', ('greet_context',)),
