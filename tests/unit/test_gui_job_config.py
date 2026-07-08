@@ -482,7 +482,7 @@ def test_save_capability_to_model_matches_provider_base_url_and_model():
     gui._mark_api_config_ui_current = Mock()
     with tempfile.TemporaryDirectory() as tmp_dir:
         config_path = Path(tmp_dir) / "api_config.json"
-        with patch.object(gui_main, "API_CONFIG_PATH", config_path):
+        with patch.object(gui_main, "get_api_config_path", return_value=config_path):
             gui._save_capability_to_model(
                 "same-model",
                 {"status": "compatible", "output_mode": "tool"},
@@ -892,6 +892,107 @@ def test_result_page_greeted_detail_uses_passed_candidates_only():
 
     assert "SCORE_THRESHOLD_PASS" in detail_block
     assert "c.get('greet_sent', False)" in detail_block
+
+
+def test_result_page_has_greet_queue_entry():
+    """筛选结果页提供显性的打招呼队列入口。"""
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    result_block = source[source.index("def create_result_page"):]
+    result_block = result_block[:result_block.index("\n    def create_education_page")]
+
+    assert 'text=" 打招呼队列"' in result_block
+    assert "command=self._show_greet_queue_dialog" in result_block
+    assert result_block.index('text=" 打招呼队列"') < result_block.index('text=" 导出 Excel"')
+
+
+def test_result_page_hides_technical_json_button():
+    """筛选结果页不暴露面向技术排障的 JSON 文件入口。"""
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    result_block = source[source.index("def create_result_page"):]
+    result_block = result_block[:result_block.index("\n    def create_education_page")]
+
+    assert 'text=" 打开 JSON"' not in result_block
+    assert "command=self.open_json" not in result_block
+
+
+def test_batch_greet_context_menu_adds_to_queue_instead_of_direct_send():
+    """多选右键只加入队列，不再直接启动批量发送黑盒流程。"""
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+
+    assert 'label=" 加入打招呼队列"' in source
+    assert 'menu.add_command(label=" 批量打招呼"' not in source
+    assert "_collect_selected_candidates_for_queue" in source
+    assert "_add_candidates_to_greet_queue" in source
+
+
+def test_greet_queue_item_classifies_context_pending_and_manual_review():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.greet_queue_items = []
+
+    direct = gui._build_greet_queue_item({
+        "geek_id": "g1",
+        "job_name": "Java",
+        "greet_context": {"chat_start": {"jid": "j1", "securityId": "s1"}},
+    })
+    pending = gui._build_greet_queue_item({
+        "geek_id": "g2",
+        "job_name": "Go",
+        "greet_confirmation_pending": True,
+        "greet_confirmation_reason": "按钮未变化",
+    })
+    manual = gui._build_greet_queue_item({
+        "geek_id": "g3",
+        "job_name": "Python",
+        "manual_review_required": True,
+        "auto_greet_blocked_reason": "硬条件待确认",
+    })
+
+    assert direct["status"] == "待发送"
+    assert direct["method"] == "可直接发送"
+    assert pending["status"] == "待确认"
+    assert pending["message"] == "按钮未变化"
+    assert manual["status"] == "需人工确认"
+    assert manual["message"] == "硬条件待确认"
+
+
+def test_greet_queue_dialog_has_status_filter_and_double_click_detail():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    dialog_block = source[source.index("def _show_greet_queue_dialog"):]
+    dialog_block = dialog_block[:dialog_block.index("\n    def _refresh_greet_queue_dialog")]
+
+    assert "状态筛选" in dialog_block
+    assert "self.greet_queue_status_filter_var" in dialog_block
+    assert '"待发送", "失败", "待确认", "需人工确认", "已发送"' in dialog_block
+    assert 'tree.bind("<Double-Button-1>", lambda _event: self._show_selected_greet_queue_detail())' in dialog_block
+
+
+def test_greet_queue_start_requires_confirmation():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    start_block = source[source.index("def _start_greet_queue"):]
+    start_block = start_block[:start_block.index("\n    def _confirm_start_greet_queue")]
+    confirm_block = source[source.index("def _confirm_start_greet_queue"):]
+    confirm_block = confirm_block[:confirm_block.index("\n    def _make_greet_queue_captcha_callback")]
+
+    assert "self._confirm_start_greet_queue(pending)" in start_block
+    assert "可直接发送" in confirm_block
+    assert "需要推荐页支持" in confirm_block
+    assert "待确认不会自动重发" in confirm_block
+    assert "messagebox.askyesno" in confirm_block
+
+
+def test_greet_queue_page_state_detects_boss_login_page():
+    assert BossFilterGUI._is_boss_login_page("https://www.zhipin.com/web/user/")
+    assert BossFilterGUI._is_boss_login_page("https://www.zhipin.com/", "扫码登录\n微信扫码")
+    assert not BossFilterGUI._is_boss_login_page("https://www.zhipin.com/web/chat/recommend")
+
+
+def test_selector_auto_check_is_limited_to_recommend_page():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    check_block = source[source.index("def _auto_check_selectors"):]
+    check_block = check_block[:check_block.index("\n    def check_browser_connection")]
+
+    assert "self._is_boss_recommend_url(current_url)" in check_block
+    assert "选择器自动检查已跳过" in check_block
 
 
 def test_passed_filter_uses_enlarged_original_people_icon():

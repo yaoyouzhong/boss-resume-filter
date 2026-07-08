@@ -1,6 +1,7 @@
 # 环境配置
 .env
 api_config.local.json
+api_config.local.corrupted-*.json
 
 # Python
 __pycache__/
