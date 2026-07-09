@@ -260,6 +260,24 @@ def _refresh(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     return img
 
 
+def _refresh_clean(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
+    img = Image.new('RGBA', (size_px, size_px), bg)
+    d = ImageDraw.Draw(img)
+    S = size_px
+    cx, cy = _s(_CX, S), _s(_CY, S)
+    r = _s(7.4, S)
+    d.arc([cx - r, cy - r, cx + r, cy + r], start=42, end=332, fill=fill, width=sw + 1)
+    al = _s(4.0, S)
+    tip_x = cx + r * math.cos(math.radians(332))
+    tip_y = cy + r * math.sin(math.radians(332))
+    d.polygon([
+        (tip_x, tip_y),
+        (tip_x - al * 0.95, tip_y - al * 0.22),
+        (tip_x - al * 0.28, tip_y + al * 0.95),
+    ], fill=fill)
+    return img
+
+
 def _import_icon(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     img = Image.new('RGBA', (size_px, size_px), bg)
     d = ImageDraw.Draw(img)
@@ -727,6 +745,7 @@ ICON_REGISTRY: Dict[str, Callable] = {
     'pencil':       _pencil,
     'save':         _save,
     'refresh':      _refresh,
+    'refresh_clean': _refresh_clean,
     'import':       _import_icon,
     'export':       _export,
     'folder':       _folder,

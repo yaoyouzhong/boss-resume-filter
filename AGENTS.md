@@ -10,12 +10,16 @@ boss-resume-filter/
 ├── ai_adapter.py         # 多服务商接口适配与模型能力验证
 ├── job_ai_parser.py      # 岗位需求 AI 增强解析模块（基于正则初稿补充优化）
 ├── job_config_diagnostics.py # 岗位配置保存前体检模块
+├── candidate_state_diagnostics.py # 候选人状态一致性体检模块
+├── candidate_workflow.py # 候选人待办与下一步动作模块
+├── greeting_failure.py   # 打招呼失败原因归类模块
+├── release_user_audit.py # 用户视角发布审计模块
 ├── storage.py            # 候选人数据持久化模块（去重、原子写入、备份恢复）
-├── gui_main.py           # 图形界面主程序（v2.17）
+├── gui_main.py           # 图形界面主程序（v2.18）
 ├── gui_dialogs.py        # 独立对话框模块（更新日志、关于弹窗、CHANGELOG 渲染）
 ├── changelog_parser.py   # CHANGELOG 解析模块（版本段落提取、标题解析）
 ├── updater.py            # 自动更新模块（Gitee/GitHub 双源检查、下载替换、完整性校验、启动时自动检查）
-├── icons.py              # 图标绘制模块（Pillow 矢量图标，35个图标函数 + IconCache）
+├── icons.py              # 图标绘制模块（Pillow 矢量图标，36个图标函数 + IconCache）
 ├── doc_parser.py         # 招聘需求文档解析器（JD → 必要条件 + 职位要求）
 ├── education_certificate.py # 毕业证书图片识别、字段校验与学信网页面填写
 ├── education_tool.py    # 独立学历证书核验助手入口（复用 gui_main 学历核验模式）

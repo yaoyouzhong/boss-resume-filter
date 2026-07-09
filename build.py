@@ -2,6 +2,7 @@
 BOSS 简历筛选器 - 打包脚本
 用法：
   python build.py --check                仅执行发布前检查，不打包、不提交、不推送
+  python build.py --user-audit           用户视角发布审计，不打包、不提交、不推送
   python build.py --check --strict-changelog  启用严格 CHANGELOG/README/latest.json 文案门禁
   python build.py                      仅打包 + 版本核对
   python build.py --release            打包 → 提交 → 打 tag → 推送 → GitHub Release
@@ -27,6 +28,8 @@ from datetime import datetime
 from pathlib import Path
 
 import requests
+
+from release_user_audit import audit_user_facing_release, summarize_release_user_audit
 
 # Windows 终端默认 GBK 编码导致中文乱码和 Unicode 字符崩溃，强制 UTF-8
 if sys.platform == 'win32':
@@ -1171,7 +1174,7 @@ def _check_code_to_changelog_coverage(strict=False):
             # 常见动词 / 名词
             "create", "destroy", "build", "make", "init", "setup", "reset",
             "update", "delete", "remove", "clear", "save", "load", "store",
-            "fetch", "send", "recv", "call", "invoke", "trigger", "fire",
+            "fetch", "refresh", "send", "recv", "call", "invoke", "trigger", "fire",
             "handle", "process", "parse", "format", "check", "test", "verify",
             "validate", "compare", "match", "find", "search", "select", "pick",
             "control", "controls", "configure", "command", "option", "setting",
@@ -1191,7 +1194,7 @@ def _check_code_to_changelog_coverage(strict=False):
             "score", "updated", "updated_at",
             "before", "after", "between", "during", "while",
             "job", "task", "work", "param", "value", "data", "info",
-            "scan", "extract", "extraction",
+            "scan", "extract", "extraction", "diagnostics",
             "thread", "lock", "mutex", "semaphore", "queue", "stack", "heap",
             "file", "dir", "path", "line", "char", "byte", "word", "block",
             "batch", "loop", "iter", "recur", "chain", "pipe", "stream",
@@ -1261,7 +1264,7 @@ def _check_code_to_changelog_coverage(strict=False):
             (r"export|excel", ["导出"]),
             (r"followup", ["跟进"]),
             (r"feedback", ["反馈"]),
-            (r"stat", ["统计"]),
+            (r"\bstats?\b|statistics", ["统计"]),
             (r"detail", ["明细"]),
         )
         for pattern, words in semantic_keywords:
@@ -4068,6 +4071,8 @@ def main():
     parser = argparse.ArgumentParser(description="BOSS 简历筛选器 - 打包及发布脚本")
     parser.add_argument("--check", action="store_true",
                         help="仅执行发布前检查，不打包、不提交、不推送")
+    parser.add_argument("--user-audit", action="store_true",
+                        help="用户视角发布审计，不打包、不提交、不推送")
     parser.add_argument("--release", action="store_true",
                         help="打包后自动提交→打tag→推送→GitHub Release上传")
     parser.add_argument("--version", type=str, default=None, metavar="X.Y",
@@ -4113,6 +4118,13 @@ def main():
     # 读取当前版本号并校验格式
     current_version = _read_version()
     _validate_version_format(current_version)
+
+    if args.user_audit:
+        issues = audit_user_facing_release(BASE_DIR)
+        print(summarize_release_user_audit(issues))
+        if any(issue.severity == "error" for issue in issues):
+            sys.exit(1)
+        return
 
     if not args.ci:
         run_in_venv()

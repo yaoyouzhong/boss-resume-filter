@@ -11,6 +11,14 @@ class JobConfigIssue:
     title: str
     detail: str
     suggestion: str
+    penalty: int = 0
+
+
+@dataclass(frozen=True)
+class JobConfigQuality:
+    score: int
+    verdict: str
+    issues: tuple[JobConfigIssue, ...]
 
 
 @dataclass(frozen=True)
@@ -87,9 +95,14 @@ def summarize_job_config_diagnostics(
     """
     if issues is None:
         issues = diagnose_job_config(job_name, rule)
+    quality = score_job_config_quality(issues)
     title = _clean_text(job_name) or "当前岗位"
     if not issues:
-        return f"{title} 配置体检通过。\n\n未发现明显配置冲突。"
+        return (
+            f"{title} 配置体检通过。\n"
+            f"配置质量：{quality.score}/100，{quality.verdict}\n\n"
+            "未发现明显配置冲突。"
+        )
 
     counts = {
         "error": sum(1 for item in issues if item.severity == "error"),
@@ -98,18 +111,41 @@ def summarize_job_config_diagnostics(
     }
     header = (
         f"{title} 配置体检结果\n"
+        f"配置质量：{quality.score}/100，{quality.verdict}\n"
         f"严重 {counts['error']} 项，提醒 {counts['warning']} 项，建议 {counts['info']} 项"
     )
     lines = [header, ""]
     for idx, issue in enumerate(issues, 1):
         label = {"error": "严重", "warning": "提醒", "info": "建议"}.get(issue.severity, "提醒")
+        penalty_text = f"（-{issue.penalty}）" if issue.penalty else ""
         lines.extend([
-            f"{idx}. [{label}] {issue.title}",
+            f"{idx}. [{label}] {issue.title}{penalty_text}",
             f"   问题：{issue.detail}",
             f"   建议：{issue.suggestion}",
             "",
         ])
     return "\n".join(lines).rstrip()
+
+
+def score_job_config_quality(issues: list[JobConfigIssue]) -> JobConfigQuality:
+    """Return a 0-100 quality score from deterministic diagnosis issues."""
+    penalty = sum(max(0, issue.penalty) for issue in issues)
+    score = max(0, min(100, 100 - penalty))
+    has_error = any(issue.severity == "error" for issue in issues)
+    warnings = sum(1 for issue in issues if issue.severity == "warning")
+    if has_error:
+        verdict = "存在阻断项，建议先修正再保存"
+    elif score >= 90:
+        verdict = "配置成熟，可直接使用"
+    elif score >= 75:
+        verdict = "配置可用，仍有少量优化空间"
+    elif score >= 60:
+        verdict = "配置勉强可用，筛选结果可能偏宽或偏窄"
+    else:
+        verdict = "配置风险较高，建议明显收敛后再使用"
+    if not issues and warnings == 0:
+        verdict = "配置成熟，可直接使用"
+    return JobConfigQuality(score=score, verdict=verdict, issues=tuple(issues))
 
 
 def _diagnose_basic_fields(rule: dict[str, Any]) -> list[JobConfigIssue]:
@@ -396,7 +432,44 @@ def _iter_required_conditions(value: Any) -> Iterable[RequiredCondition]:
 
 
 def _issue(severity: str, title: str, detail: str, suggestion: str) -> JobConfigIssue:
-    return JobConfigIssue(severity=severity, title=title, detail=detail, suggestion=suggestion)
+    penalty = _issue_penalty(severity, title)
+    return JobConfigIssue(
+        severity=severity,
+        title=title,
+        detail=detail,
+        suggestion=suggestion,
+        penalty=penalty,
+    )
+
+
+def _issue_penalty(severity: str, title: str) -> int:
+    if severity == "error":
+        return 25
+    warning_penalties = {
+        "缺少筛选依据": 35,
+        "只有优先项没有核心技能": 18,
+        "核心技能关键词偏少": 12,
+        "核心技能关键词过多": 10,
+        "必要条件过多": 12,
+        "软素质被放入关键词": 10,
+        "必要条件包含软素质": 12,
+        "关键词疑似打包填写": 8,
+        "关键词过长": 8,
+        "核心关键词过泛": 10,
+        "核心技能与优先项重叠": 8,
+        "关键词重复": 6,
+        "薪资范围只填了一端": 5,
+        "薪资区间过窄": 6,
+        "最低经验未设置": 8,
+        "最大年龄过低": 10,
+        "简单必要条件过长": 8,
+        "必要条件子项过长": 6,
+        "必要条件重复": 6,
+        "优先项过多": 6,
+    }
+    if severity == "warning":
+        return warning_penalties.get(title, 5)
+    return 0
 
 
 def _clean_text(value: Any) -> str:

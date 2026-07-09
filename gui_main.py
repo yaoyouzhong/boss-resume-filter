@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.17"
+__version__ = "2.18"
 
 import json
 import logging
@@ -28,6 +28,15 @@ import icons
 
 logger = logging.getLogger(__name__)
 from collections import Counter
+from candidate_workflow import (
+    build_daily_candidate_actions,
+    summarize_daily_candidate_actions,
+)
+from candidate_state_diagnostics import (
+    diagnose_candidate_states,
+    summarize_candidate_state_diagnostics,
+)
+from greeting_failure import diagnose_greeting_failure, format_greeting_failure_message
 from job_config_diagnostics import diagnose_job_config, summarize_job_config_diagnostics
 from constants import (
     API_CANDIDATE_LIMIT_DEFAULT,
@@ -809,8 +818,11 @@ class BossFilterGUI:
         self.greet_queue_items = []
         self.greet_queue_window = None
         self.greet_queue_tree = None
+        self.greet_queue_group_tree = None
         self.greet_queue_summary_var = None
+        self.greet_queue_detail_title_var = None
         self.greet_queue_status_filter_var = None
+        self.greet_queue_selected_group = "全部"
         self.greet_queue_running = False
         self.greet_queue_paused = False
         self._greet_queue_status_vars = {}
@@ -3591,14 +3603,41 @@ class BossFilterGUI:
                  background=self.colors['bg_main']).pack(side="left", padx=int(4 * self.dpi_scale * self.zoom_factor))
         self.result_search_entry.bind('<Escape>', lambda e: self.result_search_var.set(''))
 
-        # 显示已屏蔽候选人开关（搜索栏最右侧）
+        # 结果列表工具区（搜索栏最右侧）
         self.result_show_blacklist_var = tk.BooleanVar(value=False)
         _cb_style = ttk.Style()
         _cb_style.configure("Blacklist.TCheckbutton", font=self.font_label)
         blacklist_check = ttk.Checkbutton(
             search_frame, text="显示已屏蔽", variable=self.result_show_blacklist_var,
             command=lambda: self.refresh_results(), style="Blacklist.TCheckbutton")
-        blacklist_check.pack(side="right", padx=int(15 * self.dpi_scale * self.zoom_factor))
+        icon_refresh_result = self.icons.get(
+            'refresh_clean',
+            int(24 * self.dpi_scale * self.zoom_factor),
+            self.colors['text_primary'],
+        )
+        refresh_icon = ttk.Label(
+            search_frame,
+            image=icon_refresh_result,
+            cursor="hand2",
+            background=self.colors['bg_main'],
+        )
+        refresh_icon._icon_ref = icon_refresh_result
+        refresh_icon.bind("<Button-1>", lambda _event: self.refresh_results())
+        refresh_icon.bind(
+            "<Enter>",
+            lambda event: self._show_tooltip(
+                "刷新结果",
+                event.x_root + int(12 * self.dpi_scale * self.zoom_factor),
+                event.y_root + int(12 * self.dpi_scale * self.zoom_factor),
+                ("result_refresh",),
+            ),
+        )
+        refresh_icon.bind("<Leave>", self._hide_tooltip)
+        refresh_icon.pack(
+            side="right",
+            padx=(int(6 * self.dpi_scale * self.zoom_factor), int(12 * self.dpi_scale * self.zoom_factor)),
+        )
+        blacklist_check.pack(side="right", padx=(0, int(6 * self.dpi_scale * self.zoom_factor)))
 
         # 结果表格
         table_container = ttk.Frame(self.result_page, style='Card.TFrame')
@@ -3675,10 +3714,16 @@ class BossFilterGUI:
         btn_inner = ttk.Frame(btn_frame, style='Page.TFrame')
         btn_inner.pack(anchor="center")
 
-        icon_refresh_result = self.icons.button('refresh', self.colors['text_primary'])
-        btn_refresh = ttk.Button(btn_inner, image=icon_refresh_result, text=" 刷新结果", compound=tk.LEFT, command=self.refresh_results)
-        btn_refresh._icon_ref = icon_refresh_result
-        btn_refresh.pack(side="left", padx=int(8 * self.dpi_scale * self.zoom_factor))
+        icon_today_actions = self.icons.button('clipboard', self.colors['primary'])
+        btn_today_actions = ttk.Button(
+            btn_inner,
+            image=icon_today_actions,
+            text=" 今日待办",
+            compound=tk.LEFT,
+            command=self.show_daily_candidate_actions,
+        )
+        btn_today_actions._icon_ref = icon_today_actions
+        btn_today_actions.pack(side="left", padx=int(8 * self.dpi_scale * self.zoom_factor))
         icon_greet_queue = self.icons.button('chat', self.colors['success'])
         btn_greet_queue = ttk.Button(
             btn_inner,
@@ -3689,6 +3734,16 @@ class BossFilterGUI:
         )
         btn_greet_queue._icon_ref = icon_greet_queue
         btn_greet_queue.pack(side="left", padx=int(8 * self.dpi_scale * self.zoom_factor))
+        icon_state_check = self.icons.button('clipboard', self.colors['primary'])
+        btn_state_check = ttk.Button(
+            btn_inner,
+            image=icon_state_check,
+            text=" 状态体检",
+            compound=tk.LEFT,
+            command=self.show_candidate_state_diagnostics,
+        )
+        btn_state_check._icon_ref = icon_state_check
+        btn_state_check.pack(side="left", padx=int(8 * self.dpi_scale * self.zoom_factor))
         icon_chart_excel = self.icons.button('chart', self.colors['text_primary'])
         btn_excel = ttk.Button(btn_inner, image=icon_chart_excel, text=" 导出 Excel", compound=tk.LEFT, command=self.export_excel)
         btn_excel._icon_ref = icon_chart_excel
@@ -6838,15 +6893,25 @@ class BossFilterGUI:
         item = self.model_list_tree.item(selection[0])
         model_name = item['values'][0]
         provider_display = item['values'][1]
+        selected_base_url = item['values'][4] if len(item.get('values', ())) > 4 else ""
         # 将显示名称转换为内部键
         provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
 
         # 查找对应的配置
         model_config = None
         for saved in self.saved_models:
-            if saved.get("model") == model_name:
+            if (
+                saved.get("model") == model_name
+                and saved.get("api_provider") == provider_key
+                and (not selected_base_url or saved.get("base_url", "") == selected_base_url)
+            ):
                 model_config = saved
                 break
+        if model_config is None:
+            for saved in self.saved_models:
+                if saved.get("model") == model_name and saved.get("api_provider") == provider_key:
+                    model_config = saved
+                    break
 
         if model_config:
             # 从系统钥匙串读取该服务商的 API Key
@@ -7101,11 +7166,13 @@ class BossFilterGUI:
             # 按服务商 + Base URL 组合存储 API Key（区分同一服务商的不同接入方式）
             save_api_key(provider, api_key, base_url)
 
-            # 顶层当前活动模型：保存按钮不切换，仅在首次配置（顶层无活动模型）时兜底设一次
-            # 切换当前活动模型由双击「已保存模型」列表项完成（use_selected_model）
+            # 顶层当前活动模型：
+            # - 手工保存当前表单时，同步设为当前生效模型，避免重启后读回旧配置。
+            # - 对话框批量添加时，只加入列表；当前生效模型仍由双击列表项切换。
             edu_ref = (self.api_config or {}).get("education_model_ref")
             current_model = (self.api_config or {}).get("model", "")
-            if not current_model:
+            is_manual_save = not pending and bool(model_name)
+            if is_manual_save or not current_model:
                 # 首次配置：输入框有值用它，否则用 pending 第一个
                 top_provider, top_base_url = provider, base_url
                 top_model = model_name or (pending[0] if pending else "")
@@ -7171,7 +7238,8 @@ class BossFilterGUI:
             # 更新当前模型显示
             self.update_current_model_display()
 
-            self._update_api_status(text="✓ 配置已保存并添加到列表", foreground=self.colors['success'])
+            status_text = "✓ 配置已保存并设为当前模型" if is_manual_save else "✓ 配置已保存并添加到列表"
+            self._update_api_status(text=status_text, foreground=self.colors['success'])
             # 更新 AI 评估状态标签（可能从未配置变为已配置）
             self._update_ai_eval_status()
 
@@ -10765,6 +10833,814 @@ class BossFilterGUI:
             self._bind_treeview_context_menu()
             self._sort_bound = True
 
+    def _load_candidates_for_state_diagnostics(self):
+        """Load candidates for result-page state diagnostics using the job filter only."""
+        if not CANDIDATES_PATH.exists():
+            return [], "全部岗位"
+        with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
+            candidates = json.load(f)
+        selected_job = self.result_job_var.get() if hasattr(self, 'result_job_var') else "全部岗位"
+        if selected_job != "全部岗位":
+            normalized_job = selected_job.replace(" ", "")
+            candidates = [
+                c for c in candidates
+                if c.get('job_name', '').replace(" ", "") == normalized_job
+            ]
+        return candidates, selected_job
+
+    def show_candidate_state_diagnostics(self):
+        """Show read-only consistency diagnostics for persisted candidate states."""
+        try:
+            candidates, scope = self._load_candidates_for_state_diagnostics()
+        except Exception as exc:
+            messagebox.showerror("状态体检", f"读取候选人数据失败：{exc}", parent=self.root)
+            return
+        if not candidates:
+            messagebox.showinfo("状态体检", f"{scope} 没有候选人数据可检查。", parent=self.root)
+            return
+
+        issues = diagnose_candidate_states(candidates)
+        summary_text = summarize_candidate_state_diagnostics(candidates, issues=issues)
+        self._show_candidate_state_diagnostics_dialog(scope, candidates, issues, summary_text)
+
+    def show_daily_candidate_actions(self):
+        """Show a read-only daily action queue for candidate follow-up work."""
+        try:
+            candidates, scope = self._load_candidates_for_state_diagnostics()
+        except Exception as exc:
+            messagebox.showerror("今日待办", f"读取候选人数据失败：{exc}", parent=self.root)
+            return
+        if not candidates:
+            messagebox.showinfo("今日待办", f"{scope} 没有候选人数据可处理。", parent=self.root)
+            return
+        items = build_daily_candidate_actions(candidates)
+        if not items:
+            messagebox.showinfo("今日待办", f"{scope} 暂无需要优先处理的候选人。", parent=self.root)
+            return
+        self._show_daily_candidate_actions_dialog(scope, items)
+
+    def _show_daily_candidate_actions_dialog(self, scope, items):
+        win = tk.Toplevel(self.root)
+        win.title("今日候选人待办")
+        win.transient(self.root)
+        win.grab_set()
+        win.withdraw()
+        scale = self.dpi_scale * self.zoom_factor
+
+        body = ttk.Frame(win, style='Page.TFrame', padding=int(16 * scale))
+        body.pack(fill="both", expand=True)
+
+        group_order = [
+            "发送结果待确认",
+            "待人工确认",
+            "高分未打招呼",
+            "缺少打招呼上下文",
+            "已回复待约面",
+            "有简历未二次评估",
+            "已打招呼未回复",
+        ]
+        grouped_items = {
+            group: [item for item in items if item.group == group]
+            for group in group_order
+        }
+        grouped_items = {group: values for group, values in grouped_items.items() if values}
+        default_group = next(iter(grouped_items), "")
+        ttk.Label(
+            body,
+            text=(
+                f"检查范围：{scope}    今日建议处理：{len(items)} 人"
+                + (f"    优先处理：{default_group} {len(grouped_items[default_group])} 人" if default_group else "")
+            ),
+            font=self.font_label,
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_main'],
+        ).pack(anchor="w", pady=(0, int(10 * scale)))
+
+        content = ttk.Frame(body, style='Page.TFrame')
+        content.pack(fill="both", expand=True)
+
+        style = ttk.Style()
+        style.configure(
+            "ActionQueue.Treeview",
+            font=(FONT_FAMILY, int(11 * self.font_scale)),
+            rowheight=int(30 * scale),
+        )
+        style.configure(
+            "ActionQueue.Treeview.Heading",
+            font=(FONT_FAMILY, int(11 * self.font_scale), 'bold'),
+        )
+
+        nav_frame = ttk.Frame(content, style='Card.TFrame', padding=int(10 * scale))
+        nav_frame.pack(side="left", fill="y", padx=(0, int(10 * scale)))
+        ttk.Label(
+            nav_frame,
+            text="任务分组",
+            font=self.font_label,
+            foreground=self.colors['text_primary'],
+            background=self.colors['bg_card'],
+        ).pack(anchor="w", pady=(0, int(8 * scale)))
+        group_tree = ttk.Treeview(
+            nav_frame,
+            columns=("count",),
+            show="tree headings",
+            height=9,
+            style="ActionQueue.Treeview",
+            selectmode="browse",
+        )
+        group_tree.heading("#0", text="类型")
+        group_tree.heading("count", text="人数")
+        group_tree.column("#0", width=int(150 * scale), minwidth=int(120 * scale), anchor="w")
+        group_tree.column("count", width=int(58 * scale), minwidth=int(48 * scale), anchor="center")
+        group_tree.pack(fill="y", expand=True)
+        action_group_by_iid = {}
+        for idx, (group, values) in enumerate(grouped_items.items()):
+            iid = f"group_{idx}"
+            action_group_by_iid[iid] = group
+            group_tree.insert("", "end", iid=iid, text=group, values=(len(values),))
+
+        detail_frame = ttk.Frame(content, style='Card.TFrame')
+        detail_frame.pack(side="left", fill="both", expand=True)
+        selected_group_var = tk.StringVar()
+        selected_group_label = ttk.Label(
+            detail_frame,
+            textvariable=selected_group_var,
+            font=self.font_label,
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+        )
+        selected_group_label.grid(row=0, column=0, columnspan=3, sticky="w", padx=int(10 * scale), pady=(int(10 * scale), 0))
+
+        columns = ("name", "job", "score", "reason", "action")
+        tree = ttk.Treeview(detail_frame, columns=columns, show="headings", height=13, style="ActionQueue.Treeview")
+        for col, text, width, anchor in (
+            ("name", "候选人", 100, "center"),
+            ("job", "岗位", 145, "w"),
+            ("score", "分数", 65, "center"),
+            ("reason", "为什么处理", 290, "w"),
+            ("action", "下一步", 360, "w"),
+        ):
+            tree.heading(col, text=text)
+            tree.column(col, width=int(width * scale), minwidth=int(max(60, width * 0.65) * scale), anchor=anchor)
+
+        current_items = []
+        current_group_name = {"value": default_group}
+        scroll_y = ttk.Scrollbar(detail_frame, orient="vertical", command=tree.yview)
+        scroll_x = ttk.Scrollbar(detail_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+        tree.grid(row=1, column=0, sticky="nsew", padx=int(10 * scale), pady=int(10 * scale))
+        scroll_y.grid(row=1, column=1, sticky="ns", pady=int(10 * scale))
+        scroll_x.grid(row=2, column=0, sticky="ew", padx=int(10 * scale))
+        detail_frame.grid_rowconfigure(1, weight=1)
+        detail_frame.grid_columnconfigure(0, weight=1)
+
+        def populate_group(group):
+            nonlocal current_items
+            current_items = grouped_items.get(group, [])
+            current_group_name["value"] = group
+            selected_group_var.set(f"{group}：{len(current_items)} 人")
+            tree.delete(*tree.get_children())
+            for idx, item in enumerate(current_items):
+                tree.insert("", "end", iid=str(idx), values=(
+                    item.name or "未命名",
+                    item.job_name or "未知岗位",
+                    item.score,
+                    self._clip_table_text(item.reason, 42),
+                    self._clip_table_text(item.action, 48),
+                ))
+
+        def on_group_selected(_event=None):
+            selection = group_tree.selection()
+            if selection:
+                populate_group(action_group_by_iid.get(selection[0], ""))
+
+        def refresh_current_daily_actions():
+            nonlocal grouped_items
+            try:
+                refreshed_candidates, _scope = self._load_candidates_for_state_diagnostics()
+                refreshed_items = build_daily_candidate_actions(refreshed_candidates)
+            except Exception:
+                refreshed_items = []
+            grouped_items = {
+                group: [item for item in refreshed_items if item.group == group]
+                for group in group_order
+            }
+            grouped_items = {group: values for group, values in grouped_items.items() if values}
+            group_tree.delete(*group_tree.get_children())
+            action_group_by_iid.clear()
+            for idx, (group, values) in enumerate(grouped_items.items()):
+                iid = f"group_{idx}"
+                action_group_by_iid[iid] = group
+                group_tree.insert("", "end", iid=iid, text=group, values=(len(values),))
+            preferred = current_group_name["value"] if current_group_name["value"] in grouped_items else next(iter(grouped_items), "")
+            if preferred:
+                preferred_iid = next((iid for iid, group in action_group_by_iid.items() if group == preferred), "")
+                group_tree.selection_set(preferred_iid)
+                group_tree.focus(preferred_iid)
+                populate_group(preferred)
+            else:
+                current_items.clear()
+                selected_group_var.set("暂无需要优先处理的候选人")
+                tree.delete(*tree.get_children())
+
+        def show_detail(_event=None):
+            selection = tree.selection()
+            if not selection:
+                return
+            item = current_items[int(selection[0])]
+            detail = "\n".join([
+                f"分组：{item.group}",
+                f"候选人：{item.name or '未命名'}",
+                f"岗位：{item.job_name or '未知岗位'}",
+                f"分数：{item.score}",
+                "",
+                f"为什么处理：{item.reason}",
+                f"下一步：{item.action}",
+            ])
+            self._show_text_dialog("今日待办详情", detail, width=620, height=360)
+
+        tree.bind("<Double-Button-1>", show_detail)
+
+        def show_action_context_menu(event):
+            item_id = tree.identify_row(event.y)
+            if not item_id:
+                return
+            tree.selection_set(item_id)
+            try:
+                item = current_items[int(item_id)]
+            except (ValueError, IndexError):
+                return
+            primary = "queue" if item.group in ("高分未打招呼", "缺少打招呼上下文") else (
+                "confirm" if item.group == "待人工确认" else (
+                    "resume" if item.group == "有简历未二次评估" else (
+                        "followup" if item.group in ("已打招呼未回复", "已回复待约面") else None
+                    )
+                )
+            )
+            self._show_candidate_workflow_context_menu(
+                win,
+                item.candidate,
+                event.x_root,
+                event.y_root,
+                show_detail_fn=show_detail,
+                refresh_fn=refresh_current_daily_actions,
+                primary_action=primary,
+            )
+
+        def on_action_motion(event):
+            item_id = tree.identify_row(event.y)
+            column_id = tree.identify_column(event.x)
+            if not item_id or column_id not in ("#4", "#5"):
+                self._hide_tooltip()
+                return
+            try:
+                item = current_items[int(item_id)]
+            except (ValueError, IndexError):
+                self._hide_tooltip()
+                return
+            full = item.reason if column_id == "#4" else item.action
+            tooltip_key = ("daily_actions", item_id, column_id)
+            if (
+                tooltip_key == getattr(self, "_tooltip_item", None)
+                and getattr(self, "_tooltip", None)
+                and self._tooltip.winfo_exists()
+            ):
+                return
+            after_id = getattr(self, "_tooltip_after_id", None)
+            if after_id:
+                self.root.after_cancel(after_id)
+            x = event.x_root + int(12 * scale)
+            y = event.y_root + int(12 * scale)
+            self._tooltip_item = tooltip_key
+            self._tooltip_after_id = self.root.after(
+                250, lambda: self._show_tooltip(full, x, y, tooltip_key, parent=win)
+            )
+
+        tree.bind("<Motion>", on_action_motion)
+        tree.bind("<Leave>", self._hide_tooltip)
+        tree.bind("<Button-3>", show_action_context_menu)
+        group_tree.bind("<<TreeviewSelect>>", on_group_selected)
+        if default_group:
+            default_iid = next((iid for iid, group in action_group_by_iid.items() if group == default_group), "")
+            group_tree.selection_set(default_iid)
+            group_tree.focus(default_iid)
+            populate_group(default_group)
+
+        btn_row = ttk.Frame(win, style='Page.TFrame', padding=(int(16 * scale), 0, int(16 * scale), int(14 * scale)))
+        btn_row.pack(fill="x")
+
+        def export_report():
+            path = filedialog.asksaveasfilename(
+                title="导出今日待办",
+                defaultextension=".txt",
+                initialfile=f"candidate_daily_actions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+                parent=win,
+            )
+            if not path:
+                return
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(summarize_daily_candidate_actions(items))
+                messagebox.showinfo("今日待办", "报告已导出。", parent=win)
+            except Exception as exc:
+                messagebox.showerror("今日待办", f"导出失败：{exc}", parent=win)
+
+        def close():
+            win.grab_release()
+            win.destroy()
+
+        ttk.Button(btn_row, text="导出报告", command=export_report).pack(side="left")
+        ttk.Button(btn_row, text="查看详情", command=show_detail).pack(side="left", padx=int(8 * scale))
+        ttk.Button(btn_row, text="关闭", command=close).pack(side="right")
+        win.protocol("WM_DELETE_WINDOW", close)
+        _place_window_centered(win, int(1060 * scale), int(620 * scale), parent=self.root)
+        win.deiconify()
+
+    def _show_candidate_state_diagnostics_dialog(self, scope, candidates, issues, summary_text):
+        win = tk.Toplevel(self.root)
+        win.title("候选人状态体检")
+        win.transient(self.root)
+        win.grab_set()
+        win.withdraw()
+        scale = self.dpi_scale * self.zoom_factor
+
+        body = ttk.Frame(win, style='Page.TFrame', padding=int(16 * scale))
+        body.pack(fill="both", expand=True)
+
+        counts = {
+            "error": sum(1 for item in issues if item.severity == "error"),
+            "warning": sum(1 for item in issues if item.severity == "warning"),
+            "info": sum(1 for item in issues if item.severity == "info"),
+        }
+        headline = (
+            f"检查范围：{scope}    候选人：{len(candidates)} 人    "
+            f"发现问题：{len(issues)} 项（严重 {counts['error']}，提醒 {counts['warning']}，建议 {counts['info']}）"
+        )
+        ttk.Label(
+            body,
+            text=headline,
+            font=self.font_label,
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_main'],
+        ).pack(anchor="w", pady=(0, int(10 * scale)))
+
+        content = ttk.Frame(body, style='Page.TFrame')
+        content.pack(fill="both", expand=True)
+        state_style = ttk.Style()
+        state_style.configure(
+            "StateCheck.Treeview",
+            font=(FONT_FAMILY, int(11 * self.font_scale)),
+            rowheight=int(30 * scale),
+        )
+        state_style.configure(
+            "StateCheck.Treeview.Heading",
+            font=(FONT_FAMILY, int(11 * self.font_scale), 'bold'),
+        )
+
+        severity_label = {"error": "严重", "warning": "提醒", "info": "建议"}
+        severity_rank = {"error": 0, "warning": 1, "info": 2}
+        grouped_issues = {}
+        if issues:
+            for issue in sorted(issues, key=lambda item: (severity_rank.get(item.severity, 9), item.title, item.name)):
+                grouped_issues.setdefault(issue.title, []).append(issue)
+        else:
+            grouped_issues["未发现问题"] = []
+
+        def candidate_key_for(candidate):
+            geek_id = str(candidate.get('geek_id') or "").strip()
+            job_name = " ".join(str(candidate.get('job_name') or "").strip().split())
+            name = " ".join(str(candidate.get('name') or "").strip().split())
+            if geek_id and job_name:
+                return f"{geek_id}:{job_name}"
+            return geek_id or name or "unknown"
+
+        candidate_by_key = {candidate_key_for(candidate): candidate for candidate in candidates}
+
+        def candidate_for_issue(issue):
+            candidate = candidate_by_key.get(issue.candidate_key)
+            if candidate:
+                return candidate
+            for item in candidate_by_key.values():
+                if (
+                    (not issue.name or item.get('name') == issue.name)
+                    and (not issue.job_name or item.get('job_name') == issue.job_name)
+                ):
+                    return item
+            return None
+
+        nav_frame = ttk.Frame(content, style='Card.TFrame', padding=int(10 * scale))
+        nav_frame.pack(side="left", fill="y", padx=(0, int(10 * scale)))
+        ttk.Label(
+            nav_frame,
+            text="问题类型",
+            font=self.font_label,
+            foreground=self.colors['text_primary'],
+            background=self.colors['bg_card'],
+        ).pack(anchor="w", pady=(0, int(8 * scale)))
+        group_tree = ttk.Treeview(
+            nav_frame,
+            columns=("count", "level"),
+            show="tree headings",
+            height=10,
+            style="StateCheck.Treeview",
+            selectmode="browse",
+        )
+        group_tree.heading("#0", text="类型")
+        group_tree.heading("count", text="项")
+        group_tree.heading("level", text="级别")
+        group_tree.column("#0", width=int(180 * scale), minwidth=int(130 * scale), anchor="w")
+        group_tree.column("count", width=int(48 * scale), minwidth=int(42 * scale), anchor="center")
+        group_tree.column("level", width=int(58 * scale), minwidth=int(48 * scale), anchor="center")
+        group_tree.pack(fill="y", expand=True)
+
+        issue_group_by_iid = {}
+        for idx, (title, values) in enumerate(grouped_issues.items()):
+            iid = f"issue_group_{idx}"
+            issue_group_by_iid[iid] = title
+            if values:
+                level = min(values, key=lambda item: severity_rank.get(item.severity, 9)).severity
+                group_tree.insert("", "end", iid=iid, text=title, values=(len(values), severity_label.get(level, "提醒")))
+            else:
+                group_tree.insert("", "end", iid=iid, text=title, values=(0, "通过"))
+
+        detail_frame = ttk.Frame(content, style='Card.TFrame')
+        detail_frame.pack(side="left", fill="both", expand=True)
+        selected_issue_group_var = tk.StringVar()
+        selected_issue_group_label = ttk.Label(
+            detail_frame,
+            textvariable=selected_issue_group_var,
+            font=self.font_label,
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+        )
+        selected_issue_group_label.grid(
+            row=0, column=0, columnspan=3, sticky="w",
+            padx=int(10 * scale), pady=(int(10 * scale), 0),
+        )
+
+        columns = ("name", "job", "problem", "action")
+        tree = ttk.Treeview(
+            detail_frame,
+            columns=columns,
+            show="headings",
+            height=13,
+            style="StateCheck.Treeview",
+        )
+        tree.heading("name", text="候选人")
+        tree.heading("job", text="岗位")
+        tree.heading("problem", text="发现的问题")
+        tree.heading("action", text="建议怎么处理")
+        tree.column("name", width=int(110 * scale), minwidth=90, anchor="center")
+        tree.column("job", width=int(145 * scale), minwidth=110, anchor="w")
+        tree.column("problem", width=int(350 * scale), minwidth=240, anchor="w")
+        tree.column("action", width=int(392 * scale), minwidth=260, anchor="w")
+        tree.tag_configure("error", background="#FDECEC")
+        tree.tag_configure("warning", background="#FFF7E6")
+        tree.tag_configure("info", background="#EEF6FF")
+
+        current_issues = []
+        current_issue_group_name = {"value": next(iter(grouped_issues), "")}
+        scroll_y = ttk.Scrollbar(detail_frame, orient="vertical", command=tree.yview)
+        scroll_x = ttk.Scrollbar(detail_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+        tree.grid(row=1, column=0, sticky="nsew", padx=int(10 * scale), pady=int(10 * scale))
+        scroll_y.grid(row=1, column=1, sticky="ns", pady=int(10 * scale))
+        scroll_x.grid(row=2, column=0, sticky="ew", padx=int(10 * scale))
+        detail_frame.grid_rowconfigure(1, weight=1)
+        detail_frame.grid_columnconfigure(0, weight=1)
+
+        def populate_issue_group(title):
+            nonlocal current_issues
+            current_issues = grouped_issues.get(title, [])
+            current_issue_group_name["value"] = title
+            tree.delete(*tree.get_children())
+            if not current_issues:
+                selected_issue_group_var.set("未发现明显状态冲突。")
+                tree.insert("", "end", values=("—", "—", "未发现明显状态冲突", "无需处理"))
+                return
+            selected_issue_group_var.set(f"{title}：{len(current_issues)} 项")
+            for idx, issue in enumerate(current_issues):
+                problem_text = self._format_state_issue_problem(issue)
+                tree.insert(
+                    "",
+                    "end",
+                    iid=str(idx),
+                    values=(
+                        issue.name or issue.candidate_key,
+                        issue.job_name or "未知岗位",
+                        problem_text,
+                        self._clip_table_text(issue.suggestion, 42),
+                    ),
+                    tags=(issue.severity,),
+                )
+
+        def on_issue_group_selected(_event=None):
+            selection = group_tree.selection()
+            if selection:
+                populate_issue_group(issue_group_by_iid.get(selection[0], ""))
+
+        def rebuild_issue_groups(refreshed_issues):
+            grouped = {}
+            if refreshed_issues:
+                for issue in sorted(refreshed_issues, key=lambda item: (severity_rank.get(item.severity, 9), item.title, item.name)):
+                    grouped.setdefault(issue.title, []).append(issue)
+            else:
+                grouped["未发现问题"] = []
+            return grouped
+
+        def refresh_current_state_diagnostics():
+            nonlocal grouped_issues, current_issues
+            try:
+                refreshed_candidates, _scope = self._load_candidates_for_state_diagnostics()
+                refreshed_issues = diagnose_candidate_states(refreshed_candidates)
+            except Exception:
+                refreshed_candidates = []
+                refreshed_issues = []
+            candidate_by_key.clear()
+            candidate_by_key.update({candidate_key_for(candidate): candidate for candidate in refreshed_candidates})
+            grouped_issues = rebuild_issue_groups(refreshed_issues)
+            group_tree.delete(*group_tree.get_children())
+            issue_group_by_iid.clear()
+            for idx, (title, values) in enumerate(grouped_issues.items()):
+                iid = f"issue_group_{idx}"
+                issue_group_by_iid[iid] = title
+                if values:
+                    level = min(values, key=lambda item: severity_rank.get(item.severity, 9)).severity
+                    group_tree.insert("", "end", iid=iid, text=title, values=(len(values), severity_label.get(level, "提醒")))
+                else:
+                    group_tree.insert("", "end", iid=iid, text=title, values=(0, "通过"))
+            preferred = current_issue_group_name["value"] if current_issue_group_name["value"] in grouped_issues else next(iter(grouped_issues), "")
+            if preferred:
+                preferred_iid = next((iid for iid, title in issue_group_by_iid.items() if title == preferred), "")
+                group_tree.selection_set(preferred_iid)
+                group_tree.focus(preferred_iid)
+                populate_issue_group(preferred)
+
+        def show_detail(_event=None):
+            selection = tree.selection()
+            if not selection or not current_issues:
+                return
+            issue = current_issues[int(selection[0])]
+            detail = "\n".join([
+                f"级别：{severity_label.get(issue.severity, '提醒')}",
+                f"候选人：{issue.name or issue.candidate_key}",
+                f"岗位：{issue.job_name or '未知岗位'}",
+                f"问题：{issue.title}",
+                "",
+                f"说明：{issue.detail}",
+                f"建议：{issue.suggestion}",
+            ])
+            self._show_text_dialog("状态体检详情", detail, width=620, height=360)
+
+        tree.bind("<Double-Button-1>", show_detail)
+
+        def show_state_context_menu(event):
+            item_id = tree.identify_row(event.y)
+            if not item_id or not current_issues:
+                return
+            tree.selection_set(item_id)
+            try:
+                issue = current_issues[int(item_id)]
+            except (ValueError, IndexError):
+                return
+            candidate = candidate_for_issue(issue)
+            primary = "confirm" if issue.title == "需要人工确认" else None
+            self._show_candidate_workflow_context_menu(
+                win,
+                candidate,
+                event.x_root,
+                event.y_root,
+                show_detail_fn=show_detail,
+                refresh_fn=refresh_current_state_diagnostics,
+                primary_action=primary,
+            )
+
+        def on_state_motion(event):
+            item = tree.identify_row(event.y)
+            column_id = tree.identify_column(event.x)
+            if not item or column_id not in ("#3", "#4") or not current_issues:
+                self._hide_tooltip()
+                return
+            try:
+                issue = current_issues[int(item)]
+            except (ValueError, IndexError):
+                self._hide_tooltip()
+                return
+            if column_id == "#3":
+                full = f"{issue.title}\n\n{issue.detail}"
+            else:
+                full = issue.suggestion
+            tooltip_key = ("state_check", item, column_id)
+            if (
+                tooltip_key == getattr(self, "_tooltip_item", None)
+                and getattr(self, "_tooltip", None)
+                and self._tooltip.winfo_exists()
+            ):
+                return
+            after_id = getattr(self, "_tooltip_after_id", None)
+            if after_id:
+                self.root.after_cancel(after_id)
+            x = event.x_root + int(12 * scale)
+            y = event.y_root + int(12 * scale)
+            self._tooltip_item = tooltip_key
+            self._tooltip_after_id = self.root.after(
+                250, lambda: self._show_tooltip(full, x, y, tooltip_key, parent=win)
+            )
+
+        tree.bind("<Motion>", on_state_motion)
+        tree.bind("<Leave>", self._hide_tooltip)
+        tree.bind("<Button-3>", show_state_context_menu)
+        group_tree.bind("<<TreeviewSelect>>", on_issue_group_selected)
+        default_group = next(iter(grouped_issues), "")
+        if default_group:
+            default_iid = next((iid for iid, title in issue_group_by_iid.items() if title == default_group), "")
+            group_tree.selection_set(default_iid)
+            group_tree.focus(default_iid)
+            populate_issue_group(default_group)
+
+        btn_row = ttk.Frame(win, style='Page.TFrame', padding=(int(16 * scale), 0, int(16 * scale), int(14 * scale)))
+        btn_row.pack(fill="x")
+
+        def export_report():
+            default_name = f"candidate_state_diagnostics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            path = filedialog.asksaveasfilename(
+                title="导出状态体检报告",
+                defaultextension=".txt",
+                initialfile=default_name,
+                filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+                parent=win,
+            )
+            if not path:
+                return
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(summary_text)
+                messagebox.showinfo("状态体检", "报告已导出。", parent=win)
+            except Exception as exc:
+                messagebox.showerror("状态体检", f"导出失败：{exc}", parent=win)
+
+        def close():
+            win.grab_release()
+            win.destroy()
+
+        ttk.Button(btn_row, text="导出报告", command=export_report).pack(side="left")
+        ttk.Button(btn_row, text="查看详情", command=show_detail).pack(side="left", padx=int(8 * scale))
+        ttk.Button(btn_row, text="关闭", command=close).pack(side="right")
+        win.protocol("WM_DELETE_WINDOW", close)
+        _place_window_centered(win, int(1040 * scale), int(620 * scale), parent=self.root)
+        win.deiconify()
+
+    @staticmethod
+    def _clip_table_text(text, limit):
+        clean = " ".join(str(text or "").split())
+        if len(clean) <= limit:
+            return clean
+        return clean[: max(0, limit - 1)] + "…"
+
+    def _format_state_issue_problem(self, issue):
+        detail = " ".join(str(issue.detail or "").split())
+        title = str(issue.title or "").strip()
+        if detail:
+            return self._clip_table_text(f"{title}：{detail}", 46)
+        return self._clip_table_text(title, 46)
+
+    def _show_candidate_workflow_context_menu(
+        self,
+        parent,
+        candidate,
+        x_root,
+        y_root,
+        *,
+        show_detail_fn,
+        refresh_fn,
+        primary_action=None,
+    ):
+        """Show candidate actions inside diagnostics/action dialogs."""
+        if not candidate:
+            return
+        context_menu_font = (FONT_FAMILY, int(11 * self.font_scale))
+        menu = tk.Menu(parent, tearoff=0, font=context_menu_font)
+
+        icon_detail = self.icons.button('eye', self.colors['text_primary'])
+        icon_queue = self.icons.button('chat', self.colors['success'])
+        icon_confirm = self.icons.button('stamp_check', self.colors['success'])
+        icon_followup = self.icons.button('pencil', self.colors['primary'])
+        icon_feedback = self.icons.button('check', self.colors['primary'])
+        icon_document = self.icons.button('document', self.colors['primary'])
+        icon_blacklist = self.icons.button('close', self.colors['danger'])
+        icon_unblacklist = self.icons.button('check', self.colors['success'])
+        menu._icon_refs = [
+            icon_detail, icon_queue, icon_confirm, icon_followup,
+            icon_feedback, icon_document, icon_blacklist, icon_unblacklist,
+        ]
+
+        def refresh_later():
+            if refresh_fn:
+                parent.after(150, refresh_fn)
+
+        def add_confirm():
+            menu.add_command(
+                label=" 确认通过",
+                image=icon_confirm,
+                compound=tk.LEFT,
+                command=lambda: self._confirm_manual_review(
+                    None, candidate=candidate, parent=parent, on_saved=refresh_later
+                ),
+            )
+
+        def add_queue():
+            menu.add_command(
+                label=" 加入打招呼队列",
+                image=icon_queue,
+                compound=tk.LEFT,
+                command=lambda: (
+                    self._add_candidates_to_greet_queue([candidate], parent=parent),
+                    refresh_later(),
+                ),
+            )
+
+        def add_resume():
+            menu.add_command(
+                label=" 导入简历 / 二次评估",
+                image=icon_document,
+                compound=tk.LEFT,
+                command=lambda: (
+                    self._import_resume(None, candidate=candidate, parent=parent),
+                    refresh_later(),
+                ),
+            )
+
+        def add_followup():
+            menu.add_command(
+                label=" 更新跟进",
+                image=icon_followup,
+                compound=tk.LEFT,
+                command=lambda: self._mark_candidate_followup(
+                    None, candidate=candidate, parent=parent, on_saved=refresh_later
+                ),
+            )
+
+        if primary_action == "confirm" and candidate.get('manual_review_required'):
+            add_confirm()
+            menu.add_separator()
+        elif primary_action == "queue":
+            add_queue()
+            menu.add_separator()
+        elif primary_action == "resume":
+            add_resume()
+            menu.add_separator()
+        elif primary_action == "followup":
+            add_followup()
+            menu.add_separator()
+
+        menu.add_command(label=" 查看详情", image=icon_detail, compound=tk.LEFT, command=show_detail_fn)
+
+        if candidate.get('manual_review_required') and primary_action != "confirm":
+            add_confirm()
+
+        if (
+            not candidate.get('greet_sent')
+            and not candidate.get('greet_confirmation_pending')
+            and not candidate.get('manual_review_required')
+            and candidate.get('qualification_status') != "rejected"
+            and primary_action != "queue"
+        ):
+            add_queue()
+
+        if primary_action != "followup":
+            add_followup()
+        menu.add_command(
+            label=" 标记反馈",
+            image=icon_feedback,
+            compound=tk.LEFT,
+            command=lambda: self._mark_candidate_feedback(
+                None, candidate=candidate, parent=parent, on_saved=refresh_later
+            ),
+        )
+        if primary_action != "resume":
+            add_resume()
+
+        if candidate.get('blacklisted'):
+            menu.add_command(
+                label=" 移出黑名单",
+                image=icon_unblacklist,
+                compound=tk.LEFT,
+                command=lambda: self._unblacklist_candidate(
+                    None, candidate=candidate, parent=parent, on_saved=refresh_later
+                ),
+            )
+        else:
+            menu.add_command(
+                label=" 加入黑名单",
+                image=icon_blacklist,
+                compound=tk.LEFT,
+                command=lambda: self._blacklist_candidate(
+                    None, candidate=candidate, parent=parent, on_saved=refresh_later
+                ),
+            )
+
+        menu.tk_popup(x_root, y_root)
+
     def _bind_treeview_sorting(self):
         """绑定 Treeview 表头排序功能"""
         # 设置中文表头显示
@@ -11244,7 +12120,7 @@ class BossFilterGUI:
             menu.add_command(label=" AI评估", image=icon_ai_eval, compound=tk.LEFT,
                              command=lambda: self._ai_eval_selected_candidates([candidate]))
 
-        menu.add_command(label=" 导入简历", image=icon_document, compound=tk.LEFT,
+        menu.add_command(label=" 导入简历 / 二次评估", image=icon_document, compound=tk.LEFT,
                          command=lambda: self._import_resume(
                              None, candidate=candidate, parent=parent,
                              tree=tree, tree_item=tree_item))
@@ -12354,7 +13230,7 @@ class BossFilterGUI:
                 if geek_id in eval_map:
                     self.all_candidates[i].update(eval_map[geek_id])
 
-    def _blacklist_candidate(self, item, candidate=None, parent=None):
+    def _blacklist_candidate(self, item, candidate=None, parent=None, on_saved=None):
         """把选中候选人加入黑名单。"""
         candidate = self._resolve_candidate(item, candidate)
         if not candidate:
@@ -12376,6 +13252,8 @@ class BossFilterGUI:
                 self.refresh_home_stats()
                 self.refresh_stats()
                 self.refresh_results()
+                if on_saved:
+                    on_saved()
                 messagebox.showinfo("成功", f"已屏蔽：{name}")
             except Exception as exc:
                 messagebox.showerror("错误", f"加入黑名单失败：{exc}")
@@ -12401,7 +13279,7 @@ class BossFilterGUI:
             save_candidates_all(candidates, CANDIDATES_PATH)
         return updated
 
-    def _unblacklist_candidate(self, item, candidate=None, parent=None):
+    def _unblacklist_candidate(self, item, candidate=None, parent=None, on_saved=None):
         """把选中候选人移出黑名单。"""
         candidate = self._resolve_candidate(item, candidate)
         if not candidate:
@@ -12424,6 +13302,8 @@ class BossFilterGUI:
             self.refresh_home_stats()
             self.refresh_stats()
             self.refresh_results()
+            if on_saved:
+                on_saved()
             messagebox.showinfo("成功", f"已移出黑名单：{name}")
         except Exception as exc:
             messagebox.showerror("错误", f"移出黑名单失败：{exc}")
@@ -12472,7 +13352,7 @@ class BossFilterGUI:
             save_candidates_all(candidates, CANDIDATES_PATH)
         return updated
 
-    def _confirm_manual_review(self, item, candidate=None, parent=None):
+    def _confirm_manual_review(self, item, candidate=None, parent=None, on_saved=None):
         """清除候选人的需人工确认标记。"""
         candidate = self._resolve_candidate(item, candidate)
         if not candidate:
@@ -12504,6 +13384,8 @@ class BossFilterGUI:
             self.refresh_home_stats()
             self.refresh_stats()
             self.refresh_results()
+            if on_saved:
+                on_saved()
             messagebox.showinfo("成功", f"已确认通过：{name}",
                                 parent=parent or self.root)
         except Exception as exc:
@@ -12548,7 +13430,7 @@ class BossFilterGUI:
         messagebox.showinfo("完成", f"已确认通过 {confirmed}/{len(to_confirm)} 人",
                             parent=parent or self.root)
 
-    def _mark_candidate_followup(self, item, candidate=None, parent=None):
+    def _mark_candidate_followup(self, item, candidate=None, parent=None, on_saved=None):
         """标记候选人的跟进状态和备注。"""
         candidate = self._resolve_candidate(item, candidate)
         if not candidate:
@@ -12650,6 +13532,8 @@ class BossFilterGUI:
                     candidate['followup_note'] = note
                 self._regenerate_excel()
                 self.refresh_results()
+                if on_saved:
+                    on_saved()
                 close()
             except Exception as exc:
                 messagebox.showerror("错误", f"保存跟进状态失败：{exc}")
@@ -12683,7 +13567,7 @@ class BossFilterGUI:
             save_candidates_all(candidates, CANDIDATES_PATH)
         return updated
 
-    def _mark_candidate_feedback(self, item, candidate=None, parent=None):
+    def _mark_candidate_feedback(self, item, candidate=None, parent=None, on_saved=None):
         """标记候选人的人工反馈状态和备注。"""
         candidate = self._resolve_candidate(item, candidate)
         if not candidate:
@@ -12821,6 +13705,8 @@ class BossFilterGUI:
                 candidate['feedback_updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
                 self._regenerate_excel()
                 self.refresh_results()
+                if on_saved:
+                    on_saved()
                 close()
             except Exception as exc:
                 messagebox.showerror("错误", f"保存反馈失败：{exc}")
@@ -13303,31 +14189,115 @@ class BossFilterGUI:
         body = ttk.Frame(win, style='Page.TFrame', padding=int(16 * scale))
         body.pack(fill="both", expand=True)
 
+        header = ttk.Frame(body, style='Page.TFrame')
+        header.pack(fill="x", pady=(0, int(10 * scale)))
         self.greet_queue_summary_var = tk.StringVar(value="")
         ttk.Label(
-            body,
+            header,
             textvariable=self.greet_queue_summary_var,
             font=(FONT_FAMILY, int(12 * self.font_scale)),
-            style='Page.TLabel',
-        ).pack(anchor="w", pady=(0, int(10 * scale)))
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_main'],
+        ).pack(side="left", anchor="w")
 
-        filter_row = ttk.Frame(body, style='Page.TFrame')
-        filter_row.pack(fill="x", pady=(0, int(10 * scale)))
-        ttk.Label(filter_row, text="状态筛选", font=(FONT_FAMILY, int(11 * self.font_scale)), style='Page.TLabel').pack(side="left")
-        self.greet_queue_status_filter_var = tk.StringVar(value="全部")
-        status_filter = ttk.Combobox(
-            filter_row,
-            textvariable=self.greet_queue_status_filter_var,
-            values=("全部", "待发送", "失败", "待确认", "需人工确认", "已发送"),
-            state="readonly",
-            width=12,
+        queue_actions = ttk.Frame(header, style='Page.TFrame')
+        queue_actions.pack(side="right", padx=(0, int(8 * scale)))
+        ttk.Button(
+            queue_actions,
+            text="开始发送队列",
+            command=self._start_greet_queue,
+            style="GreetQueue.Small.TButton",
+        ).pack(side="left", padx=(0, int(6 * scale)))
+        ttk.Button(
+            queue_actions,
+            text="暂停",
+            command=self._pause_greet_queue,
+            style="GreetQueue.Small.TButton",
+            width=8,
+        ).pack(side="left", padx=(0, int(6 * scale)))
+        ttk.Button(
+            queue_actions,
+            text="继续",
+            command=self._resume_greet_queue,
+            style="GreetQueue.Small.TButton",
+            width=8,
+        ).pack(side="left")
+
+        self.greet_queue_status_filter_var = tk.StringVar(value=self.greet_queue_selected_group)
+
+        style = ttk.Style()
+        style.configure(
+            "GreetQueue.Treeview",
             font=(FONT_FAMILY, int(11 * self.font_scale)),
+            rowheight=int(30 * scale),
         )
-        status_filter.pack(side="left", padx=(int(8 * scale), 0))
-        status_filter.bind("<<ComboboxSelected>>", lambda _event: self._refresh_greet_queue_dialog())
+        style.configure(
+            "GreetQueue.Treeview.Heading",
+            font=(FONT_FAMILY, int(11 * self.font_scale), 'bold'),
+        )
+        style.configure(
+            "GreetQueue.Small.TButton",
+            font=(FONT_FAMILY, int(11 * self.font_scale)),
+            padding=(int(12 * scale), int(5 * scale)),
+        )
+        content = ttk.Frame(body, style='Page.TFrame')
+        content.pack(fill="both", expand=True)
 
-        tree_frame = ttk.Frame(body, style='Page.TFrame')
-        tree_frame.pack(fill="both", expand=True)
+        nav_frame = ttk.Frame(content, style='Card.TFrame', padding=(int(6 * scale), int(10 * scale)))
+        nav_frame.pack(side="left", fill="y", padx=(0, int(8 * scale)))
+        ttk.Label(
+            nav_frame,
+            text="队列状态",
+            font=self.font_label,
+            foreground=self.colors['text_primary'],
+            background=self.colors['bg_card'],
+        ).pack(anchor="w", pady=(0, int(8 * scale)))
+        group_tree = ttk.Treeview(
+            nav_frame,
+            columns=("count",),
+            show="tree headings",
+            height=8,
+            style="GreetQueue.Treeview",
+            selectmode="browse",
+        )
+        self.greet_queue_group_tree = group_tree
+        group_tree.heading("#0", text="状态")
+        group_tree.heading("count", text="人数")
+        group_tree.column("#0", width=int(120 * scale), minwidth=int(100 * scale), anchor="center")
+        group_tree.column("count", width=int(58 * scale), minwidth=int(48 * scale), anchor="center")
+        group_tree.pack(fill="y", expand=True)
+        group_tree.bind("<<TreeviewSelect>>", lambda _event: self._on_greet_queue_group_selected())
+
+        tree_frame = ttk.Frame(content, style='Card.TFrame')
+        tree_frame.pack(side="left", fill="both", expand=True)
+        self.greet_queue_detail_title_var = tk.StringVar(value="")
+        detail_header = ttk.Frame(tree_frame)
+        detail_header.grid(row=0, column=0, columnspan=3, sticky="ew", padx=(int(10 * scale), int(8 * scale)), pady=(int(10 * scale), 0))
+        detail_header.grid_columnconfigure(0, weight=1)
+        ttk.Label(
+            detail_header,
+            textvariable=self.greet_queue_detail_title_var,
+            font=self.font_label,
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+        ).grid(row=0, column=0, sticky="w", padx=(0, int(10 * scale)))
+        selected_actions = ttk.Frame(detail_header)
+        selected_actions.grid(row=0, column=1, sticky="e")
+        ttk.Button(
+            selected_actions,
+            text="移除选中",
+            command=self._remove_selected_greet_queue_items,
+            style="GreetQueue.Small.TButton",
+            width=8,
+        ).pack(side="left", padx=(0, int(6 * scale)))
+        ttk.Button(
+            selected_actions,
+            text="重试失败",
+            command=self._retry_failed_greet_queue_items,
+            style="GreetQueue.Small.TButton",
+            width=8,
+        ).pack(side="left")
+
         columns = ("name", "job", "score", "level", "method", "status", "message")
         tree = ttk.Treeview(
             tree_frame,
@@ -13335,7 +14305,7 @@ class BossFilterGUI:
             show="headings",
             height=12,
             selectmode="extended",
-            style="Result.Treeview",
+            style="GreetQueue.Treeview",
         )
         self.greet_queue_tree = tree
         headings = {
@@ -13360,27 +14330,33 @@ class BossFilterGUI:
             tree.heading(col, text=headings[col])
             tree.column(col, width=int(widths[col] * scale), minwidth=50, anchor="center")
         scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scroll.set)
-        tree.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        scroll_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=scroll.set, xscrollcommand=scroll_x.set)
+        tree.grid(row=1, column=0, sticky="nsew", padx=int(10 * scale), pady=int(10 * scale))
+        scroll.grid(row=1, column=1, sticky="ns", pady=int(10 * scale))
+        scroll_x.grid(row=2, column=0, sticky="ew", padx=int(10 * scale))
+        tree_frame.grid_rowconfigure(1, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
         tree.bind("<Double-Button-1>", lambda _event: self._show_selected_greet_queue_detail())
-
-        btn_frame = ttk.Frame(body, style='Page.TFrame')
-        btn_frame.pack(fill="x", pady=(int(12 * scale), 0))
-        btn_inner = ttk.Frame(btn_frame, style='Page.TFrame')
-        btn_inner.pack(anchor="center")
-
-        ttk.Button(btn_inner, text="开始发送", command=self._start_greet_queue).pack(side="left", padx=int(5 * scale))
-        ttk.Button(btn_inner, text="暂停", command=self._pause_greet_queue).pack(side="left", padx=int(5 * scale))
-        ttk.Button(btn_inner, text="继续", command=self._resume_greet_queue).pack(side="left", padx=int(5 * scale))
-        ttk.Button(btn_inner, text="移除选中", command=self._remove_selected_greet_queue_items).pack(side="left", padx=int(5 * scale))
-        ttk.Button(btn_inner, text="重试失败", command=self._retry_failed_greet_queue_items).pack(side="left", padx=int(5 * scale))
-        ttk.Button(btn_inner, text="关闭", command=win.destroy).pack(side="left", padx=int(5 * scale))
 
         win.protocol("WM_DELETE_WINDOW", win.destroy)
         self._refresh_greet_queue_dialog()
-        _place_window_centered(win, int(920 * scale), int(560 * scale), parent=_parent)
+        _place_window_centered(win, int(1040 * scale), int(560 * scale), parent=_parent)
         win.deiconify()
+
+    def _on_greet_queue_group_selected(self):
+        if not self.greet_queue_group_tree or not self.greet_queue_group_tree.winfo_exists():
+            return
+        selection = self.greet_queue_group_tree.selection()
+        if not selection:
+            return
+        selected_group = str(selection[0])
+        if selected_group == self.greet_queue_selected_group:
+            return
+        self.greet_queue_selected_group = selected_group
+        if self.greet_queue_status_filter_var:
+            self.greet_queue_status_filter_var.set(selected_group)
+        self._refresh_greet_queue_dialog()
 
     def _refresh_greet_queue_dialog(self):
         if not self.greet_queue_tree or not self.greet_queue_tree.winfo_exists():
@@ -13388,15 +14364,34 @@ class BossFilterGUI:
         tree = self.greet_queue_tree
         tree.delete(*tree.get_children())
         counts = {}
-        selected_status = "全部"
-        if self.greet_queue_status_filter_var:
-            selected_status = self.greet_queue_status_filter_var.get() or "全部"
+        group_order = ("全部", "待确认", "失败", "需人工确认", "待发送", "发送中", "已发送")
+        for item in self.greet_queue_items:
+            status = item.get('status') or "待发送"
+            counts[status] = counts.get(status, 0) + 1
+
+        if self.greet_queue_group_tree and self.greet_queue_group_tree.winfo_exists():
+            group_tree = self.greet_queue_group_tree
+            previous_selection = self.greet_queue_selected_group or "全部"
+            group_tree.delete(*group_tree.get_children())
+            for group in group_order:
+                count = len(self.greet_queue_items) if group == "全部" else counts.get(group, 0)
+                group_tree.insert("", "end", iid=group, text=group, values=(count,))
+            if previous_selection not in group_order:
+                previous_selection = "全部"
+            self.greet_queue_selected_group = previous_selection
+            if self.greet_queue_status_filter_var:
+                self.greet_queue_status_filter_var.set(previous_selection)
+            group_tree.selection_set(previous_selection)
+            group_tree.focus(previous_selection)
+
+        selected_status = self.greet_queue_selected_group or "全部"
+        visible_count = 0
         for item in self.greet_queue_items:
             candidate = item.get('candidate') or {}
             status = item.get('status') or "待发送"
-            counts[status] = counts.get(status, 0) + 1
             if selected_status != "全部" and status != selected_status:
                 continue
+            visible_count += 1
             tree.insert(
                 "",
                 "end",
@@ -13411,13 +14406,23 @@ class BossFilterGUI:
                     item.get('message', ''),
                 ),
             )
+        if self.greet_queue_detail_title_var:
+            self.greet_queue_detail_title_var.set(f"{selected_status}：{visible_count} 人")
         if self.greet_queue_summary_var:
             total = len(self.greet_queue_items)
-            self.greet_queue_summary_var.set(
-                f"总计 {total}｜待发送 {counts.get('待发送', 0)}｜发送中 {counts.get('发送中', 0)}｜"
-                f"已发送 {counts.get('已发送', 0)}｜失败 {counts.get('失败', 0)}｜"
-                f"待确认 {counts.get('待确认', 0)}｜需人工确认 {counts.get('需人工确认', 0)}"
+            needs_attention = (
+                counts.get('待确认', 0)
+                + counts.get('失败', 0)
+                + counts.get('需人工确认', 0)
             )
+            pending = counts.get('待发送', 0)
+            if total == 0:
+                summary = "队列为空"
+            elif needs_attention:
+                summary = f"队列共 {total} 人｜需处理 {needs_attention} 人｜待发送 {pending} 人"
+            else:
+                summary = f"队列共 {total} 人｜待发送 {pending} 人"
+            self.greet_queue_summary_var.set(summary)
 
     def _set_greet_queue_item_state(self, item, status, message=""):
         item['status'] = status
@@ -13711,8 +14716,9 @@ class BossFilterGUI:
                     persist_candidate_greeting_pending(candidate, msg, CANDIDATES_PATH)
                     pending_count += 1
                     consecutive_uncertain += 1
-                    self._set_greet_queue_item_state(item, "待确认", msg)
-                    self.append_log(f"[打招呼队列] {name} 待确认：{msg}")
+                    pending_message = format_greeting_failure_message(msg)
+                    self._set_greet_queue_item_state(item, "待确认", pending_message)
+                    self.append_log(f"[打招呼队列] {name} 待确认：{pending_message}")
                     if consecutive_uncertain >= GREET_UNCERTAIN_LIMIT:
                         self.append_log("[打招呼队列] 连续发送结果待确认，已暂停队列，请人工核实")
                         self.greet_queue_paused = True
@@ -13728,13 +14734,15 @@ class BossFilterGUI:
                 else:
                     fail_count += 1
                     consecutive_uncertain = 0
-                    self._set_greet_queue_item_state(item, "失败", msg)
-                    self.append_log(f"[打招呼队列] {name} 失败：{msg}")
+                    fail_message = format_greeting_failure_message(msg)
+                    diagnosis = diagnose_greeting_failure(msg)
+                    self._set_greet_queue_item_state(item, "失败", fail_message)
+                    self.append_log(f"[打招呼队列] {name} 失败：{fail_message}")
                     if "上限" in msg or "次数" in msg:
                         self.append_log("[打招呼队列] 沟通次数已达上限，停止队列")
                         self.root.after(0, lambda: messagebox.showwarning(
-                            "沟通次数已达上限",
-                            "BOSS 直聘今日沟通次数已用完，请明天再试。",
+                            diagnosis.title,
+                            f"{diagnosis.action}\n\n原始信息：{msg}",
                             parent=parent,
                         ))
                         break
@@ -13968,6 +14976,7 @@ class BossFilterGUI:
                         captcha_callback=captcha_callback
                     )
                 if success is None:
+                    pending_message = format_greeting_failure_message(msg)
                     self.append_log(f"[打招呼] ⚠️ {name} 待确认：{msg}")
                     persist_candidate_greeting_pending(candidate, msg)
                     if _tree_item is not None:
@@ -13983,6 +14992,7 @@ class BossFilterGUI:
                     _parent.after(0, lambda: messagebox.showwarning(
                         "发送结果待确认",
                         f"{name} 的打招呼操作已点击，但页面没有返回明确成功状态。\n\n"
+                        f"{pending_message}\n\n"
                         "程序未将其标记为已沟通，请先在 BOSS 沟通列表核实，避免重复发送。",
                         parent=_parent))
                 elif success:
@@ -14011,7 +15021,8 @@ class BossFilterGUI:
                     _parent.after(0, self.refresh_results)
                     _parent.after(0, self.refresh_home_stats)
                 else:
-                    self.append_log(f"[打招呼] ❌ {name} 失败：{msg}")
+                    diagnosis = diagnose_greeting_failure(msg)
+                    self.append_log(f"[打招呼] ❌ {name} 失败：{diagnosis.title}；{diagnosis.action}（{msg}）")
                     # 恢复表格状态（item 可能已被刷新删除，需 try/except）
                     def _revert_status():
                         if _tree_item is not None:
@@ -14023,11 +15034,17 @@ class BossFilterGUI:
                     # 沟通次数上限
                     if "上限" in msg or "次数" in msg:
                         _parent.after(0, lambda: messagebox.showwarning(
-                            "沟通次数已达上限",
-                            "BOSS 直聘今日沟通次数已用完，请明天再试。",
+                            diagnosis.title,
+                            f"{diagnosis.action}\n\n原始信息：{msg}",
+                            parent=_parent))
+                    else:
+                        _parent.after(0, lambda: messagebox.showwarning(
+                            diagnosis.title,
+                            f"{diagnosis.action}\n\n原始信息：{msg}",
                             parent=_parent))
             except Exception as e:
-                self.append_log(f"[打招呼] ❌ {name} 异常：{e}")
+                diagnosis = diagnose_greeting_failure(str(e))
+                self.append_log(f"[打招呼] ❌ {name} 异常：{diagnosis.title}；{diagnosis.action}（{e}）")
                 def _revert_status_exc():
                     if _tree_item is not None:
                         try:
@@ -14200,7 +15217,9 @@ class BossFilterGUI:
                             # 更新表格状态
                             _parent.after(0, lambda t=tree_item, c=candidate: self._safe_tree_set(tree, t, 'status', self._format_candidate_status(c)))
                         else:
-                            self.append_log(f"[批量打招呼] ❌ {name} 失败：{msg}")
+                            fail_message = format_greeting_failure_message(msg)
+                            diagnosis = diagnose_greeting_failure(msg)
+                            self.append_log(f"[批量打招呼] ❌ {name} 失败：{fail_message}")
                             fail_count += 1
                             # 恢复表格状态
                             _parent.after(0, lambda t=tree_item, c=candidate: self._safe_tree_set(tree, t, 'status', self._format_candidate_status(c)))
@@ -14208,8 +15227,8 @@ class BossFilterGUI:
                             if "上限" in msg or "次数" in msg:
                                 self.append_log("[批量打招呼] 沟通次数已达上限，停止批量打招呼")
                                 _parent.after(0, lambda: messagebox.showwarning(
-                                    "沟通次数已达上限",
-                                    "BOSS 直聘今日沟通次数已用完，请明天再试。",
+                                    diagnosis.title,
+                                    f"{diagnosis.action}\n\n原始信息：{msg}",
                                     parent=_parent))
                                 break
 
@@ -14302,7 +15321,8 @@ class BossFilterGUI:
                             )
 
                             if success is None:
-                                self.append_log(f"[批量打招呼] ⚠️ {name} 待确认：{msg}")
+                                pending_message = format_greeting_failure_message(msg)
+                                self.append_log(f"[批量打招呼] ⚠️ {name} 待确认：{pending_message}")
                                 skip_count += 1
                                 persist_candidate_greeting_pending(candidate, msg)
                                 consecutive_uncertain += 1
@@ -14331,7 +15351,9 @@ class BossFilterGUI:
                                 # 更新表格状态
                                 _parent.after(0, lambda t=tree_item, c=candidate: self._safe_tree_set(tree, t, 'status', self._format_candidate_status(c)))
                             else:
-                                self.append_log(f"[批量打招呼] ❌ {name} 失败：{msg}")
+                                fail_message = format_greeting_failure_message(msg)
+                                diagnosis = diagnose_greeting_failure(msg)
+                                self.append_log(f"[批量打招呼] ❌ {name} 失败：{fail_message}")
                                 fail_count += 1
                                 consecutive_uncertain = 0
                                 # 恢复表格状态
@@ -14340,8 +15362,8 @@ class BossFilterGUI:
                                 if "上限" in msg or "次数" in msg:
                                     self.append_log("[批量打招呼] 沟通次数已达上限，停止批量打招呼")
                                     _parent.after(0, lambda: messagebox.showwarning(
-                                        "沟通次数已达上限",
-                                        "BOSS 直聘今日沟通次数已用完，请明天再试。",
+                                        diagnosis.title,
+                                        f"{diagnosis.action}\n\n原始信息：{msg}",
                                         parent=_parent))
                                     break
 

@@ -500,6 +500,27 @@ def test_save_capability_to_model_matches_provider_base_url_and_model():
     gui._mark_api_config_ui_current.assert_called_once()
 
 
+def test_save_api_config_manual_save_sets_current_model():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    save_block = source[source.index("def save_api_config"):]
+    save_block = save_block[:save_block.index("\n    def fetch_model_list")]
+
+    assert "is_manual_save = not pending and bool(model_name)" in save_block
+    assert "if is_manual_save or not current_model:" in save_block
+    assert '"✓ 配置已保存并设为当前模型" if is_manual_save' in save_block
+
+
+def test_use_selected_model_matches_provider_and_base_url_not_model_name_only():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    use_block = source[source.index("def use_selected_model"):]
+    use_block = use_block[:use_block.index("\n    def test_saved_model_connectivity")]
+
+    assert 'selected_base_url = item[\'values\'][4]' in use_block
+    assert 'saved.get("api_provider") == provider_key' in use_block
+    assert 'saved.get("base_url", "") == selected_base_url' in use_block
+    assert 'if saved.get("model") == model_name:' not in use_block
+
+
 def test_latest_history_value_uses_latest_end_date_not_list_order():
     entries = [
         {"school": "较早学校", "end": "2018.06"},
@@ -976,15 +997,99 @@ def test_greet_queue_skip_summary_is_user_readable():
     assert "- 需人工确认：3 人" in summary
 
 
-def test_greet_queue_dialog_has_status_filter_and_double_click_detail():
+def test_greet_queue_dialog_has_status_groups_and_double_click_detail():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     dialog_block = source[source.index("def _show_greet_queue_dialog"):]
     dialog_block = dialog_block[:dialog_block.index("\n    def _refresh_greet_queue_dialog")]
+    refresh_block = source[source.index("def _refresh_greet_queue_dialog"):]
+    refresh_block = refresh_block[:refresh_block.index("\n    def _set_greet_queue_item_state")]
 
-    assert "状态筛选" in dialog_block
-    assert "self.greet_queue_status_filter_var" in dialog_block
-    assert '"待发送", "失败", "待确认", "需人工确认", "已发送"' in dialog_block
+    assert "队列状态" in dialog_block
+    assert "self.greet_queue_group_tree" in dialog_block
+    assert "self.greet_queue_detail_title_var" in dialog_block
+    assert "GreetQueue.Small.TButton" in dialog_block
+    assert "GreetQueue.Primary.TButton" not in dialog_block
+    assert 'text="开始发送队列"' in dialog_block
+    assert 'text="暂停",' in dialog_block and 'width=8' in dialog_block
+    assert 'text="移除选中",' in dialog_block
+    assert 'queue_actions.pack(side="right", padx=(0, int(8 * scale)))' in dialog_block
+    assert "padding=(int(6 * scale), int(10 * scale))" in dialog_block
+    assert "detail_header = ttk.Frame(tree_frame)" in dialog_block
+    assert "detail_title_box" not in dialog_block
+    assert "foreground=self.colors['text_secondary']" in dialog_block
+    assert "background=self.colors['bg_card']" in dialog_block
+    assert 'padx=(int(10 * scale), int(8 * scale))' in dialog_block
+    assert "selected_actions = ttk.Frame(detail_header)" in dialog_block
+    assert "selected_actions.grid(row=0, column=1, sticky=\"e\")" in dialog_block
+    assert 'group_tree.column("#0", width=int(120 * scale), minwidth=int(100 * scale), anchor="center")' in dialog_block
+    assert 'group_tree.column("count", width=int(58 * scale), minwidth=int(48 * scale), anchor="center")' in dialog_block
+    assert 'group_order = ("全部", "待确认", "失败", "需人工确认", "待发送", "发送中", "已发送")' in refresh_block
+    assert "队列为空" in refresh_block
+    assert "需处理" in refresh_block
     assert 'tree.bind("<Double-Button-1>", lambda _event: self._show_selected_greet_queue_detail())' in dialog_block
+
+
+def test_candidate_state_diagnostics_detail_does_not_repeat_severity_column():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    dialog_block = source[source.index("def _show_candidate_state_diagnostics_dialog"):]
+    dialog_block = dialog_block[:dialog_block.index("\n    def _clip_table_text")]
+
+    assert 'columns=("count", "level")' in dialog_block
+    assert 'group_tree.heading("level", text="级别")' in dialog_block
+    assert 'columns = ("name", "job", "problem", "action")' in dialog_block
+    assert 'tree.heading("severity", text="级别")' not in dialog_block
+    assert 'tree.column("severity"' not in dialog_block
+    assert 'severity_label.get(issue.severity, "提醒"),' not in dialog_block
+    assert 'column_id not in ("#3", "#4")' in dialog_block
+    assert 'if column_id == "#3":' in dialog_block
+    assert 'full = f"{issue.title}\\n\\n{issue.detail}"' in dialog_block
+    assert 'full = issue.suggestion' in dialog_block
+
+
+def test_candidate_workflow_dialog_subtitles_use_neutral_text_color():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    daily_block = source[source.index("def _show_daily_candidate_actions_dialog"):]
+    daily_block = daily_block[:daily_block.index("\n    def _show_candidate_state_diagnostics_dialog")]
+    state_block = source[source.index("def _show_candidate_state_diagnostics_dialog"):]
+    state_block = state_block[:state_block.index("\n    def _clip_table_text")]
+    queue_block = source[source.index("def _show_greet_queue_dialog"):]
+    queue_block = queue_block[:queue_block.index("\n    def _on_greet_queue_group_selected")]
+
+    assert "foreground=self.colors['text_secondary']" in daily_block
+    assert "foreground=self.colors['primary']" not in daily_block
+    assert "headline_color" not in state_block
+    assert "foreground=self.colors['text_secondary']" in state_block
+    assert "foreground=headline_color" not in state_block
+    assert "foreground=self.colors['text_secondary']" in queue_block
+    assert "textvariable=self.greet_queue_detail_title_var" in queue_block
+    assert "background=self.colors['bg_card']" in queue_block
+
+
+def test_daily_resume_action_promotes_resume_context_menu_entry():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    action_block = source[source.index("def _show_daily_candidate_actions_dialog"):]
+    action_block = action_block[:action_block.index("\n    def _show_candidate_state_diagnostics_dialog")]
+    menu_block = source[source.index("def _show_candidate_workflow_context_menu"):]
+    menu_block = menu_block[:menu_block.index("\n    def _bind_treeview_sorting")]
+    result_menu_block = source[source.index("def _build_candidate_context_menu"):]
+    result_menu_block = result_menu_block[:result_menu_block.index("\n    def _find_candidate_by_tree_item")]
+
+    assert '"resume" if item.group == "有简历未二次评估"' in action_block
+    assert 'label=" 导入简历 / 二次评估"' in menu_block
+    assert 'label=" 导入简历 / 二次评估"' in result_menu_block
+    assert 'elif primary_action == "resume":' in menu_block
+
+
+def test_daily_followup_action_promotes_followup_context_menu_entry():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    action_block = source[source.index("def _show_daily_candidate_actions_dialog"):]
+    action_block = action_block[:action_block.index("\n    def _show_candidate_state_diagnostics_dialog")]
+    menu_block = source[source.index("def _show_candidate_workflow_context_menu"):]
+    menu_block = menu_block[:menu_block.index("\n    def _bind_treeview_sorting")]
+
+    assert '"followup" if item.group in ("已打招呼未回复", "已回复待约面") else None' in action_block
+    assert 'label=" 更新跟进"' in menu_block
+    assert 'elif primary_action == "followup":' in menu_block
 
 
 def test_greet_queue_start_requires_confirmation():

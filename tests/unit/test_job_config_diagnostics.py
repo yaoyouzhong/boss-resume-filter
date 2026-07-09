@@ -1,4 +1,8 @@
-from job_config_diagnostics import diagnose_job_config, summarize_job_config_diagnostics
+from job_config_diagnostics import (
+    diagnose_job_config,
+    score_job_config_quality,
+    summarize_job_config_diagnostics,
+)
 
 
 def test_diagnose_empty_job_config_reports_missing_basis():
@@ -107,3 +111,37 @@ def test_summarize_job_config_diagnostics_reports_clean_config():
     })
 
     assert "配置体检通过" in text
+    assert "配置质量：100/100" in text
+
+
+def test_job_config_quality_score_penalizes_warnings_without_blocking():
+    issues = diagnose_job_config("平台工程师", {
+        "min_exp": 3,
+        "keywords": [
+            {"name": "开发", "weight": 1},
+            {"name": "Java/Spring/MySQL", "weight": 2},
+            {"name": "负责大型分布式系统架构设计与性能优化", "weight": 2},
+        ],
+    })
+
+    quality = score_job_config_quality(issues)
+    assert 0 < quality.score < 100
+    assert "可用" in quality.verdict or "风险" in quality.verdict
+    assert any(issue.penalty > 0 for issue in issues)
+
+
+def test_summarize_job_config_diagnostics_includes_quality_score_and_penalties():
+    issues = diagnose_job_config("客户成功经理", {
+        "min_exp": 3,
+        "keywords": [
+            {"name": "SaaS", "weight": 2},
+            {"name": "沟通能力", "weight": 2},
+            {"name": "SQL", "weight": 1},
+        ],
+        "preferred_keywords": [{"name": "SaaS", "bonus": 1}],
+    })
+    text = summarize_job_config_diagnostics("客户成功经理", {}, issues=issues)
+
+    assert "配置质量：" in text
+    assert "核心技能与优先项重叠" in text
+    assert "（-" in text
