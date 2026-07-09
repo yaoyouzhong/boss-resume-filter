@@ -1,29 +1,29 @@
 {
-  "version": "2.17",
-  "release_date": "2026-07-08",
+  "version": "2.18",
+  "release_date": "2026-07-09",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.17/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.17/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.17/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.18/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.18/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.18/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "windows": {
-      "size": 38644292,
-      "sha256": "0bd2655542dd8534a5b2263177d164910cf28516a45c920688b660395c67117e"
+      "size": 38703524,
+      "sha256": "28d8ec4b0b5ff7f54871bd964177ccc5427dd1b80074ddd8e4eb6310436b6a90"
     },
     "macos_dmg": {
-      "size": 33197310,
-      "sha256": "0cfc31b437ce20150866c1599116df90965b336f72cb8449eaecded10507377d"
+      "size": 33280862,
+      "sha256": "869c6674bf962689aec1680cc1be5c81fa24d6c33ab877490c6e36e992af45e1"
     },
     "macos": {
-      "size": 34045656,
-      "sha256": "190501f80bd901f3984291b60db68f2b97fb0f9317c099f000e31825d5fde242"
+      "size": 34104457,
+      "sha256": "7e92eed883132bce280bc848e6e9575dcbe439e7092feaaea9b28c0a17f93409"
     }
   },
-  "release_notes": "### 新增功能\n\n- **岗位配置保存前体检**：保存岗位配置时自动检查明显冲突、重复项和过窄条件；严重问题阻止保存，提醒项可确认后继续保存\n- **反馈原因结构化**：标记候选人反馈时可选择技能不匹配、行业经验不符、年限判断偏差、薪资不合适、地点不合适、规则过宽等常用原因，保留备注补充说明，便于后续按岗位复盘\n- **岗位级复盘**：按岗位汇总反馈分布、原因 Top 项、样本概览、已回复、已约面、平均分和调整建议，帮助判断筛选规则是否需要调整\n- **打招呼队列工作台**：筛选结果页新增打招呼队列，多选候选人可先加入队列，再统一查看发送方式、执行状态和失败原因后发送；加入队列时会自动跳过已沟通、需人工确认、分数不足或状态不适合自动发送的候选人\n\n### 问题修复\n\n- **模型配置保存隔离**：系统设置中的个人模型选择与程序内置模板分开保存，避免刷新模型列表或切换模型后影响当前配置\n- **浏览器页面提示修正**：浏览器停留在登录页或非推荐牛人页面时，不再把选择器检查警告当成扫描故障提示\n- **自动更新检查提示修正**：Gitee 更新源短暂超时时会自动重试或切换备用源，启动静默检查不再把可恢复的网络波动显示成报错",
+  "release_notes": "### 新增功能\n\n- **候选人状态体检**：筛选结果页新增状态体检，按问题类型聚合候选人状态异常，帮助发现已打招呼未更新跟进、发送结果待确认、简历评估不完整、重复记录等问题\n- **今日候选人待办**：新增候选人待办窗口，按发送确认、人工确认、高分未打招呼、简历未二次评估、已回复待约面等分组展示下一步动作\n- **候选人快捷处理菜单**：今日待办、状态体检和筛选结果页支持通过右键菜单直接更新跟进、导入简历、标记反馈、加入打招呼队列、移出黑名单或确认候选人状态\n- **待办与体检报告导出**：今日待办和状态体检支持导出文本报告，便于把候选人问题清单留档或转发复核\n- **岗位配置质量评分**：岗位配置体检新增质量分和风险判断，保存前更容易看出配置是否过宽、过窄或存在冲突\n\n### 体验优化\n\n- **打招呼队列布局优化**：队列窗口改为左侧状态分类、右侧候选人明细，减少无效信息堆叠，发送、暂停、重试和移除操作更集中\n- **候选人列表提示优化**：待办、状态体检和打招呼队列的字体、颜色、提示气泡和副标题样式统一；未命名候选人也会使用统一兜底显示\n- **刷新入口优化**：筛选结果页刷新入口改为轻量图标，减少底部按钮干扰\n\n### 问题修复\n\n- **模型设置保存修复**：修复手工保存模型配置后，重启仍读取旧生效模型的问题\n- **同名模型切换修复**：切换已保存模型时同时匹配服务商和接入地址，避免同名模型使用错误地址\n- **打招呼失败提示优化**：发送失败时按沟通次数、安全验证、浏览器连接、页面位置等原因给出更明确的处理建议，减少只看到底层错误信息的情况",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.17/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.17/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.17/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.18/BOSS_ResumeFilter.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.18/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.18/BOSS_ResumeFilter.dmg"
   }
 }
