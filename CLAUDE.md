@@ -248,7 +248,7 @@ boss-resume-filter/
 
 - `api_config.json` 是发布默认模板；源码运行时用户配置写入 ignored 的 `api_config.local.json`，避免模型列表刷新和本机模型切换污染发布 diff
 - API Key 加密存储在系统钥匙串，配置文件只保存 provider/base_url/model 等非密钥信息
-- 支持动态获取模型列表、双击切换已保存模型、测试连接（并行双策略）
+- 支持动态获取模型列表、保存模型库、在“使用中的模型”中显式选择默认 AI 模型、测试连接（并行双策略）
 - 新电脑部署：首次启动检测 API Key 缺失并引导重新配置
 
 ### 模型列表搜索与新增检测
@@ -260,11 +260,11 @@ boss-resume-filter/
 
 ### 学历核验模型独立配置
 
-- 已保存模型列表右键菜单可「设为学历核验模型」/「取消学历核验模型」，指定后学历核验功能使用独立模型，AI 评估继续使用全局模型
-- `api_config.local.json` / 打包后的 `api_config.json` 的 `education_model_ref` 字段存储指定模型（`{api_provider, base_url, model}`），未设置时回退全局模型
+- 系统设置的“使用中的模型”可显式选择学历核验模型；未指定时跟随默认 AI 模型
+- `api_config.local.json` / 打包后的 `api_config.json` 的 `education_model_ref` 字段存储指定模型（`{api_provider, base_url, model}`），未设置时回退默认 AI 模型
 - 独立学历证书核验助手固定使用 `token-plan.cn-beijing.maas.aliyuncs.com` 的 `kimi-k2.6`
-- 删除已保存模型时自动清除对应的学历核验配置
-- 实现位置：`gui_main.py:_set_education_model()`、`gui_main.py:_get_education_api_config()`
+- 正在作为默认 AI 模型或学历核验模型使用的已保存模型，需先在“使用中的模型”中切换后才能删除
+- 实现位置：`gui_main.py:_on_education_model_selected()`、`gui_main.py:_get_education_api_config()`
 
 ## 自动更新
 

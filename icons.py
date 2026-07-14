@@ -727,6 +727,41 @@ def _stamp_check(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     return img
 
 
+def _traffic_light(size_px: int, fill: str, bg: str, sw: int, active: str) -> Image.Image:
+    """三色信号灯，突出当前连通性状态，不绘制额外外框。"""
+    img = Image.new('RGBA', (size_px, size_px), bg)
+    d = ImageDraw.Draw(img)
+    S = size_px
+    colors = {
+        "red": "#E5484D",
+        "yellow": "#F5A524",
+        "green": "#30A46C",
+    }
+    centers = {"red": 5.5, "yellow": 12, "green": 18.5}
+    inactive = "#C8CDD5"
+    radius = _s(3.2, S)
+    center_x = _s(12, S)
+    for color, center_y in centers.items():
+        cy = _s(center_y, S)
+        d.ellipse(
+            [center_x - radius, cy - radius, center_x + radius, cy + radius],
+            fill=colors[color] if color == active else inactive,
+        )
+    return img
+
+
+def _traffic_light_pending(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
+    return _traffic_light(size_px, fill, bg, sw, "yellow")
+
+
+def _traffic_light_success(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
+    return _traffic_light(size_px, fill, bg, sw, "green")
+
+
+def _traffic_light_error(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
+    return _traffic_light(size_px, fill, bg, sw, "red")
+
+
 # ---------------------------------------------------------------------------
 # 图标注册表
 # ---------------------------------------------------------------------------
@@ -769,6 +804,9 @@ ICON_REGISTRY: Dict[str, Callable] = {
     'document':     _document,
     'shield_check': _shield_check,
     'stamp_check':  _stamp_check,
+    'traffic_light_pending': _traffic_light_pending,
+    'traffic_light_success': _traffic_light_success,
+    'traffic_light_error': _traffic_light_error,
 }
 
 

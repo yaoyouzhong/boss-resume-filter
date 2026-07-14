@@ -67,6 +67,24 @@ class _FakeVar:
         self.value = value
 
 
+class _FakeWidget:
+    def __init__(self):
+        self.configs = []
+
+    def config(self, **kwargs):
+        self.configs.append(kwargs)
+
+    configure = config
+
+
+class _FakeStopEvent:
+    def __init__(self):
+        self.cleared = False
+
+    def clear(self):
+        self.cleared = True
+
+
 class _FakeCombo(dict):
     def __init__(self):
         super().__init__()
@@ -384,10 +402,11 @@ def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
 
     gui._update_model_list_columns()
 
-    assert gui.model_list_tree.column_options["name"]["width"] == 320
-    assert gui.model_list_tree.column_options["provider"]["width"] == 280
-    assert gui.model_list_tree.column_options["compat"]["width"] == 170
-    assert gui.model_list_tree.column_options["edu_ref"]["width"] == 150
+    assert gui.model_list_tree.column_options["name"]["width"] == 400
+    assert gui.model_list_tree.column_options["provider"]["width"] == 300
+    assert gui.model_list_tree.column_options["compat"]["width"] == 220
+    assert gui.model_list_tree.column_options["base_url"]["width"] == 380
+    assert "edu_ref" not in gui.model_list_tree.column_options
 
     gui.root = _FakeRoot(width=1920, height=1040)
     gui.model_list_tree = _FakeTree(920)
@@ -399,6 +418,7 @@ def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
     }
     assert sum(widths_1080p.values()) <= 896
     assert widths_1080p["provider"] < 240
+    assert widths_1080p["compat"] >= 160
     assert widths_1080p["base_url"] >= 170
 
     gui.root = _FakeRoot(width=2560, height=1400)
@@ -411,6 +431,21 @@ def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
     }
     assert sum(widths_2k.values()) <= 956
     assert widths_2k["provider"] < 240
+
+
+def test_saved_model_list_keeps_library_fields_and_removes_derived_purpose_column():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    list_block = source[source.index("# 模型列表 Treeview"):]
+    list_block = list_block[:list_block.index("# 滚动条（垂直 + 水平）")]
+    load_block = source[source.index("def load_saved_models_to_tree"):]
+    load_block = load_block[:load_block.index("\n    def _get_model_list_max_rows")]
+
+    assert 'model_columns = ("name", "provider", "compat", "base_url")' in list_block
+    assert 'heading("edu_ref"' not in list_block
+    assert 'displaycolumns=("name", "provider", "compat", "base_url")' in list_block
+    assert "purpose_display" not in load_block
+    assert "tags=tuple(tags)" not in load_block
+    assert "values=(name, provider_display, status_display, base_url)" in load_block
 
 
 def test_education_queue_columns_keep_status_visible_on_narrow_screens():
@@ -500,14 +535,334 @@ def test_save_capability_to_model_matches_provider_base_url_and_model():
     gui._mark_api_config_ui_current.assert_called_once()
 
 
-def test_save_api_config_manual_save_sets_current_model():
+def test_result_scope_label_matches_filter_label_style():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    result_block = source[source.index("def create_result_page"):]
+    result_block = result_block[:result_block.index("\n    def create_education_page")]
+
+    assert 'text="结果范围:"' in result_block
+
+
+def test_model_settings_use_explicit_role_selectors_not_hidden_actions():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    settings_block = source[source.index("def _create_api_config_content"):]
+    settings_block = settings_block[:settings_block.index("\n    def load_api_config_to_ui")]
+
+    assert '"使用中的模型"' in settings_block
+    assert 'text="默认 AI 模型:"' in settings_block
+    assert 'text="学历核验模型:"' in settings_block
+    assert "label_width_assignment = 14" in settings_block
+    assert "model_choice_width = 34" in settings_block
+    assert "traffic_light_size = int(32 * self.dpi_scale * self.zoom_factor)" in settings_block
+    assert "traffic_light_pending" in settings_block
+    assert "traffic_light_success" in settings_block
+    assert "traffic_light_error" in settings_block
+    assert "pulse_check" not in settings_block
+    assert 'width=model_choice_width' in settings_block
+    assert "width=UI_CONFIG['entry_width_url']" in settings_block
+    assert "self.api_key_entry = ttk.Entry(" in settings_block
+    api_key_block = settings_block[settings_block.index("self.api_key_entry = ttk.Entry("):]
+    api_key_block = api_key_block[:api_key_block.index("self.api_key_entry.pack")]
+    assert "width=UI_CONFIG['entry_width_url']" in api_key_block
+    assert 'sticky="w"' in settings_block
+    assert "btn_test_default_model" in settings_block
+    assert "btn_test_education_model" in settings_block
+    assert "_assigned_model_test_status_labels" in settings_block
+    assert 'text="未检测"' in settings_block
+    assert "font=self.font_small" not in settings_block
+    assert "tk.Label(" in settings_block
+    assert '<Button-1>", lambda _e: self._test_assigned_model("default")' in settings_block
+    assert '<Button-1>", lambda _e: self._test_assigned_model("education")' in settings_block
+    assert '_show_assigned_model_test_tooltip("default", e)' in settings_block
+    assert '_show_assigned_model_test_tooltip("education", e)' in settings_block
+    assert 'text="测试"' not in settings_block
+    assert '"模型接入"' in settings_block
+    assert '"已保存模型（双击切换）"' not in settings_block
+    assert 'label="切换模型"' not in settings_block
+    assert 'label="设为学历核验模型"' not in settings_block
+    assert 'label="取消学历核验模型"' not in settings_block
+
+
+def test_system_settings_populates_model_controls_before_page_is_visible():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    show_block = source[source.index("def show_page_api"):]
+    show_block = show_block[:show_block.index("\n    def hide_all_pages")]
+
+    assert "self._load_api_config_to_ui_if_needed()" in show_block
+    assert "_defer_ui_work(\"api_config_to_ui\"" not in show_block
+    assert show_block.index("self._load_api_config_to_ui_if_needed()") < show_block.index(
+        "self.api_config_page.pack"
+    )
+
+
+def test_api_key_is_visible_only_while_eye_button_is_pressed():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.api_key_entry = _FakeWidget()
+    gui.api_key_toggle_btn = _FakeWidget()
+    gui.api_key_toggle_btn._icon_eye = "eye"
+    gui.api_key_toggle_btn._icon_eye_off = "eye-off"
+    gui.api_key_show_var = _FakeVar(False)
+
+    gui._show_api_key_while_pressed()
+
+    assert gui.api_key_entry.configs[-1] == {"show": ""}
+    assert gui.api_key_toggle_btn.configs[-1] == {"image": "eye-off"}
+    assert gui.api_key_show_var.get() is True
+
+    gui._hide_api_key_after_release()
+
+    assert gui.api_key_entry.configs[-1] == {"show": "*"}
+    assert gui.api_key_toggle_btn.configs[-1] == {"image": "eye"}
+    assert gui.api_key_show_var.get() is False
+
+
+def test_api_key_eye_uses_press_and_release_bindings_not_click_toggle():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    settings_block = source[source.index("def _create_api_config_content"):]
+    settings_block = settings_block[:settings_block.index("\n    def load_api_config_to_ui")]
+
+    assert '"<ButtonPress-1>", self._show_api_key_while_pressed' in settings_block
+    assert '"<ButtonRelease-1>", self._hide_api_key_after_release' in settings_block
+    assert '"<Leave>", self._hide_api_key_after_release' in settings_block
+    assert '"<FocusOut>", self._hide_api_key_after_release' in settings_block
+    assert "command=self.toggle_api_key_visibility" not in settings_block
+
+
+def test_assigned_model_test_result_updates_matching_traffic_light_only():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    default_button = _FakeWidget()
+    gui.api_config = {
+        "api_provider": "qwen",
+        "base_url": "https://example.test/v1",
+        "model": "qwen-plus",
+    }
+    gui._assigned_model_test_buttons = {"default": default_button}
+    gui._assigned_model_test_icons = {
+        "pending": "yellow-light",
+        "success": "green-light",
+        "error": "red-light",
+    }
+    gui._assigned_model_test_states = {"default": "testing"}
+    gui._assigned_model_test_tokens = {"default": 4}
+
+    gui._apply_assigned_model_test_result({
+        "assigned_role": "default",
+        "assigned_test_token": 4,
+        "assigned_model_ref": {
+            "api_provider": "qwen",
+            "base_url": "https://example.test/v1/",
+            "model": "qwen-plus",
+        },
+    }, {"status": "success"})
+
+    assert gui._assigned_model_test_states["default"] == "success"
+    assert default_button.configs[-1] == {"image": "green-light"}
+
+
+def test_assigned_model_test_feedback_identifies_role_and_keeps_rows_independent():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.PROVIDER_DISPLAY = gui_main.PROVIDER_DISPLAY
+    gui.api_config = {
+        "api_provider": "qwen",
+        "base_url": "https://example.test/v1",
+        "model": "qwen-plus",
+        "education_model_ref": {
+            "api_provider": "kimi",
+            "base_url": "https://example.test/kimi",
+            "model": "kimi-k2.6",
+        },
+    }
+    gui.colors = {
+        "text_secondary": "gray",
+        "warning": "yellow",
+        "success": "green",
+        "danger": "red",
+    }
+    gui._assigned_model_test_buttons = {
+        "default": _FakeWidget(), "education": _FakeWidget(),
+    }
+    gui._assigned_model_test_status_labels = {
+        "default": _FakeWidget(), "education": _FakeWidget(),
+    }
+    gui._assigned_model_test_icons = {
+        "pending": "yellow-light", "success": "green-light", "error": "red-light",
+    }
+    gui._assigned_model_test_states = {"default": "pending", "education": "pending"}
+
+    gui._set_assigned_model_test_state("default", "testing")
+    gui._set_assigned_model_test_state("education", "success")
+
+    assert gui._assigned_model_test_status_labels["default"].configs[-1] == {
+        "text": "测试中", "foreground": "yellow",
+    }
+    assert gui._assigned_model_test_status_labels["education"].configs[-1] == {
+        "text": "已通过", "foreground": "green",
+    }
+    default_target = gui._assigned_model_test_target_label("default")
+    education_target = gui._assigned_model_test_target_label("education")
+    assert default_target.startswith("默认 AI 模型（")
+    assert default_target.endswith("/ qwen-plus）")
+    assert education_target.startswith("学历核验模型（")
+    assert education_target.endswith("/ kimi-k2.6）")
+
+
+def test_assigned_model_connectivity_status_uses_role_and_model_name():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    test_block = source[source.index("def test_saved_model_connectivity"):]
+    test_block = test_block[:test_block.index("\n    def _set_model_list_item_status")]
+    result_block = source[source.index("def _apply_model_connectivity_result"):]
+    result_block = result_block[:result_block.index("\n    def _apply_assigned_model_test_result")]
+
+    assert "assigned_target_label = (" in test_block
+    assert 'f"正在测试{assigned_target_label}..."' in test_block
+    assert 'f"✓ {assigned_target_label}测试通过"' in result_block
+
+
+def test_assigned_model_test_result_is_ignored_after_model_switch():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    default_button = _FakeWidget()
+    gui.api_config = {
+        "api_provider": "qwen",
+        "base_url": "https://new.example.test/v1",
+        "model": "new-model",
+    }
+    gui._assigned_model_test_buttons = {"default": default_button}
+    gui._assigned_model_test_icons = {
+        "pending": "yellow-light",
+        "success": "green-light",
+        "error": "red-light",
+    }
+    gui._assigned_model_test_states = {"default": "pending"}
+    gui._assigned_model_test_tokens = {"default": 5}
+
+    gui._apply_assigned_model_test_result({
+        "assigned_role": "default",
+        "assigned_test_token": 4,
+        "assigned_model_ref": {
+            "api_provider": "qwen",
+            "base_url": "https://old.example.test/v1",
+            "model": "old-model",
+        },
+    }, {"status": "success"})
+
+    assert gui._assigned_model_test_states["default"] == "pending"
+    assert default_button.configs == []
+
+
+def test_assigned_model_test_state_restores_when_returning_to_tested_model():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    default_button = _FakeWidget()
+    tested_model = {
+        "api_provider": "qwen",
+        "base_url": "https://tested.example.test/v1",
+        "model": "tested-model",
+    }
+    gui.api_config = dict(tested_model)
+    gui._assigned_model_test_buttons = {"default": default_button}
+    gui._assigned_model_test_icons = {
+        "pending": "yellow-light",
+        "success": "green-light",
+        "error": "red-light",
+    }
+    gui._assigned_model_test_states = {"default": "pending", "education": "pending"}
+    gui._assigned_model_test_tokens = {"default": 3, "education": 0}
+    gui._assigned_model_test_refs = {
+        "default": {
+            "api_provider": "qwen",
+            "base_url": "https://other.example.test/v1",
+            "model": "other-model",
+        },
+        "education": dict(tested_model),
+    }
+    gui._assigned_model_test_results = {
+        gui._model_ref_key(tested_model): "success",
+    }
+
+    gui._reset_assigned_model_test_states()
+
+    assert gui._assigned_model_test_states["default"] == "success"
+    assert default_button.configs[-1] == {"image": "green-light"}
+
+
+def test_traffic_light_icons_are_registered_without_pulse_check():
+    assert "traffic_light_pending" in icons.ICON_REGISTRY
+    assert "traffic_light_success" in icons.ICON_REGISTRY
+    assert "traffic_light_error" in icons.ICON_REGISTRY
+    assert "pulse_check" not in icons.ICON_REGISTRY
+
+
+def test_model_ref_matches_full_connection_identity():
+    same_model_one = {
+        "api_provider": "qwen",
+        "base_url": "https://one.example/v1/",
+        "model": "same-model",
+    }
+    same_model_two = {
+        "api_provider": "qwen",
+        "base_url": "https://two.example/v1",
+        "model": "same-model",
+    }
+
+    assert BossFilterGUI._model_ref_matches(same_model_one, {
+        "api_provider": "qwen",
+        "base_url": "https://one.example/v1",
+        "model": "same-model",
+    })
+    assert not BossFilterGUI._model_ref_matches(same_model_one, same_model_two)
+
+
+def test_save_api_config_preserves_existing_default_model():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.PROVIDER_DISPLAY = gui_main.PROVIDER_DISPLAY
+    gui.DISPLAY_TO_KEY = gui_main.DISPLAY_TO_KEY
+    gui.api_provider_var = _FakeVar("qwen")
+    gui.api_model_var = _FakeVar("new-model")
+    gui.api_key_var = _FakeVar("secret")
+    gui.api_base_url_var = _FakeVar("https://two.example/v1")
+    gui.llm_read_timeout_var = _FakeVar(60)
+    gui._pending_models_to_add = []
+    gui.saved_models = [{
+        "api_provider": "qwen",
+        "base_url": "https://one.example/v1",
+        "model": "current-model",
+    }]
+    gui.api_config = {
+        "api_provider": "qwen",
+        "base_url": "https://one.example/v1/",
+        "model": "current-model",
+        "saved_models": gui.saved_models,
+    }
+    gui.colors = {"success": "green", "danger": "red"}
+    gui.api_status_label = _FakeWidget()
+    gui._status_clickable_labels = []
+    gui.load_saved_models_to_tree = Mock()
+    gui._mark_api_config_ui_current = Mock()
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        config_path = Path(tmp_dir) / "api_config.json"
+        with patch.object(gui_main, "get_api_config_path", return_value=config_path), \
+             patch.object(gui_main, "save_api_key"), \
+             patch.object(gui_main.messagebox, "showinfo") as showinfo, \
+             patch.object(gui_main.messagebox, "showwarning") as showwarning, \
+             patch.object(gui_main.messagebox, "showerror") as showerror:
+            gui.save_api_config()
+
+    showwarning.assert_not_called()
+    showerror.assert_not_called()
+    assert gui.api_config["model"] == "current-model"
+    assert gui.api_config["base_url"] == "https://one.example/v1/"
+    assert any(m["model"] == "new-model" for m in gui.api_config["saved_models"])
+    assert "默认 AI 模型保持不变" in showinfo.call_args.args[1]
+
+
+def test_save_api_config_sets_default_when_current_model_is_not_saved():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     save_block = source[source.index("def save_api_config"):]
     save_block = save_block[:save_block.index("\n    def fetch_model_list")]
 
-    assert "is_manual_save = not pending and bool(model_name)" in save_block
-    assert "if is_manual_save or not current_model:" in save_block
-    assert '"✓ 配置已保存并设为当前模型" if is_manual_save' in save_block
+    assert "has_saved_current = any(" in save_block
+    assert "should_set_default = not has_saved_current" in save_block
+    assert 'default_summary = "本次保存的模型已设为默认 AI 模型" if should_set_default else "默认 AI 模型保持不变"' in save_block
 
 
 def test_use_selected_model_matches_provider_and_base_url_not_model_name_only():
@@ -515,9 +870,9 @@ def test_use_selected_model_matches_provider_and_base_url_not_model_name_only():
     use_block = source[source.index("def use_selected_model"):]
     use_block = use_block[:use_block.index("\n    def test_saved_model_connectivity")]
 
-    assert 'selected_base_url = item[\'values\'][4]' in use_block
-    assert 'saved.get("api_provider") == provider_key' in use_block
-    assert 'saved.get("base_url", "") == selected_base_url' in use_block
+    assert 'selected_base_url = item[\'values\'][3]' in use_block
+    assert '"api_provider": provider_key' in use_block
+    assert '"base_url": selected_base_url' in use_block
     assert 'if saved.get("model") == model_name:' not in use_block
 
 

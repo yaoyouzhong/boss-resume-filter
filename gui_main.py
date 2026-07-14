@@ -2607,28 +2607,119 @@ class BossFilterGUI:
             ttk.Label(_inner, text="检测到已保存的模型配置，但 API Key 未配置（可能是新电脑）",
                      font=self.font_label, foreground=self.colors['warning'],
                      background=self.colors['bg_card']).pack(anchor="w")
-            ttk.Label(_inner, text="请在下方重新输入 API Key 并点击「保存并添加到列表」",
+            ttk.Label(_inner, text="请在下方重新输入 API Key 并点击「保存模型」",
                      font=self.font_label, foreground=self.colors['text_secondary'],
                      background=self.colors['bg_card']).pack(anchor="w", pady=(5, 0))
 
-        # API 配置卡片
-        config_card = self._create_card(api_container, "API 配置",
+        # 模型用途分配
+        assignment_card = self._create_card(api_container, "使用中的模型",
             fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(20 * self.dpi_scale * self.zoom_factor))
+        assignment_frame = ttk.Frame(assignment_card, style='TFrame')
+        assignment_frame.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor),
+                              pady=int(15 * self.dpi_scale * self.zoom_factor))
+        self.default_model_choice_var = tk.StringVar()
+        self.education_model_choice_var = tk.StringVar()
+        self._model_choice_refs = {}
+        self._updating_model_assignment_controls = False
+        self._assigned_model_test_buttons = {}
+        self._assigned_model_test_status_labels = {}
+        traffic_light_size = int(32 * self.dpi_scale * self.zoom_factor)
+        self._assigned_model_test_icons = {
+            "pending": self.icons.get('traffic_light_pending', traffic_light_size, self.colors['text_primary']),
+            "success": self.icons.get('traffic_light_success', traffic_light_size, self.colors['text_primary']),
+            "error": self.icons.get('traffic_light_error', traffic_light_size, self.colors['text_primary']),
+        }
+        self._assigned_model_test_states = {"default": "pending", "education": "pending"}
+        self._assigned_model_test_tokens = {"default": 0, "education": 0}
+        self._assigned_model_test_refs = {}
+        self._assigned_model_test_results = {}
 
-        # 1. 当前使用模型显示
-        current_model_frame = ttk.Frame(config_card, style='TFrame')
-        current_model_frame.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
+        label_width_assignment = 14
+        model_choice_width = 34
+        icon_test_default_model = self._assigned_model_test_icons["pending"]
+        icon_test_education_model = self._assigned_model_test_icons["pending"]
 
-        ttk.Label(current_model_frame, text="当前使用模型:", font=self.font_label,
-                 background=self.colors['bg_card']).pack(side="left")
+        default_row = ttk.Frame(assignment_frame, style='TFrame')
+        default_row.pack(fill="x")
+        ttk.Label(default_row, text="默认 AI 模型:", font=self.font_label,
+                  width=label_width_assignment).grid(row=0, column=0, sticky="w")
+        self.default_model_combo = ttk.Combobox(
+            default_row, textvariable=self.default_model_choice_var,
+            state="readonly", width=model_choice_width, font=self.font_label,
+        )
+        self.default_model_combo.grid(
+            row=0, column=1, sticky="w",
+            padx=(int(5 * self.dpi_scale * self.zoom_factor), int(8 * self.dpi_scale * self.zoom_factor)),
+        )
+        self.default_model_combo.bind("<<ComboboxSelected>>", self._on_default_model_selected)
+        btn_test_default_model = tk.Label(
+            default_row, image=icon_test_default_model,
+            bg=self.colors['bg_card'], cursor="hand2", takefocus=1,
+        )
+        btn_test_default_model._icon_ref = icon_test_default_model
+        self._assigned_model_test_buttons["default"] = btn_test_default_model
+        btn_test_default_model.grid(row=0, column=2, sticky="e")
+        default_test_status = ttk.Label(
+            default_row, text="未检测", font=self.font_label,
+            foreground=self.colors['text_secondary'], background=self.colors['bg_card'], width=6,
+        )
+        self._assigned_model_test_status_labels["default"] = default_test_status
+        default_test_status.grid(
+            row=0, column=3, sticky="w",
+            padx=(int(8 * self.dpi_scale * self.zoom_factor), 0),
+        )
+        btn_test_default_model.bind("<Button-1>", lambda _e: self._test_assigned_model("default"))
+        btn_test_default_model.bind("<Return>", lambda _e: self._test_assigned_model("default"))
+        btn_test_default_model.bind("<space>", lambda _e: self._test_assigned_model("default"))
+        btn_test_default_model.bind(
+            "<Enter>",
+            lambda e: self._show_assigned_model_test_tooltip("default", e),
+        )
+        btn_test_default_model.bind("<Leave>", self._hide_tooltip)
 
-        self.current_model_label = ttk.Label(current_model_frame, text="未配置",
-                                             font=(FONT_FAMILY, int(14 * self.font_scale), 'bold'),
-                                             foreground=self.colors['primary'],
-                                             background=self.colors['bg_card'])
-        self.current_model_label.pack(side="left", padx=(int(10 * self.dpi_scale * self.zoom_factor), 0))
+        education_row = ttk.Frame(assignment_frame, style='TFrame')
+        education_row.pack(fill="x", pady=(int(10 * self.dpi_scale * self.zoom_factor), 0))
+        ttk.Label(education_row, text="学历核验模型:", font=self.font_label,
+                  width=label_width_assignment).grid(row=0, column=0, sticky="w")
+        self.education_model_combo = ttk.Combobox(
+            education_row, textvariable=self.education_model_choice_var,
+            state="readonly", width=model_choice_width, font=self.font_label,
+        )
+        self.education_model_combo.grid(
+            row=0, column=1, sticky="w",
+            padx=(int(5 * self.dpi_scale * self.zoom_factor), int(8 * self.dpi_scale * self.zoom_factor)),
+        )
+        self.education_model_combo.bind("<<ComboboxSelected>>", self._on_education_model_selected)
+        btn_test_education_model = tk.Label(
+            education_row, image=icon_test_education_model,
+            bg=self.colors['bg_card'], cursor="hand2", takefocus=1,
+        )
+        btn_test_education_model._icon_ref = icon_test_education_model
+        self._assigned_model_test_buttons["education"] = btn_test_education_model
+        btn_test_education_model.grid(row=0, column=2, sticky="e")
+        education_test_status = ttk.Label(
+            education_row, text="未检测", font=self.font_label,
+            foreground=self.colors['text_secondary'], background=self.colors['bg_card'], width=6,
+        )
+        self._assigned_model_test_status_labels["education"] = education_test_status
+        education_test_status.grid(
+            row=0, column=3, sticky="w",
+            padx=(int(8 * self.dpi_scale * self.zoom_factor), 0),
+        )
+        btn_test_education_model.bind("<Button-1>", lambda _e: self._test_assigned_model("education"))
+        btn_test_education_model.bind("<Return>", lambda _e: self._test_assigned_model("education"))
+        btn_test_education_model.bind("<space>", lambda _e: self._test_assigned_model("education"))
+        btn_test_education_model.bind(
+            "<Enter>",
+            lambda e: self._show_assigned_model_test_tooltip("education", e),
+        )
+        btn_test_education_model.bind("<Leave>", self._hide_tooltip)
 
-        # 2. API 配置输入区（服务商、Key、URL、模型名称）
+        # 模型接入配置
+        config_card = self._create_card(api_container, "模型接入",
+            fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
+
+        # API 配置输入区（服务商、Key、URL、模型名称）
         input_frame = ttk.Frame(config_card, style='TFrame')
         input_frame.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
 
@@ -2670,20 +2761,26 @@ class BossFilterGUI:
 
         ttk.Label(row3, text="API Key:", font=self.font_label, width=UI_CONFIG['label_width_api_key']).pack(side="left")
         self.api_key_var = tk.StringVar()
-        self.api_key_entry = ttk.Entry(row3, textvariable=self.api_key_var, width=55, font=self.font_label, show="*")
+        self.api_key_entry = ttk.Entry(
+            row3, textvariable=self.api_key_var,
+            width=UI_CONFIG['entry_width_url'], font=self.font_label, show="*",
+        )
         self.api_key_entry.pack(side="left", padx=(int(5 * self.dpi_scale * self.zoom_factor), 0))
         self.bind_entry_context_menu(self.api_key_entry)
 
-        # 明文/密文切换按钮（无边框 Button 实现，使用图标）
+        # 按住显示 API Key；松开或离开按钮立即恢复掩码。
         self.api_key_show_var = tk.BooleanVar(value=False)
         eye_icon = self.icons.button('eye', self.colors['text_primary'])
         eye_off_icon = self.icons.button('eye_off', self.colors['text_primary'])
         self.api_key_toggle_btn = tk.Button(row3, image=eye_icon,
-            relief="flat", bd=0, highlightthickness=0, cursor="hand2",
-            command=self.toggle_api_key_visibility)
+            relief="flat", bd=0, highlightthickness=0, cursor="hand2")
         self.api_key_toggle_btn._icon_eye = eye_icon
         self.api_key_toggle_btn._icon_eye_off = eye_off_icon
         self.api_key_toggle_btn.pack(side="left", padx=(int(5 * self.dpi_scale * self.zoom_factor), 0))
+        self.api_key_toggle_btn.bind("<ButtonPress-1>", self._show_api_key_while_pressed)
+        self.api_key_toggle_btn.bind("<ButtonRelease-1>", self._hide_api_key_after_release)
+        self.api_key_toggle_btn.bind("<Leave>", self._hide_api_key_after_release)
+        self.api_key_toggle_btn.bind("<FocusOut>", self._hide_api_key_after_release)
 
         # 第四行：Base URL
         row4 = ttk.Frame(input_frame, style='TFrame')
@@ -2691,7 +2788,10 @@ class BossFilterGUI:
 
         ttk.Label(row4, text="Base URL:", font=self.font_label, width=UI_CONFIG['label_width_url']).pack(side="left")
         self.api_base_url_var = tk.StringVar()
-        url_entry = ttk.Entry(row4, textvariable=self.api_base_url_var, width=55, font=self.font_label)
+        url_entry = ttk.Entry(
+            row4, textvariable=self.api_base_url_var,
+            width=UI_CONFIG['entry_width_url'], font=self.font_label,
+        )
         url_entry.pack(side="left", padx=(int(5 * self.dpi_scale * self.zoom_factor), 0))
         self.bind_entry_context_menu(url_entry)
 
@@ -2700,7 +2800,7 @@ class BossFilterGUI:
         button_row.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
 
         icon_save_api = self.icons.button('save', self.colors['text_primary'])
-        btn_save_api = ttk.Button(button_row, image=icon_save_api, text=" 保存并添加到列表", compound=tk.LEFT, command=self.save_api_config)
+        btn_save_api = ttk.Button(button_row, image=icon_save_api, text=" 保存模型", compound=tk.LEFT, command=self.save_api_config)
         btn_save_api._icon_ref = icon_save_api
         btn_save_api.pack(side="left", padx=(int(10 * self.dpi_scale * self.zoom_factor), int(5 * self.dpi_scale * self.zoom_factor)))
         icon_search_test = self.icons.button('search', self.colors['text_primary'])
@@ -2718,25 +2818,23 @@ class BossFilterGUI:
         # 用于存放可点击的标签引用
         self._status_clickable_labels = []
 
-        # 3. 已保存模型列表
-        model_list_card = self._create_card(api_container, "已保存模型（双击切换）",
+        # 已保存模型列表
+        model_list_card = self._create_card(api_container, "已保存模型",
             fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
 
         # 模型列表 Treeview
-        model_columns = ("name", "provider", "compat", "edu_ref", "base_url")
+        model_columns = ("name", "provider", "compat", "base_url")
         self.model_list_tree = ttk.Treeview(model_list_card, columns=model_columns, show="headings", selectmode='extended')
         self.model_list_tree.heading("name", text="模型名称")
         self.model_list_tree.heading("provider", text="服务商")
         self.model_list_tree.heading("compat", text="状态")
-        self.model_list_tree.heading("edu_ref", text="学历核验")
         self.model_list_tree.heading("base_url", text="Base URL")
         self.model_list_tree.column("name", width=260, minwidth=200, anchor='center', stretch=False)
         self.model_list_tree.column("provider", width=240, minwidth=200, anchor='center', stretch=False)
-        self.model_list_tree.column("compat", width=140, minwidth=100, anchor='center', stretch=False)
-        self.model_list_tree.column("edu_ref", width=130, minwidth=90, anchor='center', stretch=False)
-        self.model_list_tree.column("base_url", width=200, minwidth=100, anchor='w', stretch=True)
+        self.model_list_tree.column("compat", width=180, minwidth=120, anchor='center', stretch=False)
+        self.model_list_tree.column("base_url", width=300, minwidth=170, anchor='w', stretch=True)
         # 默认显示全部列
-        self.model_list_tree.configure(displaycolumns=("name", "provider", "compat", "edu_ref", "base_url"))
+        self.model_list_tree.configure(displaycolumns=("name", "provider", "compat", "base_url"))
 
         # 已保存模型列表字体比表格字体小一号
         fs = self.dpi_scale * self.zoom_factor
@@ -2760,11 +2858,7 @@ class BossFilterGUI:
         # 右键菜单 - 模型列表
         model_menu_font = (FONT_FAMILY, int(12 * self.font_scale))
         self.model_context_menu = tk.Menu(self.model_list_tree, tearoff=0, font=model_menu_font)
-        self.model_context_menu.add_command(label="切换模型", command=self.use_selected_model)
         self.model_context_menu.add_command(label="测试连通性", command=self.test_saved_model_connectivity)
-        self.model_context_menu.add_separator()
-        self.model_context_menu.add_command(label="设为学历核验模型", command=self._set_education_model)
-        self.model_context_menu.add_command(label="取消学历核验模型", command=self._unset_education_model)
         self.model_context_menu.add_separator()
         self.model_context_menu.add_command(label="删除模型", command=self.delete_selected_model)
 
@@ -2774,10 +2868,6 @@ class BossFilterGUI:
                 # 右键点击的行已在多选集合内时，保持现有选区
                 if item not in self.model_list_tree.selection():
                     self.model_list_tree.selection_set(item)
-                # 动态切换学历核验菜单项可用状态
-                is_edu = self._is_education_model_item(item)
-                self.model_context_menu.entryconfig("设为学历核验模型", state="disabled" if is_edu else "normal")
-                self.model_context_menu.entryconfig("取消学历核验模型", state="normal" if is_edu else "disabled")
                 self.model_context_menu.tk_popup(event.x_root, event.y_root)
 
         self.model_list_tree.bind("<Button-3>", show_model_context_menu)
@@ -2971,19 +3061,178 @@ class BossFilterGUI:
         self._api_ui_config_mtime = self._api_config_file_mtime()
 
     def update_current_model_display(self):
-        """更新当前使用模型显示"""
-        if not hasattr(self, 'current_model_label'):
+        """刷新两个模型用途选择器。"""
+        self._refresh_model_assignment_controls()
+
+    @staticmethod
+    def _model_ref_matches(model_config, model_ref):
+        """按完整连接身份比较模型，避免同名模型误匹配。"""
+        if not model_config or not model_ref:
+            return False
+        config_base_url = str(model_config.get("base_url", "")).strip().rstrip("/")
+        ref_base_url = str(model_ref.get("base_url", "")).strip().rstrip("/")
+        return (
+            model_config.get("model", "") == model_ref.get("model", "")
+            and model_config.get("api_provider", "") == model_ref.get("api_provider", "")
+            and config_base_url == ref_base_url
+        )
+
+    def _model_choice_label(self, model_config, include_url=False):
+        provider_key = model_config.get("api_provider", "")
+        provider_display = self.PROVIDER_DISPLAY.get(provider_key, provider_key)
+        label = f"{provider_display} / {model_config.get('model', '')}"
+        if include_url and model_config.get("base_url"):
+            label += f" ({model_config['base_url']})"
+        return label
+
+    def _get_assigned_model_ref(self, role):
+        """返回指定用途当前实际使用模型的完整连接身份。"""
+        config = self.api_config or {}
+        if role == "education":
+            return dict(config.get("education_model_ref") or {
+                "api_provider": config.get("api_provider", ""),
+                "base_url": config.get("base_url", ""),
+                "model": config.get("model", ""),
+            })
+        return {
+            "api_provider": config.get("api_provider", ""),
+            "base_url": config.get("base_url", ""),
+            "model": config.get("model", ""),
+        }
+
+    @staticmethod
+    def _model_ref_key(model_ref):
+        """将模型完整连接身份规整为可复用的状态缓存键。"""
+        if not model_ref:
+            return None
+        return (
+            str(model_ref.get("api_provider", "")).strip(),
+            str(model_ref.get("base_url", "")).strip().rstrip("/"),
+            str(model_ref.get("model", "")).strip(),
+        )
+
+    def _assigned_model_test_target_label(self, role, model_ref=None):
+        """返回用途模型测试提示中使用的可辨识名称。"""
+        role_label = "默认 AI 模型" if role == "default" else "学历核验模型"
+        model_ref = model_ref or self._get_assigned_model_ref(role)
+        provider_key = model_ref.get("api_provider", "")
+        provider_display = getattr(self, "PROVIDER_DISPLAY", PROVIDER_DISPLAY).get(
+            provider_key, provider_key
+        )
+        model_name = model_ref.get("model", "") or "未配置"
+        return f"{role_label}（{provider_display} / {model_name}）"
+
+    def _set_assigned_model_test_state(self, role, state):
+        """更新用途模型的红绿灯和行内状态。"""
+        states = getattr(self, "_assigned_model_test_states", None)
+        icons = getattr(self, "_assigned_model_test_icons", None)
+        buttons = getattr(self, "_assigned_model_test_buttons", None)
+        if not states or not icons or not buttons:
             return
+        states[role] = state
+        icon = icons["pending" if state in ("pending", "testing") else state]
+        button = buttons.get(role)
+        if button is None:
+            return
+        button.configure(image=icon)
+        button._icon_ref = icon
+        status_label = getattr(self, "_assigned_model_test_status_labels", {}).get(role)
+        if status_label is not None:
+            status_text, foreground = {
+                "pending": ("未检测", self.colors['text_secondary']),
+                "testing": ("测试中", self.colors['warning']),
+                "success": ("已通过", self.colors['success']),
+                "error": ("失败", self.colors['danger']),
+            }.get(state, ("未检测", self.colors['text_secondary']))
+            status_label.configure(text=status_text, foreground=foreground)
 
-        current_model = self.api_config.get("model", "")
-        current_provider = self.api_config.get("api_provider", "")
+    def _reset_assigned_model_test_states(self):
+        """模型用途变更后撤销旧测试结果，避免把结果带给新模型。"""
+        if not hasattr(self, "_assigned_model_test_tokens"):
+            return
+        for role in ("default", "education"):
+            current_ref = self._get_assigned_model_ref(role)
+            previous_ref = self._assigned_model_test_refs.get(role)
+            if self._model_ref_matches(previous_ref, current_ref):
+                continue
+            self._assigned_model_test_refs[role] = current_ref
+            self._assigned_model_test_tokens[role] += 1
+            previous_state = getattr(self, "_assigned_model_test_results", {}).get(
+                self._model_ref_key(current_ref), "pending"
+            )
+            self._set_assigned_model_test_state(role, previous_state)
 
-        if current_model:
-            provider_display = self.PROVIDER_DISPLAY.get(current_provider, current_provider)
-            display_text = f"{provider_display} / {current_model}"
-            self.current_model_label.config(text=display_text, foreground=self.colors['primary'])
+    def _show_assigned_model_test_tooltip(self, role, event):
+        """显示当前模型连通性信号灯的含义。"""
+        target_label = self._assigned_model_test_target_label(role)
+        state = getattr(self, "_assigned_model_test_states", {}).get(role, "pending")
+        text = {
+            "pending": f"未检测，点击测试{target_label}",
+            "testing": f"正在测试{target_label}",
+            "success": f"{target_label}测试通过，点击重新测试",
+            "error": f"{target_label}测试失败，点击重试",
+        }.get(state, f"测试{target_label}")
+        self._show_tooltip(text, event.x_root + 12, event.y_root + 10, ("model-test", role))
+
+    def _refresh_model_assignment_controls(self):
+        """让模型用途选择器与 saved_models 和当前配置保持一致。"""
+        if not hasattr(self, 'default_model_combo'):
+            return
+        saved_models = list((self.api_config or {}).get("saved_models", []))
+        identity_counts = {}
+        for model_config in saved_models:
+            identity = (model_config.get("api_provider", ""), model_config.get("model", ""))
+            identity_counts[identity] = identity_counts.get(identity, 0) + 1
+
+        choices = []
+        refs = {}
+        for model_config in saved_models:
+            identity = (model_config.get("api_provider", ""), model_config.get("model", ""))
+            label = self._model_choice_label(model_config, identity_counts[identity] > 1)
+            if label in refs:
+                continue
+            choices.append(label)
+            refs[label] = model_config
+
+        current_ref = {
+            "api_provider": (self.api_config or {}).get("api_provider", ""),
+            "base_url": (self.api_config or {}).get("base_url", ""),
+            "model": (self.api_config or {}).get("model", ""),
+        }
+        default_label = next(
+            (label for label, ref in refs.items() if self._model_ref_matches(ref, current_ref)),
+            "",
+        )
+        if current_ref["model"] and not default_label:
+            default_label = f"{self._model_choice_label(current_ref)}（未保存）"
+            choices.insert(0, default_label)
+            refs[default_label] = current_ref
+
+        follow_label = "跟随默认 AI 模型"
+        edu_choices = [follow_label, *choices]
+        edu_ref = (self.api_config or {}).get("education_model_ref") or {}
+        if edu_ref:
+            education_label = next(
+                (label for label, ref in refs.items() if self._model_ref_matches(ref, edu_ref)),
+                "",
+            )
+            if not education_label:
+                education_label = f"{self._model_choice_label(edu_ref)}（未保存）"
+                edu_choices.append(education_label)
+                refs[education_label] = edu_ref
         else:
-            self.current_model_label.config(text="未配置", foreground=self.colors['text_secondary'])
+            education_label = follow_label
+
+        self._updating_model_assignment_controls = True
+        try:
+            self._model_choice_refs = refs
+            self.default_model_combo.configure(values=choices)
+            self.education_model_combo.configure(values=edu_choices)
+            self.default_model_choice_var.set(default_label or "未配置")
+            self.education_model_choice_var.set(education_label)
+        finally:
+            self._updating_model_assignment_controls = False
+        self._reset_assigned_model_test_states()
 
     def load_saved_models_to_tree(self):
         """加载已保存的模型列表到 Treeview"""
@@ -3000,9 +3249,6 @@ class BossFilterGUI:
 
         # 加载已保存的模型
         saved_models = self.api_config.get("saved_models", [])
-        current_model = self.api_config.get("model", "")
-        edu_ref = self.api_config.get("education_model_ref") or {}
-
         # 同步到 self.saved_models（关键修复！）
         self.saved_models = saved_models
 
@@ -3029,32 +3275,15 @@ class BossFilterGUI:
                 status_display = "✓ 可用"
             else:
                 status_display = "未检测"
-            is_current = "✓ 使用中" if name == current_model else ""
-            # 学历核验标记：匹配 provider + model
-            is_edu = (
-                edu_ref
-                and edu_ref.get("model") == name
-                and edu_ref.get("api_provider") == provider_key
+            self.model_list_tree.insert(
+                "", "end", values=(name, provider_display, status_display, base_url)
             )
-            edu_display = "✓" if is_edu else ""
-            tags = []
-            if is_current:
-                tags.append('current')
-            if is_edu:
-                tags.append('edu_ref')
-            self.model_list_tree.insert("", "end", values=(name, provider_display, status_display, edu_display, base_url), tags=tuple(tags))
-
-        # 设置使用中标记和学历核验标记的样式
-        self.model_list_tree.tag_configure('current', foreground=self.colors['success'])
-        self.model_list_tree.tag_configure('edu_ref', foreground=self.colors['primary'])
 
         # 动态调整高度：普通窗口保持原来的最多6行，全屏/高窗口显示更多行。
         self._update_model_list_height()
         # 根据窗口状态显示/隐藏 Base URL 列
         self._update_model_list_columns()
-
-        # 绑定双击事件 - 双击切换模型
-        self.model_list_tree.bind("<Double-1>", lambda e: self.use_selected_model())
+        self._refresh_model_assignment_controls()
 
         # 在所有控件创建完毕后绑定滚轮事件
         self._bind_mousewheel(self.api_canvas, self.api_scrollable_frame)
@@ -3086,25 +3315,22 @@ class BossFilterGUI:
         """Fit saved-model columns while preserving the wider 4K layout."""
         if not hasattr(self, 'model_list_tree'):
             return
-        display = ("name", "provider", "compat", "edu_ref", "base_url")
+        display = ("name", "provider", "compat", "base_url")
         current = tuple(self.model_list_tree.cget("displaycolumns"))
         if current != display:
             self.model_list_tree.configure(displaycolumns=display)
 
         if self._is_window_maximized():
             base_widths = {
-                "name": 320, "provider": 280, "compat": 170,
-                "edu_ref": 150, "base_url": 200,
+                "name": 400, "provider": 300, "compat": 220, "base_url": 380,
             }
         else:
             base_widths = {
-                "name": 260, "provider": 240, "compat": 140,
-                "edu_ref": 130, "base_url": 200,
+                "name": 320, "provider": 260, "compat": 190, "base_url": 360,
             }
 
         min_widths = {
-            "name": 180, "provider": 160, "compat": 90,
-            "edu_ref": 80, "base_url": 170,
+            "name": 180, "provider": 160, "compat": 120, "base_url": 170,
         }
         widths = dict(base_widths)
         try:
@@ -3114,7 +3340,7 @@ class BossFilterGUI:
 
         overflow = sum(widths.values()) - available_width
         if available_width > 0 and overflow > 0:
-            for column in ("provider", "edu_ref", "compat", "name"):
+            for column in ("provider", "base_url", "compat", "name"):
                 reducible = max(0, widths[column] - min_widths[column])
                 reduction = min(reducible, overflow)
                 widths[column] -= reduction
@@ -4304,7 +4530,7 @@ class BossFilterGUI:
         self._render_education_preview()
 
     def _get_education_api_config(self) -> dict:
-        """获取学历核验使用的 API 配置。优先 education_model_ref，回退全局模型。"""
+        """获取学历核验使用的 API 配置。优先 education_model_ref，回退默认 AI 模型。"""
         edu_ref = (self.api_config or {}).get("education_model_ref")
         if edu_ref and edu_ref.get("model"):
             return dict(edu_ref)
@@ -4319,7 +4545,7 @@ class BossFilterGUI:
             return
         if self.education_recognition_running:
             return
-        # 学历核验专用配置（优先 education_model_ref，回退全局模型）
+        # 学历核验专用配置（优先 education_model_ref，回退默认 AI 模型）
         edu_config = self._get_education_api_config()
         # 检查是否有图片文件需要视觉模型
         has_image = any(
@@ -4337,7 +4563,7 @@ class BossFilterGUI:
                     "  国外：GPT-4o / GPT-4.1、Claude Sonnet 4、Gemini 2.5 Pro\n"
                     "  国内：qwen3.7-plus、mimo-v2.5、GLM-5V、Kimi K2.5、MiniMax-M2.7\n\n"
                     "PDF 文件使用文本提取，不受此限制。\n\n"
-                    "可在系统设置的已保存模型列表中右键指定学历核验专用模型。\n\n"
+                    "可在系统设置的“使用中的模型”中选择学历核验模型。\n\n"
                     "是否仍要尝试识别？",
                     parent=self.root,
                 ):
@@ -5547,6 +5773,9 @@ class BossFilterGUI:
         """显示 API 配置页面（系统设置）"""
         if self.api_config_page is None:
             self.create_api_config_page()
+        # 配置文件已在启动时读取；在页面首次绘制前回填普通字段，避免短暂显示空下拉框。
+        # API Key 仍由 _resolve_api_keys_async() 在后台读取，不阻塞打开系统设置。
+        self._load_api_config_to_ui_if_needed()
         self.hide_all_pages()
         self.api_config_page.pack(fill="both", expand=True)
         self.current_page_index = 6
@@ -5555,8 +5784,6 @@ class BossFilterGUI:
         # 重置滚动条位置到顶部
         if hasattr(self, 'api_canvas'):
             self.api_canvas.yview_moveto(0.0)
-        # 显示时按需加载配置到 UI，避免每次切页都同步查询 keyring。
-        self._defer_ui_work("api_config_to_ui", self._load_api_config_to_ui_if_needed)
         # 重新绑定滚轮事件（覆盖动态创建的控件）
         self._bind_mousewheel(self.api_canvas, self.api_scrollable_frame)
 
@@ -6701,12 +6928,85 @@ class BossFilterGUI:
         if not edu_ref:
             return False
         values = self.model_list_tree.item(item_id, 'values')
-        if not values or len(values) < 2:
+        if not values or len(values) < 4:
             return False
         name = values[0]
         provider_display = values[1]
         provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
-        return edu_ref.get("model") == name and edu_ref.get("api_provider") == provider_key
+        return self._model_ref_matches({
+            "model": name,
+            "api_provider": provider_key,
+            "base_url": values[3],
+        }, edu_ref)
+
+    def _on_default_model_selected(self, event=None):
+        """将用途选择器中的模型设为默认 AI 模型。"""
+        if getattr(self, '_updating_model_assignment_controls', False):
+            return
+        model_config = self._model_choice_refs.get(self.default_model_choice_var.get())
+        if model_config and not self._activate_saved_model(model_config, announce=False):
+            self._refresh_model_assignment_controls()
+
+    def _on_education_model_selected(self, event=None):
+        """显式设置学历核验模型，或选择跟随默认模型。"""
+        if getattr(self, '_updating_model_assignment_controls', False):
+            return
+        choice = self.education_model_choice_var.get()
+        if choice == "跟随默认 AI 模型":
+            self._unset_education_model()
+            return
+        model_config = self._model_choice_refs.get(choice)
+        if model_config:
+            self._set_education_model_ref(model_config)
+
+    def _set_education_model_ref(self, model_config):
+        """保存学历核验模型的完整连接身份。"""
+        self.api_config["education_model_ref"] = {
+            "api_provider": model_config.get("api_provider", ""),
+            "base_url": model_config.get("base_url", ""),
+            "model": model_config.get("model", ""),
+        }
+        self._save_api_config_to_file()
+        self._mark_api_config_ui_current()
+        self.load_saved_models_to_tree()
+        provider_display = self.PROVIDER_DISPLAY.get(
+            model_config.get("api_provider", ""), model_config.get("api_provider", "")
+        )
+        self._update_api_status(
+            text=f"✓ 学历核验模型已设为 {provider_display} / {model_config.get('model', '')}",
+            foreground=self.colors['success'],
+        )
+
+    def _test_assigned_model(self, role):
+        """复用模型库连通性测试，测试指定用途当前实际使用的模型。"""
+        model_ref = self._get_assigned_model_ref(role)
+        self._assigned_model_test_tokens[role] += 1
+        test_token = self._assigned_model_test_tokens[role]
+        self._assigned_model_test_refs[role] = dict(model_ref)
+        self._set_assigned_model_test_state(role, "testing")
+        self._update_api_status(
+            text=f"正在测试{self._assigned_model_test_target_label(role, model_ref)}...",
+            foreground=self.colors['warning'],
+        )
+        for item_id in self.model_list_tree.get_children():
+            values = self.model_list_tree.item(item_id, 'values')
+            if len(values) < 4:
+                continue
+            item_ref = {
+                "model": values[0],
+                "api_provider": self.DISPLAY_TO_KEY.get(values[1], values[1]),
+                "base_url": values[3],
+            }
+            if self._model_ref_matches(item_ref, model_ref):
+                self.model_list_tree.selection_set(item_id)
+                self.test_saved_model_connectivity(
+                    assigned_role=role,
+                    assigned_model_ref=model_ref,
+                    assigned_test_token=test_token,
+                )
+                return
+        self._set_assigned_model_test_state(role, "error")
+        messagebox.showwarning("模型未保存", "当前模型不在已保存模型列表中，请先保存模型配置。")
 
     def _set_education_model(self):
         """将选中模型设为学历核验专用模型"""
@@ -6720,42 +7020,33 @@ class BossFilterGUI:
             return
         name = values[0]
         provider_display = values[1]
+        selected_base_url = values[3] if len(values) >= 4 else ""
         provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
         # 从 saved_models 中查找完整配置
-        base_url = ""
+        model_config = None
         for m in getattr(self, 'saved_models', []):
-            if m.get("model") == name and m.get("api_provider") == provider_key:
-                base_url = m.get("base_url", "")
+            if self._model_ref_matches(m, {
+                "model": name, "api_provider": provider_key, "base_url": selected_base_url,
+            }):
+                model_config = m
                 break
-        if not base_url:
-            # fallback: 从 Treeview values 取 base_url（最大化时可见）
-            if len(values) >= 5:
-                base_url = values[4]
-        if not hasattr(self, 'api_config') or not self.api_config:
+        if not model_config or not hasattr(self, 'api_config') or not self.api_config:
             return
-        self.api_config["education_model_ref"] = {
-            "api_provider": provider_key,
-            "base_url": base_url,
-            "model": name,
-        }
-        self._save_api_config_to_file()
-        self.load_saved_models_to_tree()
-        self._update_api_status(
-            text=f"✓ 学历核验模型已设为 {provider_display} / {name}",
-            foreground=self.colors['success'],
-        )
+        self._set_education_model_ref(model_config)
 
     def _unset_education_model(self):
-        """取消学历核验专用模型，回退到全局模型"""
+        """取消学历核验专用模型，回退默认 AI 模型"""
         if not hasattr(self, 'api_config') or not self.api_config:
             return
         if not self.api_config.get("education_model_ref"):
+            self._refresh_model_assignment_controls()
             return
         self.api_config.pop("education_model_ref", None)
         self._save_api_config_to_file()
+        self._mark_api_config_ui_current()
         self.load_saved_models_to_tree()
         self._update_api_status(
-            text="✓ 已取消学历核验专用模型，将使用全局模型",
+            text="✓ 学历核验模型已改为跟随默认 AI 模型",
             foreground=self.colors['success'],
         )
 
@@ -6777,39 +7068,70 @@ class BossFilterGUI:
             return
 
         # 收集所有选中模型的信息
-        deleted = []  # [(model_name, provider_key), ...]
+        deleted = []
         for item_id in selection:
             item = self.model_list_tree.item(item_id)
-            model_name = item['values'][0]
-            provider_display = item['values'][1]
+            values = item.get('values', ())
+            if len(values) < 4:
+                continue
+            model_name = values[0]
+            provider_display = values[1]
             provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
-            deleted.append((model_name, provider_key))
+            deleted.append({
+                "model": model_name,
+                "api_provider": provider_key,
+                "base_url": values[3],
+                "provider_display": provider_display,
+            })
 
         # 去重（同一模型可能被重复选中）
-        deleted = list(dict.fromkeys(deleted))
+        unique_deleted = []
+        seen = set()
+        for model_ref in deleted:
+            key = (
+                model_ref.get("api_provider", ""),
+                str(model_ref.get("base_url", "")).strip().rstrip("/"),
+                model_ref.get("model", ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_deleted.append(model_ref)
+        deleted = unique_deleted
+        if not deleted:
+            messagebox.showwarning("警告", "未找到选中模型的完整配置信息")
+            return
+
+        current_ref = {
+            "api_provider": (self.api_config or {}).get("api_provider", ""),
+            "base_url": (self.api_config or {}).get("base_url", ""),
+            "model": (self.api_config or {}).get("model", ""),
+        }
+        edu_ref = (self.api_config or {}).get("education_model_ref") or {}
+        for model_ref in deleted:
+            if self._model_ref_matches(model_ref, current_ref):
+                messagebox.showwarning("无法删除", "该模型正在作为默认 AI 模型使用，请先在“使用中的模型”中更换默认模型。")
+                return
+            if edu_ref and self._model_ref_matches(model_ref, edu_ref):
+                messagebox.showwarning("无法删除", "该模型正在作为学历核验模型使用，请先在“使用中的模型”中更换，或改为跟随默认 AI 模型。")
+                return
 
         count = len(deleted)
         prompt = f"确定要删除选中的 {count} 个模型吗？\n\n" + "\n".join(
-            f"  • {name} ({provider})" for name, provider in deleted
+            f"  • {model_ref['model']} ({model_ref['provider_display']})"
+            for model_ref in deleted
         )
         if not messagebox.askyesno("确认", prompt):
             return
 
-        deleted_names = {name for name, _ in deleted}
-
         # 从 saved_models 移除所有被选中的模型
         if hasattr(self, 'saved_models'):
-            self.saved_models = [m for m in self.saved_models if m.get("model") not in deleted_names]
+            self.saved_models = [
+                m for m in self.saved_models
+                if not any(self._model_ref_matches(m, model_ref) for model_ref in deleted)
+            ]
 
-        # 如果删除的是学历核验模型，清除配置
         if hasattr(self, 'api_config') and self.api_config:
-            edu_ref = self.api_config.get("education_model_ref")
-            if edu_ref:
-                for name, provider_key in deleted:
-                    if edu_ref.get("model") == name and edu_ref.get("api_provider") == provider_key:
-                        self.api_config.pop("education_model_ref", None)
-                        break
-
             self.api_config["saved_models"] = self.saved_models
             try:
                 save_config = self._sanitize_config_for_save(self.api_config)
@@ -6822,7 +7144,7 @@ class BossFilterGUI:
         # 刷新显示
         self.load_saved_models_to_tree()
         if count == 1:
-            status_text = f"✓ 已删除模型 {deleted[0][0]}"
+            status_text = f"✓ 已删除模型 {deleted[0]['model']}"
         else:
             status_text = f"✓ 已删除 {count} 个模型"
         self._update_api_status(text=status_text, foreground=self.colors['success'])
@@ -6893,73 +7215,71 @@ class BossFilterGUI:
         item = self.model_list_tree.item(selection[0])
         model_name = item['values'][0]
         provider_display = item['values'][1]
-        selected_base_url = item['values'][4] if len(item.get('values', ())) > 4 else ""
+        selected_base_url = item['values'][3] if len(item.get('values', ())) > 3 else ""
         # 将显示名称转换为内部键
         provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
 
         # 查找对应的配置
         model_config = None
         for saved in self.saved_models:
-            if (
-                saved.get("model") == model_name
-                and saved.get("api_provider") == provider_key
-                and (not selected_base_url or saved.get("base_url", "") == selected_base_url)
-            ):
+            if self._model_ref_matches(saved, {
+                "model": model_name,
+                "api_provider": provider_key,
+                "base_url": selected_base_url,
+            }):
                 model_config = saved
                 break
-        if model_config is None:
-            for saved in self.saved_models:
-                if saved.get("model") == model_name and saved.get("api_provider") == provider_key:
-                    model_config = saved
-                    break
 
         if model_config:
-            # 从系统钥匙串读取该服务商的 API Key
-            _model_base_url = model_config.get("base_url", "")
-            saved_api_key = get_api_key(provider_key, _model_base_url)
-
-            if not saved_api_key:
-                messagebox.showwarning("警告",
-                    f"模型 '{model_name}' 的 API Key 未在系统钥匙串中找到\n\n"
-                    f"可能原因：\n"
-                    f"1. 系统钥匙串被清理\n"
-                    f"2. 配置文件来自其他电脑\n\n"
-                    f"请重新输入 API Key 并保存该模型")
-                return
-
-            # 更新当前使用的模型配置（包括 API Key）
-            self.api_provider_var.set(provider_display)
-            self.api_key_var.set(saved_api_key)
-            self.api_base_url_var.set(model_config.get("base_url", ""))
-            self.api_model_var.set(model_name)
-
-            # 更新 api_config 中的所有字段
-            if hasattr(self, 'api_config') and self.api_config:
-                self.api_config["model"] = model_name
-                self.api_config["api_provider"] = provider_key
-                self.api_config["api_key"] = saved_api_key
-                self.api_config["base_url"] = model_config.get("base_url", "")
-
-            # 更新显示
-            self.update_current_model_display()
-            self.load_saved_models_to_tree()
-
-            # 保存到文件（排除 api_key，Key 仅存 keyring）
-            try:
-                save_config = self._sanitize_config_for_save(self.api_config)
-                with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as f:
-                    json.dump(save_config, f, ensure_ascii=False, indent=4)
-                self._mark_api_config_ui_current()
-            except Exception as e:
-                print(f"保存配置失败：{e}")
-
-            self._update_api_status(text=f"✓ 已切换到 {provider_key}/{model_name}", foreground=self.colors['success'])
-            self._update_ai_eval_status()
-            messagebox.showinfo("切换成功", f"已切换到模型：\n\n{provider_display} / {model_name}")
+            self._activate_saved_model(model_config, announce=True)
         else:
             messagebox.showerror("错误", f"未找到模型 '{model_name}' 的配置信息")
 
-    def test_saved_model_connectivity(self):
+    def _activate_saved_model(self, model_config, announce=True):
+        """将已保存模型设为默认 AI 模型。"""
+        if not model_config:
+            return False
+
+        provider_key = model_config.get("api_provider", "")
+        base_url = model_config.get("base_url", "")
+        model_name = model_config.get("model", "")
+        provider_display = self.PROVIDER_DISPLAY.get(provider_key, provider_key)
+        saved_api_key = get_api_key(provider_key, base_url)
+
+        if not saved_api_key:
+            messagebox.showwarning("警告",
+                f"模型 '{model_name}' 的 API Key 未在系统钥匙串中找到\n\n"
+                f"可能原因：\n"
+                f"1. 系统钥匙串被清理\n"
+                f"2. 配置文件来自其他电脑\n\n"
+                f"请重新输入 API Key 并保存该模型")
+            return False
+
+        self.api_provider_var.set(provider_display)
+        self.api_key_var.set(saved_api_key)
+        self.api_base_url_var.set(base_url)
+        self.api_model_var.set(model_name)
+
+        if hasattr(self, 'api_config') and self.api_config:
+            self.api_config["model"] = model_name
+            self.api_config["api_provider"] = provider_key
+            self.api_config["api_key"] = saved_api_key
+            self.api_config["base_url"] = base_url
+
+        self.update_current_model_display()
+        self.load_saved_models_to_tree()
+
+        self._save_api_config_to_file()
+        self._mark_api_config_ui_current()
+
+        self._update_api_status(text=f"✓ 默认 AI 模型已设为 {provider_display} / {model_name}", foreground=self.colors['success'])
+        self._update_ai_eval_status()
+        if announce:
+            messagebox.showinfo("切换成功", f"已切换默认 AI 模型：\n\n{provider_display} / {model_name}")
+        return True
+
+    def test_saved_model_connectivity(self, assigned_role=None, assigned_model_ref=None,
+                                      assigned_test_token=None):
         """测试已保存模型连通性，结果直接回写到列表状态列。"""
         selection = self.model_list_tree.selection()
         if not selection:
@@ -6970,13 +7290,21 @@ class BossFilterGUI:
         models_to_test = []
         for item_id in selection:
             item = self.model_list_tree.item(item_id)
-            model_name = item['values'][0]
-            provider_display = item['values'][1]
+            values = item.get('values', ())
+            if len(values) < 4:
+                continue
+            model_name = values[0]
+            provider_display = values[1]
             provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
+            selected_base_url = values[3]
 
             model_config = None
             for saved in getattr(self, 'saved_models', []):
-                if saved.get("model") == model_name:
+                if self._model_ref_matches(saved, {
+                    "model": model_name,
+                    "api_provider": provider_key,
+                    "base_url": selected_base_url,
+                }):
                     model_config = saved
                     break
             if not model_config:
@@ -6992,14 +7320,27 @@ class BossFilterGUI:
                 "model_config": model_config,
                 "base_url": base_url,
                 "api_key": api_key,
+                "assigned_role": assigned_role,
+                "assigned_model_ref": assigned_model_ref,
+                "assigned_test_token": assigned_test_token,
             })
 
         if not models_to_test:
+            if assigned_role:
+                self._set_assigned_model_test_state(assigned_role, "error")
             messagebox.showerror("错误", "未找到选中模型的配置信息")
             return
 
         total = len(models_to_test)
-        self._update_api_status(text=f"正在测试 {total} 个模型...", foreground=self.colors['warning'])
+        assigned_target_label = (
+            self._assigned_model_test_target_label(assigned_role, assigned_model_ref)
+            if assigned_role else ""
+        )
+        status_text = (
+            f"正在测试{assigned_target_label}..."
+            if assigned_target_label else f"正在测试 {total} 个模型..."
+        )
+        self._update_api_status(text=status_text, foreground=self.colors['warning'])
         for entry in models_to_test:
             self._set_model_list_item_status(entry["item_id"], "测试中...")
 
@@ -7055,6 +7396,7 @@ class BossFilterGUI:
     def _apply_model_connectivity_result(self, entry, result, progress, total):
         """Apply one connectivity result on the Tk UI thread."""
         progress["done"] += 1
+        self._apply_assigned_model_test_result(entry, result)
         if result["status"] == "success":
             progress["success"] += 1
             capability = result.get("capability", {})
@@ -7084,7 +7426,22 @@ class BossFilterGUI:
             )
             return
 
-        if progress["fail"] == 0:
+        assigned_target_label = (
+            self._assigned_model_test_target_label(
+                entry.get("assigned_role"), entry.get("assigned_model_ref")
+            ) if entry.get("assigned_role") else ""
+        )
+        if assigned_target_label and progress["fail"] == 0:
+            self._update_api_status(
+                text=f"✓ {assigned_target_label}测试通过",
+                foreground=self.colors['success'],
+            )
+        elif assigned_target_label:
+            self._update_api_status(
+                text=f"✗ {assigned_target_label}测试失败",
+                foreground=self.colors['danger'],
+            )
+        elif progress["fail"] == 0:
             self._update_api_status(
                 text=f"✓ {progress['success']} 个模型测试通过",
                 foreground=self.colors['success'],
@@ -7099,6 +7456,23 @@ class BossFilterGUI:
                 text=f"{progress['success']} 通过 / {progress['fail']} 失败",
                 foreground=self.colors['warning'],
             )
+
+    def _apply_assigned_model_test_result(self, entry, result):
+        """仅将仍对应当前模型的异步结果同步到用途信号灯。"""
+        role = entry.get("assigned_role")
+        if not role:
+            return
+        token = entry.get("assigned_test_token")
+        if token != getattr(self, "_assigned_model_test_tokens", {}).get(role):
+            return
+        expected_ref = entry.get("assigned_model_ref")
+        if not self._model_ref_matches(expected_ref, self._get_assigned_model_ref(role)):
+            return
+        state = "success" if result.get("status") == "success" else "error"
+        if not hasattr(self, "_assigned_model_test_results"):
+            self._assigned_model_test_results = {}
+        self._assigned_model_test_results[self._model_ref_key(expected_ref)] = state
+        self._set_assigned_model_test_state(role, state)
 
     def _save_capability_to_model(
         self, model_name, capability, provider_key=None, base_url=None, refresh=True
@@ -7167,25 +7541,33 @@ class BossFilterGUI:
             save_api_key(provider, api_key, base_url)
 
             # 顶层当前活动模型：
-            # - 手工保存当前表单时，同步设为当前生效模型，避免重启后读回旧配置。
-            # - 对话框批量添加时，只加入列表；当前生效模型仍由双击列表项切换。
+            # - 首次配置或当前默认模型尚未入库时，使用本次保存的第一个模型。
+            # - 已有明确默认模型时，保存只维护模型库；默认用途由上方下拉框显式选择。
             edu_ref = (self.api_config or {}).get("education_model_ref")
-            current_model = (self.api_config or {}).get("model", "")
-            is_manual_save = not pending and bool(model_name)
-            if is_manual_save or not current_model:
-                # 首次配置：输入框有值用它，否则用 pending 第一个
+            existing_saved_models = list(getattr(self, 'saved_models', []) or [])
+            current_ref = {
+                "api_provider": (self.api_config or {}).get("api_provider", ""),
+                "base_url": (self.api_config or {}).get("base_url", ""),
+                "model": (self.api_config or {}).get("model", ""),
+            }
+            has_saved_current = any(
+                self._model_ref_matches(model_config, current_ref)
+                for model_config in existing_saved_models
+            )
+            should_set_default = not has_saved_current
+            if should_set_default:
                 top_provider, top_base_url = provider, base_url
                 top_model = model_name or (pending[0] if pending else "")
             else:
                 top_provider = (self.api_config or {}).get("api_provider", provider)
                 top_base_url = (self.api_config or {}).get("base_url", base_url)
-                top_model = current_model
+                top_model = current_ref.get("model", "")
 
             self.api_config = {
                 "api_provider": top_provider,
                 "base_url": top_base_url,
                 "model": top_model,
-                "saved_models": getattr(self, 'saved_models', []),
+                "saved_models": existing_saved_models,
                 "providers": (self.api_config or {}).get("providers", {}),
                 "fetched_models": (self.api_config or {}).get("fetched_models", {}),
                 "llm_read_timeout": self.llm_read_timeout_var.get() if hasattr(self, 'llm_read_timeout_var') else 60,
@@ -7196,7 +7578,7 @@ class BossFilterGUI:
             # 待批量添加的模型集合
             # - 多选：pending 含全部选中模型（输入框不参与，多选不改输入框）
             # - 单选/手输：pending 为空，处理输入框的当前模型名
-            # 同服务商共享 API Key / Base URL，仅 model 名不同
+            # 同一服务商 + Base URL 共享 API Key，仅 model 名不同
             if not pending:
                 pending = [model_name]
 
@@ -7205,7 +7587,11 @@ class BossFilterGUI:
             for model_name_to_add in pending:
                 model_exists = False
                 for m in self.api_config["saved_models"]:
-                    if m.get("model") == model_name_to_add and m.get("api_provider") == provider:
+                    if self._model_ref_matches(m, {
+                        "api_provider": provider,
+                        "base_url": base_url,
+                        "model": model_name_to_add,
+                    }):
                         # 更新已存在模型的配置，保留 capability 字段
                         m["api_provider"] = provider
                         m["base_url"] = base_url
@@ -7238,7 +7624,7 @@ class BossFilterGUI:
             # 更新当前模型显示
             self.update_current_model_display()
 
-            status_text = "✓ 配置已保存并设为当前模型" if is_manual_save else "✓ 配置已保存并添加到列表"
+            status_text = "✓ 模型配置已保存"
             self._update_api_status(text=status_text, foreground=self.colors['success'])
             # 更新 AI 评估状态标签（可能从未配置变为已配置）
             self._update_ai_eval_status()
@@ -7251,8 +7637,13 @@ class BossFilterGUI:
             if len(pending) > 1:
                 summary = f"已保存 {len(pending)} 个模型到列表（新增 {added_count}，更新 {updated_count}）"
             else:
-                summary = f"模型 {provider}/{model_name} 已添加到已保存模型列表"
-            messagebox.showinfo("成功", f"API 配置已保存\n{summary}\n\nAPI Key 已按服务商加密存储（同一服务商的模型共享）")
+                summary = f"模型 {provider}/{pending[0]} 已保存到已保存模型列表"
+            default_summary = "本次保存的模型已设为默认 AI 模型" if should_set_default else "默认 AI 模型保持不变"
+            messagebox.showinfo(
+                "成功",
+                f"模型配置已保存\n{summary}\n{default_summary}\n\n"
+                "API Key 已按服务商 + Base URL 加密存储"
+            )
         except Exception as e:
             self._update_api_status(text=f"✗ 保存失败：{e}", foreground=self.colors['danger'])
             messagebox.showerror("错误", f"保存 API 配置失败：{e}")
@@ -7998,18 +8389,17 @@ class BossFilterGUI:
 
         threading.Thread(target=fetch_thread, daemon=True).start()
 
-    def toggle_api_key_visibility(self):
-        """切换 API Key 明文/密文显示"""
-        if self.api_key_show_var.get():
-            # 当前是明文，切换为密文
-            self.api_key_entry.configure(show="*")
-            self.api_key_toggle_btn.configure(image=self.api_key_toggle_btn._icon_eye)
-            self.api_key_show_var.set(False)
-        else:
-            # 当前是密文，切换为明文
-            self.api_key_entry.configure(show="")
-            self.api_key_toggle_btn.configure(image=self.api_key_toggle_btn._icon_eye_off)
-            self.api_key_show_var.set(True)
+    def _show_api_key_while_pressed(self, event=None):
+        """按住眼睛图标时临时显示 API Key。"""
+        self.api_key_entry.configure(show="")
+        self.api_key_toggle_btn.configure(image=self.api_key_toggle_btn._icon_eye_off)
+        self.api_key_show_var.set(True)
+
+    def _hide_api_key_after_release(self, event=None):
+        """松开、移出或失焦时立即恢复 API Key 掩码。"""
+        self.api_key_entry.configure(show="*")
+        self.api_key_toggle_btn.configure(image=self.api_key_toggle_btn._icon_eye)
+        self.api_key_show_var.set(False)
 
     def test_api_connection(self):
         """测试 API 连接 - 高可用版本：每次全新连接 + 并行双策略 + 宽松超时"""
