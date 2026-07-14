@@ -3122,6 +3122,22 @@ class BossFilterGUI:
             "model": config.get("model", ""),
         }
 
+    def _saved_model_usage_tag(self, model_config):
+        """返回已保存模型的用途颜色标签，不在列表中重复展示用途文字。"""
+        is_default = self._model_ref_matches(
+            model_config, self._get_assigned_model_ref("default")
+        )
+        is_education = self._model_ref_matches(
+            model_config, self._get_assigned_model_ref("education")
+        )
+        if is_default and is_education:
+            return "default_and_education_model"
+        if is_default:
+            return "default_model"
+        if is_education:
+            return "education_model"
+        return ""
+
     @staticmethod
     def _model_ref_key(model_ref):
         """将模型完整连接身份规整为可复用的状态缓存键。"""
@@ -3274,6 +3290,23 @@ class BossFilterGUI:
         # 同步到 self.saved_models（关键修复！）
         self.saved_models = saved_models
 
+        # 用颜色保留正在使用模型的辨识度，不重新引入“用途”列。
+        self.model_list_tree.tag_configure(
+            "default_model",
+            background=self.colors['bg_tree_tag_high'],
+            foreground=self.colors['success'],
+        )
+        self.model_list_tree.tag_configure(
+            "education_model",
+            background="#E3F2FD",
+            foreground=self.colors['primary'],
+        )
+        self.model_list_tree.tag_configure(
+            "default_and_education_model",
+            background=self.colors['bg_tree_tag_high'],
+            foreground=self.colors['primary'],
+        )
+
         for model_config in saved_models:
             name = model_config.get("model", "")
             provider_key = model_config.get("api_provider", "")
@@ -3297,8 +3330,10 @@ class BossFilterGUI:
                 status_display = "✓ 可用"
             else:
                 status_display = "未检测"
+            usage_tag = self._saved_model_usage_tag(model_config)
             self.model_list_tree.insert(
-                "", "end", values=(name, provider_display, status_display, base_url)
+                "", "end", values=(name, provider_display, status_display, base_url),
+                tags=(usage_tag,) if usage_tag else (),
             )
 
         # 动态调整高度：普通窗口保持原来的最多6行，全屏/高窗口显示更多行。

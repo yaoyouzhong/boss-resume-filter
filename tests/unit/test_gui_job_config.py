@@ -480,8 +480,81 @@ def test_saved_model_list_keeps_library_fields_and_removes_derived_purpose_colum
     assert 'heading("edu_ref"' not in list_block
     assert 'displaycolumns=("name", "provider", "compat", "base_url")' in list_block
     assert "purpose_display" not in load_block
-    assert "tags=tuple(tags)" not in load_block
     assert "values=(name, provider_display, status_display, base_url)" in load_block
+
+
+def test_saved_model_list_marks_active_models_with_role_colors():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.colors = {
+        "bg_tree_tag_high": "#E8F5E9",
+        "success": "#43A047",
+        "primary": "#1E88E5",
+    }
+    gui.PROVIDER_DISPLAY = {"qwen": "通义千问", "kimi": "Kimi", "deepseek": "DeepSeek"}
+    gui.api_config = {
+        "api_provider": "qwen",
+        "base_url": "https://dashscope.aliyuncs.com",
+        "model": "qwen-plus",
+        "education_model_ref": {
+            "api_provider": "kimi",
+            "base_url": "https://api.moonshot.cn",
+            "model": "kimi-k2",
+        },
+        "saved_models": [
+            {
+                "api_provider": "qwen",
+                "base_url": "https://dashscope.aliyuncs.com/",
+                "model": "qwen-plus",
+            },
+            {
+                "api_provider": "kimi",
+                "base_url": "https://api.moonshot.cn",
+                "model": "kimi-k2",
+            },
+            {
+                "api_provider": "deepseek",
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-v3",
+            },
+        ],
+    }
+    gui.model_list_tree = _FakeResultTree()
+    gui._update_model_list_height = Mock()
+    gui._update_model_list_columns = Mock()
+    gui._refresh_model_assignment_controls = Mock()
+    gui._bind_mousewheel = Mock()
+    gui.api_canvas = Mock()
+    gui.api_scrollable_frame = Mock()
+
+    gui.load_saved_models_to_tree()
+
+    assert gui.model_list_tree.items[0]["tags"] == ("default_model",)
+    assert gui.model_list_tree.items[1]["tags"] == ("education_model",)
+    assert gui.model_list_tree.items[2]["tags"] == ()
+    assert gui.model_list_tree.tags["default_model"] == {
+        "background": "#E8F5E9", "foreground": "#43A047"
+    }
+    assert gui.model_list_tree.tags["education_model"] == {
+        "background": "#E3F2FD", "foreground": "#1E88E5"
+    }
+
+
+def test_saved_model_list_marks_shared_default_and_education_model():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.api_config = {
+        "api_provider": "qwen",
+        "base_url": "https://dashscope.aliyuncs.com",
+        "model": "qwen-plus",
+        "saved_models": [{
+            "api_provider": "qwen",
+            "base_url": "https://dashscope.aliyuncs.com",
+            "model": "qwen-plus",
+        }],
+    }
+
+    assert gui._saved_model_usage_tag(gui.api_config["saved_models"][0]) == (
+        "default_and_education_model"
+    )
 
 
 def test_education_queue_columns_keep_status_visible_on_narrow_screens():
