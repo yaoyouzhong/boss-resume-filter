@@ -1125,7 +1125,20 @@ def evaluate_batch(
                     progress_callback(pct, f"AI 评估中... {current}/{total}")
 
             except Exception as e:
-                print(f"  [错误] AI 评估异常: {e}")
+                idx = future_to_index[future]
+                candidate = to_evaluate[idx]
+                candidate['llm_evaluated'] = False
+                candidate['llm_error'] = str(e).strip() or "AI 评估异常"
+                print(
+                    f"  [{idx+1}/{total}] {candidate.get('name', '?')}："
+                    f"评估异常（{candidate['llm_error']}），保留原始分数"
+                )
+                with count_lock:
+                    completed_count += 1
+                    current = completed_count
+                if progress_callback:
+                    pct = int(current / total * 100)
+                    progress_callback(pct, f"AI 评估中... {current}/{total}")
 
     return candidates
 

@@ -73,6 +73,17 @@ UPDATE_TIMEOUT_RELEASE_NOTES_GITEE_RETRY = 5.0  # 更新日志弹窗远端说明
 UPDATE_TIMEOUT_RELEASE_NOTES_GITHUB = 3.5  # 更新日志弹窗远端说明：GitHub 短超时
 UPDATE_TIMEOUT_GIT_PULL = 30       # git pull subprocess 超时
 
+# ========== BOSS 推荐页空状态标记 ==========
+# 用于检测推荐牛人页面无候选人的情况（bossmaster + gui_main 共用）
+EMPTY_RECOMMEND_MARKS = (
+    "暂无推荐",
+    "暂无合适",
+    "暂时没有",
+    "没有更多",
+)
+# 更严格的空状态：未发布职位（仅 bossmaster 选择器健康检查使用）
+EMPTY_RECOMMEND_NO_JOB_MARK = "您需要先发布职位，才能查看推荐牛人"
+
 # ========== 城市列表 ==========
 # 中国主要城市列表（按长度降序，优先匹配长名如"哈尔滨"）
 MAJOR_CITIES = sorted([

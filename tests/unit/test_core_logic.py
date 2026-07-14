@@ -15,8 +15,47 @@ import io
 import json
 import os
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import patch
+
+
+def test_smart_scan_stop_during_filtering_checkpoints_completed_candidates():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+    stop_event = threading.Event()
+    raw_candidates = [
+        {"geek_id": "done", "name": "已完成", "summary": "本科，5年 Java"},
+        {"geek_id": "pending", "name": "未处理", "summary": "本科，5年 Java"},
+    ]
+    job_info = {
+        "job_id": "job-java",
+        "job_name": "Java工程师",
+        "rule_key": "java",
+        "rule": {"min_exp": 0, "edu": "不限", "keywords": ["Java"]},
+    }
+
+    def filter_first_then_stop(*_args, **_kwargs):
+        stop_event.set()
+        return True, 75, {"skill_matches": ["Java"]}
+
+    with patch.object(bossmaster, "load_candidates_all", return_value=[]), \
+         patch.object(bossmaster, "extract_candidates_by_comprehensive_analysis", return_value=raw_candidates), \
+         patch.object(bossmaster, "filter_candidate", side_effect=filter_first_then_stop), \
+         patch.object(bossmaster, "merge_candidates_all") as mock_merge:
+        try:
+            bossmaster.smart_scan_candidates(
+                FakePage(), job_info, max_rounds=1, stop_event=stop_event
+            )
+        except bossmaster.StopRequested:
+            pass
+        else:
+            raise AssertionError("stop should interrupt filtering")
+
+    checkpoint = mock_merge.call_args
+    assert [c["geek_id"] for c in checkpoint.args[0]] == ["done"]
+    assert checkpoint.kwargs["replace_keys"] == {("done", "Java工程师")}
 
 
 def test_rescan_log_describes_candidates_as_pending_evaluation_not_new():
@@ -39,7 +78,7 @@ def test_scan_summary_separates_rule_passed_and_ai_final_counts():
 
     assert message == (
         "[完成] 筛选完成：规则筛选通过 13/375 人，"
-        "AI复核后淘汰 1 人，最终保留 12 人，0 人已打招呼"
+        "AI复核成功 4 人，复核淘汰 1 人，最终保留 12 人，0 人已打招呼"
     )
 
 
@@ -57,6 +96,63 @@ def test_scan_summary_without_ai_does_not_repeat_final_count():
     assert message == "[完成] 筛选完成：规则筛选通过 12/100 人，3 人已打招呼"
 
 
+def test_scan_summary_exposes_ai_failures_even_when_all_evaluations_fail():
+    message = bossmaster._format_scan_summary(
+        "完成",
+        total_rule_passed=13,
+        total_raw=100,
+        total_ai_evaluated=0,
+        total_ai_downgraded=0,
+        total_passed=13,
+        total_greeted=0,
+        total_ai_failed=13,
+    )
+
+    assert message == (
+        "[完成] 筛选完成：规则筛选通过 13/100 人，"
+        "AI复核成功 0 人、失败 13 人（按规则结果保留），"
+        "复核淘汰 0 人，最终保留 13 人，0 人已打招呼"
+    )
+
+
+def test_scan_outcome_summary_uses_worst_job_status():
+    status, detail = bossmaster._summarize_scan_outcomes([
+        {"job_name": "岗位A", "status": "complete", "reason": "检测到页面底部"},
+        {"job_name": "岗位B", "status": "partial", "reason": "达到 30 轮上限"},
+    ])
+    assert status == "可能未扫完"
+    assert detail == "岗位A：检测到页面底部；岗位B：达到 30 轮上限"
+
+    status, _ = bossmaster._summarize_scan_outcomes([
+        {"job_name": "岗位A", "status": "partial", "reason": "达到 30 轮上限"},
+        {"job_name": "岗位B", "status": "interrupted", "reason": "页面已离开推荐牛人页面"},
+    ])
+    assert status == "扫描中断"
+
+
+def test_filter_audit_detail_reports_top_rejection_reasons_and_skips():
+    detail = bossmaster._format_filter_audit_detail(
+        skipped_blacklisted=2,
+        skipped_already_greeted=3,
+        rule_failed_reasons={
+            "评分不足(40-49分)": 5,
+            "经验不足（要求3年以上）": 7,
+            "学历不符/不足（要求本科）": 4,
+            "薪资不匹配（岗位最高25K）": 2,
+        },
+        ai_hard_rejected=1,
+        ai_score_rejected=2,
+    )
+
+    assert detail == (
+        "黑名单跳过 2 人；已沟通跳过 3 人；"
+        "主要淘汰：经验不足（要求3年以上） 7 人、"
+        "学历不符/不足（要求本科） 4 人、"
+        "薪资不匹配（岗位最高25K） 2 人；"
+        "AI淘汰：硬条件 1 人、降分 2 人"
+    )
+
+
 def test_selector_health_rejects_disconnected_page_before_iframe_lookup():
     class DisconnectedPage:
         def run_js(self, *_args, **_kwargs):
@@ -72,6 +168,40 @@ def test_selector_health_rejects_disconnected_page_before_iframe_lookup():
         raised = "连接已断开" in str(exc)
 
     assert raised is True
+
+
+def test_selector_health_skips_cards_when_account_has_no_published_job():
+    class FakeFrame:
+        def attr(self, name):
+            return "https://www.zhipin.com/web/frame/recommend/?jobid&status=0" if name == "src" else ""
+
+        def eles(self, _selector):
+            return []
+
+        def run_js(self, script):
+            if "slice(0, 2000)" in script:
+                return "推荐\n您需要先发布职位，才能查看推荐牛人\n发布职位"
+            return False
+
+    class FakePage:
+        def __init__(self):
+            self.frame = FakeFrame()
+
+        def run_js(self, _script):
+            return 1
+
+        def eles(self, _selector):
+            return [self.frame]
+
+        def ele(self, _selector, timeout=0):
+            return None
+
+    results = bossmaster.check_selectors_health(FakePage())
+    card_result = next(r for r in results if r["group"] == "candidate_card")
+
+    assert card_result["status"] == "skip"
+    assert "需要先发布职位" in card_result["detail"]
+    assert not [r for r in results if r["status"] in ("warn", "fail")]
 
 
 def test_parse_experience_years_supports_arabic_and_chinese_numbers():
@@ -106,6 +236,245 @@ def test_resolve_job_name_ignores_whitespace_in_gui_selection():
 
     assert bossmaster._resolve_job_name("AI Agent工程师", job_rules) == "AIAgent工程师"
     assert bossmaster._resolve_job_name("ai agent工程师", job_rules) == "AIAgent工程师"
+
+
+def test_job_title_match_is_tolerant_but_not_overbroad():
+    assert bossmaster._job_titles_match("AI Agent 工程师", "aiagent工程师") is True
+    assert bossmaster._job_titles_match("Java工程师", "高级 Java 工程师") is True
+    assert bossmaster._job_titles_match("Java工程师", "Java工程师助理") is False
+    assert bossmaster._job_titles_match("Java工程师", "Python工程师") is False
+    assert bossmaster._job_titles_match("Java工程师", "") is None
+
+
+def test_page_job_mismatch_requires_explicit_confirmation():
+    callback_args = []
+
+    with patch.object(bossmaster, "get_iframe", return_value=None), \
+         patch.object(bossmaster, "_read_recommend_page_identity", return_value={
+             "job_id": "job-python",
+             "job_title": "Python工程师",
+             "href": "https://www.zhipin.com/web/frame/recommend/?jobid=job-python",
+         }):
+        confirmed = bossmaster._confirm_page_job_match(
+            object(),
+            "Java工程师",
+            confirm_callback=lambda expected, actual: callback_args.append((expected, actual)) or False,
+        )
+
+    assert confirmed is False
+    assert callback_args == [("Java工程师", "Python工程师")]
+
+
+def test_run_stops_before_scanning_when_job_mismatch_is_rejected():
+    class Args:
+        clear = False
+        keep_greeted = False
+        job = "Java工程师"
+        greet = False
+        re_greet = False
+        greet_level = "normal"
+        greet_names = None
+        list_candidates = False
+        rounds = 30
+        max_candidates = 400
+        dom_only = True
+        listener_first = False
+        verbose = False
+        ai_eval = False
+
+    progress = []
+    job_rules = {
+        "Java工程师": {"min_exp": 0, "edu": "不限", "keywords": ["Java"]}
+    }
+
+    with patch.object(bossmaster.time, "sleep"), \
+         patch.object(bossmaster, "_human_delay", return_value=0), \
+         patch.object(bossmaster, "load_job_config", return_value=(job_rules, None)), \
+         patch.object(bossmaster, "_confirm_run_job_configs", return_value=True), \
+         patch.object(bossmaster, "_confirm_page_job_match", return_value=False) as mock_match, \
+         patch.object(bossmaster, "smart_scan_candidates") as mock_scan, \
+         patch.object(bossmaster, "_save_progress_on_exit"):
+        bossmaster.run_smart_scan(
+            Args(),
+            existing_page=object(),
+            progress_callback=lambda percentage, description: progress.append((percentage, description)),
+        )
+
+    mock_match.assert_called_once()
+    mock_scan.assert_not_called()
+    assert progress[-1][0] == 100
+    assert progress[-1][1].startswith("[已停止]")
+
+
+def test_run_smart_scan_passes_greet_confirmation_callback_to_scan():
+    class Args:
+        clear = False
+        keep_greeted = False
+        job = "Java工程师"
+        greet = True
+        re_greet = False
+        greet_level = "normal"
+        greet_names = None
+        list_candidates = False
+        rounds = 30
+        max_candidates = 400
+        dom_only = True
+        listener_first = False
+        verbose = False
+        ai_eval = False
+
+    job_rules = {"Java工程师": {"min_exp": 0, "edu": "不限", "keywords": ["Java"]}}
+    greet_confirm = lambda _message: True
+
+    with patch.object(bossmaster.time, "sleep"), \
+         patch.object(bossmaster, "_human_delay", return_value=0), \
+         patch.object(bossmaster, "load_job_config", return_value=(job_rules, None)), \
+         patch.object(bossmaster, "_confirm_run_job_configs", return_value=True), \
+         patch.object(bossmaster, "_confirm_page_job_match", return_value=True), \
+         patch.object(bossmaster, "smart_scan_candidates", return_value=[]) as mock_scan, \
+         patch.object(bossmaster, "export_to_excel", return_value=True), \
+         patch.object(bossmaster, "_save_progress_on_exit"):
+        bossmaster.run_smart_scan(
+            Args(),
+            existing_page=object(),
+            greet_confirm_callback=greet_confirm,
+        )
+
+    assert mock_scan.call_args.kwargs["greet_confirm_callback"] is greet_confirm
+
+
+def test_run_smart_scan_includes_ai_failures_in_final_summary():
+    class Args:
+        clear = False
+        keep_greeted = False
+        job = "Java工程师"
+        greet = False
+        re_greet = False
+        greet_level = "normal"
+        greet_names = None
+        list_candidates = False
+        rounds = 30
+        max_candidates = 400
+        dom_only = True
+        listener_first = False
+        verbose = False
+        ai_eval = False
+
+    job_rules = {"Java工程师": {"min_exp": 0, "edu": "不限", "keywords": ["Java"]}}
+    progress = []
+
+    def fake_scan(*_args, stats=None, **_kwargs):
+        stats.update({
+            "raw_count": 10,
+            "rule_passed_count": 3,
+            "passed_count": 3,
+            "greeted_count": 0,
+            "ai_eval_count": 0,
+            "ai_downgraded": 0,
+            "ai_failed_count": 3,
+            "scan_status": "complete",
+            "scan_reason": "检测到页面底部",
+        })
+        return []
+
+    with patch.object(bossmaster.time, "sleep"), \
+         patch.object(bossmaster, "_human_delay", return_value=0), \
+         patch.object(bossmaster, "load_job_config", return_value=(job_rules, None)), \
+         patch.object(bossmaster, "_confirm_run_job_configs", return_value=True), \
+         patch.object(bossmaster, "_confirm_page_job_match", return_value=True), \
+         patch.object(bossmaster, "smart_scan_candidates", side_effect=fake_scan), \
+         patch.object(bossmaster, "load_candidates_all", return_value=[]), \
+         patch.object(bossmaster, "export_to_excel", return_value=True):
+        bossmaster.run_smart_scan(
+            Args(),
+            existing_page=object(),
+            progress_callback=lambda percentage, description: progress.append((percentage, description)),
+        )
+
+    assert progress[-1][0] == 100
+    assert "AI复核成功 0 人、失败 3 人（按规则结果保留）" in progress[-1][1]
+
+
+def test_run_job_config_diagnostics_ignores_info_only():
+    text, has_error = bossmaster._build_run_job_config_diagnostics(
+        ["数据工程师"],
+        {"数据工程师": {
+            "min_exp": 3,
+            "keywords": [
+                {"name": "Python", "weight": 2},
+                {"name": "SQL", "weight": 2},
+                {"name": "ETL", "weight": 1},
+            ],
+        }},
+    )
+
+    assert text == ""
+    assert has_error is False
+
+
+def test_run_job_config_errors_cannot_be_overridden():
+    callback_args = []
+    confirmed = bossmaster._confirm_run_job_configs(
+        ["Java工程师"],
+        {"Java工程师": {"min_exp": "五年", "keywords": []}},
+        confirm_callback=lambda text, has_error: callback_args.append((text, has_error)) or True,
+    )
+
+    assert confirmed is False
+    assert callback_args[0][1] is True
+    assert "最低经验不是数字" in callback_args[0][0]
+
+
+def test_run_job_config_warnings_can_be_confirmed():
+    confirmed = bossmaster._confirm_run_job_configs(
+        ["Java工程师"],
+        {"Java工程师": {
+            "min_exp": 3,
+            "keywords": [{"name": "Java", "weight": 2}],
+            "original_requirement": "Java开发",
+        }},
+        confirm_callback=lambda _text, has_error: not has_error,
+    )
+
+    assert confirmed is True
+
+
+def test_run_stops_before_page_check_when_job_config_is_blocked():
+    class Args:
+        clear = False
+        keep_greeted = False
+        job = "Java工程师"
+        greet = False
+        re_greet = False
+        greet_level = "normal"
+        greet_names = None
+        list_candidates = False
+        rounds = 30
+        max_candidates = 400
+        dom_only = True
+        listener_first = False
+        verbose = False
+        ai_eval = False
+
+    job_rules = {"Java工程师": {"min_exp": "五年", "keywords": []}}
+    progress = []
+
+    with patch.object(bossmaster.time, "sleep"), \
+         patch.object(bossmaster, "_human_delay", return_value=0), \
+         patch.object(bossmaster, "load_job_config", return_value=(job_rules, None)), \
+         patch.object(bossmaster, "_confirm_run_job_configs", return_value=False) as mock_config, \
+         patch.object(bossmaster, "_confirm_page_job_match") as mock_page_job, \
+         patch.object(bossmaster, "smart_scan_candidates") as mock_scan:
+        bossmaster.run_smart_scan(
+            Args(),
+            existing_page=object(),
+            progress_callback=lambda percentage, description: progress.append((percentage, description)),
+        )
+
+    mock_config.assert_called_once()
+    mock_page_job.assert_not_called()
+    mock_scan.assert_not_called()
+    assert progress[-1] == (100, "[已停止] 岗位配置体检未通过，未开始扫描")
 
 
 def test_parse_greet_context_from_detail_url_builds_chat_start_payload():
@@ -464,6 +833,7 @@ def test_dom_scan_uses_conservative_empty_limit_without_api_listener():
             self.refresh_count += 1
 
     page = FakePage()
+    scan_stats = {}
 
     with patch('bossmaster.time.sleep'), \
             patch('bossmaster._human_delay', return_value=0), \
@@ -472,7 +842,9 @@ def test_dom_scan_uses_conservative_empty_limit_without_api_listener():
             patch('bossmaster._consume_recommend_api_candidates', return_value=([], "")) as mock_consume_api, \
             patch('bossmaster._detect_captcha', return_value=(False, "")), \
             patch('bossmaster._extract_cards_batch', side_effect=dom_batches) as mock_dom_extract:
-        candidates = bossmaster.extract_candidates_by_comprehensive_analysis(page, max_rounds=6)
+        candidates = bossmaster.extract_candidates_by_comprehensive_analysis(
+            page, max_rounds=6, scan_stats=scan_stats
+        )
 
     assert len(candidates) == 15
     assert mock_dom_extract.call_count == 6
@@ -480,6 +852,8 @@ def test_dom_scan_uses_conservative_empty_limit_without_api_listener():
     mock_start_listener.assert_called_once()
     assert page.refresh_count == 0
     mock_consume_api.assert_not_called()
+    assert scan_stats["scan_status"] == "complete"
+    assert scan_stats["scan_reason"] == "连续 5 轮无新增候选人"
 
 
 def test_recommend_api_pagination_builds_from_current_iframe_jobid():
@@ -727,6 +1101,7 @@ def test_scan_warns_when_round_limit_ends_with_new_candidates():
             return None
 
     output = io.StringIO()
+    scan_stats = {}
     with contextlib.redirect_stdout(output), \
             patch('bossmaster.time.sleep'), \
             patch('bossmaster._human_delay', return_value=0), \
@@ -737,11 +1112,49 @@ def test_scan_warns_when_round_limit_ends_with_new_candidates():
                 {"geek_id": "g-new", "name": "新增候选人", "text": "本科，5年 Java"}
             ]):
         bossmaster.extract_candidates_by_comprehensive_analysis(
-            FakePage(), max_rounds=1, extraction_mode="dom"
+            FakePage(), max_rounds=1, extraction_mode="dom", scan_stats=scan_stats
         )
 
     assert "已达到扫描轮次上限 1" in output.getvalue()
     assert "最后一轮仍新增 1 人" in output.getvalue()
+    assert scan_stats["scan_status"] == "partial"
+    assert scan_stats["scan_reason"] == "达到 1 轮上限，最后一轮新增 1 人"
+
+
+def test_scan_collects_last_viewport_before_stopping_at_bottom():
+    class FakeFrame:
+        def run_js(self, *_args, **_kwargs):
+            return None
+
+        def ele(self, *_args, **_kwargs):
+            return object()
+
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+    frame = FakeFrame()
+    first_batch = [{"geek_id": "g-first", "name": "首屏", "text": "本科，5年 Java"}]
+    last_batch = first_batch + [
+        {"geek_id": "g-last", "name": "末屏", "text": "本科，6年 Java"}
+    ]
+    scan_stats = {}
+
+    with patch('bossmaster.time.sleep'), \
+            patch('bossmaster._human_delay', return_value=0), \
+            patch('bossmaster.get_iframe', return_value=frame), \
+            patch('bossmaster.get_frame_scroll_info', return_value={"atBottom": True}), \
+            patch('bossmaster._detect_captcha', return_value=(False, "")), \
+            patch('bossmaster._extract_cards_batch', side_effect=[first_batch, last_batch]) as mock_extract:
+        candidates = bossmaster.extract_candidates_by_comprehensive_analysis(
+            FakePage(), max_rounds=10, extraction_mode="dom", scan_stats=scan_stats
+        )
+
+    assert [candidate["geek_id"] for candidate in candidates] == ["g-first", "g-last"]
+    assert mock_extract.call_count == 2
+    assert scan_stats["scan_status"] == "complete"
+    assert scan_stats["scan_reason"] == "检测到页面底部"
+    assert scan_stats["scan_rounds"] == 2
+    assert scan_stats["scan_last_new_count"] == 1
 
 
 def test_api_enrichment_stops_after_consecutive_misses():
@@ -1065,6 +1478,333 @@ def test_auto_greet_skips_manual_review_candidates():
     assert result[0]["manual_review_required"] is True
     assert result[0]["greet_sent"] is False
     mock_greet.assert_not_called()
+
+
+def test_smart_scan_records_filter_audit_stats():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+    job_info = {
+        "job_id": "job-audit",
+        "job_name": "Java 工程师",
+        "rule_key": "java",
+        "rule": {
+            "min_exp": 3,
+            "edu": "本科",
+            "salary_max": 25,
+            "keywords": ["Java"],
+        },
+    }
+    raw_candidates = [
+        {"geek_id": "g-pass", "name": "张三", "summary": "本科，5 年 Java"},
+        {"geek_id": "g-exp", "name": "李四", "summary": "本科，1 年 Java"},
+        {"geek_id": "g-score", "name": "王五", "summary": "本科，4 年 Java"},
+    ]
+    stats = {}
+
+    with patch.object(bossmaster, "load_candidates_all", return_value=[]), \
+         patch.object(bossmaster, "extract_candidates_by_comprehensive_analysis", return_value=raw_candidates), \
+         patch.object(bossmaster, "filter_candidate", side_effect=[
+             (True, 80, {"skill_matches": ["Java"]}),
+             (False, 20, {"reason": "经验不足"}),
+             (True, 52, {"skill_matches": ["Java"]}),
+         ]), \
+         patch.object(bossmaster, "save_candidates_all"), \
+         patch.object(bossmaster, "merge_candidates_all"):
+        result = bossmaster.smart_scan_candidates(
+            FakePage(),
+            job_info,
+            auto_greet=False,
+            max_rounds=1,
+            stats=stats,
+        )
+
+    assert len(result) == 1
+    assert stats["raw_count"] == 3
+    assert stats["rule_passed_count"] == 1
+    assert stats["rule_failed_count"] == 2
+    assert stats["rule_failed_reasons"] == {
+        "经验不足（要求3年以上）": 1,
+        "评分不足(50-54分)": 1,
+    }
+
+
+def test_smart_scan_submits_current_results_for_existing_and_cross_job_candidates():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def run_js(self, *_args, **_kwargs):
+            return None
+
+    existing = [
+        {
+            "geek_id": "same-job",
+            "name": "旧同岗位记录",
+            "job_name": "Java工程师",
+            "match_score": 60,
+            "greet_sent": False,
+        },
+        {
+            "geek_id": "cross-job",
+            "name": "跨岗位候选人",
+            "job_name": "Python工程师",
+            "match_score": 80,
+            "greet_sent": False,
+        },
+    ]
+    raw_candidates = [
+        {"geek_id": "same-job", "name": "新同岗位记录", "summary": "本科，5年 Java"},
+        {"geek_id": "cross-job", "name": "跨岗位候选人", "summary": "本科，4年 Java"},
+    ]
+    job_info = {
+        "job_id": "job-java",
+        "job_name": "Java工程师",
+        "rule_key": "java",
+        "rule": {"min_exp": 0, "edu": "不限", "keywords": ["Java"]},
+    }
+
+    with patch.object(bossmaster, "load_candidates_all", return_value=existing), \
+         patch.object(
+             bossmaster,
+             "extract_candidates_by_comprehensive_analysis",
+             return_value=raw_candidates,
+         ), \
+         patch.object(
+             bossmaster,
+             "filter_candidate",
+             side_effect=[
+                 (True, 80, {"skill_matches": ["Java"]}),
+                 (True, 75, {"skill_matches": ["Java"]}),
+             ],
+         ), \
+         patch.object(bossmaster, "_select_greet_context_candidates", return_value=[]), \
+         patch.object(bossmaster, "merge_candidates_all") as mock_merge:
+        result = bossmaster.smart_scan_candidates(
+            FakePage(), job_info, auto_greet=False, max_rounds=1
+        )
+
+    assert [(c["geek_id"], c["job_name"], c["match_score"]) for c in result] == [
+        ("same-job", "Java工程师", 80),
+        ("cross-job", "Java工程师", 75),
+    ]
+    submitted = mock_merge.call_args.args[0]
+    assert [(c["geek_id"], c["job_name"], c["match_score"]) for c in submitted] == [
+        ("same-job", "Java工程师", 80),
+        ("cross-job", "Java工程师", 75),
+    ]
+    assert mock_merge.call_args.kwargs["replace_keys"] == {
+        ("same-job", "Java工程师"),
+        ("cross-job", "Java工程师"),
+    }
+
+
+def test_smart_scan_replaces_previous_pass_when_current_rules_reject_candidate():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def run_js(self, *_args, **_kwargs):
+            return None
+
+    existing = [{
+        "geek_id": "g-rejected",
+        "name": "旧通过记录",
+        "job_name": "Java工程师",
+        "match_score": 80,
+        "greet_sent": False,
+    }]
+    raw_candidates = [{
+        "geek_id": "g-rejected",
+        "name": "本轮未通过",
+        "summary": "本科，1年 Java",
+    }]
+    job_info = {
+        "job_id": "job-java",
+        "job_name": "Java工程师",
+        "rule_key": "java",
+        "rule": {"min_exp": 3, "edu": "本科", "keywords": ["Java"]},
+    }
+
+    with patch.object(bossmaster, "load_candidates_all", return_value=existing), \
+         patch.object(
+             bossmaster,
+             "extract_candidates_by_comprehensive_analysis",
+             return_value=raw_candidates,
+         ), \
+         patch.object(
+             bossmaster,
+             "filter_candidate",
+             return_value=(False, 25, {"reason": "经验不足"}),
+         ), \
+         patch.object(bossmaster, "merge_candidates_all") as mock_merge:
+        result = bossmaster.smart_scan_candidates(
+            FakePage(), job_info, auto_greet=False, max_rounds=1
+        )
+
+    assert result == []
+    assert len(mock_merge.call_args.args[0]) == 1
+    assert mock_merge.call_args.args[0][0]["qualification_status"] == "rejected"
+    assert mock_merge.call_args.args[0][0]["rejection_source"] == "previously_recommended"
+    assert "经验不足" in mock_merge.call_args.args[0][0]["qualification_reasons"][0]
+    assert mock_merge.call_args.kwargs["replace_keys"] == {
+        ("g-rejected", "Java工程师")
+    }
+
+
+def test_smart_scan_does_not_persist_first_scan_ordinary_rejection():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+    job_info = {
+        "job_id": "job-java",
+        "job_name": "Java工程师",
+        "rule_key": "java",
+        "rule": {"min_exp": 3, "edu": "本科", "keywords": ["Java"]},
+    }
+    raw_candidates = [{
+        "geek_id": "first-reject",
+        "name": "首次淘汰",
+        "summary": "本科，1年 Java",
+    }]
+
+    with patch.object(bossmaster, "load_candidates_all", return_value=[]), \
+         patch.object(bossmaster, "extract_candidates_by_comprehensive_analysis", return_value=raw_candidates), \
+         patch.object(bossmaster, "filter_candidate", return_value=(False, 20, {"reason": "经验不足"})), \
+         patch.object(bossmaster, "merge_candidates_all") as mock_merge:
+        result = bossmaster.smart_scan_candidates(FakePage(), job_info, max_rounds=1)
+
+    assert result == []
+    assert mock_merge.call_args.args[0] == []
+
+
+def test_auto_greet_is_disabled_when_scan_is_interrupted():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def run_js(self, *_args, **_kwargs):
+            return None
+
+    job_info = {
+        "job_id": "job-interrupted",
+        "job_name": "Java 工程师",
+        "rule_key": "java",
+        "rule": {"min_exp": 0, "edu": "不限", "keywords": ["Java"]},
+    }
+    raw_candidates = [{
+        "geek_id": "g-interrupted",
+        "name": "张三",
+        "summary": "本科，5 年 Java",
+    }]
+    stats = {}
+
+    def fake_extract(*_args, **kwargs):
+        kwargs["scan_stats"].update({
+            "scan_status": "interrupted",
+            "scan_reason": "页面已离开推荐牛人页面",
+        })
+        return raw_candidates
+
+    with patch.object(bossmaster, "load_candidates_all", return_value=[]), \
+         patch.object(bossmaster, "extract_candidates_by_comprehensive_analysis", side_effect=fake_extract), \
+         patch.object(bossmaster, "filter_candidate", return_value=(True, 80, {"skill_matches": ["Java"]})), \
+         patch.object(bossmaster, "get_iframe", return_value=None), \
+         patch.object(bossmaster, "send_greeting_on_list_page") as mock_greet, \
+         patch.object(bossmaster, "save_candidates_all"), \
+         patch.object(bossmaster, "merge_candidates_all"):
+        result = bossmaster.smart_scan_candidates(
+            FakePage(), job_info, auto_greet=True, max_rounds=1, stats=stats
+        )
+
+    assert len(result) == 1
+    assert stats["scan_status"] == "interrupted"
+    mock_greet.assert_not_called()
+
+
+def test_pending_snapshot_prunes_only_after_complete_scan():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+    job_info = {
+        "job_id": "job-pending",
+        "job_name": "Java 工程师",
+        "rule_key": "java",
+        "rule": {"min_exp": 0, "edu": "不限", "keywords": ["Java"]},
+    }
+    raw_candidates = [{
+        "geek_id": "pending",
+        "name": "待定候选人",
+        "summary": "本科，3年 Java",
+    }]
+
+    def run_with_status(status):
+        scan_stats = {}
+
+        def fake_extract(*_args, **kwargs):
+            kwargs["scan_stats"].update({"scan_status": status, "scan_reason": status})
+            return raw_candidates
+
+        with patch.object(bossmaster, "load_candidates_all", return_value=[]), \
+             patch.object(bossmaster, "extract_candidates_by_comprehensive_analysis", side_effect=fake_extract), \
+             patch.object(bossmaster, "filter_candidate", return_value=(True, 60, {"skill_matches": ["Java"]})), \
+             patch.object(bossmaster, "_select_greet_context_candidates", return_value=[]), \
+             patch.object(bossmaster, "merge_candidates_all") as mock_merge:
+            bossmaster.smart_scan_candidates(
+                FakePage(), job_info, max_rounds=1, stats=scan_stats
+            )
+        return mock_merge.call_args_list
+
+    complete_calls = run_with_status("complete")
+    partial_calls = run_with_status("partial")
+
+    assert any(call.kwargs.get("prune_pending_jobs") == {"Java工程师"} for call in complete_calls)
+    assert not any(call.kwargs.get("prune_pending_jobs") for call in partial_calls)
+
+
+def test_auto_greet_confirmation_cancel_skips_sending_but_keeps_results():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def run_js(self, *_args, **_kwargs):
+            return None
+
+    job_info = {
+        "job_id": "job-confirm",
+        "job_name": "Java 工程师",
+        "rule_key": "java",
+        "rule": {"min_exp": 0, "edu": "不限", "keywords": ["Java"]},
+    }
+    raw_candidates = [{
+        "geek_id": "g-confirm",
+        "name": "张三",
+        "summary": "本科，5 年 Java",
+    }]
+    confirmations = []
+    progress = []
+
+    with patch.object(bossmaster, "load_candidates_all", return_value=[]), \
+         patch.object(bossmaster, "extract_candidates_by_comprehensive_analysis", return_value=raw_candidates), \
+         patch.object(bossmaster, "filter_candidate", return_value=(True, 80, {"skill_matches": ["Java"]})), \
+         patch.object(bossmaster, "get_iframe", return_value=None), \
+         patch.object(bossmaster, "send_greeting_on_list_page") as mock_greet, \
+         patch.object(bossmaster, "save_candidates_all"), \
+         patch.object(bossmaster, "merge_candidates_all") as mock_merge:
+        result = bossmaster.smart_scan_candidates(
+            FakePage(),
+            job_info,
+            auto_greet=True,
+            max_rounds=1,
+            greet_level="normal",
+            progress_callback=lambda pct, desc: progress.append((pct, desc)),
+            greet_confirm_callback=lambda message: confirmations.append(message) or False,
+        )
+
+    assert len(result) == 1
+    assert result[0]["greet_sent"] is False
+    assert confirmations
+    assert "本次将自动打招呼：1 人" in confirmations[0]
+    assert "张三" in confirmations[0]
+    mock_greet.assert_not_called()
+    mock_merge.assert_called()
+    assert progress[-1] == (100, "[完成] 已保存筛选结果，未执行自动打招呼")
 
 
 def test_auto_greet_uses_page_order_not_score_order():

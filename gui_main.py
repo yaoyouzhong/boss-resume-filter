@@ -40,6 +40,7 @@ from greeting_failure import diagnose_greeting_failure, format_greeting_failure_
 from job_config_diagnostics import diagnose_job_config, summarize_job_config_diagnostics
 from constants import (
     API_CANDIDATE_LIMIT_DEFAULT,
+    EMPTY_RECOMMEND_MARKS,
     SCORE_THRESHOLD_PASS,
     SCORE_THRESHOLD_RECOMMEND,
     SCORE_THRESHOLD_STRONG,
@@ -47,6 +48,7 @@ from constants import (
     GREET_UNCERTAIN_LIMIT,
 )
 from storage import (
+    is_recommended_candidate,
     mark_candidate_greeted,
     persist_candidate_greeted,
     persist_candidate_greeting_pending,
@@ -168,6 +170,21 @@ def _candidate_has_ai_eval(c: dict) -> bool:
     return bool(c.get('llm_evaluated')) or c.get('resume_eval_adjustment') is not None
 
 
+def _filter_candidates_by_result_view(candidates, view):
+    """Filter candidates by the user's next action, not only by score."""
+    if view == "推荐候选人":
+        return [c for c in candidates if is_recommended_candidate(c)]
+    if view == "待复核":
+        return [
+            c for c in candidates
+            if c.get('qualification_status') != 'rejected'
+            and not is_recommended_candidate(c)
+        ]
+    if view == "淘汰记录":
+        return [c for c in candidates if c.get('qualification_status') == 'rejected']
+    return list(candidates)
+
+
 # _resolve_rule_score 已挪到 llm_eval（evaluate_batch 与撤回流程共用，统一规则分还原逻辑）
 
 
@@ -236,8 +253,8 @@ _DEFAULT_UI_CONFIG = {
     'entry_width_label': 10,         # 标签 Entry 宽度
     'entry_width_job': 12,           # 岗位名称 Entry 宽度
     'entry_width_model': 30,         # 模型名称 Entry 宽度
-    'entry_width_api_key': 55,       # API Key Entry 宽度
-    'entry_width_url': 55,           # Base URL Entry 宽度
+    'entry_width_api_key': 65,       # API Key Entry 宽度（与 Base URL 保持一致）
+    'entry_width_url': 65,           # Base URL Entry 宽度
     'entry_width_required': 40,      # 必要条件 Entry 宽度
     'treeview_column_width_base_url': 400,  # Treeview 列宽
     'label_width_provider': 10,      # 服务商标签宽度
@@ -822,6 +839,9 @@ class BossFilterGUI:
         self.greet_queue_summary_var = None
         self.greet_queue_detail_title_var = None
         self.greet_queue_status_filter_var = None
+        self.run_summary_frame = None
+        self.run_summary_status_label = None
+        self.run_summary_text_label = None
         self.greet_queue_selected_group = "全部"
         self.greet_queue_running = False
         self.greet_queue_paused = False
@@ -870,6 +890,8 @@ class BossFilterGUI:
         self._result_last_job = None
         self._result_last_dates = None
         self._result_last_show_blacklist = False
+        self._result_last_view = None
+        self._acknowledged_job_config_warnings = set()
         self._stats_tree_fingerprint = None
         self._stats_last_job = None
         self._stats_last_time = None
@@ -3644,6 +3666,52 @@ class BossFilterGUI:
                                        background=self.colors['bg_card'])
         self.progress_label.pack(fill="x", pady=(int(4 * self.dpi_scale * self.zoom_factor), 0))
 
+        # 本轮结果摘要：终态时固定展示，便于复盘筛选漏斗。
+        summary_outer = tk.Frame(
+            param_frame,
+            bg=self.colors['bg_input'],
+            highlightbackground=self.colors['border'],
+            highlightthickness=1,
+        )
+        summary_outer.pack(
+            fill="x",
+            pady=(int(10 * self.dpi_scale * self.zoom_factor), 0),
+        )
+        self.run_summary_frame = summary_outer
+        summary_pad = int(12 * self.dpi_scale * self.zoom_factor)
+        summary_header = tk.Frame(summary_outer, bg=self.colors['bg_input'])
+        summary_header.pack(fill="x", padx=summary_pad, pady=(summary_pad, int(4 * self.dpi_scale * self.zoom_factor)))
+        tk.Label(
+            summary_header,
+            text="本轮结果摘要",
+            font=(FONT_FAMILY, int(11 * self.font_scale), "bold"),
+            foreground=self.colors['text_primary'],
+            background=self.colors['bg_input'],
+        ).pack(side="left")
+        self.run_summary_status_label = tk.Label(
+            summary_header,
+            text="等待运行",
+            font=(FONT_FAMILY, int(11 * self.font_scale)),
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_input'],
+        )
+        self.run_summary_status_label.pack(side="right")
+        self.run_summary_text_label = tk.Label(
+            summary_outer,
+            text="运行完成后显示通过率、主要淘汰原因、AI 淘汰和打招呼结果。",
+            font=(FONT_FAMILY, int(11 * self.font_scale)),
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_input'],
+            justify="left",
+            anchor="w",
+            wraplength=int(760 * self.dpi_scale * self.zoom_factor),
+        )
+        self.run_summary_text_label.pack(
+            fill="x",
+            padx=summary_pad,
+            pady=(0, summary_pad),
+        )
+
         # 控制按钮区
         btn_container = ttk.Frame(control_container, style='TFrame')
         btn_container.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(20 * self.dpi_scale * self.zoom_factor))
@@ -3828,6 +3896,29 @@ class BossFilterGUI:
                  foreground=self.colors.get('text_secondary', '#666'),
                  background=self.colors['bg_main']).pack(side="left", padx=int(4 * self.dpi_scale * self.zoom_factor))
         self.result_search_entry.bind('<Escape>', lambda e: self.result_search_var.set(''))
+
+        ttk.Label(search_frame, text="结果范围:", font=self.font_label,
+                 background=self.colors['bg_main']).pack(
+                     side="left", padx=(int(16 * self.dpi_scale * self.zoom_factor), 0))
+        self.result_view_var = tk.StringVar(value="推荐候选人")
+        self.result_view_combo = ttk.Combobox(
+            search_frame,
+            textvariable=self.result_view_var,
+            values=("推荐候选人", "待复核", "淘汰记录", "全部记录"),
+            width=11,
+            state="readonly",
+            font=self.font_label,
+        )
+        self.result_view_combo.pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
+        self.result_view_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_results())
+        self.result_count_var = tk.StringVar(value="显示 0 人")
+        ttk.Label(
+            search_frame,
+            textvariable=self.result_count_var,
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            foreground=self.colors.get('text_secondary', '#666'),
+            background=self.colors['bg_main'],
+        ).pack(side="left", padx=int(8 * self.dpi_scale * self.zoom_factor))
 
         # 结果列表工具区（搜索栏最右侧）
         self.result_show_blacklist_var = tk.BooleanVar(value=False)
@@ -5356,7 +5447,10 @@ class BossFilterGUI:
             cutoff = self._stats_time_cutoff(time_range)
             if cutoff:
                 cutoff_str = cutoff.strftime("%Y%m%d_%H%M%S")
-                candidates = [c for c in candidates if c.get('batch_timestamp', '') >= cutoff_str]
+                candidates = [
+                    c for c in candidates
+                    if (c.get('first_seen_at') or c.get('batch_timestamp', '')) >= cutoff_str
+                ]
         return candidates
 
     @staticmethod
@@ -6406,7 +6500,7 @@ class BossFilterGUI:
             date_start, date_end = self._get_result_date_filter() if hasattr(self, 'result_date_start_entry') else (None, None)
             if date_start or date_end:
                 def _in_date_range(c):
-                    ts = c.get('batch_timestamp', '')
+                    ts = c.get('first_seen_at') or c.get('batch_timestamp', '')
                     if not ts or len(ts) < 8:
                         return False
                     d = ts[:8]
@@ -6416,6 +6510,12 @@ class BossFilterGUI:
                         return False
                     return True
                 candidates = [c for c in candidates if _in_date_range(c)]
+
+            result_view = (
+                self.result_view_var.get()
+                if hasattr(self, 'result_view_var') else "推荐候选人"
+            )
+            candidates = _filter_candidates_by_result_view(candidates, result_view)
 
             # 根据类型筛选候选人
             if stat_type == 'strong':
@@ -9855,7 +9955,7 @@ class BossFilterGUI:
         text = summarize_job_config_diagnostics(job_name, rule, issues=issues)
         return self._show_job_config_diagnostics_dialog(text, has_error)
 
-    def _show_job_config_diagnostics_dialog(self, text, has_error=False):
+    def _show_job_config_diagnostics_dialog(self, text, has_error=False, context="save"):
         """Show diagnostics in a scrollable dialog and return whether to continue."""
         result = {"continue": False}
         win = tk.Toplevel(self.root)
@@ -9869,7 +9969,16 @@ class BossFilterGUI:
         body = ttk.Frame(win, padding=int(16 * scale))
         body.pack(fill="both", expand=True)
 
-        summary_text = "发现严重问题，请返回修改后再保存。" if has_error else "发现一些提醒项，可返回修改，也可确认后继续保存。"
+        if context == "run":
+            summary_text = (
+                "发现严重问题，必须先修改岗位配置。"
+                if has_error else
+                "发现一些提醒项，可返回修改，也可确认后继续本次运行。"
+            )
+            continue_text = "仍然运行"
+        else:
+            summary_text = "发现严重问题，请返回修改后再保存。" if has_error else "发现一些提醒项，可返回修改，也可确认后继续保存。"
+            continue_text = "仍然保存"
         ttk.Label(
             body,
             text=summary_text,
@@ -9902,7 +10011,7 @@ class BossFilterGUI:
 
         ttk.Button(btn_row, text="返回修改", command=win.destroy).pack(side="right")
         if not has_error:
-            ttk.Button(btn_row, text="仍然保存", command=_continue).pack(
+            ttk.Button(btn_row, text=continue_text, command=_continue).pack(
                 side="right", padx=(0, int(8 * scale))
             )
 
@@ -9914,6 +10023,15 @@ class BossFilterGUI:
         except Exception:
             return False
         return result["continue"]
+
+    def _should_prompt_run_job_config(self, text, has_error):
+        """Return whether run diagnostics still require a dialog this session."""
+        return bool(has_error or text not in self._acknowledged_job_config_warnings)
+
+    def _remember_run_job_config_warning(self, text, has_error, confirmed):
+        """Remember an accepted warning until its deterministic diagnostic text changes."""
+        if confirmed and not has_error:
+            self._acknowledged_job_config_warnings.add(text)
 
     def save_current_job(self):
         """保存当前岗位配置"""
@@ -10127,15 +10245,23 @@ class BossFilterGUI:
             results = check_selectors_health(page)
 
             ok_count = sum(1 for r in results if r['status'] == 'ok')
+            skip_count = sum(1 for r in results if r['status'] == 'skip')
             warn_count = sum(1 for r in results if r['status'] == 'warn')
             fail_count = sum(1 for r in results if r['status'] == 'fail')
 
+            for r in results:
+                if r['status'] == 'skip':
+                    self.append_log(f"选择器自动检查已跳过 [{r['group']}]：{r['detail']}")
+
             # 只在有异常时输出日志
             if warn_count + fail_count > 0:
-                self.append_log(f"选择器自动检查：{ok_count} 正常 / {warn_count} 警告 / {fail_count} 失败")
+                self.append_log(
+                    f"选择器自动检查：{ok_count} 正常 / {skip_count} 跳过 / "
+                    f"{warn_count} 警告 / {fail_count} 失败"
+                )
 
                 for r in results:
-                    if r['status'] != 'ok':
+                    if r['status'] in ('warn', 'fail'):
                         icon = {'warn': '⚠️', 'fail': '❌'}.get(r['status'], '?')
                         self.append_log(f"  {icon} [{r['group']}] {r['name']}: {r['detail']}")
 
@@ -10240,7 +10366,7 @@ class BossFilterGUI:
                             raise page_url_exception[0]
                         current_url = page_url_result[0] or ''
                         self._browser_connection_failures = 0
-                        if 'zhipin.com/web/chat/recommend' in current_url.lower():
+                        if self._is_boss_recommend_url(current_url):
                             self._browser_non_target_checks = 0
                             self.browser_connected = True
                             self.set_browser_ui("🟢 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
@@ -10387,7 +10513,7 @@ class BossFilterGUI:
                                 try:
                                     p = ChromiumPage(co)
                                     u = p.url
-                                    if 'zhipin.com/web/chat/recommend' not in u.lower():
+                                    if not self._is_boss_recommend_url(u):
                                         p.get('https://www.zhipin.com/web/chat/recommend')
                                         time.sleep(2)
                                         u = p.url
@@ -10404,7 +10530,7 @@ class BossFilterGUI:
                                 raise startup_exception[0]
 
                             page, current_url = startup_result[0]
-                            if 'zhipin.com/web/chat/recommend' in current_url.lower():
+                            if self._is_boss_recommend_url(current_url):
                                 self.browser_connected = True
                                 self.browser_page = page
                                 self.browser_address = page.address
@@ -10479,7 +10605,7 @@ class BossFilterGUI:
                                     nav_url = nav_page.url or ''
                                 except Exception:
                                     nav_url = ''
-                                if 'zhipin.com/web/chat/recommend' in nav_url.lower():
+                                if self._is_boss_recommend_url(nav_url):
                                     self.set_browser_ui("🟢 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
                                     self.append_log("✅ 已连接到 BOSS 直聘推荐牛人页面")
                                 else:
@@ -10501,7 +10627,7 @@ class BossFilterGUI:
                         # 处理完毕，不再往下走 URL 检查
                         return
 
-                    if 'zhipin.com/web/chat/recommend' in current_url.lower():
+                    if self._is_boss_recommend_url(current_url):
                         self._browser_non_target_checks = 0
                         prev_connected = self.browser_connected
                         self.browser_connected = True
@@ -10645,6 +10771,54 @@ class BossFilterGUI:
             self.root.after_cancel(self._browser_auto_check_id)
             self._browser_auto_check_id = None
 
+    def _reset_run_summary(self):
+        """Clear the fixed run summary before a new run starts."""
+        if not getattr(self, 'run_summary_text_label', None):
+            return
+        self.run_summary_status_label.config(
+            text="运行中",
+            foreground=self.colors['warning'],
+        )
+        self.run_summary_text_label.config(
+            text="正在扫描和筛选候选人，运行结束后显示本轮结果摘要。",
+            foreground=self.colors['text_secondary'],
+        )
+
+    def _set_run_summary(self, final_desc):
+        """Show the final run summary in the fixed run-page summary area."""
+        if not getattr(self, 'run_summary_text_label', None):
+            return
+        desc = str(final_desc or "").strip()
+        status_text = "运行结果"
+        status_color = self.colors['text_secondary']
+        body = desc
+        if desc.startswith("[完成]"):
+            status_text = "已完成"
+            status_color = self.colors['success']
+            body = desc[len("[完成]"):].lstrip()
+        elif desc.startswith("[可能未扫完]"):
+            status_text = "可能未扫完"
+            status_color = self.colors['warning']
+            body = desc[len("[可能未扫完]"):].lstrip()
+        elif desc.startswith("[扫描中断]"):
+            status_text = "扫描中断"
+            status_color = self.colors['warning']
+            body = desc[len("[扫描中断]"):].lstrip()
+        elif desc.startswith("[已停止]"):
+            status_text = "已停止"
+            status_color = self.colors['danger']
+            body = desc[len("[已停止]"):].lstrip()
+        elif desc.startswith("[出错]"):
+            status_text = "运行出错"
+            status_color = self.colors['danger']
+            body = desc[len("[出错]"):].lstrip()
+
+        self.run_summary_status_label.config(text=status_text, foreground=status_color)
+        self.run_summary_text_label.config(
+            text=body or "未取得本轮摘要。",
+            foreground=self.colors['text_primary'],
+        )
+
     def update_progress(self):
         """更新进度条显示"""
         try:
@@ -10656,6 +10830,7 @@ class BossFilterGUI:
                 percentage = min(100, int((current / total) * 100)) if total > 0 else 0
                 self.progress_var.set(percentage)
                 desc = progress_data.get('desc', '')
+                raw_desc = str(desc)
 
                 # 检测终态前缀，应用自绘图标
                 icon = None
@@ -10676,6 +10851,8 @@ class BossFilterGUI:
                         image='', compound='text',
                         text=f"{percentage}%  {desc}"
                     )
+                if percentage >= 100 and raw_desc.startswith('['):
+                    self._set_run_summary(raw_desc)
         except queue.Empty:
             pass
 
@@ -10773,20 +10950,15 @@ class BossFilterGUI:
             messagebox.showwarning("未连接", "请先连接到 BOSS 直聘推荐页面后再运行")
             return
 
-        if self.browser_page is not None:
-            try:
-                current_url = self.browser_page.url
-                if 'zhipin.com/web/chat/recommend' not in current_url.lower():
-                    self.start_btn.config(state="normal")
-                    messagebox.showwarning("页面错误", "请将浏览器导航到 BOSS 直聘推荐页面后再运行")
-                    return
-            except Exception:
-                self.start_btn.config(state="normal")
-                messagebox.showwarning("连接丢失", "浏览器连接已丢失，请重新检测/连接")
-                return
-        else:
+        if self.browser_page is None:
             self.start_btn.config(state="normal")
             messagebox.showwarning("未连接", "请先检测/连接浏览器")
+            return
+
+        page_ready, reason = self._get_run_page_readiness()
+        if not page_ready:
+            self.start_btn.config(state="normal")
+            messagebox.showwarning("运行前检查", reason)
             return
 
         self.is_running = True
@@ -10797,6 +10969,7 @@ class BossFilterGUI:
         # 重置进度显示
         self.progress_var.set(0)
         self.progress_label.config(text="0%", image='', compound='text')
+        self._reset_run_summary()
 
         self.append_log(f"[{datetime.now().strftime('%H:%M:%S')}] ▶ 开始运行...")
 
@@ -10819,6 +10992,7 @@ class BossFilterGUI:
         from datetime import datetime
 
         old_stdout = sys.stdout
+        final_progress = {'desc': ''}
         try:
             class LogRedirector:
                 def __init__(self, callback):
@@ -10917,6 +11091,8 @@ class BossFilterGUI:
 
             # 进度回调 — 将 bossmaster 的进度报告送入队列
             def on_progress(percentage, description):
+                if percentage >= 100 and str(description).startswith('['):
+                    final_progress['desc'] = description
                 self.progress_queue.put({
                     'current': percentage,
                     'total': 100,
@@ -10991,29 +11167,114 @@ class BossFilterGUI:
                         break
                     done.wait(timeout=0.5)
 
+            def job_match_callback(expected_job_name, actual_job_name):
+                """岗位不一致确认 — 用户明确选择后工作线程才继续。"""
+                event = threading.Event()
+                result = [False]
+
+                def show_dialog():
+                    result[0] = messagebox.askyesno(
+                        "岗位不一致",
+                        "当前配置岗位与 BOSS 页面岗位不一致。\n\n"
+                        f"配置岗位：{expected_job_name}\n"
+                        f"BOSS 当前岗位：{actual_job_name}\n\n"
+                        "继续运行会使用配置岗位的规则筛选当前页面候选人。\n\n"
+                        "是否仍要继续？",
+                        parent=self.root,
+                    )
+                    event.set()
+
+                self.run_on_ui(show_dialog)
+                while not event.is_set():
+                    if self.stop_event.is_set():
+                        break
+                    event.wait(timeout=0.5)
+                return result[0]
+
+            def job_config_callback(text, has_error):
+                """运行前岗位配置体检 — 在 UI 线程展示并等待用户决定。"""
+                if not self._should_prompt_run_job_config(text, has_error):
+                    self.append_log("岗位配置未变化，沿用本次启动中已确认的体检提醒")
+                    return True
+                event = threading.Event()
+                result = [False]
+
+                def show_dialog():
+                    result[0] = self._show_job_config_diagnostics_dialog(
+                        text, has_error=has_error, context="run"
+                    )
+                    event.set()
+
+                self.run_on_ui(show_dialog)
+                while not event.is_set():
+                    if self.stop_event.is_set():
+                        break
+                    event.wait(timeout=0.5)
+                self._remember_run_job_config_warning(text, has_error, result[0])
+                return result[0]
+
+            def greet_confirm_callback(message):
+                """自动打招呼发送前确认 — 用户取消时只保存筛选结果。"""
+                event = threading.Event()
+                result = [False]
+
+                def show_dialog():
+                    result[0] = messagebox.askyesno(
+                        "确认自动打招呼",
+                        message,
+                        parent=self.root,
+                    )
+                    event.set()
+
+                self.run_on_ui(show_dialog)
+                while not event.is_set():
+                    if self.stop_event.is_set():
+                        break
+                    event.wait(timeout=0.5)
+                return result[0]
+
             # 调用 run_smart_scan 并传入参数和进度回调
             run_smart_scan(args, progress_callback=on_progress, confirm_callback=confirm_callback,
                            stop_event=self.stop_event, existing_page=self.browser_page,
                            captcha_callback=captcha_callback, notice_callback=notice_callback,
-                           blocking_notice_callback=blocking_notice_callback)
+                           blocking_notice_callback=blocking_notice_callback,
+                           job_match_callback=job_match_callback,
+                           job_config_callback=job_config_callback,
+                           greet_confirm_callback=greet_confirm_callback)
 
         except KeyboardInterrupt:
+            if not final_progress['desc']:
+                final_progress['desc'] = "[已停止] 用户取消岗位切换"
             self.append_log("用户取消岗位切换，已停止")
         except Exception as e:
+            final_progress['desc'] = f"[出错] {str(e)[:30]}"
             self.append_log(f"运行出错：{e}")
             import traceback
             self.append_log(traceback.format_exc())
         finally:
             sys.stdout = old_stdout
             self.is_running = False
-            self.append_log(f"[{datetime.now().strftime('%H:%M:%S')}] ✔ 运行完成")
+            final_desc = final_progress['desc'] or "[出错] 未取得最终运行状态"
+            self.append_log(f"[{datetime.now().strftime('%H:%M:%S')}] {final_desc}")
+
+            if final_desc.startswith("[完成]"):
+                status_text, status_color, progress_text = "🟢 已完成", self.colors['success'], "完成"
+            elif final_desc.startswith("[可能未扫完]"):
+                status_text, status_color, progress_text = "🟠 可能未扫完", self.colors['warning'], "需继续扫描"
+            elif final_desc.startswith("[扫描中断]"):
+                status_text, status_color, progress_text = "🟠 扫描中断", self.colors['warning'], "扫描中断"
+            elif final_desc.startswith("[已停止]"):
+                status_text, status_color, progress_text = "🔴 已停止", self.colors['danger'], "已停止"
+            else:
+                status_text, status_color, progress_text = "🔴 运行出错", self.colors['danger'], "运行出错"
 
             def finish_ui():
-                self.status_label.config(text="🟢 就绪", foreground=self.colors['success'])
+                self.status_label.config(text=status_text, foreground=status_color)
                 self.start_btn.config(state="normal")
                 self.stop_btn.config(state="disabled")
-                self.progress_var.set(0)
-                self.progress_label.config(text="就绪", image='', compound='text')
+                self.progress_var.set(100)
+                self.progress_label.config(text=progress_text, image='', compound='text')
+                self._set_run_summary(final_desc)
                 self.root.after(100, self.refresh_results)
 
             self.run_on_ui(finish_ui)
@@ -11050,6 +11311,7 @@ class BossFilterGUI:
         current_job = self.result_job_var.get() if hasattr(self, 'result_job_var') else ""
         current_dates = self._get_result_date_filter() if hasattr(self, 'result_date_start_entry') else (None, None)
         show_blacklist = self.result_show_blacklist_var.get() if hasattr(self, 'result_show_blacklist_var') else False
+        result_view = self.result_view_var.get() if hasattr(self, 'result_view_var') else "推荐候选人"
         if CANDIDATES_PATH.exists():
             stat = CANDIDATES_PATH.stat()
             fingerprint = (stat.st_mtime, stat.st_size)
@@ -11059,12 +11321,14 @@ class BossFilterGUI:
                 and current_job == self._result_last_job
                 and current_dates == self._result_last_dates
                 and show_blacklist == self._result_last_show_blacklist
+                and result_view == getattr(self, '_result_last_view', result_view)
             ):
                 return
             self._result_tree_fingerprint = fingerprint
             self._result_last_job = current_job
             self._result_last_dates = current_dates
             self._result_last_show_blacklist = show_blacklist
+            self._result_last_view = result_view
         elif self._result_tree_fingerprint is not None:
             self._result_tree_fingerprint = None
 
@@ -11080,11 +11344,11 @@ class BossFilterGUI:
                 if selected_job != "全部岗位":
                     candidates = [c for c in candidates if c.get('job_name', '') == selected_job.replace(" ", "")]
 
-                # 日期过滤（基于 batch_timestamp 前 8 位 YYYYMMDD）
+                # 日期过滤按首次发现时间统计；旧数据回退 batch_timestamp。
                 date_start, date_end = current_dates
                 if date_start or date_end:
                     def _in_date_range(c):
-                        ts = c.get('batch_timestamp', '')
+                        ts = c.get('first_seen_at') or c.get('batch_timestamp', '')
                         if not ts or len(ts) < 8:
                             return False
                         d = ts[:8]
@@ -11094,6 +11358,8 @@ class BossFilterGUI:
                             return False
                         return True
                     candidates = [c for c in candidates if _in_date_range(c)]
+
+                candidates = _filter_candidates_by_result_view(candidates, result_view)
 
                 # 计算新的指标
                 total = len(candidates)
@@ -11142,6 +11408,7 @@ class BossFilterGUI:
                 self.result_tree.tag_configure('recommend', background=self.colors['bg_tree_tag_mid'])
                 self.result_tree.tag_configure('pending', background=self.colors['bg_tree_tag_low'])
                 self.result_tree.tag_configure('blacklisted', background='#F5F5F5', foreground='#C62828')
+                self.result_tree.tag_configure('rejected', background='#F5F5F5', foreground='#757575')
 
                 visible_count = 0
                 for c in sorted_candidates:
@@ -11152,12 +11419,14 @@ class BossFilterGUI:
                     is_evaluating = geek_id in self._ai_evaluating_ids
                     is_just_evaluated = geek_id in self._ai_eval_results
                     is_ai_evaluated = bool(c.get('llm_evaluated'))
-                    should_keep_low_score = is_evaluating or is_just_evaluated or is_ai_evaluated
+                    has_ai_failure = bool(c.get('llm_error'))
+                    should_keep_low_score = (
+                        is_evaluating or is_just_evaluated or is_ai_evaluated or has_ai_failure
+                    )
 
-                    if score < SCORE_THRESHOLD_PASS and not should_keep_low_score:
+                    is_rejected = c.get('qualification_status') == 'rejected'
+                    if score < SCORE_THRESHOLD_PASS and not should_keep_low_score and not is_rejected:
                         continue  # 低于通过分且没有 AI 评估上下文，不显示
-                    if visible_count >= 100 and score >= SCORE_THRESHOLD_PASS:
-                        continue  # 常规结果仍保留前100条，低分 AI 评估结果不被挤掉
 
                     level = (
                         "强烈推荐" if score >= SCORE_THRESHOLD_STRONG
@@ -11169,6 +11438,8 @@ class BossFilterGUI:
                     # 根据推荐等级设置颜色标记
                     if c.get('blacklisted'):
                         tag = 'blacklisted'
+                    elif is_rejected:
+                        tag = 'rejected'
                     elif score >= SCORE_THRESHOLD_STRONG:
                         tag = 'strong_recommend'
                     elif score >= SCORE_THRESHOLD_RECOMMEND:
@@ -11211,8 +11482,10 @@ class BossFilterGUI:
                     visible_count += 1
 
                 # 存储原始数据用于排序和详情展示
-                self.result_tree_data = sorted_candidates[:100]
+                self.result_tree_data = sorted_candidates
                 self.all_candidates = candidates  # 存储全部数据用于详情展示
+                if hasattr(self, 'result_count_var'):
+                    self.result_count_var.set(f"显示 {visible_count} / 共 {len(candidates)} 人")
                 self._tree_original_order = None  # 搜索排序缓存失效，下次搜索时重建
         except Exception as e:
             self.append_log(f"加载结果失败：{e}")
@@ -12674,6 +12947,11 @@ class BossFilterGUI:
         if not followup_status:
             followup_status = "已打招呼" if candidate.get('greet_sent', False) else "未沟通"
         status_parts = [followup_status]
+        if candidate.get('qualification_status') == 'rejected':
+            reasons = candidate.get('qualification_reasons') or []
+            status_parts.append(str(reasons[0]) if reasons else "淘汰记录")
+        if candidate.get('llm_error'):
+            status_parts.append("AI评估失败")
         if candidate.get('greet_confirmation_pending'):
             status_parts.append("发送待确认")
         if candidate.get('manual_review_required'):
@@ -14368,6 +14646,11 @@ class BossFilterGUI:
                     filled = round(val / 10 * 8)
                     bar = "█" * filled + "░" * (8 - filled)
                     lines.append(f"    {label}：{val}/10 {bar}")
+        elif c.get('llm_error'):
+            error = str(c.get('llm_error')).replace('\n', ' ').replace('\r', '').strip()
+            lines.append("【AI 一次评估】")
+            lines.append("  状态：评估失败，当前分数仍为规则评分")
+            lines.append(f"  失败原因：{error or '未知原因'}")
         else:
             lines.append("【AI 一次评估】未启用")
 
@@ -14952,6 +15235,60 @@ class BossFilterGUI:
             return True
         login_marks = ("扫码登录", "密码登录", "短信登录", "登录 BOSS", "登录Boss", "微信扫码")
         return any(mark in text for mark in login_marks)
+
+    def _get_run_page_readiness(self):
+        """检查当前浏览器页面是否已具备候选人扫描条件。"""
+        page = self.browser_page
+        if not page:
+            return False, "浏览器未连接，请重新检测/连接"
+
+        try:
+            page.run_js('return 1')
+            current_url = str(getattr(page, 'url', '') or '')
+            page_text = str(page.run_js(
+                "return (document.body && document.body.innerText || '').slice(0, 800)"
+            ) or "")
+        except Exception:
+            return False, "浏览器连接已丢失，请重新检测/连接"
+
+        if self._is_boss_login_page(current_url, page_text):
+            return False, "当前停留在 BOSS 登录页，请先完成登录"
+        if not self._is_boss_recommend_url(current_url):
+            return False, "请将浏览器导航到 BOSS 直聘推荐牛人页面后再运行"
+
+        try:
+            from bossmaster import get_iframe
+            target = get_iframe(page) or page
+            state = target.run_js(r'''
+                return (function() {
+                    const href = location.href || '';
+                    const text = (document.body && document.body.innerText || '').slice(0, 2000);
+                    return {
+                        readyState: document.readyState || '',
+                        href: href,
+                        hasCards: !!document.querySelector('[data-geekid]'),
+                        text: text
+                    };
+                })()
+            ''') or {}
+        except Exception:
+            return False, "推荐牛人页面尚未加载完成，请稍候再试"
+
+        ready_state = str(state.get('readyState', '') or '')
+        if ready_state not in ('interactive', 'complete'):
+            return False, "推荐牛人页面正在加载，请稍候再试"
+
+        target_url = str(state.get('href', '') or '')
+        has_job = bool(re.search(r'[?&]job_?id=[^&]+', target_url, re.IGNORECASE))
+        has_cards = bool(state.get('hasCards'))
+        target_text = str(state.get('text', '') or '')
+        if "您需要先发布职位，才能查看推荐牛人" in target_text:
+            return False, "当前账号没有可用的已发布职位，暂时无法扫描候选人"
+        has_empty_state = any(mark in target_text for mark in EMPTY_RECOMMEND_MARKS)
+        if not (has_job or has_cards or has_empty_state):
+            return False, "推荐页尚未加载出岗位或候选人，请选择岗位并等待页面加载完成"
+
+        return True, ""
 
     def _get_greet_queue_page_state(self):
         page = self.browser_page

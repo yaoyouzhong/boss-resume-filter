@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from constants import SCORE_THRESHOLD_PASS
+from constants import SCORE_THRESHOLD_PASS, SCORE_THRESHOLD_RECOMMEND
 
 
 logger = logging.getLogger(__name__)
@@ -126,24 +126,113 @@ def get_greeted_geek_ids(candidates_all: list[dict[str, Any]]) -> set[str]:
     return set(c['geek_id'] for c in candidates_all if c.get('greet_sent') is True)
 
 
+def candidate_key(geek_id: Any, job_name: str) -> tuple[str, str]:
+    """Normalize a (geek_id, job_name) composite key for dedup and lookup."""
+    return (str(geek_id), str(job_name).replace(' ', ''))
+
+
+def get_first_seen(candidate: dict[str, Any], fallback: str = '') -> str:
+    """Return the first-seen timestamp with legacy batch_timestamp fallback."""
+    return candidate.get('first_seen_at') or candidate.get('batch_timestamp') or fallback
+
+
+def get_last_evaluated(candidate: dict[str, Any], fallback: str = '') -> str:
+    """Return the last-evaluated timestamp with legacy batch_timestamp fallback."""
+    return candidate.get('last_evaluated_at') or candidate.get('batch_timestamp') or fallback
+
+
+def _has_candidate_history(candidate: dict[str, Any]) -> bool:
+    """Return whether a rejected candidate has user-owned history to retain."""
+    followup_status = str(candidate.get('followup_status') or '')
+    return bool(
+        candidate.get('feedback_status')
+        or candidate.get('blacklisted')
+        or candidate.get('greet_sent')
+        or candidate.get('greet_confirmation_pending')
+        or followup_status not in ('', '未沟通')
+        or candidate.get('followup_note')
+        or candidate.get('resume_file')
+        or candidate.get('resume_eval_adjustment') is not None
+    )
+
+
+def is_recommended_candidate(candidate: dict[str, Any]) -> bool:
+    """Return whether a candidate is actionable without manual review blockers."""
+    return bool(
+        candidate.get('qualification_status', 'qualified') == 'qualified'
+        and candidate.get('match_score', 0) >= SCORE_THRESHOLD_RECOMMEND
+        and not candidate.get('manual_review_required')
+        and not candidate.get('llm_error')
+        and not candidate.get('greet_confirmation_pending')
+    )
+
+
+def should_retain_rejected_candidate(candidate: dict[str, Any]) -> bool:
+    """Return whether a rejected record still supports review or user history."""
+    return bool(
+        _has_candidate_history(candidate)
+        or candidate.get('qualification_status') == 'manual_review'
+        or candidate.get('manual_review_required')
+        or candidate.get('llm_evaluated')
+        or candidate.get('llm_error')
+        or candidate.get('rejection_source') in {
+            'previously_recommended',
+            'ai_rejected',
+            'user_history',
+        }
+    )
+
+
+def _is_current_scan_pending(candidate: dict[str, Any]) -> bool:
+    """Return whether a record is an ordinary 55-64 point scan snapshot."""
+    score = candidate.get('match_score', 0)
+    return bool(
+        candidate.get('qualification_status') != 'rejected'
+        and SCORE_THRESHOLD_PASS <= score < SCORE_THRESHOLD_RECOMMEND
+        and candidate.get('qualification_status') != 'manual_review'
+        and not candidate.get('manual_review_required')
+        and not candidate.get('llm_evaluated')
+        and not candidate.get('llm_error')
+        and not candidate.get('greet_confirmation_pending')
+        and not _has_candidate_history(candidate)
+    )
+
+
 def save_candidates_all(candidates_all: list[dict[str, Any]], path: Optional[str] = None) -> None:
     """保存 candidates_all.json，支持去重、中断恢复和 .bak 备份。"""
     with _CANDIDATES_FILE_LOCK:
         candidate_path, backup_path = _candidate_paths(path)
         unique_candidates = _dedupe_candidates(candidates_all)
 
-        # 过滤低于通过分的候选人；已有业务动作/评估记录的低分候选人保留，便于复盘。
-        unique_candidates = [
-            c for c in unique_candidates
+        # 兼容旧数据：batch_timestamp 继续表示首次发现时间，避免重复扫描
+        # 把历史候选人重新计入”今天/本周”统计。仅在缺少字段时回填。
+        for candidate in unique_candidates:
+            first_seen_at = get_first_seen(candidate)
+            if first_seen_at:
+                candidate['first_seen_at'] = first_seen_at
+                candidate['batch_timestamp'] = first_seen_at
+            if not candidate.get('last_evaluated_at') and candidate.get('batch_timestamp'):
+                candidate['last_evaluated_at'] = candidate['batch_timestamp']
+
+        # 普通首次淘汰只进入扫描汇总；仅保留有复核或业务价值的淘汰记录。
+        retained_candidates = []
+        for candidate in unique_candidates:
+            if candidate.get('qualification_status') == 'rejected':
+                if not should_retain_rejected_candidate(candidate):
+                    continue
+                candidate = dict(candidate)
+                candidate['match_score'] = 0
+                candidate['recommend_level'] = '未通过'
+                retained_candidates.append(candidate)
+                continue
             if (
-                c.get('match_score', 0) >= SCORE_THRESHOLD_PASS
-                and c.get('qualification_status') != 'rejected'
-            )
-            or c.get('feedback_status')
-            or c.get('blacklisted')
-            or c.get('llm_evaluated')
-            or c.get('resume_eval_adjustment') is not None
-        ]
+                candidate.get('match_score', 0) >= SCORE_THRESHOLD_PASS
+                or _has_candidate_history(candidate)
+                or candidate.get('llm_evaluated')
+                or candidate.get('llm_error')
+            ):
+                retained_candidates.append(candidate)
+        unique_candidates = retained_candidates
 
         if candidate_path.exists():
             try:
@@ -190,10 +279,53 @@ def mark_candidate_greeting_pending(
 def merge_candidates_all(
     candidates: list[dict[str, Any]],
     path: Optional[str] = None,
+    replace_keys: Optional[set[tuple[str, str]]] = None,
+    prune_pending_jobs: Optional[set[str]] = None,
 ) -> None:
-    """在锁内读取最新文件并合并候选人，避免旧快照覆盖并发更新。"""
+    """合并候选人；完整扫描可替换岗位的普通待定快照。"""
     with _CANDIDATES_FILE_LOCK:
         current = load_candidates_all(path)
+        incoming_keys = {
+            candidate_key(item.get('geek_id'), item.get('job_name', ''))
+            for item in candidates
+            if item.get('geek_id')
+        } if replace_keys or prune_pending_jobs else set()
+        if replace_keys:
+            normalized_replace_keys = {
+                candidate_key(geek_id, job_name)
+                for geek_id, job_name in replace_keys
+            }
+            refreshed_current = []
+            archived_at = datetime.now().strftime("%Y%m%d_%H%M%S")
+            for item in current:
+                key = candidate_key(item.get('geek_id'), item.get('job_name', ''))
+                if key not in normalized_replace_keys or key in incoming_keys:
+                    refreshed_current.append(item)
+                elif is_recommended_candidate(item) or should_retain_rejected_candidate(item):
+                    archived = dict(item)
+                    archived['last_evaluated_at'] = archived_at
+                    archived['rejected_at'] = archived_at
+                    archived['rejection_source'] = (
+                        'previously_recommended'
+                        if is_recommended_candidate(item)
+                        else 'user_history'
+                    )
+                    archived['match_score'] = 0
+                    archived['recommend_level'] = '未通过'
+                    archived['qualification_status'] = 'rejected'
+                    archived['qualification_reasons'] = ['最新扫描未通过筛选']
+                    refreshed_current.append(archived)
+            current = refreshed_current
+        if prune_pending_jobs:
+            normalized_jobs = {str(job).replace(' ', '') for job in prune_pending_jobs}
+            current = [
+                item for item in current
+                if not (
+                    str(item.get('job_name', '')).replace(' ', '') in normalized_jobs
+                    and _is_current_scan_pending(item)
+                    and candidate_key(item.get('geek_id'), item.get('job_name', '')) not in incoming_keys
+                )
+            ]
         save_candidates_all(current + candidates, path)
 
 
@@ -268,20 +400,38 @@ def _merge_manual_fields(target: dict[str, Any], source: dict[str, Any]) -> None
                 target[field] = source[field]
 
 
+def _should_replace_candidate(
+    existing: dict[str, Any], incoming: dict[str, Any]
+) -> bool:
+    """Choose the latest scan result, with a high-score fallback for legacy data."""
+    existing_ts = get_last_evaluated(existing)
+    incoming_ts = get_last_evaluated(incoming)
+    if existing_ts or incoming_ts:
+        return incoming_ts >= existing_ts
+    return incoming.get('match_score', 0) > existing.get('match_score', 0)
+
+
 def _dedupe_candidates(candidates_all: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """按 (geek_id, job_name) 去重，并合并打招呼状态。"""
+    """按候选人与岗位去重，保留最新评估并合并人工业务状态。"""
     seen: dict[tuple[str, str], dict[str, Any]] = {}
 
     for c in candidates_all:
         geek_id = c.get('geek_id')
-        job_name = c.get('job_name', '')
         if geek_id:
-            key = (geek_id, job_name)
+            key = candidate_key(geek_id, c.get('job_name', ''))
             if key not in seen:
                 seen[key] = dict(c)  # 浅拷贝，避免修改调用方的输入数据
             else:
                 old_c = seen[key]
-                if c.get('match_score', 0) > old_c.get('match_score', 0) or c.get('greet_sent', False):
+                if _should_replace_candidate(old_c, c) or c.get('greet_sent', False):
+                    c = dict(c)
+                    first_seen_at = get_first_seen(old_c)
+                    last_evaluated_at = get_last_evaluated(c)
+                    if first_seen_at:
+                        c['first_seen_at'] = first_seen_at
+                        c['batch_timestamp'] = first_seen_at
+                    if last_evaluated_at:
+                        c['last_evaluated_at'] = last_evaluated_at
                     if old_c.get('greet_sent', False) and not c.get('greet_sent', False):
                         c['greet_sent'] = True
                     if old_c.get('greeting_in_progress', False):

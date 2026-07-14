@@ -443,6 +443,28 @@ def test_batch_failure_preserves_score(mock_call, mock_sleep):
     assert c['recommend_level'] == '待定'
 
 
+def test_batch_worker_exception_records_candidate_failure():
+    candidates = [
+        {'name': '李四', 'match_score': 60, 'recommend_level': '待定', 'summary': '3年Python'},
+    ]
+    progress = []
+
+    with patch('llm_eval._evaluate_single', side_effect=RuntimeError('worker crashed')):
+        result = quiet_evaluate_batch(
+            candidates,
+            "岗位",
+            {'base_url': 'x', 'model': 'y'},
+            "key",
+            max_workers=1,
+            progress_callback=lambda pct, desc: progress.append((pct, desc)),
+        )
+
+    assert result[0]['llm_evaluated'] is False
+    assert result[0]['llm_error'] == 'worker crashed'
+    assert result[0]['match_score'] == 60
+    assert progress[-1] == (100, "AI 评估中... 1/1")
+
+
 @patch('llm_eval.time.sleep')
 @patch('llm_eval._call_llm_api')
 def test_batch_score_clamped_high(mock_call, mock_sleep):

@@ -33,6 +33,77 @@ def test_dedupe_keeps_higher_score():
     assert result[0]["match_score"] == 80
 
 
+def test_dedupe_uses_latest_scan_even_when_score_decreases():
+    result = _dedupe_candidates([
+        {
+            "geek_id": "g1",
+            "job_name": "Java",
+            "match_score": 80,
+            "batch_timestamp": "20260701_100000",
+            "feedback_status": "合适",
+        },
+        {
+            "geek_id": "g1",
+            "job_name": "Java",
+            "match_score": 65,
+            "batch_timestamp": "20260702_100000",
+            "llm_evaluated": True,
+            "llm_adjustment": -5,
+        },
+    ])
+
+    assert len(result) == 1
+    assert result[0]["match_score"] == 65
+    assert result[0]["batch_timestamp"] == "20260701_100000"
+    assert result[0]["first_seen_at"] == "20260701_100000"
+    assert result[0]["last_evaluated_at"] == "20260702_100000"
+    assert result[0]["llm_adjustment"] == -5
+    assert result[0]["feedback_status"] == "合适"
+
+
+def test_dedupe_same_batch_keeps_later_ai_result():
+    result = _dedupe_candidates([
+        {
+            "geek_id": "g1",
+            "job_name": "Java",
+            "match_score": 70,
+            "batch_timestamp": "20260702_100000",
+            "llm_evaluated": False,
+        },
+        {
+            "geek_id": "g1",
+            "job_name": "Java",
+            "match_score": 70,
+            "batch_timestamp": "20260702_100000",
+            "llm_evaluated": True,
+            "llm_adjustment": 0,
+        },
+    ])
+
+    assert result[0]["llm_evaluated"] is True
+    assert result[0]["llm_adjustment"] == 0
+
+
+def test_dedupe_does_not_replace_newer_scan_with_older_snapshot():
+    result = _dedupe_candidates([
+        {
+            "geek_id": "g1",
+            "job_name": "Java",
+            "match_score": 65,
+            "batch_timestamp": "20260702_100000",
+        },
+        {
+            "geek_id": "g1",
+            "job_name": "Java",
+            "match_score": 90,
+            "batch_timestamp": "20260701_100000",
+        },
+    ])
+
+    assert result[0]["match_score"] == 65
+    assert result[0]["batch_timestamp"] == "20260702_100000"
+
+
 def test_dedupe_different_job_names_not_merged():
     result = _dedupe_candidates([
         {"geek_id": "g1", "job_name": "Java", "match_score": 70},
@@ -119,6 +190,37 @@ def test_merge_candidates_all_preserves_existing_records():
         loaded = load_candidates_all(target)
 
     assert {c["geek_id"] for c in loaded} == {"g1", "g2"}
+
+
+def test_merge_candidates_all_updates_latest_scan_and_preserves_feedback():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        save_candidates_all([{
+            "geek_id": "g1",
+            "job_name": "Java",
+            "match_score": 80,
+            "batch_timestamp": "20260701_100000",
+            "feedback_status": "合适",
+            "feedback_updated_at": "20260701_120000",
+        }], target)
+
+        merge_candidates_all([{
+            "geek_id": "g1",
+            "job_name": "Java",
+            "match_score": 65,
+            "batch_timestamp": "20260702_100000",
+            "llm_evaluated": True,
+            "llm_adjustment": -5,
+        }], target)
+        loaded = load_candidates_all(target)
+
+    assert len(loaded) == 1
+    assert loaded[0]["match_score"] == 65
+    assert loaded[0]["batch_timestamp"] == "20260701_100000"
+    assert loaded[0]["first_seen_at"] == "20260701_100000"
+    assert loaded[0]["last_evaluated_at"] == "20260702_100000"
+    assert loaded[0]["llm_adjustment"] == -5
+    assert loaded[0]["feedback_status"] == "合适"
 
 
 def test_dedupe_preserves_feedback_from_old_to_new():
@@ -548,7 +650,7 @@ def test_save_then_load_roundtrip():
     assert loaded[0]["greet_sent"] is True
 
 
-def test_save_excludes_high_score_rejected_candidate():
+def test_save_drops_ordinary_rejected_candidate_without_review_value():
     with tempfile.TemporaryDirectory() as tmpdir:
         target = os.path.join(tmpdir, "candidates_all.json")
         save_candidates_all([{
@@ -558,6 +660,144 @@ def test_save_excludes_high_score_rejected_candidate():
             "qualification_status": "rejected",
         }], target)
         assert load_candidates_all(target) == []
+
+
+def test_save_keeps_rejected_candidate_history_outside_active_score():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        save_candidates_all([{
+            "geek_id": "rejected-with-history",
+            "job_name": "Java",
+            "match_score": 90,
+            "qualification_status": "rejected",
+            "feedback_status": "误推",
+        }], target)
+        loaded = load_candidates_all(target)
+
+    assert len(loaded) == 1
+    assert loaded[0]["match_score"] == 0
+    assert loaded[0]["recommend_level"] == "未通过"
+    assert loaded[0]["qualification_status"] == "rejected"
+    assert loaded[0]["feedback_status"] == "误推"
+
+
+def test_save_keeps_rejected_candidate_that_required_manual_review():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        save_candidates_all([{
+            "geek_id": "manual-rejected",
+            "job_name": "Java",
+            "match_score": 0,
+            "qualification_status": "rejected",
+            "manual_review_required": True,
+        }], target)
+        loaded = load_candidates_all(target)
+
+    assert len(loaded) == 1
+    assert loaded[0]["geek_id"] == "manual-rejected"
+
+
+def test_merge_candidates_all_archives_previous_pass_when_latest_scan_fails():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        save_candidates_all([{
+            "geek_id": "g1",
+            "job_name": "Java",
+            "match_score": 80,
+            "batch_timestamp": "20260701_100000",
+        }], target)
+
+        merge_candidates_all([], target, replace_keys={("g1", "Java")})
+
+        loaded = load_candidates_all(target)
+
+    assert len(loaded) == 1
+    assert loaded[0]["qualification_status"] == "rejected"
+    assert loaded[0]["qualification_reasons"] == ["最新扫描未通过筛选"]
+    assert loaded[0]["first_seen_at"] == "20260701_100000"
+    assert loaded[0]["rejection_source"] == "previously_recommended"
+
+
+def test_complete_scan_replaces_old_plain_pending_but_keeps_review_work():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        save_candidates_all([
+            {"geek_id": "old-pending", "job_name": "Java", "match_score": 60},
+            {"geek_id": "manual", "job_name": "Java", "match_score": 60, "manual_review_required": True},
+            {"geek_id": "other-job", "job_name": "Python", "match_score": 60},
+        ], target)
+
+        merge_candidates_all(
+            [{"geek_id": "new-pending", "job_name": "Java", "match_score": 61}],
+            target,
+            prune_pending_jobs={"Java"},
+        )
+        loaded = load_candidates_all(target)
+
+    assert {c["geek_id"] for c in loaded} == {"new-pending", "manual", "other-job"}
+
+
+def test_partial_scan_keeps_old_plain_pending_snapshot():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        save_candidates_all([
+            {"geek_id": "old-pending", "job_name": "Java", "match_score": 60},
+        ], target)
+
+        merge_candidates_all(
+            [{"geek_id": "new-pending", "job_name": "Java", "match_score": 61}],
+            target,
+        )
+        loaded = load_candidates_all(target)
+
+    assert {c["geek_id"] for c in loaded} == {"old-pending", "new-pending"}
+
+
+def test_merge_candidates_all_archives_failed_candidate_with_feedback_only():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        save_candidates_all([
+            {
+                "geek_id": "g1",
+                "job_name": "Java",
+                "match_score": 80,
+                "feedback_status": "误推",
+            },
+            {
+                "geek_id": "g1",
+                "job_name": "Python",
+                "match_score": 75,
+            },
+        ], target)
+
+        merge_candidates_all([], target, replace_keys={("g1", "Java")})
+        loaded = load_candidates_all(target)
+
+    assert len(loaded) == 2
+    java_record = next(c for c in loaded if c["job_name"] == "Java")
+    assert java_record["match_score"] == 0
+    assert java_record["qualification_status"] == "rejected"
+    assert java_record["qualification_reasons"] == ["最新扫描未通过筛选"]
+    assert java_record["feedback_status"] == "误推"
+    assert next(c for c in loaded if c["job_name"] == "Python")["match_score"] == 75
+
+
+def test_manual_review_candidate_is_not_archived_as_previously_recommended():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        save_candidates_all([{
+            "geek_id": "manual-high",
+            "job_name": "Java",
+            "match_score": 72,
+            "qualification_status": "manual_review",
+            "manual_review_required": True,
+        }], target)
+
+        merge_candidates_all([], target, replace_keys={("manual-high", "Java")})
+        loaded = load_candidates_all(target)
+
+    assert len(loaded) == 1
+    assert loaded[0]["rejection_source"] == "user_history"
 
 
 def test_save_keeps_ai_evaluated_candidate_below_pass_score():
@@ -576,6 +816,22 @@ def test_save_keeps_ai_evaluated_candidate_below_pass_score():
         assert loaded[0]["geek_id"] == "ai-low"
         assert loaded[0]["match_score"] == 53
         assert loaded[0]["llm_adjustment"] == -3
+
+
+def test_save_keeps_failed_ai_candidate_below_pass_score_for_retry():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        save_candidates_all([{
+            "geek_id": "ai-failed-low",
+            "job_name": "Java",
+            "match_score": 53,
+            "llm_evaluated": False,
+            "llm_error": "请求超时",
+        }], target)
+        loaded = load_candidates_all(target)
+        assert len(loaded) == 1
+        assert loaded[0]["geek_id"] == "ai-failed-low"
+        assert loaded[0]["llm_error"] == "请求超时"
 
 
 # ========== load_candidates_all 边界场景 ==========

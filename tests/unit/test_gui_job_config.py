@@ -15,12 +15,48 @@ from gui_main import (
     _optional_int_to_entry,
     _parse_optional_int_entry,
     _candidate_has_ai_eval,
+    _filter_candidates_by_result_view,
 )
 from llm_eval import _resolve_rule_score
 
 
 def test_optional_max_age_none_displays_as_blank():
     assert _optional_int_to_entry(None) == ""
+
+
+def test_result_view_separates_recommended_review_and_rejected_without_limit():
+    candidates = [
+        {
+            "geek_id": f"active-{i}",
+            "qualification_status": "qualified",
+            "match_score": 70,
+        }
+        for i in range(125)
+    ] + [
+        {"geek_id": "pending", "qualification_status": "qualified", "match_score": 60},
+        {"geek_id": "manual", "qualification_status": "manual_review", "match_score": 72},
+        {"geek_id": "ai-failed", "qualification_status": "qualified", "match_score": 72, "llm_error": "timeout"},
+        {"geek_id": "send-pending", "qualification_status": "qualified", "match_score": 72, "greet_confirmation_pending": True},
+        {"geek_id": "rejected", "qualification_status": "rejected", "match_score": 0},
+    ]
+
+    assert len(_filter_candidates_by_result_view(candidates, "推荐候选人")) == 125
+    assert {
+        c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "待复核")
+    } == {"pending", "manual", "ai-failed", "send-pending"}
+    assert [c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "淘汰记录")] == ["rejected"]
+    assert len(_filter_candidates_by_result_view(candidates, "全部记录")) == 130
+
+
+def test_run_job_config_warning_is_acknowledged_until_diagnostics_change():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._acknowledged_job_config_warnings = set()
+
+    assert gui._should_prompt_run_job_config("warning-a", False) is True
+    gui._remember_run_job_config_warning("warning-a", False, True)
+    assert gui._should_prompt_run_job_config("warning-a", False) is False
+    assert gui._should_prompt_run_job_config("warning-b", False) is True
+    assert gui._should_prompt_run_job_config("warning-a", True) is True
 
 
 def test_optional_max_age_number_displays_as_number_text():
@@ -944,6 +980,9 @@ def test_candidate_status_shows_temporary_ai_eval_state_and_expires():
     assert gui._format_candidate_status(candidate) == "未沟通"
     assert "123" not in gui._ai_eval_results
 
+    candidate["llm_error"] = "请求超时"
+    assert gui._format_candidate_status(candidate) == "未沟通｜AI评估失败"
+
 
 def test_refresh_results_force_rebuilds_for_transient_ai_status():
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -962,6 +1001,7 @@ def test_refresh_results_force_rebuilds_for_transient_ai_status():
         gui = BossFilterGUI.__new__(BossFilterGUI)
         gui.result_tree = _FakeResultTree()
         gui.result_job_var = _FakeVar("全部岗位")
+        gui.result_view_var = _FakeVar("推荐候选人")
         gui.result_show_blacklist_var = _FakeVar(False)
         gui.result_stats_vars = {key: _FakeVar() for key in ("strong", "recommended", "pending", "greeted")}
         gui.result_stats_greeted = {key: _FakeVar() for key in ("strong", "recommended", "pending", "greeted")}
@@ -991,25 +1031,46 @@ def test_refresh_results_force_rebuilds_for_transient_ai_status():
         assert gui.result_tree.items[0]["values"][7] == "AI评估中..."
 
 
-def test_refresh_results_keeps_ai_evaluated_candidate_below_pass_score():
+def test_refresh_results_keeps_ai_evaluated_and_failed_candidates_below_pass_score():
     with tempfile.TemporaryDirectory() as tmp_dir:
         candidates_path = Path(tmp_dir) / "candidates.json"
         candidates_path.write_text(
-            json.dumps([{
-                "geek_id": "g1",
-                "name": "候选人",
-                "job_name": "Java 工程师",
-                "match_score": 52,
-                "followup_status": "未沟通",
-                "llm_evaluated": True,
-                "llm_adjustment": -3,
-            }], ensure_ascii=False),
+            json.dumps([
+                {
+                    "geek_id": "g1",
+                    "name": "已评估候选人",
+                    "job_name": "Java 工程师",
+                    "match_score": 52,
+                    "followup_status": "未沟通",
+                    "llm_evaluated": True,
+                    "llm_adjustment": -3,
+                },
+                {
+                    "geek_id": "g2",
+                    "name": "评估失败候选人",
+                    "job_name": "Java 工程师",
+                    "match_score": 51,
+                    "followup_status": "未沟通",
+                    "llm_evaluated": False,
+                    "llm_error": "请求超时",
+                },
+                {
+                    "geek_id": "g3",
+                    "name": "已淘汰候选人",
+                    "job_name": "Java 工程师",
+                    "match_score": 90,
+                    "followup_status": "未沟通",
+                    "llm_evaluated": True,
+                    "qualification_status": "rejected",
+                },
+            ], ensure_ascii=False),
             encoding="utf-8",
         )
 
         gui = BossFilterGUI.__new__(BossFilterGUI)
         gui.result_tree = _FakeResultTree()
         gui.result_job_var = _FakeVar("全部岗位")
+        gui.result_view_var = _FakeVar("待复核")
         gui.result_show_blacklist_var = _FakeVar(False)
         gui.result_stats_vars = {key: _FakeVar() for key in ("strong", "recommended", "pending", "greeted")}
         gui.result_stats_greeted = {key: _FakeVar() for key in ("strong", "recommended", "pending", "greeted")}
@@ -1032,11 +1093,35 @@ def test_refresh_results_keeps_ai_evaluated_candidate_below_pass_score():
         with patch("gui_main.CANDIDATES_PATH", candidates_path):
             gui.refresh_results()
 
+        assert len(gui.result_tree.items) == 2
         values = gui.result_tree.items[0]["values"]
         assert values[4] == 52
         assert values[5] == "-3"
         assert values[6] == "未通过"
         assert values[7] == "未沟通"
+        failed_values = gui.result_tree.items[1]["values"]
+        assert failed_values[4] == 51
+        assert failed_values[5] == "—"
+        assert failed_values[6] == "未通过"
+        assert failed_values[7] == "未沟通｜AI评估失败"
+
+
+def test_candidate_detail_explains_ai_failure_and_retained_rule_score():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    detail = gui._format_candidate_detail({
+        "name": "候选人",
+        "job_name": "Java 工程师",
+        "geek_id": "g-failed",
+        "match_score": 60,
+        "summary": "本科，3年 Java",
+        "llm_evaluated": False,
+        "llm_error": "请求超时\n请稍后重试",
+    })
+
+    assert "【AI 一次评估】" in detail
+    assert "状态：评估失败，当前分数仍为规则评分" in detail
+    assert "失败原因：请求超时 请稍后重试" in detail
+    assert "【AI 一次评估】未启用" not in detail
 
 
 def test_scroll_to_ai_evaluated_candidate_selects_row_by_geek_id_string():
@@ -1461,10 +1546,144 @@ def test_greet_queue_start_requires_confirmation():
     assert "messagebox.askyesno" in confirm_block
 
 
+def test_initial_auto_greet_requires_confirmation_before_run_sends():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    worker_block = source[source.index("def run_worker"):]
+    worker_block = worker_block[:worker_block.index("\n        # 启动后台线程")]
+
+    assert "def greet_confirm_callback(message):" in worker_block
+    assert '"确认自动打招呼"' in worker_block
+    assert "job_config_callback=job_config_callback" in worker_block
+    assert "greet_confirm_callback=greet_confirm_callback" in worker_block
+
+
 def test_greet_queue_page_state_detects_boss_login_page():
     assert BossFilterGUI._is_boss_login_page("https://www.zhipin.com/web/user/")
     assert BossFilterGUI._is_boss_login_page("https://www.zhipin.com/", "扫码登录\n微信扫码")
     assert not BossFilterGUI._is_boss_login_page("https://www.zhipin.com/web/chat/recommend")
+
+
+def test_boss_recommend_url_accepts_chat_and_frame_routes():
+    assert BossFilterGUI._is_boss_recommend_url("https://www.zhipin.com/web/chat/recommend")
+    assert BossFilterGUI._is_boss_recommend_url("https://www.zhipin.com/web/frame/recommend/?jobid=job-123&status=0")
+    assert not BossFilterGUI._is_boss_recommend_url("https://www.zhipin.com/web/user/")
+    assert not BossFilterGUI._is_boss_recommend_url("https://example.com/web/chat/recommend")
+
+
+def test_start_run_accepts_frame_recommend_page():
+    class FakePage:
+        url = "https://www.zhipin.com/web/frame/recommend/?jobid=job-123&status=0"
+
+        def run_js(self, script):
+            if script == 'return 1':
+                return 1
+            if 'slice(0, 800)' in script:
+                return "推荐牛人"
+            return {
+                "readyState": "complete",
+                "href": self.url,
+                "hasCards": True,
+                "text": "推荐牛人",
+            }
+
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.is_running = False
+    gui.browser_connected = True
+    gui.browser_page = FakePage()
+    gui.start_btn = _FakeWidget()
+    gui.stop_btn = _FakeWidget()
+    gui.status_label = _FakeWidget()
+    gui.progress_label = _FakeWidget()
+    gui.progress_var = _FakeVar()
+    gui.stop_event = _FakeStopEvent()
+    gui.colors = {"warning": "#F9A825"}
+    logs = []
+    gui.append_log = logs.append
+    started = []
+
+    class FakeThread:
+        def __init__(self, target):
+            self.target = target
+            self.daemon = False
+
+        def start(self):
+            started.append(self.target)
+
+    with patch("gui_main.threading.Thread", FakeThread), patch("gui_main.messagebox.showwarning") as showwarning:
+        gui.start_run()
+
+    showwarning.assert_not_called()
+    assert gui.is_running is True
+    assert gui.stop_event.cleared is True
+    assert started == [gui.run_worker]
+
+
+def test_run_page_readiness_rejects_bare_frame_shell():
+    class FakePage:
+        url = "https://www.zhipin.com/web/frame/recommend/"
+
+        def run_js(self, script):
+            if script == 'return 1':
+                return 1
+            if 'slice(0, 800)' in script:
+                return "推荐牛人"
+            return {
+                "readyState": "complete",
+                "href": self.url,
+                "hasCards": False,
+                "text": "推荐牛人",
+            }
+
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.browser_page = FakePage()
+
+    ready, reason = gui._get_run_page_readiness()
+
+    assert ready is False
+    assert "选择岗位" in reason
+
+
+def test_run_page_readiness_reports_missing_published_job():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def run_js(self, script):
+            if script == 'return 1':
+                return 1
+            if 'slice(0, 800)' in script:
+                return "推荐牛人"
+            return {
+                "readyState": "complete",
+                "href": "https://www.zhipin.com/web/frame/recommend/?jobid&status=0",
+                "hasCards": False,
+                "text": "推荐\n您需要先发布职位，才能查看推荐牛人\n发布职位",
+            }
+
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.browser_page = FakePage()
+
+    ready, reason = gui._get_run_page_readiness()
+
+    assert ready is False
+    assert reason == "当前账号没有可用的已发布职位，暂时无法扫描候选人"
+
+
+def test_run_page_readiness_rejects_login_page():
+    class FakePage:
+        url = "https://www.zhipin.com/web/user/"
+
+        def run_js(self, script):
+            if script == 'return 1':
+                return 1
+            return "扫码登录\n微信扫码"
+
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.browser_page = FakePage()
+
+    ready, reason = gui._get_run_page_readiness()
+
+    assert ready is False
+    assert "完成登录" in reason
 
 
 def test_selector_auto_check_is_limited_to_recommend_page():
@@ -1474,6 +1693,83 @@ def test_selector_auto_check_is_limited_to_recommend_page():
 
     assert "self._is_boss_recommend_url(current_url)" in check_block
     assert "选择器自动检查已跳过" in check_block
+
+
+def test_selector_auto_check_does_not_warn_for_skipped_card_check():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def run_js(self, _script):
+            return 1
+
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._selectors_auto_checked = False
+    gui.browser_connected = True
+    gui.browser_page = FakePage()
+    logs = []
+    ui_callbacks = []
+    gui.append_log = logs.append
+    gui.run_on_ui = ui_callbacks.append
+    results = [{
+        "group": "candidate_card",
+        "name": "all_cards",
+        "status": "skip",
+        "detail": "当前账号没有已发布职位，跳过卡片选择器验证",
+    }]
+
+    with patch("bossmaster.check_selectors_health", return_value=results):
+        gui._auto_check_selectors()
+
+    assert gui._selectors_auto_checked is True
+    assert any("选择器自动检查已跳过" in log for log in logs)
+    assert ui_callbacks == []
+
+
+def test_run_worker_preserves_scan_completion_state():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    run_block = source[source.index("def run_worker"):]
+    run_block = run_block[:run_block.index("\n    def on_closing")]
+    create_block = source[source.index("def create_run_page"):]
+    create_block = create_block[:create_block.index("\n    def create_result_page")]
+    start_block = source[source.index("def start_run"):]
+    start_block = start_block[:start_block.index("\n    def stop_run")]
+
+    assert 'final_desc.startswith("[可能未扫完]")' in run_block
+    assert 'final_desc.startswith("[扫描中断]")' in run_block
+    assert "str(description).startswith('[')" in run_block
+    assert "job_match_callback=job_match_callback" in run_block
+    assert "job_config_callback=job_config_callback" in run_block
+    assert 'context="run"' in run_block
+    assert 'self.progress_var.set(100)' in run_block
+    assert 'self._set_run_summary(final_desc)' in run_block
+    assert 'self._reset_run_summary()' in start_block
+    assert 'self.run_summary_text_label' in create_block
+    assert '本轮结果摘要' in create_block
+    assert '✔ 运行完成' not in run_block
+
+
+def test_run_summary_splits_status_prefix_for_fixed_summary_card():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.colors = {
+        "success": "#0A0",
+        "warning": "#FA0",
+        "danger": "#D00",
+        "text_primary": "#111",
+        "text_secondary": "#666",
+    }
+    gui.run_summary_status_label = _FakeWidget()
+    gui.run_summary_text_label = _FakeWidget()
+
+    gui._set_run_summary("[可能未扫完] 规则筛选通过 8/30 人，筛选漏斗：主要淘汰：经验不足 10 人")
+
+    assert gui.run_summary_status_label.configs[-1] == {
+        "text": "可能未扫完",
+        "foreground": "#FA0",
+    }
+    assert gui.run_summary_text_label.configs[-1] == {
+        "text": "规则筛选通过 8/30 人，筛选漏斗：主要淘汰：经验不足 10 人",
+        "foreground": "#111",
+    }
 
 
 def test_passed_filter_uses_enlarged_original_people_icon():

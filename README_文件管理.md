@@ -4,8 +4,8 @@
 
 ### 每次运行产生的文件
 ```
-candidates_all.json    # ≥55 分候选人数据（累积、去重、覆盖）
-candidates_all.xlsx    # Excel 导出（覆盖）
+candidates_all.json    # 候选人记录（按岗位去重，保留当前结果和需要复核的历史）
+candidates_all.xlsx    # 当前可导出候选人记录（覆盖）
 ```
 
 **注意**：不再产生带时间戳的中间文件，每次运行只更新这两个文件。
@@ -40,7 +40,7 @@ candidates_all.xlsx    # Excel 导出（覆盖）
 |------|------|
 | rule_score | 原始规则评分（LLM 调整前） |
 | llm_evaluated | LLM 是否评估成功 |
-| llm_adjustment | LLM 调整值（-10 ~ +10） |
+| llm_adjustment | LLM 调整值（-15 ~ +15） |
 | llm_reason | 完整 LLM 评估理由；运行日志只显示单行摘要 |
 | llm_model | 使用的 LLM 模型名称 |
 | llm_hard_condition_verdict | LLM 对硬条件的结构化结论 |
@@ -86,12 +86,12 @@ candidates_all.xlsx    # Excel 导出（覆盖）
 |------|------|
 | resume_file | 导入的简历文件路径 |
 | resume_imported_at | 简历导入时间 |
-| resume_eval_adjustment | 简历评估调整值（-10 ~ +10） |
+| resume_eval_adjustment | 简历评估调整值（-15 ~ +15） |
 | resume_eval_reason | 简历评估理由 |
 | resume_eval_model | 使用的 LLM 模型名称 |
 | resume_eval_at | 评估执行时间 |
 
-简历评估在 LLM 一次评估基础上叠加第二次调整，最终分 = 规则分 + LLM 调整 + 简历评估调整。
+导入完整简历后，简历评估调整值替代一次 LLM 调整值，最终分 = 规则分 + 简历评估调整值；一次 LLM 的硬条件结论仍会保留。
 
 ## 运行参数
 
@@ -157,8 +157,8 @@ python bossmaster.py --greet --rounds 20
 ## 输出文件
 
 每次运行固定生成：
-- `candidates_all.json` - ≥55 分候选人数据（累积、去重，低于 55 分的淘汰候选人自动过滤）
-- `candidates_all.xlsx` - Excel 导出（覆盖旧文件，同样只含 ≥55 分候选人）
+- `candidates_all.json` - 按“候选人 + 岗位”去重的记录。推荐候选人保留当前结果；普通待定只保留该岗位最近一次完整扫描快照；首次普通淘汰只计入本轮摘要，不长期保存；曾被推荐、AI 淘汰或已有跟进、反馈、黑名单等业务记录的候选人保留供复核。
+- `candidates_all.xlsx` - Excel 导出（覆盖旧文件），默认不导出已屏蔽候选人。
 
 ## 打招呼逻辑
 
@@ -225,6 +225,6 @@ for /f "delims=" %i in ('dir /b candidates_*.xlsx ^| findstr /v "^candidates_all
         → 过滤「当前岗位已匹配且打过招呼」的候选人
         → 扫描新候选人并筛选
         → 对≥65 分的新候选人/未打招呼的候选人发送消息
-        → 更新 candidates_all.json（累积、去重、过滤<55分、更新打招呼状态）
+        → 更新 candidates_all.json（去重、替换当前评估、保留需要复核的业务历史）
         → 生成 candidates_all.xlsx（覆盖）
 ```

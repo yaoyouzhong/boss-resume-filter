@@ -25,6 +25,8 @@ from constants import (
     SCROLL_PX,
     MAX_SCROLL_SEARCH,
     MAX_ROUNDS_DEFAULT,
+    EMPTY_RECOMMEND_MARKS,
+    EMPTY_RECOMMEND_NO_JOB_MARK,
     EMPTY_ROUNDS_LIMIT,
     GREET_FAIL_LIMIT,
     GREET_UNCERTAIN_LIMIT,
@@ -54,13 +56,18 @@ from paths import BASE_DIR, SELECTORS_PATH, CONFIG_PATH, CANDIDATES_PATH, CANDID
 from storage import (
     build_blacklist_index,
     build_greeted_index,
+    candidate_key,
+    get_first_seen,
     get_greeted_geek_ids,
+    get_last_evaluated,
     is_already_greeted,
+    is_recommended_candidate,
     load_candidates_all,
     merge_candidates_all,
     persist_candidate_greeting_pending,
     persist_candidate_greeted,
     save_candidates_all,
+    should_retain_rejected_candidate,
 )
 
 logger = logging.getLogger(__name__)
@@ -620,7 +627,8 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
                 '风险提示': _format_risk_flags(c),
                 '自动打招呼阻断原因': c.get('auto_greet_blocked_reason', ''),
                 # ⑤ 原始
-                '批次': c.get('batch_timestamp', ''),
+                '首次发现': c.get('first_seen_at') or c.get('batch_timestamp', ''),
+                '最近评估': c.get('last_evaluated_at') or c.get('batch_timestamp', ''),
                 '详细信息': c.get('summary', '')
             }
             data.append(row)
@@ -634,7 +642,7 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
             '是否打招呼', '跟进状态', '跟进备注', '跟进时间',
             '人工反馈', '反馈原因', '反馈备注', '反馈时间',
             '是否需人工确认', '风险提示', '自动打招呼阻断原因',
-            '批次', '详细信息',
+            '首次发现', '最近评估', '详细信息',
         ]
         # XML 1.0 合法字符集：#x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
         # BOSS API 的工作职责/个人优势字段偶尔混入垂直制表符 (\x0b) / 换页符 (\x0c) 等控制字符，
@@ -1715,6 +1723,56 @@ def _same_recommend_page_identity(before: dict[str, str], after: dict[str, str])
     return True
 
 
+def _normalize_job_title(title: str) -> str:
+    """归一化岗位名称，用于比较配置岗位和 BOSS 页面岗位。"""
+    return re.sub(r"[\s\-_/·•（）()【】\[\]]+", "", str(title or "")).lower()
+
+
+def _job_titles_match(expected: str, actual: str) -> bool | None:
+    """判断岗位名称是否一致；任一名称缺失时返回 None。"""
+    expected_norm = _normalize_job_title(expected)
+    actual_norm = _normalize_job_title(actual)
+    if not expected_norm or not actual_norm:
+        return None
+    if expected_norm == actual_norm:
+        return True
+    qualifiers = ("中高级", "高级", "资深", "中级", "初级", "急聘")
+    expected_base = expected_norm
+    actual_base = actual_norm
+    for qualifier in qualifiers:
+        expected_base = expected_base.replace(qualifier, "")
+        actual_base = actual_base.replace(qualifier, "")
+    return bool(expected_base and expected_base == actual_base)
+
+
+def _confirm_page_job_match(page, expected_job_name, confirm_callback=None) -> bool:
+    """核对当前 BOSS 推荐页岗位；明确不一致时请求用户确认。"""
+    target = get_iframe(page) or page
+    identity = _read_recommend_page_identity(target)
+    actual_job_name = str(identity.get('job_title', '') or '').strip()
+    matched = _job_titles_match(expected_job_name, actual_job_name)
+    if matched is None:
+        print(f"[WARN] 无法读取 BOSS 当前岗位名称，跳过“{expected_job_name}”岗位一致性检查")
+        return True
+    if matched:
+        print(f"岗位一致性确认：配置“{expected_job_name}” / BOSS“{actual_job_name}”")
+        return True
+
+    message = (
+        "岗位名称不一致：\n\n"
+        f"配置岗位：{expected_job_name}\n"
+        f"BOSS 当前岗位：{actual_job_name}\n\n"
+        "继续运行会使用配置岗位的规则筛选当前页面候选人。"
+    )
+    print(f"[WARN] 配置岗位“{expected_job_name}”与 BOSS 当前岗位“{actual_job_name}”不一致")
+    if confirm_callback:
+        return bool(confirm_callback(expected_job_name, actual_job_name))
+    try:
+        return input(f"{message}\n仍要继续？[y/N] ").strip().lower() == 'y'
+    except (EOFError, OSError):
+        return False
+
+
 def _is_api_risk_status(status: Any) -> bool:
     """判断接口错误是否应视为风控熔断，而不是普通接口失败。"""
     try:
@@ -1786,7 +1844,7 @@ def _fetch_api_page(page: Any, pagination: dict[str, Any], page_num: int) -> lis
     return candidates
 
 
-def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEFAULT, progress_callback=None, stop_event=None, captcha_callback=None, notice_callback=None, blocking_notice_callback=None, max_candidates=API_CANDIDATE_LIMIT_DEFAULT, use_api_extraction=True, extraction_mode=None):
+def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEFAULT, progress_callback=None, stop_event=None, captcha_callback=None, notice_callback=None, blocking_notice_callback=None, max_candidates=API_CANDIDATE_LIMIT_DEFAULT, use_api_extraction=True, extraction_mode=None, scan_stats=None):
     """通过全面分析提取候选人
 
     Args:
@@ -1799,6 +1857,7 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
         max_candidates: API 直调补全预算，用于推导最多补全页数；0 表示使用保守默认值
         use_api_extraction: 兼容旧调用；False 等价于 extraction_mode="dom"
         extraction_mode: 提取模式，api=listener+refresh+DOM+API补全，listener=listener+refresh+DOM补全，dom=仅DOM滚动
+        scan_stats: 可选字典，写入扫描完整性、停止原因和轮次统计
     """
     print("正在提取候选人...")
     time.sleep(_human_delay(1.0, 0.5))
@@ -1825,6 +1884,19 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
     observed_api_url = ""
     listener_refresh_captured = False
     last_round_new_count = 0
+    rounds_completed = 0
+    scan_status = "partial"
+    scan_reason = "尚未完成扫描"
+
+    def _record_scan_outcome(status, reason):
+        if scan_stats is not None:
+            scan_stats.update({
+                'scan_status': status,
+                'scan_reason': reason,
+                'scan_rounds': rounds_completed,
+                'scan_candidate_count': len(all_candidates),
+                'scan_last_new_count': last_round_new_count,
+            })
 
     # listener 启动后刷新一次，让首屏 API 请求被监听器捕获（结构化字段来源）。
     # 刷新会使页面恢复默认岗位，用 identity 校验检测是否跑偏。
@@ -1882,11 +1954,16 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
 
     try:
         for scroll_round in range(max_rounds):
+            rounds_completed = scroll_round + 1
+            bottom_reached = False
             # 检查停止信号
             if stop_event and stop_event.is_set():
+                _record_scan_outcome("interrupted", "用户停止扫描")
                 raise StopRequested()
 
             if not _ensure_recommend_page(page, notice_callback=notice_callback, context="扫描候选人"):
+                scan_status = "interrupted"
+                scan_reason = "页面已离开推荐牛人页面"
                 break
 
             # 验证码检测：每 3 轮一次（降低调用频率，弹窗一旦出现 1.5s 内必然可见）
@@ -1895,6 +1972,8 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
                 if is_captcha:
                     print(f"\n⚠️  检测到安全验证弹窗 ({captcha_msg})")
                     if not _wait_for_captcha_resolution(page, stop_event, captcha_callback=captcha_callback, detail=captcha_msg, stage="scan"):
+                        scan_status = "interrupted"
+                        scan_reason = "安全验证未完成"
                         break
 
             # 进度上报
@@ -1962,8 +2041,7 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
                     except Exception:
                         pass
                     if bottom_hint:
-                        print(f"检测到'到底'提示，第 {scroll_round + 1} 轮提前终止（累计 {len(all_candidates)} 个候选人）")
-                        break
+                        bottom_reached = True
 
             # 收集候选人：DOM 建集合，listener 只增强已有 geek_id。
             candidates_in_round = []
@@ -2022,10 +2100,21 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
             last_round_new_count = new_count
             total_count = len(all_candidates)
 
+            if bottom_reached:
+                scan_status = "complete"
+                scan_reason = "检测到页面底部"
+                print(
+                    f"检测到'到底'提示，已采集最后一屏，第 {scroll_round + 1} 轮结束"
+                    f"（本轮新增 {new_count} 人，累计 {total_count} 人）"
+                )
+                break
+
             # 连续空轮次检测（兜底策略，不依赖特定文案）
             if new_count == 0:
                 consecutive_empty += 1
                 if consecutive_empty >= EMPTY_ROUNDS_LIMIT:
+                    scan_status = "complete"
+                    scan_reason = f"连续 {consecutive_empty} 轮无新增候选人"
                     print(f"连续 {consecutive_empty} 轮无新候选人，第 {scroll_round + 1} 轮提前终止（累计 {total_count} 个候选人）")
                     break
             else:
@@ -2036,6 +2125,10 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
                 status = f"+{new_count}" if new_count > 0 else "无新增"
                 print(f"轮次 {scroll_round + 1}/{max_rounds}: {status}, 累计 {total_count} 个")
         else:
+            scan_status = "partial"
+            scan_reason = (
+                f"达到 {max_rounds} 轮上限，最后一轮新增 {last_round_new_count} 人"
+            )
             if last_round_new_count > 0:
                 warning = (
                     f"已达到扫描轮次上限 {max_rounds}，最后一轮仍新增 "
@@ -2049,7 +2142,9 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
             except Exception:
                 pass
 
-    if api_enrichment_enabled and all_candidates:
+    _record_scan_outcome(scan_status, scan_reason)
+
+    if scan_status != "interrupted" and api_enrichment_enabled and all_candidates:
         missing_ids = {
             c.get('geek_id') for c in all_candidates
             if c.get('geek_id') and not c.get('structured')
@@ -3077,7 +3172,7 @@ def check_selectors_health(page: ChromiumPage) -> list[dict[str, Any]]:
     返回: list[dict]，每项包含:
         - group: 选择器组名
         - name: 选择器名称
-        - status: 'ok' | 'warn' | 'fail'
+        - status: 'ok' | 'skip' | 'warn' | 'fail'
         - detail: 描述信息
     """
     # Chrome 刷新或重建标签页时，DrissionPage 的旧对象可能短暂断线。
@@ -3116,7 +3211,27 @@ def check_selectors_health(page: ChromiumPage) -> list[dict[str, Any]]:
     def _test_cards():
         els = target.eles(cards_sel)
         return len(els) if els else 0
-    _check('all_cards', _test_cards, group='candidate_card')
+    try:
+        card_count = _test_cards()
+        if card_count:
+            results.append({'group': 'candidate_card', 'name': 'all_cards', 'status': 'ok',
+                           'detail': f'找到 {card_count} 个匹配元素'})
+        else:
+            page_text = str(target.run_js(
+                "return (document.body && document.body.innerText || '').slice(0, 2000)"
+            ) or "")
+            empty_marks = (EMPTY_RECOMMEND_NO_JOB_MARK,) + EMPTY_RECOMMEND_MARKS
+            empty_mark = next((mark for mark in empty_marks if mark in page_text), "")
+            if empty_mark:
+                results.append({'group': 'candidate_card', 'name': 'all_cards', 'status': 'skip',
+                               'detail': f'当前页面无候选人（{empty_mark}），跳过卡片选择器验证'})
+            else:
+                results.append({'group': 'candidate_card', 'name': 'all_cards', 'status': 'warn',
+                               'detail': '未找到匹配元素（可能页面未加载或选择器已失效）'})
+    except Exception as e:
+        card_count = 0
+        results.append({'group': 'candidate_card', 'name': 'all_cards', 'status': 'fail',
+                       'detail': f'异常：{type(e).__name__}: {str(e)[:80]}'})
 
     # 3. 验证码容器（不应存在）
     captcha_css = _sel('captcha_detection', 'css_selectors', [])
@@ -3154,7 +3269,7 @@ def check_selectors_health(page: ChromiumPage) -> list[dict[str, Any]]:
 
     # 5. 打招呼按钮（需要至少有卡片才能检测）
     btn_xpath = _sel('greet_button', 'button_xpath', '')
-    if btn_xpath and _test_cards() > 0:
+    if btn_xpath and card_count > 0:
         try:
             cards = target.eles(cards_sel)
             if cards:
@@ -3246,7 +3361,70 @@ def _prioritize_greet_context_candidates(
     )
 
 
-def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUNDS_DEFAULT, verbose=False, greet_level='normal', greet_names_list=None, list_candidates=False, progress_callback=None, stop_event=None, ai_eval=False, api_config=None, api_key=None, captcha_callback=None, notice_callback=None, blocking_notice_callback=None, stats=None, max_candidates=API_CANDIDATE_LIMIT_DEFAULT, use_api_extraction=True, extraction_mode=None):
+def _build_auto_greet_confirm_text(
+    job_name: str,
+    to_greet_list: list[dict[str, Any]],
+    greet_level_text: str,
+    manual_review_count: int = 0,
+    pending_count: int = 0,
+    limited_remaining_count: int = 0,
+    scan_stats: dict[str, Any] | None = None,
+) -> str:
+    """Build the user-facing confirmation text before irreversible greeting sends."""
+    strong_count = sum(1 for c in to_greet_list if c.get('recommend_level') == '强烈推荐')
+    recommend_count = sum(1 for c in to_greet_list if c.get('recommend_level') == '推荐')
+    preview = [
+        f"- {c.get('name', '未知')}（{c.get('recommend_level', '未知')}，{c.get('match_score', 0)}分）"
+        for c in to_greet_list[:5]
+    ]
+    lines = [
+        f"岗位：{job_name}",
+        f"本次将自动打招呼：{len(to_greet_list)} 人",
+        f"发送范围：{greet_level_text}",
+        f"分布：强烈推荐 {strong_count} 人，推荐 {recommend_count} 人",
+    ]
+    if limited_remaining_count:
+        lines.append(f"本轮上限后剩余：{limited_remaining_count} 人，下次运行继续")
+    if manual_review_count:
+        lines.append(f"已跳过需人工确认：{manual_review_count} 人")
+    if pending_count:
+        lines.append(f"已跳过上次发送待确认：{pending_count} 人")
+    if scan_stats and scan_stats.get('scan_status') == 'partial':
+        lines.append(f"提示：本岗位可能未扫完（{scan_stats.get('scan_reason', '未取得停止原因')}）")
+    if preview:
+        lines.append("")
+        lines.append("将先发送：")
+        lines.extend(preview)
+        if len(to_greet_list) > len(preview):
+            lines.append(f"... 还有 {len(to_greet_list) - len(preview)} 人")
+    lines.append("")
+    lines.append("点击「是」开始发送；点击「否」只保存筛选结果，不发送消息。")
+    return "\n".join(lines)
+
+
+def _filter_reason_sort_key(item: tuple[str, int]) -> tuple[int, int]:
+    """Stable business ordering for filter rejection reasons."""
+    reason, count = item
+    if '经验不足' in reason:
+        return (0, -count)
+    if '学历' in reason:
+        return (1, -count)
+    if '年龄' in reason:
+        return (2, -count)
+    if '地点' in reason:
+        return (3, -count)
+    if '薪资' in reason:
+        return (4, -count)
+    if '技术条件' in reason:
+        return (5, -count)
+    if '评分不足' in reason:
+        return (6, -count)
+    if '筛选异常' in reason:
+        return (7, -count)
+    return (8, -count)
+
+
+def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUNDS_DEFAULT, verbose=False, greet_level='normal', greet_names_list=None, list_candidates=False, progress_callback=None, stop_event=None, ai_eval=False, api_config=None, api_key=None, captcha_callback=None, notice_callback=None, blocking_notice_callback=None, stats=None, max_candidates=API_CANDIDATE_LIMIT_DEFAULT, use_api_extraction=True, extraction_mode=None, greet_confirm_callback=None):
     """
     智能扫描候选人 - 两阶段模式
 
@@ -3285,6 +3463,8 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
     # 点对点模式
     point_to_point_mode = bool(greet_names_list)
 
+    normalized_job_name = job_name.replace(" ", "")
+
     if point_to_point_mode:
         print(f"开始智能扫描候选人... (岗位：{job_name}, 点对点打招呼：{greet_names_list}, 轮次：{max_rounds})")
     else:
@@ -3308,10 +3488,14 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
         print(f"已加载 candidates_all.json：累计 {len(all_existing_ids)} 个候选人，{len(greeted_geek_ids)} 人已打招呼{blacklist_text}")
 
     # === 阶段 1: 滚动收集所有候选人 ===
-    raw_candidates = extract_candidates_by_comprehensive_analysis(page, max_rounds=max_rounds, progress_callback=progress_callback, stop_event=stop_event, captcha_callback=captcha_callback, notice_callback=notice_callback, blocking_notice_callback=blocking_notice_callback, max_candidates=max_candidates, use_api_extraction=use_api_extraction, extraction_mode=extraction_mode)
+    scan_state = stats if stats is not None else {}
+    raw_candidates = extract_candidates_by_comprehensive_analysis(page, max_rounds=max_rounds, progress_callback=progress_callback, stop_event=stop_event, captcha_callback=captcha_callback, notice_callback=notice_callback, blocking_notice_callback=blocking_notice_callback, max_candidates=max_candidates, use_api_extraction=use_api_extraction, extraction_mode=extraction_mode, scan_stats=scan_state)
     print(f"原始提取到 {len(raw_candidates)} 个唯一候选人")
+    if scan_state.get('scan_status') == 'interrupted' and auto_greet:
+        auto_greet = False
+        print("[WARN] 扫描已中断，本轮仅保存已提取结果，不自动打招呼")
     existing_by_candidate_key = {
-        (str(c.get('geek_id')), c.get('job_name', '')): c
+        candidate_key(c.get('geek_id'), c.get('job_name', '')): c
         for c in candidates_all
         if c.get('geek_id')
     }
@@ -3322,20 +3506,33 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
         skipped_count = before_count - len(raw_candidates)
         if skipped_count:
             print(f"过滤黑名单候选人：{before_count} -> {len(raw_candidates)} (已屏蔽 {skipped_count} 人)")
+    else:
+        skipped_count = 0
 
     # 过滤当前岗位已打过招呼的候选人；其余候选人进入本轮重新评估。
+    already_greeted_skipped_count = 0
     if existing_ids_for_job_and_greeted:
         before_count = len(raw_candidates)
         raw_candidates = [c for c in raw_candidates if c['geek_id'] not in existing_ids_for_job_and_greeted]
+        already_greeted_skipped_count = before_count - len(raw_candidates)
         print(
             f"过滤当前岗位已打招呼候选人：{before_count} → {len(raw_candidates)} "
             f"（本轮待评估 {len(raw_candidates)} 人）"
         )
 
+    evaluated_candidate_keys = {
+        candidate_key(candidate.get('geek_id'), job_name)
+        for candidate in raw_candidates
+        if candidate.get('geek_id')
+    }
+
     # 筛选所有候选人（暂不打招呼）
     print("\n=== 阶段 1: 筛选候选人 ===")
     passed_candidates = []  # 通过筛选的候选人（含分数）
+    rejected_candidates = []  # 本轮明确淘汰，保留最近一次结果供复核
     failed_reasons = {}
+    processed_candidate_keys = set()
+    scan_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # 构建淘汰原因的动态描述（基于实际招聘要求）
     rule = job_info['rule']
@@ -3361,6 +3558,10 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
 
     for i, candidate in enumerate(raw_candidates):
         if stop_event and stop_event.is_set():
+            merge_candidates_all(
+                passed_candidates + rejected_candidates,
+                replace_keys=processed_candidate_keys,
+            )
             raise StopRequested()
         passed, score, details = filter_candidate(candidate['summary'], job_info['rule'], candidate.get('structured'))
         if passed and score >= SCORE_THRESHOLD_PASS:
@@ -3392,12 +3593,15 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
             if not summary_info.get('salary'):
                 summary_info['salary'] = '面议'
 
+            candidate_k = candidate_key(candidate['geek_id'], job_name)
+            existing_record = existing_by_candidate_key.get(candidate_k)
+            first_seen_at = get_first_seen(existing_record, scan_timestamp) if existing_record else scan_timestamp
             candidate_record = {
                 "geek_id": candidate['geek_id'],
                 "name": candidate['name'],
                 "summary": candidate['summary'],
                 "job_id": job_info['job_id'],
-                "job_name": job_name.replace(" ", ""),  # 去除岗位名称中的空格
+                "job_name": normalized_job_name,
                 "salary": summary_info.get('salary', ''),
                 "age": summary_info.get('age', ''),
                 "exp_years": summary_info.get('exp_years', ''),
@@ -3419,11 +3623,12 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                 "qualification_reasons": details.get('qualification_reasons', []),
                 "qualification_evidence": details.get('qualification_evidence', []),
                 "recommend_level": recommend_level,
-                "batch_timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
+                "batch_timestamp": first_seen_at,
+                "first_seen_at": first_seen_at,
+                "last_evaluated_at": scan_timestamp,
                 "followup_status": "未沟通",
                 "greet_sent": False
             }
-            existing_record = existing_by_candidate_key.get((str(candidate['geek_id']), job_name.replace(" ", "")))
             if existing_record and existing_record.get('greet_context'):
                 candidate_record['greet_context'] = existing_record['greet_context']
                 if existing_record.get('greet_context_updated_at'):
@@ -3474,6 +3679,42 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                 elif '筛选异常' in reason:
                     reason = '筛选异常'
             failed_reasons[reason] = failed_reasons.get(reason, 0) + 1
+            candidate_k = candidate_key(candidate['geek_id'], job_name)
+            existing_record = existing_by_candidate_key.get(candidate_k)
+            first_seen_at = get_first_seen(existing_record, scan_timestamp) if existing_record else scan_timestamp
+            rejection_source = None
+            if existing_record and is_recommended_candidate(existing_record):
+                rejection_source = 'previously_recommended'
+            elif existing_record and should_retain_rejected_candidate(existing_record):
+                rejection_source = (
+                    'ai_rejected'
+                    if existing_record.get('llm_evaluated') or existing_record.get('llm_error')
+                    else 'user_history'
+                )
+            rejected_record = {
+                "geek_id": candidate['geek_id'],
+                "name": candidate['name'],
+                "summary": candidate['summary'],
+                "job_id": job_info['job_id'],
+                "job_name": normalized_job_name,
+                "match_rule": job_info['rule_key'],
+                "match_score": 0,
+                "recommend_level": "未通过",
+                "qualification_status": "rejected",
+                "qualification_reasons": [reason],
+                "qualification_evidence": details.get('qualification_evidence', []),
+                "rejection_source": rejection_source,
+                "rejected_at": scan_timestamp,
+                "batch_timestamp": first_seen_at,
+                "first_seen_at": first_seen_at,
+                "last_evaluated_at": scan_timestamp,
+                "followup_status": "未沟通",
+                "greet_sent": False,
+            }
+            if rejection_source:
+                rejected_candidates.append(rejected_record)
+
+        processed_candidate_keys.add(candidate_key(candidate.get('geek_id'), job_name))
 
         if (i + 1) % 20 == 0:
             print(f"  已筛选 {i + 1}/{len(raw_candidates)} 个，通过 {len(passed_candidates)} 个")
@@ -3490,6 +3731,13 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
     # 按分数从高到低排序，保持结果展示和 AI 评估优先级不变。
     passed_candidates.sort(key=lambda x: x.get('match_score', 0), reverse=True)
 
+    # 规则筛选完成即建立恢复点。后续 AI、上下文捕获或打招呼中断时，
+    # 至少保留本轮已经确定的规则结果。
+    merge_candidates_all(
+        passed_candidates + rejected_candidates,
+        replace_keys=processed_candidate_keys,
+    )
+
     qualified_count = sum(
         1 for c in passed_candidates if c.get('qualification_status', 'qualified') == 'qualified'
     )
@@ -3502,27 +3750,7 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
     if failed_reasons:
         total_failed = sum(failed_reasons.values())
         print(f"淘汰原因（共 {total_failed} 人）:")
-        def _reason_order(item):
-            reason = item[0]
-            if '经验不足' in reason:
-                return (0, -item[1])
-            if '学历' in reason:
-                return (1, -item[1])
-            if '年龄' in reason:
-                return (2, -item[1])
-            if '地点' in reason:
-                return (3, -item[1])
-            if '薪资' in reason:
-                return (4, -item[1])
-            if '技术条件' in reason:
-                return (5, -item[1])
-            if '评分不足' in reason:
-                return (6, -item[1])
-            if '筛选异常' in reason:
-                return (7, -item[1])
-            return (8, -item[1])
-
-        for reason, count in sorted(failed_reasons.items(), key=_reason_order):
+        for reason, count in sorted(failed_reasons.items(), key=_filter_reason_sort_key):
             print(f"  - {reason}: {count} 人")
         # 总数校验
         accounted = len(passed_candidates) + total_failed
@@ -3531,6 +3759,9 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
 
     ai_removed_count = 0
     ai_evaluated_count = 0
+    ai_hard_rejected = 0
+    ai_score_rejected = 0
+    llm_failed_count = 0
     rule_pool_count = len(passed_candidates)
     # === 阶段 1.5: AI 辅助评估（可选）===
     if ai_eval and api_config and api_key and passed_candidates:
@@ -3590,6 +3821,20 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
             and c.get('match_score', 0) < SCORE_THRESHOLD_PASS
         )
         ai_removed_count = ai_hard_rejected + ai_score_rejected
+        for candidate in passed_candidates:
+            if (
+                candidate.get('qualification_status') == 'rejected'
+                or candidate.get('match_score', 0) < SCORE_THRESHOLD_PASS
+            ):
+                rejected = dict(candidate)
+                rejected['qualification_status'] = 'rejected'
+                rejected['rejection_source'] = 'ai_rejected'
+                rejected['rejected_at'] = scan_timestamp
+                if not rejected.get('qualification_reasons'):
+                    rejected['qualification_reasons'] = ['AI评估后未达到通过标准']
+                rejected['match_score'] = 0
+                rejected['recommend_level'] = '未通过'
+                rejected_candidates.append(rejected)
         passed_candidates = [
             c for c in passed_candidates
             if c.get('qualification_status') != 'rejected'
@@ -3611,6 +3856,17 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
     # === 阶段 1.6: 为后续可能补打招呼的候选人捕获上下文（最佳努力）===
     # 本轮确定会自动发送的候选人无需提前抓取；被模式、人工确认或单轮上限
     # 排除的人仍保存上下文，方便后续从筛选结果页直接发送。
+    # AI 完成（或被用户停止）后更新恢复点；仅列表模式也使用同一持久化语义。
+    merge_candidates_all(
+        passed_candidates + rejected_candidates,
+        replace_keys=processed_candidate_keys,
+        prune_pending_jobs=(
+            {normalized_job_name}
+            if scan_state.get('scan_status') == 'complete'
+            else None
+        ),
+    )
+
     context_candidates = _select_greet_context_candidates(
         passed_candidates,
         auto_greet=auto_greet,
@@ -3643,10 +3899,8 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
         print(f"总人数：{len(passed_candidates)}")
         print(f"{'序号':<4} {'姓名':<10} {'匹配分':<8} {'推荐指数':<10} {'已打招呼':<8}")
         print("-" * 50)
-        for i, c in enumerate(passed_candidates[:50], 1):  # 最多显示前 50 个
+        for i, c in enumerate(passed_candidates, 1):
             print(f"{i:<4} {c['name']:<10} {c['match_score']:<8} {c['recommend_level']:<10} {'是' if c.get('greet_sent') else '否':<8}")
-        if len(passed_candidates) > 50:
-            print(f"... 还有 {len(passed_candidates) - 50} 个")
         return passed_candidates
 
     # === 阶段 2: 按页面顺序依次打招呼 ===
@@ -3697,11 +3951,12 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
 
         # 点击顺序按扫描/页面顺序，减少虚拟列表反复回顶和跳跃滚动。
         to_greet_list.sort(key=lambda x: raw_order_by_geek_id.get(str(x.get('geek_id')), len(raw_order_by_geek_id)))
+        limited_remaining_count = 0
         if len(to_greet_list) > AUTO_GREET_RUN_LIMIT:
-            remaining_count = len(to_greet_list) - AUTO_GREET_RUN_LIMIT
+            limited_remaining_count = len(to_greet_list) - AUTO_GREET_RUN_LIMIT
             limit_msg = (
                 f"为降低 BOSS 风控风险，本轮最多自动打招呼 {AUTO_GREET_RUN_LIMIT} 人，"
-                f"剩余 {remaining_count} 人下次继续。\n\n"
+                f"剩余 {limited_remaining_count} 人下次继续。\n\n"
                 "下次直接再次运行同一岗位扫描即可：程序会跳过当前岗位已打过招呼的人，"
                 "未打招呼的合格候选人会重新进入待打招呼队列。"
             )
@@ -3719,6 +3974,27 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
         greeted_in_this_run = []
         consecutive_failures = 0  # 连续失败计数
         consecutive_uncertain = 0
+
+        if to_greet_list and greet_confirm_callback:
+            confirm_text = _build_auto_greet_confirm_text(
+                job_name,
+                to_greet_list,
+                greet_level_text if not point_to_point_mode else "点对点指定候选人",
+                manual_review_count=blocked_count if not point_to_point_mode else 0,
+                pending_count=pending_count if not point_to_point_mode else 0,
+                limited_remaining_count=limited_remaining_count,
+                scan_stats=stats,
+            )
+            try:
+                confirmed = greet_confirm_callback(confirm_text)
+            except Exception as e:
+                print(f"自动打招呼确认失败，已跳过发送：{e}")
+                confirmed = False
+            if not confirmed:
+                print("用户取消自动打招呼：本轮只保存筛选结果，不发送消息")
+                if progress_callback:
+                    progress_callback(100, "[完成] 已保存筛选结果，未执行自动打招呼")
+                to_greet_list = []
 
         try:
             for i, candidate in enumerate(to_greet_list):
@@ -3808,7 +4084,10 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
         except KeyboardInterrupt:
             print(f"\n\n⚠️  检测到中断，保存当前进度...")
             # 中断时立即保存所有数据
-            merge_candidates_all(candidates_all)
+            merge_candidates_all(
+                passed_candidates + rejected_candidates,
+                replace_keys=processed_candidate_keys,
+            )
             if greeted_in_this_run:
                 print(f"  本次运行已打招呼 {len(greeted_in_this_run)} 人")
             print(f"✅ 候选人总数：{len(candidates_all)}")
@@ -3819,24 +4098,29 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
             f"待确认 {greet_pending_count} 人"
         )
 
-    # 保存所有通过的候选人（包含未打招呼的）
-    # 用字典索引避免 O(n²) 查找
-    existing_index = {c.get('geek_id'): c for c in candidates_all}
-    for c in passed_candidates:
-        if not c.get('greet_sent'):
-            if c.get('geek_id') not in existing_index:
-                candidates_all.append(c)
-                existing_index[c.get('geek_id')] = c
-    merge_candidates_all(candidates_all)
+    # 提交本轮评估结果，并撤下本轮已评估但未通过的旧记录。
+    merge_candidates_all(
+        passed_candidates + rejected_candidates,
+        replace_keys=evaluated_candidate_keys,
+    )
 
     if stats is not None:
         stats['raw_count'] = len(raw_candidates)
         stats['rule_passed_count'] = rule_pool_count
+        stats['rule_failed_count'] = sum(failed_reasons.values())
+        stats['rule_failed_reasons'] = dict(
+            sorted(failed_reasons.items(), key=_filter_reason_sort_key)
+        )
+        stats['blacklisted_skipped_count'] = skipped_count
+        stats['already_greeted_skipped_count'] = already_greeted_skipped_count
         stats['passed_count'] = len(passed_candidates)
         stats['greeted_count'] = sum(1 for c in passed_candidates if c.get('greet_sent'))
         if ai_eval:
             stats['ai_eval_count'] = ai_evaluated_count
             stats['ai_downgraded'] = ai_removed_count
+            stats['ai_hard_rejected'] = ai_hard_rejected
+            stats['ai_score_rejected'] = ai_score_rejected
+            stats['ai_failed_count'] = llm_failed_count
 
     return passed_candidates
 
@@ -3883,6 +4167,48 @@ def _show_job_navigation_prompt(current_idx, total, next_job_name, confirm_callb
             print("  继续处理...\n")
 
 
+def _summarize_scan_outcomes(scan_outcomes: list[dict[str, str]]) -> tuple[str, str]:
+    """按最差岗位状态汇总本轮扫描结论和停止原因。"""
+    final_status = "完成"
+    if any(item['status'] == 'interrupted' for item in scan_outcomes):
+        final_status = "扫描中断"
+    elif any(item['status'] == 'partial' for item in scan_outcomes):
+        final_status = "可能未扫完"
+    detail = "；".join(
+        f"{item['job_name']}：{item['reason']}" for item in scan_outcomes
+    )
+    return final_status, detail
+
+
+def _format_filter_audit_detail(
+    skipped_blacklisted: int = 0,
+    skipped_already_greeted: int = 0,
+    rule_failed_reasons: dict[str, int] | None = None,
+    ai_hard_rejected: int = 0,
+    ai_score_rejected: int = 0,
+) -> str:
+    """Format the compact rejection funnel detail for the final run summary."""
+    parts = []
+    if skipped_blacklisted:
+        parts.append(f"黑名单跳过 {skipped_blacklisted} 人")
+    if skipped_already_greeted:
+        parts.append(f"已沟通跳过 {skipped_already_greeted} 人")
+    top_reasons = sorted(
+        (rule_failed_reasons or {}).items(), key=_filter_reason_sort_key
+    )[:3]
+    if top_reasons:
+        reason_text = "、".join(f"{reason} {count} 人" for reason, count in top_reasons)
+        parts.append(f"主要淘汰：{reason_text}")
+    ai_parts = []
+    if ai_hard_rejected:
+        ai_parts.append(f"硬条件 {ai_hard_rejected} 人")
+    if ai_score_rejected:
+        ai_parts.append(f"降分 {ai_score_rejected} 人")
+    if ai_parts:
+        parts.append(f"AI淘汰：{'、'.join(ai_parts)}")
+    return "；".join(parts)
+
+
 def _format_scan_summary(
     status: str,
     total_rule_passed: int,
@@ -3891,19 +4217,64 @@ def _format_scan_summary(
     total_ai_downgraded: int,
     total_passed: int,
     total_greeted: int,
+    detail: str = "",
+    total_ai_failed: int = 0,
 ) -> str:
     """Format the final scan summary with rule and AI counts kept separate."""
     prefix = "筛选完成：" if status == "完成" else ""
     message = f"[{status}] {prefix}规则筛选通过 {total_rule_passed}/{total_raw} 人"
-    if total_ai_evaluated > 0:
+    if total_ai_evaluated > 0 or total_ai_failed > 0:
+        ai_result = f"AI复核成功 {total_ai_evaluated} 人"
+        if total_ai_failed:
+            ai_result += f"、失败 {total_ai_failed} 人（按规则结果保留）"
         message += (
-            f"，AI复核后淘汰 {total_ai_downgraded} 人，"
+            f"，{ai_result}，复核淘汰 {total_ai_downgraded} 人，"
             f"最终保留 {total_passed} 人"
         )
-    return f"{message}，{total_greeted} 人已打招呼"
+    message = f"{message}，{total_greeted} 人已打招呼"
+    return f"{message}，{detail}" if detail else message
 
 
-def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, stop_event=None, existing_page=None, captcha_callback=None, notice_callback=None, blocking_notice_callback=None):
+def _build_run_job_config_diagnostics(
+    jobs_to_run: list[str], job_rules: dict[str, dict[str, Any]]
+) -> tuple[str, bool]:
+    """汇总本轮岗位配置中的 error/warning；纯建议项不打断运行。"""
+    from job_config_diagnostics import diagnose_job_config, summarize_job_config_diagnostics
+
+    sections = []
+    has_error = False
+    for job_name in jobs_to_run:
+        rule = job_rules.get(job_name, {})
+        issues = [
+            issue for issue in diagnose_job_config(job_name, rule)
+            if issue.severity in {'error', 'warning'}
+        ]
+        if not issues:
+            continue
+        has_error = has_error or any(issue.severity == 'error' for issue in issues)
+        sections.append(summarize_job_config_diagnostics(job_name, rule, issues=issues))
+    return "\n\n".join(sections), has_error
+
+
+def _confirm_run_job_configs(jobs_to_run, job_rules, confirm_callback=None) -> bool:
+    """运行前检查岗位规则；error 强制阻断，warning 由用户决定。"""
+    text, has_error = _build_run_job_config_diagnostics(jobs_to_run, job_rules)
+    if not text:
+        return True
+    print("\n[运行前岗位配置体检]")
+    print(text)
+    if confirm_callback:
+        confirmed = bool(confirm_callback(text, has_error))
+        return False if has_error else confirmed
+    if has_error:
+        return False
+    try:
+        return input("岗位配置存在提醒，仍要继续运行？[y/N] ").strip().lower() == 'y'
+    except (EOFError, OSError):
+        return False
+
+
+def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, stop_event=None, existing_page=None, captcha_callback=None, notice_callback=None, blocking_notice_callback=None, job_match_callback=None, job_config_callback=None, greet_confirm_callback=None):
     """运行智能扫描（支持多岗位）
 
     参数：
@@ -3915,6 +4286,9 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
         captcha_callback: callable(detail) -> bool，检测到验证码时调用，
             用于 GUI 弹窗通知用户。返回 True 继续等待，False 中止。
         notice_callback: callable(title, message)，用于 GUI 展示非阻塞提示。
+        job_match_callback: callable(expected, actual) -> bool，岗位不一致时确认是否继续。
+        job_config_callback: callable(text, has_error) -> bool，运行前岗位配置体检确认。
+        greet_confirm_callback: callable(message) -> bool，自动打招呼发送前确认。
     """
     import argparse
 
@@ -4163,9 +4537,15 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
         print(f"AI 辅助评估已启用（模型：{model_name}）")
 
     # 统计累计（提前初始化，防止异常路径上 NameError）
-    job_stats = {}
     total_raw = total_rule_passed = total_passed = 0
     total_greeted = total_ai_evaluated = total_ai_downgraded = 0
+    total_ai_failed = 0
+    total_blacklisted_skipped = 0
+    total_already_greeted_skipped = 0
+    total_ai_hard_rejected = 0
+    total_ai_score_rejected = 0
+    rule_failed_reasons_total: dict[str, int] = {}
+    scan_outcomes = []
 
     try:
         if existing_page:
@@ -4199,6 +4579,14 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
             print(f"(另有 default 默认规则，不作为岗位运行)")
         print("="*50)
 
+        if not _confirm_run_job_configs(
+            jobs_to_run, job_rules, confirm_callback=job_config_callback
+        ):
+            print("岗位配置体检未通过，未开始扫描")
+            if progress_callback:
+                progress_callback(100, "[已停止] 岗位配置体检未通过，未开始扫描")
+            return
+
         # 逐个岗位处理
         for idx, job_name in enumerate(jobs_to_run, 1):
             # 多岗位间页面导航提示（第一个岗位之前不需要）
@@ -4220,6 +4608,12 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
             print(f"过滤规则：经验≥{rule.get('min_exp', 0)}年，学历≥{rule.get('edu', '不限')}")
             print(f"Keywords: {[k.get('name', k) if isinstance(k, dict) else k for k in rule.get('keywords', [])][:5]}...")
 
+            if not _confirm_page_job_match(
+                page, job_name, confirm_callback=job_match_callback
+            ):
+                print("用户取消：BOSS 当前岗位与配置岗位不一致")
+                raise StopRequested()
+
             if getattr(args, 'dom_only', False):
                 extraction_mode = "dom"
             elif getattr(args, 'listener_first', False):
@@ -4227,6 +4621,7 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
             else:
                 extraction_mode = "api"
 
+            job_stats = {}
             candidates = smart_scan_candidates(page, job_info, auto_greet=auto_greet_scan,
                                                max_rounds=args.rounds, verbose=args.verbose,
                                                greet_level=args.greet_level, greet_names_list=None,
@@ -4241,7 +4636,8 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                                                blocking_notice_callback=blocking_notice_callback,
                                                max_candidates=getattr(args, 'max_candidates', API_CANDIDATE_LIMIT_DEFAULT),
                                                extraction_mode=extraction_mode,
-                                               stats=job_stats)
+                                               stats=job_stats,
+                                               greet_confirm_callback=greet_confirm_callback)
             all_candidates.extend(candidates)
             total_raw += job_stats.get('raw_count', 0)
             total_rule_passed += job_stats.get(
@@ -4251,6 +4647,18 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
             total_greeted += job_stats.get('greeted_count', 0)
             total_ai_evaluated += job_stats.get('ai_eval_count', 0)
             total_ai_downgraded += job_stats.get('ai_downgraded', 0)
+            total_ai_failed += job_stats.get('ai_failed_count', 0)
+            total_blacklisted_skipped += job_stats.get('blacklisted_skipped_count', 0)
+            total_already_greeted_skipped += job_stats.get('already_greeted_skipped_count', 0)
+            total_ai_hard_rejected += job_stats.get('ai_hard_rejected', 0)
+            total_ai_score_rejected += job_stats.get('ai_score_rejected', 0)
+            for reason, count in (job_stats.get('rule_failed_reasons') or {}).items():
+                rule_failed_reasons_total[reason] = rule_failed_reasons_total.get(reason, 0) + count
+            scan_outcomes.append({
+                'job_name': job_name,
+                'status': job_stats.get('scan_status', 'partial'),
+                'reason': job_stats.get('scan_reason', '未取得扫描停止原因'),
+            })
 
         # 最后生成 Excel 文件
         existing_all = load_candidates_all()
@@ -4262,14 +4670,29 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
 
         # 全部岗位处理完毕，更新进度为最终状态
         if progress_callback:
+            final_status, scan_detail = _summarize_scan_outcomes(scan_outcomes)
+            filter_detail = _format_filter_audit_detail(
+                total_blacklisted_skipped,
+                total_already_greeted_skipped,
+                rule_failed_reasons_total,
+                total_ai_hard_rejected,
+                total_ai_score_rejected,
+            )
+            detail_parts = []
+            if scan_detail:
+                detail_parts.append(f"扫描结束：{scan_detail}")
+            if filter_detail:
+                detail_parts.append(f"筛选漏斗：{filter_detail}")
             msg = _format_scan_summary(
-                "完成",
+                final_status,
                 total_rule_passed,
                 total_raw,
                 total_ai_evaluated,
                 total_ai_downgraded,
                 total_passed,
                 total_greeted,
+                "；".join(detail_parts),
+                total_ai_failed=total_ai_failed,
             )
             progress_callback(100, msg)
 
@@ -4285,6 +4708,7 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                 total_ai_downgraded,
                 total_passed,
                 total_greeted,
+                total_ai_failed=total_ai_failed,
             )
             progress_callback(100, stop_msg)
 
@@ -4300,6 +4724,7 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                 total_ai_downgraded,
                 total_passed,
                 total_greeted,
+                total_ai_failed=total_ai_failed,
             )
             progress_callback(100, stop_msg)
         raise
