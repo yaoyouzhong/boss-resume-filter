@@ -14288,12 +14288,16 @@ class BossFilterGUI:
         else:
             all_candidates = self.all_candidates if hasattr(self, 'all_candidates') else []
 
-        # 更新评估结果
-        eval_map = {c.get('geek_id'): c for c in candidates}
+        # AI 评估结果属于具体岗位；同一候选人在多个岗位中的评分不能互相覆盖。
+        eval_map = {
+            self._candidate_identity_key(candidate): candidate
+            for candidate in candidates
+            if self._candidate_identity_key(candidate)[0]
+        }
         for i, c in enumerate(all_candidates):
-            geek_id = c.get('geek_id')
-            if geek_id in eval_map:
-                eval_result = eval_map[geek_id]
+            identity = self._candidate_identity_key(c)
+            if identity in eval_map:
+                eval_result = eval_map[identity]
                 all_candidates[i].update({
                     'llm_evaluated': eval_result.get('llm_evaluated'),
                     'llm_adjustment': eval_result.get('llm_adjustment'),
@@ -14320,9 +14324,9 @@ class BossFilterGUI:
         # 更新内存数据
         if hasattr(self, 'all_candidates'):
             for i, c in enumerate(self.all_candidates):
-                geek_id = c.get('geek_id')
-                if geek_id in eval_map:
-                    self.all_candidates[i].update(eval_map[geek_id])
+                identity = self._candidate_identity_key(c)
+                if identity in eval_map:
+                    self.all_candidates[i].update(eval_map[identity])
 
     def _blacklist_candidate(self, item, candidate=None, parent=None, on_saved=None):
         """把选中候选人加入黑名单。"""

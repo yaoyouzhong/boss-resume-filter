@@ -3293,6 +3293,43 @@ def test_save_ai_eval_results_persists_dimension_scores_and_hard_fields():
         assert saved[0]["qualification_status"] == "rejected"
 
 
+def test_save_ai_eval_results_only_updates_the_evaluated_job_record():
+    """同一候选人出现在多个岗位时，AI 结果只能写入本次评估的岗位。"""
+    import json
+    import tempfile
+    from pathlib import Path
+
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cand_path = Path(tmpdir) / "candidates.json"
+        disk_candidates = [
+            {"geek_id": "same-geek", "name": "张三", "job_name": "Java", "match_score": 70},
+            {"geek_id": "same-geek", "name": "张三", "job_name": "Python", "match_score": 68},
+        ]
+        cand_path.write_text(
+            json.dumps(disk_candidates, ensure_ascii=False), encoding="utf-8"
+        )
+        gui.all_candidates = [dict(candidate) for candidate in disk_candidates]
+
+        evaluated = dict(disk_candidates[0])
+        evaluated.update({
+            "llm_evaluated": True,
+            "llm_adjustment": 10,
+            "match_score": 80,
+        })
+
+        with patch.object(gui_main, "CANDIDATES_PATH", cand_path):
+            gui._save_ai_eval_results([evaluated])
+
+        saved = json.loads(cand_path.read_text(encoding="utf-8"))
+        assert saved[0]["job_name"] == "Java"
+        assert saved[0]["match_score"] == 80
+        assert saved[0]["llm_evaluated"] is True
+        assert saved[1] == disk_candidates[1]
+        assert gui.all_candidates[0]["match_score"] == 80
+        assert gui.all_candidates[1] == disk_candidates[1]
+
+
 # === _candidate_has_ai_eval 守卫（regression: 已导入简历的候选人不得再跑一次评估，否则叠加两次调整）===
 
 def test_candidate_has_ai_eval_helper():
