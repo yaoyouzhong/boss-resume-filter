@@ -75,6 +75,115 @@ def _clipboard(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     return img
 
 
+def _task_list(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
+    """带勾选项的任务清单 — 今日待办。"""
+    img = Image.new('RGBA', (size_px, size_px), bg)
+    d = ImageDraw.Draw(img)
+    S = size_px
+    d.rounded_rectangle(
+        [_s(3, S), _s(2.5, S), _s(21, S), _s(21.5, S)],
+        radius=_s(1.8, S), outline=fill, width=sw,
+    )
+    line_sw = max(1, sw - 1)
+    for y in (7, 12, 17):
+        d.line(
+            [_s(6, S), _s(y, S), _s(7.4, S), _s(y + 1.4, S)],
+            fill=fill, width=sw,
+        )
+        d.line(
+            [_s(7.4, S), _s(y + 1.4, S), _s(9.5, S), _s(y - 1.5, S)],
+            fill=fill, width=sw,
+        )
+        d.line(
+            [_s(12, S), _s(y, S), _s(18, S), _s(y, S)],
+            fill=fill, width=line_sw,
+        )
+    return img
+
+
+def _candidate_review(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
+    """候选人头像 + 放大镜 — 查看与复核。"""
+    img = Image.new('RGBA', (size_px, size_px), bg)
+    d = ImageDraw.Draw(img)
+    S = size_px
+    d.ellipse(
+        [_s(2.5, S), _s(2.5, S), _s(17.5, S), _s(17.5, S)],
+        outline=fill, width=sw,
+    )
+    d.line(
+        [_s(15.2, S), _s(15.2, S), _s(21.2, S), _s(21.2, S)],
+        fill=fill, width=sw + 1,
+    )
+    head_r = _s(2.2, S)
+    head_x, head_y = _s(10, S), _s(8.5, S)
+    d.ellipse(
+        [head_x - head_r, head_y - head_r, head_x + head_r, head_y + head_r],
+        fill=fill,
+    )
+    d.arc(
+        [_s(6, S), _s(10, S), _s(14, S), _s(16.5, S)],
+        start=180, end=360, fill=fill, width=sw,
+    )
+    return img
+
+
+def _health_shield(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
+    """线框盾牌 + 医疗十字 — 候选人状态体检。"""
+    img = Image.new('RGBA', (size_px, size_px), bg)
+    d = ImageDraw.Draw(img)
+    S = size_px
+    shield = [
+        (_s(12, S), _s(2, S)),
+        (_s(20.5, S), _s(5, S)),
+        (_s(19.5, S), _s(15, S)),
+        (_s(12, S), _s(22, S)),
+        (_s(4.5, S), _s(15, S)),
+        (_s(3.5, S), _s(5, S)),
+    ]
+    d.line(shield + [shield[0]], fill=fill, width=sw, joint='curve')
+    cross_sw = sw + 1
+    d.line(
+        [_s(12, S), _s(7, S), _s(12, S), _s(17, S)],
+        fill=fill, width=cross_sw,
+    )
+    d.line(
+        [_s(7, S), _s(12, S), _s(17, S), _s(12, S)],
+        fill=fill, width=cross_sw,
+    )
+    return img
+
+
+def _ai_spark(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
+    """主星芒 + 辅助闪光 — AI 评估。"""
+    img = Image.new('RGBA', (size_px, size_px), bg)
+    d = ImageDraw.Draw(img)
+    S = size_px
+    main = [
+        (_s(10, S), _s(2.5, S)),
+        (_s(12, S), _s(8, S)),
+        (_s(17.5, S), _s(10, S)),
+        (_s(12, S), _s(12, S)),
+        (_s(10, S), _s(17.5, S)),
+        (_s(8, S), _s(12, S)),
+        (_s(2.5, S), _s(10, S)),
+        (_s(8, S), _s(8, S)),
+    ]
+    d.polygon(main, fill=fill)
+    for cx, cy, radius in ((18.5, 5, 2.5), (18.5, 18.5, 2.2)):
+        spark = [
+            (_s(cx, S), _s(cy - radius, S)),
+            (_s(cx + radius * 0.45, S), _s(cy - radius * 0.45, S)),
+            (_s(cx + radius, S), _s(cy, S)),
+            (_s(cx + radius * 0.45, S), _s(cy + radius * 0.45, S)),
+            (_s(cx, S), _s(cy + radius, S)),
+            (_s(cx - radius * 0.45, S), _s(cy + radius * 0.45, S)),
+            (_s(cx - radius, S), _s(cy, S)),
+            (_s(cx - radius * 0.45, S), _s(cy - radius * 0.45, S)),
+        ]
+        d.polygon(spark, fill=fill)
+    return img
+
+
 def _chart(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     img = Image.new('RGBA', (size_px, size_px), bg)
     d = ImageDraw.Draw(img)
@@ -769,6 +878,10 @@ ICON_REGISTRY: Dict[str, Callable] = {
     'eye':          _eye,
     'eye_off':      _eye_off,
     'clipboard':    _clipboard,
+    'task_list':    _task_list,
+    'candidate_review': _candidate_review,
+    'health_shield': _health_shield,
+    'ai_spark':      _ai_spark,
     'chart':        _chart,
     'gear':         _gear,
     'briefcase':    _briefcase,
@@ -830,9 +943,10 @@ class IconCache:
             sw = max(1, int(STROKE_WIDTH * self._scale))
             # 空字符串 → 透明背景（RGBA 四元组）
             bg_resolved = bg if bg else (0, 0, 0, 0)
-            # 2x 超采样 + LANCZOS 缩回，消除 ImageDraw 锯齿
-            super_px = size_px * 2
-            super_sw = max(1, sw * 2)
+            # 4x 超采样 + LANCZOS 缩回，在高 DPI 和细曲线下保持平滑边缘。
+            supersample = 4
+            super_px = size_px * supersample
+            super_sw = max(1, sw * supersample)
             pil_img = drawer(super_px, fill, bg_resolved, super_sw)
             pil_img = pil_img.resize((size_px, size_px), Image.LANCZOS)
             self._cache[key] = ImageTk.PhotoImage(pil_img)

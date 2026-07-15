@@ -5,6 +5,7 @@ import sys
 import tempfile
 import time
 import types
+from datetime import date
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -12,6 +13,7 @@ import gui_main
 import icons
 from gui_main import (
     BossFilterGUI,
+    _api_service_display_name,
     _optional_int_to_entry,
     _parse_optional_int_entry,
     _candidate_has_ai_eval,
@@ -22,6 +24,26 @@ from llm_eval import _resolve_rule_score
 
 def test_optional_max_age_none_displays_as_blank():
     assert _optional_int_to_entry(None) == ""
+
+
+def test_token_plan_uses_official_alibaba_cloud_display_name():
+    config = {
+        "api_provider": "qwen",
+        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        "model": "kimi-k2.6",
+    }
+
+    assert _api_service_display_name(config) == "阿里云百炼 Token Plan"
+
+
+def test_gui_timeout_policy_recognizes_token_plan_as_official_service():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.api_config = {
+        "api_provider": "qwen",
+        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    }
+
+    assert gui._is_relay_endpoint_for_timeout() is False
 
 
 def test_result_view_separates_recommended_review_and_rejected_without_limit():
@@ -40,10 +62,10 @@ def test_result_view_separates_recommended_review_and_rejected_without_limit():
         {"geek_id": "rejected", "qualification_status": "rejected", "match_score": 0},
     ]
 
-    assert len(_filter_candidates_by_result_view(candidates, "推荐候选人")) == 125
+    assert len(_filter_candidates_by_result_view(candidates, "推荐候选人")) == 126
     assert {
         c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "待复核")
-    } == {"pending", "manual", "ai-failed", "send-pending"}
+    } == {"pending", "manual", "ai-failed"}
     assert [c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "淘汰记录")] == ["rejected"]
     assert len(_filter_candidates_by_result_view(candidates, "全部记录")) == 130
 
@@ -57,6 +79,20 @@ def test_run_job_config_warning_is_acknowledged_until_diagnostics_change():
     assert gui._should_prompt_run_job_config("warning-a", False) is False
     assert gui._should_prompt_run_job_config("warning-b", False) is True
     assert gui._should_prompt_run_job_config("warning-a", True) is True
+
+
+def test_job_config_diagnostics_dialog_is_content_sized_and_keeps_actions_visible():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    dialog_block = source[source.index("def _show_job_config_diagnostics_dialog"):]
+    dialog_block = dialog_block[:dialog_block.index("\n    def _should_prompt_run_job_config")]
+
+    assert "win.grid_rowconfigure(0, weight=1)" in dialog_block
+    assert 'body.grid(row=0, column=0, sticky="nsew")' in dialog_block
+    assert 'btn_row.grid(row=1, column=0, sticky="ew")' in dialog_block
+    assert "text_widget.configure(height=max(6, min(18, estimated_rows)))" in dialog_block
+    assert "max(int(260 * scale), win.winfo_reqheight())" in dialog_block
+    assert "_place_window_centered(win, dialog_width, dialog_height" in dialog_block
+    assert "int(720 * scale), int(520 * scale)" not in dialog_block
 
 
 def test_optional_max_age_number_displays_as_number_text():
@@ -106,11 +142,18 @@ class _FakeVar:
 class _FakeWidget:
     def __init__(self):
         self.configs = []
+        self.text = ""
 
     def config(self, **kwargs):
         self.configs.append(kwargs)
 
     configure = config
+
+    def delete(self, *_args):
+        self.text = ""
+
+    def insert(self, _index, text):
+        self.text = text
 
 
 class _FakeStopEvent:
@@ -128,6 +171,130 @@ class _FakeCombo(dict):
 
     def set(self, value):
         self.current_value = value
+
+
+class _FakePackFrame:
+    def __init__(self):
+        self.manager = ""
+
+    def winfo_manager(self):
+        return self.manager
+
+    def pack(self, **_kwargs):
+        self.manager = "pack"
+
+    def pack_forget(self):
+        self.manager = ""
+
+
+class _FakeCalendarTop:
+    def __init__(self, mapped=True):
+        self.mapped = mapped
+
+    def winfo_ismapped(self):
+        return self.mapped
+
+    def withdraw(self):
+        self.mapped = False
+
+
+def test_result_time_range_defaults_to_all_time():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.result_time_range_var = _FakeVar("全部时间")
+
+    assert gui._get_result_date_filter() == (None, None)
+
+
+def test_review_workbench_formats_first_seen_timestamp_for_users():
+    assert BossFilterGUI._format_display_datetime("20260610_220126") == (
+        "2026-06-10 22:01"
+    )
+    assert BossFilterGUI._format_display_datetime("20260710T120000") == (
+        "2026-07-10 12:00"
+    )
+    assert BossFilterGUI._format_display_datetime("2026-07-15T08:30:45+08:00") == (
+        "2026-07-15 08:30"
+    )
+    assert BossFilterGUI._format_display_datetime("") == "未知"
+    assert BossFilterGUI._format_display_datetime("历史数据") == "历史数据"
+
+
+def test_result_time_range_presets_use_exact_natural_days():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.result_time_range_var = _FakeVar("近7天")
+
+    with patch("gui_main.datetime") as datetime_mock:
+        datetime_mock.now.return_value.date.return_value = date(2026, 7, 15)
+        gui.result_time_range_var.set("今天")
+        assert gui._get_result_date_filter() == ("20260715", "20260715")
+
+        gui.result_time_range_var.set("近7天")
+        assert gui._get_result_date_filter() == ("20260709", "20260715")
+
+        gui.result_time_range_var.set("近30天")
+        assert gui._get_result_date_filter() == ("20260616", "20260715")
+
+
+def test_result_time_range_custom_mode_reads_both_date_entries():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.result_time_range_var = _FakeVar("自定义")
+    gui.result_date_start_entry = Mock()
+    gui.result_date_end_entry = Mock()
+    gui.result_date_start_entry.get_date.return_value = date(2026, 6, 1)
+    gui.result_date_end_entry.get_date.return_value = date(2026, 6, 30)
+
+    assert gui._get_result_date_filter() == ("20260601", "20260630")
+
+
+def test_daily_actions_use_result_job_date_and_blacklist_scope():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.result_job_var = _FakeVar("Java 工程师")
+    gui.result_date_start_entry = Mock()
+    gui.result_time_range_var = _FakeVar("近7天")
+    gui._get_result_date_filter = Mock(return_value=("20260709", "20260715"))
+    candidates = [
+        {"geek_id": "included", "job_name": "Java工程师", "first_seen_at": "20260710T120000"},
+        {"geek_id": "old", "job_name": "Java工程师", "first_seen_at": "20260701T120000"},
+        {"geek_id": "blacklisted", "job_name": "Java工程师", "first_seen_at": "20260710T120000", "blacklisted": True},
+        {"geek_id": "other-job", "job_name": "Python工程师", "first_seen_at": "20260710T120000"},
+    ]
+
+    with patch.object(gui, "_load_candidates_for_state_diagnostics", return_value=(candidates[:3], "Java 工程师")):
+        rows, scope = gui._load_candidates_for_daily_actions()
+
+    assert [row["geek_id"] for row in rows] == ["included"]
+    assert scope == "Java 工程师 / 近7天"
+
+
+def test_result_time_range_only_shows_dates_for_custom_mode():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.result_time_range_var = _FakeVar("自定义")
+    gui.result_custom_date_frame = _FakePackFrame()
+    gui.result_tree = object()
+    gui.refresh_results = Mock()
+    gui._close_result_date_dropdowns = Mock()
+
+    gui._on_result_time_range_changed()
+    assert gui.result_custom_date_frame.winfo_manager() == "pack"
+
+    gui.result_time_range_var.set("全部时间")
+    gui._on_result_time_range_changed()
+    assert gui.result_custom_date_frame.winfo_manager() == ""
+    assert gui.refresh_results.call_count == 2
+    assert gui._close_result_date_dropdowns.call_count == 2
+
+
+def test_time_range_dropdown_closes_both_open_date_calendars():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    start_top = _FakeCalendarTop()
+    end_top = _FakeCalendarTop()
+    gui.result_date_start_entry = Mock(_top_cal=start_top)
+    gui.result_date_end_entry = Mock(_top_cal=end_top)
+
+    gui._close_result_date_dropdowns()
+
+    assert start_top.mapped is False
+    assert end_top.mapped is False
 
 
 def test_save_current_job_keeps_ai_preferred_keywords_as_preferred():
@@ -652,6 +819,81 @@ def test_result_scope_label_matches_filter_label_style():
     assert 'text="结果范围:"' in result_block
 
 
+def test_result_page_defaults_to_all_records_and_offers_today():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    result_block = source[source.index("def create_result_page"):]
+    result_block = result_block[:result_block.index("\n    def create_education_page")]
+
+    assert 'values=("全部时间", "今天", "近7天", "近30天", "自定义")' in result_block
+    assert 'self.result_view_var = tk.StringVar(value="全部记录")' in result_block
+
+
+def test_result_blacklist_check_blends_with_page_background_in_every_state():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    result_block = source[source.index("def create_result_page"):]
+    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    style_block = result_block[result_block.index('_cb_style.configure('):]
+    style_block = style_block[:style_block.index('blacklist_check = ttk.Checkbutton(')]
+
+    assert "background=self.colors['bg_main']" in style_block
+    for state in ("active", "pressed", "selected", "disabled"):
+        assert f'(\"{state}\", self.colors[\'bg_main\'])' in style_block
+
+
+def test_result_page_keeps_workflow_actions_visible_and_groups_utilities():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    result_block = source[source.index("def create_result_page"):]
+    result_block = result_block[:result_block.index("\n    def create_education_page")]
+
+    assert 'text=" 今日待办"' in result_block
+    assert "self.icons.button('task_list', self.colors['primary'])" in result_block
+    assert 'text=" 查看与复核"' in result_block
+    assert "self.icons.button('candidate_review', self.colors['primary'])" in result_block
+    review_button_block = result_block[result_block.index("self.result_review_button = ttk.Button("):]
+    review_button_block = review_button_block[:review_button_block.index("self.result_review_button._icon_ref")]
+    assert "style='Accent.TButton'" not in review_button_block
+    assert 'text=" 打招呼队列"' in result_block
+    assert 'text="更多操作"' in result_block
+    assert 'label=" 查看今日待办"' not in result_block
+    assert 'label=" 候选人状态体检"' in result_block
+    assert "self.icons.button('health_shield', self.colors['primary'])" in result_block
+    assert 'label=" 导出 Excel"' in result_block
+    assert 'label=" 清空候选人"' in result_block
+    assert 'text=" 状态体检"' not in result_block
+    assert 'text=" 导出 Excel"' not in result_block
+    assert 'text=" 清空候选人"' not in result_block
+
+
+def test_more_menu_excel_export_uses_exact_visible_result_candidates():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    visible = [
+        {"geek_id": "review-low", "job_name": "Java工程师", "match_score": 53},
+        {"geek_id": "review-manual", "job_name": "Java工程师", "match_score": 72},
+    ]
+    gui.result_tree = Mock()
+    gui.result_tree.get_children.return_value = ("row-1", "row-2")
+    gui._find_candidate_by_tree_item = Mock(side_effect=visible)
+    gui.refresh_results = Mock()
+    gui.result_job_var = _FakeVar("Java工程师")
+    gui.result_view_var = _FakeVar("待复核")
+    gui.result_date_start_entry = Mock()
+    gui._get_result_date_filter = Mock(return_value=("20260709", "20260715"))
+
+    with (
+        patch("gui_main.filedialog.asksaveasfilename", return_value="review.xlsx") as save_dialog,
+        patch("bossmaster.export_to_excel", return_value=True) as export_mock,
+        patch("gui_main.messagebox.showinfo") as showinfo,
+    ):
+        gui.export_excel()
+
+    gui.refresh_results.assert_called_once_with(force=True)
+    export_mock.assert_called_once_with(visible, "review.xlsx", preserve_input=True)
+    assert save_dialog.call_args.kwargs["initialfile"] == (
+        "Java工程师_待复核_20260709_20260715.xlsx"
+    )
+    assert "2 名候选人" in showinfo.call_args.args[1]
+
+
 def test_model_settings_use_explicit_role_selectors_not_hidden_actions():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     settings_block = source[source.index("def _create_api_config_content"):]
@@ -735,6 +977,19 @@ def test_api_key_eye_uses_press_and_release_bindings_not_click_toggle():
     assert '"<Leave>", self._hide_api_key_after_release' in settings_block
     assert '"<FocusOut>", self._hide_api_key_after_release' in settings_block
     assert "command=self.toggle_api_key_visibility" not in settings_block
+
+
+def test_api_key_eye_blends_with_settings_card_background():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    settings_block = source[source.index("def _create_api_config_content"):]
+    settings_block = settings_block[:settings_block.index("\n    def load_api_config_to_ui")]
+    button_block = settings_block[settings_block.index("self.api_key_toggle_btn = tk.Button("):]
+    button_block = button_block[:button_block.index("self.api_key_toggle_btn._icon_eye")]
+
+    assert 'relief="flat"' in button_block
+    assert 'overrelief="flat"' in button_block
+    assert "bg=self.colors['bg_card']" in button_block
+    assert "activebackground=self.colors['bg_card']" in button_block
 
 
 def test_assigned_model_test_result_updates_matching_traffic_light_only():
@@ -900,6 +1155,40 @@ def test_traffic_light_icons_are_registered_without_pulse_check():
     assert "pulse_check" not in icons.ICON_REGISTRY
 
 
+def test_result_action_icons_are_registered_visible_and_distinct():
+    assert "task_list" in icons.ICON_REGISTRY
+    assert "candidate_review" in icons.ICON_REGISTRY
+    assert "health_shield" in icons.ICON_REGISTRY
+    assert "ai_spark" in icons.ICON_REGISTRY
+    task_list = icons.ICON_REGISTRY["task_list"](48, "#2563EB", (0, 0, 0, 0), 4)
+    candidate_review = icons.ICON_REGISTRY["candidate_review"](
+        48, "#2563EB", (0, 0, 0, 0), 4
+    )
+    health_shield = icons.ICON_REGISTRY["health_shield"](
+        48, "#2563EB", (0, 0, 0, 0), 4
+    )
+    ai_spark = icons.ICON_REGISTRY["ai_spark"](
+        48, "#2563EB", (0, 0, 0, 0), 4
+    )
+
+    assert task_list.getbbox() is not None
+    assert candidate_review.getbbox() is not None
+    assert health_shield.getbbox() is not None
+    assert ai_spark.getbbox() is not None
+    assert len({
+        task_list.tobytes(), candidate_review.tobytes(),
+        health_shield.tobytes(), ai_spark.tobytes(),
+    }) == 4
+
+
+def test_icon_cache_uses_four_times_supersampling():
+    source = Path("icons.py").read_text(encoding="utf-8")
+
+    assert "supersample = 4" in source
+    assert "super_px = size_px * supersample" in source
+    assert "super_sw = max(1, sw * supersample)" in source
+
+
 def test_model_ref_matches_full_connection_identity():
     same_model_one = {
         "api_provider": "qwen",
@@ -1030,7 +1319,7 @@ def test_candidate_status_surfaces_pending_greeting_confirmation():
         "greet_confirmation_pending": True,
     }
 
-    assert gui._format_candidate_status(candidate) == "未沟通｜发送待确认"
+    assert gui._format_candidate_status(candidate) == "发送待确认"
 
 
 def test_candidate_status_shows_temporary_ai_eval_state_and_expires():
@@ -1054,7 +1343,9 @@ def test_candidate_status_shows_temporary_ai_eval_state_and_expires():
     assert "123" not in gui._ai_eval_results
 
     candidate["llm_error"] = "请求超时"
-    assert gui._format_candidate_status(candidate) == "未沟通｜AI评估失败"
+    assert gui._format_candidate_status(candidate) == (
+        "未沟通｜待复核：AI 评估失败，需人工判断或重试"
+    )
 
 
 def test_refresh_results_force_rebuilds_for_transient_ai_status():
@@ -1171,12 +1462,295 @@ def test_refresh_results_keeps_ai_evaluated_and_failed_candidates_below_pass_sco
         assert values[4] == 52
         assert values[5] == "-3"
         assert values[6] == "未通过"
-        assert values[7] == "未沟通"
+        assert values[7] == "未沟通｜待复核：评分低于通过线（52 分）"
         failed_values = gui.result_tree.items[1]["values"]
         assert failed_values[4] == 51
         assert failed_values[5] == "—"
         assert failed_values[6] == "未通过"
-        assert failed_values[7] == "未沟通｜AI评估失败"
+        assert failed_values[7] == "未沟通｜待复核：AI 评估失败，需人工判断或重试"
+
+
+def test_refresh_results_keeps_full_dataset_and_uses_stable_metric_scope():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        candidates_path = Path(tmp_dir) / "candidates.json"
+        candidates_path.write_text(
+            json.dumps([
+                {
+                    "geek_id": "strong",
+                    "name": "强推候选人",
+                    "job_name": "Java 工程师",
+                    "match_score": 80,
+                    "greet_sent": True,
+                },
+                {
+                    "geek_id": "pending",
+                    "name": "待定候选人",
+                    "job_name": "Java 工程师",
+                    "match_score": 60,
+                },
+                {
+                    "geek_id": "rejected",
+                    "name": "淘汰候选人",
+                    "job_name": "Java 工程师",
+                    "match_score": 90,
+                    "qualification_status": "rejected",
+                },
+            ], ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+        gui.result_tree = _FakeResultTree()
+        gui.result_job_var = _FakeVar("全部岗位")
+        gui.result_view_var = _FakeVar("待复核")
+        gui.result_show_blacklist_var = _FakeVar(False)
+        gui.result_stats_vars = {key: _FakeVar() for key in ("strong", "recommended", "pending", "greeted")}
+        gui.result_stats_greeted = {key: _FakeVar() for key in ("strong", "recommended", "pending", "greeted")}
+        gui.colors = {
+            "bg_tree_tag_high": "#fff",
+            "bg_tree_tag_mid": "#fff",
+            "bg_tree_tag_low": "#fff",
+        }
+        gui._ai_evaluating_ids = set()
+        gui._ai_eval_results = {}
+        gui._result_tree_fingerprint = None
+        gui._result_last_job = None
+        gui._result_last_dates = None
+        gui._result_last_show_blacklist = False
+        gui._parse_salary_exp = Mock(return_value=("", ""))
+        gui._extract_extra_fields = Mock(return_value=("", "", "", "", ""))
+        gui._sort_bound = True
+        gui.append_log = Mock()
+
+        with patch("gui_main.CANDIDATES_PATH", candidates_path):
+            gui.refresh_results()
+
+        assert len(gui.all_candidates) == 3
+        assert [candidate["geek_id"] for candidate in gui.result_tree_data] == ["pending"]
+        assert gui.result_stats_vars["strong"].get() == "1"
+        assert gui.result_stats_vars["pending"].get() == "1"
+        assert gui.result_stats_vars["greeted"].get() == "1"
+
+
+def test_result_tree_item_map_wins_for_duplicate_name_and_score():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    first = {"geek_id": "first", "name": "同名", "match_score": 70}
+    second = {"geek_id": "second", "name": "同名", "match_score": 70}
+    gui.result_tree = _FakeResultTree()
+    gui.result_tree.items = [{"values": ("同名", "", "", "", 70)}]
+    gui.result_tree_data = [first, second]
+    gui._item_to_candidate = {0: second}
+
+    assert gui._find_candidate_by_tree_item(0) is second
+
+
+def test_candidate_detail_opens_review_workbench_with_mapped_candidate():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidate = {"geek_id": "mapped", "name": "同名", "match_score": 70}
+    gui._find_candidate_by_tree_item = Mock(return_value=candidate)
+    gui._open_candidate_review_workbench = Mock()
+
+    gui._show_candidate_detail("row-2")
+
+    gui._open_candidate_review_workbench.assert_called_once_with(candidate)
+
+
+def test_result_review_button_follows_candidate_selection():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.result_review_button = Mock()
+    gui.result_tree = Mock()
+
+    gui.result_tree.selection.return_value = ("row-1",)
+    gui._update_result_review_button_state()
+    gui.result_review_button.configure.assert_called_with(state="normal")
+
+    gui.result_tree.selection.return_value = ()
+    gui.result_tree.get_children.return_value = ("row-1",)
+    gui._update_result_review_button_state()
+    gui.result_review_button.configure.assert_called_with(state="normal")
+
+    gui.result_tree.get_children.return_value = ()
+    gui._update_result_review_button_state()
+    gui.result_review_button.configure.assert_called_with(state="disabled")
+
+
+def test_visible_review_action_opens_first_selected_candidate():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.result_tree = Mock()
+    gui.result_tree.selection.return_value = ("row-2", "row-3")
+    gui._show_candidate_detail = Mock()
+
+    gui._open_selected_candidate_review()
+
+    gui._show_candidate_detail.assert_called_once_with("row-2")
+
+
+def test_visible_review_action_starts_from_first_row_without_selection():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.result_tree = Mock()
+    gui.result_tree.selection.return_value = ()
+    gui.result_tree.get_children.return_value = ("row-1", "row-2")
+    gui._show_candidate_detail = Mock()
+
+    gui._open_selected_candidate_review()
+
+    gui.result_tree.selection_set.assert_called_once_with("row-1")
+    gui.result_tree.focus.assert_called_once_with("row-1")
+    gui.result_tree.see.assert_called_once_with("row-1")
+    gui._show_candidate_detail.assert_called_once_with("row-1")
+
+
+def test_candidate_decision_summary_leads_with_action_and_review_evidence():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    summary = gui._format_candidate_decision_summary({
+        "name": "候选人",
+        "match_score": 60,
+        "manual_review_required": True,
+        "qualification_status": "manual_review",
+        "qualification_reasons": ["工作年限证据不足"],
+        "keyword_evidence": [{"name": "Python", "evidence": "项目使用 Python"}],
+        "score_breakdown": {
+            "base": 25,
+            "skill": 25,
+            "experience": 5,
+            "education": 5,
+            "preferred": 0,
+        },
+    })
+
+    assert summary.startswith("下一步\n")
+    assert "工作年限证据不足" in summary
+    assert "评分处于待定区间（60 分）" in summary
+    assert "关键匹配" in summary
+    assert "Python：项目使用 Python" in summary
+
+
+def test_candidate_review_action_advances_after_refresh():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    current = {"geek_id": "current", "job_name": "Java"}
+    next_candidate = {"geek_id": "next", "job_name": "Java"}
+    gui._candidate_review_index = 0
+    gui.result_tree_data = [current, next_candidate]
+    gui.refresh_results = Mock()
+    gui._render_candidate_review_workbench = Mock()
+
+    gui._candidate_review_action_saved(("current", "Java"))
+
+    gui.refresh_results.assert_called_once_with(force=True)
+    assert gui._candidate_review_candidates == [current, next_candidate]
+    assert gui._candidate_review_index == 1
+    gui._render_candidate_review_workbench.assert_called_once()
+
+
+def test_clear_manual_review_is_scoped_to_candidate_job():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        candidates_path = Path(tmp_dir) / "candidates.json"
+        candidates_path.write_text(json.dumps([
+            {
+                "geek_id": "same-geek",
+                "job_name": "Java 工程师",
+                "match_score": 75,
+                "manual_review_required": True,
+                "qualification_status": "manual_review",
+            },
+            {
+                "geek_id": "same-geek",
+                "job_name": "Python 工程师",
+                "match_score": 75,
+                "manual_review_required": True,
+                "qualification_status": "manual_review",
+            },
+        ], ensure_ascii=False), encoding="utf-8")
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+
+        with patch("gui_main.CANDIDATES_PATH", candidates_path):
+            updated = gui._clear_manual_review("same-geek", "Java 工程师")
+
+        saved = json.loads(candidates_path.read_text(encoding="utf-8"))
+        assert updated == 1
+        assert saved[0]["manual_review_required"] is False
+        assert saved[0]["qualification_status"] == "qualified"
+        assert saved[1]["manual_review_required"] is True
+        assert saved[1]["qualification_status"] == "manual_review"
+
+
+def test_clear_manual_review_rejects_missing_candidate_id():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        candidates_path = Path(tmp_dir) / "candidates.json"
+        original = [{
+            "geek_id": "",
+            "job_name": "Java 工程师",
+            "manual_review_required": True,
+            "qualification_status": "manual_review",
+        }]
+        candidates_path.write_text(
+            json.dumps(original, ensure_ascii=False), encoding="utf-8"
+        )
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+
+        with patch("gui_main.CANDIDATES_PATH", candidates_path):
+            updated = gui._clear_manual_review("", "Java 工程师")
+
+        assert updated == 0
+        assert json.loads(candidates_path.read_text(encoding="utf-8")) == original
+
+
+def test_candidate_review_workbench_exposes_navigation_tabs_and_direct_actions():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _open_candidate_review_workbench"):]
+    block = block[:block.index("\n    def _show_candidate_detail")]
+
+    assert 'win.title("候选人查看与复核")' in block
+    assert "'CandidateReview.TNotebook.Tab'" in block
+    assert "font=(FONT_FAMILY, max(11, int(13 * self.font_scale)), 'bold')" in block
+    assert 'text="上一位"' in block
+    assert 'text="下一位"' in block
+    assert 'text="决策摘要"' in block
+    assert 'text="完整资料"' in block
+    assert "preferred_height = max(960, self.root.winfo_height() + 270)" in block
+    assert "height = min(1120, preferred_height" in block
+    assert "max_height_ratio=0.98" in block
+    assert '"确认通过"' in block
+    assert '"加入打招呼队列"' in block
+    assert '"更新跟进"' in block
+    assert '"标记反馈"' in block
+    assert '"导入简历"' in block
+    assert 'text="建议下一步"' in block
+    assert 'text="其他操作"' in block
+    assert "orient='horizontal'" in block
+    assert "style='Accent.TButton'" not in block
+
+
+def test_candidate_review_actions_keep_stable_two_row_layout_and_button_style():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    workbench = source[source.index("def _open_candidate_review_workbench"):]
+    workbench = workbench[:workbench.index("\n    def _render_candidate_review_workbench")]
+    render_actions = source[source.index("def _render_candidate_review_actions"):]
+    render_actions = render_actions[:render_actions.index("\n    def _navigate_candidate_review")]
+
+    assert "primary_section.grid(row=0, column=0, sticky='w')" in workbench
+    assert "secondary_section.grid(row=2, column=0, sticky='w')" in workbench
+    assert "orient='horizontal'" in workbench
+    assert "actions.bind('<Configure>'" not in workbench
+    assert "def _layout_candidate_review_actions" not in source
+    assert "style='Accent.TButton'" not in render_actions
+
+
+def test_candidate_context_menu_uses_review_workbench_wording():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _build_candidate_context_menu"):]
+    block = block[:block.index("\n    def _find_candidate_by_tree_item")]
+
+    assert 'label=" 查看与复核"' in block
+    assert "self.icons.button('candidate_review', self.colors['primary'])" in block
+    assert "self.icons.button('ai_spark', self.colors['primary'])" in block
+    assert 'label=" 查看详情"' not in block
+    assert 'label=" 加入打招呼队列"' in block
+    assert 'label=" 打招呼"' not in block
+    assert "candidate_greet_skip_reason(candidate)" in block
+    assert "not _candidate_has_ai_eval(candidate)" in block
+    assert "candidate.get('qualification_status') == 'manual_review'" in block
+    assert 'label=" 导出选中"' not in block
 
 
 def test_candidate_detail_explains_ai_failure_and_retained_rule_score():
@@ -1424,7 +1998,8 @@ def test_result_page_greeted_detail_uses_passed_candidates_only():
     detail_block = source[source.index("elif stat_type == 'greeted':"):]
     detail_block = detail_block[:detail_block.index("\n            else:")]
 
-    assert "SCORE_THRESHOLD_PASS" in detail_block
+    assert "derive_candidate_decision(c).screening_result" in detail_block
+    assert "{'强烈推荐', '推荐', '待定'}" in detail_block
     assert "c.get('greet_sent', False)" in detail_block
 
 
@@ -1436,7 +2011,7 @@ def test_result_page_has_greet_queue_entry():
 
     assert 'text=" 打招呼队列"' in result_block
     assert "command=self._show_greet_queue_dialog" in result_block
-    assert result_block.index('text=" 打招呼队列"') < result_block.index('text=" 导出 Excel"')
+    assert result_block.index('text=" 打招呼队列"') < result_block.index('label=" 导出 Excel"')
 
 
 def test_result_page_hides_technical_json_button():
@@ -1496,8 +2071,11 @@ def test_greet_queue_skip_reason_filters_non_sendable_candidates():
     assert BossFilterGUI._greet_queue_skip_reason({
         "geek_id": "g1",
         "manual_review_required": True,
-    }) == "需人工确认"
-    assert BossFilterGUI._greet_queue_skip_reason({"geek_id": "g1"}) == ""
+    }) == "硬性条件需要人工确认"
+    assert BossFilterGUI._greet_queue_skip_reason({"geek_id": "g1"}) == "评分未达到推荐标准"
+    assert BossFilterGUI._greet_queue_skip_reason({
+        "geek_id": "g1", "match_score": 70,
+    }) == ""
 
 
 def test_greet_queue_skip_summary_is_user_readable():
@@ -1578,6 +2156,19 @@ def test_candidate_workflow_dialog_subtitles_use_neutral_text_color():
     assert "background=self.colors['bg_card']" in queue_block
 
 
+def test_daily_actions_dialog_uses_consistent_title_and_review_subgroups_only():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    daily_block = source[source.index("def _show_daily_candidate_actions_dialog"):]
+    daily_block = daily_block[:daily_block.index("\n    def _show_candidate_state_diagnostics_dialog")]
+
+    assert 'win.title("今日待办")' in daily_block
+    assert 'win.title("今日候选人待办")' not in daily_block
+    assert 'if group != "待复核":' in daily_block
+    assert "candidate_review_category(item.candidate)" in daily_block
+    assert 'parent_iid, "end", iid=child_iid, text=category' in daily_block
+    assert 'open=(group == "待复核")' in daily_block
+
+
 def test_daily_resume_action_promotes_resume_context_menu_entry():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     action_block = source[source.index("def _show_daily_candidate_actions_dialog"):]
@@ -1587,10 +2178,23 @@ def test_daily_resume_action_promotes_resume_context_menu_entry():
     result_menu_block = source[source.index("def _build_candidate_context_menu"):]
     result_menu_block = result_menu_block[:result_menu_block.index("\n    def _find_candidate_by_tree_item")]
 
-    assert '"resume" if item.group == "有简历未二次评估"' in action_block
+    assert '"resume" if item.group == "待完成简历评估"' in action_block
     assert 'label=" 导入简历 / 二次评估"' in menu_block
     assert 'label=" 导入简历 / 二次评估"' in result_menu_block
     assert 'elif primary_action == "resume":' in menu_block
+
+
+def test_workflow_context_menu_opens_review_and_uses_shared_decision_rules():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    menu_block = source[source.index("def _show_candidate_workflow_context_menu"):]
+    menu_block = menu_block[:menu_block.index("\n    def _bind_treeview_sorting")]
+
+    assert 'label=" 查看与复核"' in menu_block
+    assert "self.icons.button('candidate_review', self.colors['primary'])" in menu_block
+    assert 'label=" 查看详情"' not in menu_block
+    assert "self._open_candidate_review_workbench(candidate)" in menu_block
+    assert "candidate_greet_skip_reason(candidate)" in menu_block
+    assert "candidate.get('qualification_status') == 'manual_review'" in menu_block
 
 
 def test_daily_followup_action_promotes_followup_context_menu_entry():
@@ -1600,7 +2204,7 @@ def test_daily_followup_action_promotes_followup_context_menu_entry():
     menu_block = source[source.index("def _show_candidate_workflow_context_menu"):]
     menu_block = menu_block[:menu_block.index("\n    def _bind_treeview_sorting")]
 
-    assert '"followup" if item.group in ("已打招呼未回复", "已回复待约面") else None' in action_block
+    assert '"followup" if item.group in ("已打招呼待跟进", "已回复待推进") else None' in action_block
     assert 'label=" 更新跟进"' in menu_block
     assert 'elif primary_action == "followup":' in menu_block
 
@@ -1798,6 +2402,76 @@ def test_selector_auto_check_does_not_warn_for_skipped_card_check():
     assert ui_callbacks == []
 
 
+def test_selector_auto_check_defers_refresh_errors_and_keeps_page_for_retry():
+    class ContextLostError(Exception):
+        pass
+
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def run_js(self, _script):
+            return 1
+
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._selectors_auto_checked = False
+    gui._selector_check_retry_pending = False
+    gui.browser_connected = True
+    gui.browser_page = FakePage()
+    logs = []
+    gui.append_log = logs.append
+
+    with patch(
+        "bossmaster.check_selectors_health",
+        side_effect=ContextLostError("页面被刷新，请等待页面加载完成"),
+    ):
+        gui._auto_check_selectors()
+        gui._auto_check_selectors()
+
+    assert gui._selectors_auto_checked is False
+    assert gui._selector_check_retry_pending is True
+    assert gui.browser_connected is True
+    assert gui.browser_page is not None
+    assert logs == ["选择器自动检查暂缓：页面正在加载，稳定后将自动重试"]
+
+
+def test_selector_auto_check_treats_closed_browser_as_disconnect_not_selector_failure():
+    class PageDisconnectedError(Exception):
+        pass
+
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def run_js(self, _script):
+            return 1
+
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._selectors_auto_checked = False
+    gui._selector_check_retry_pending = False
+    gui.browser_connected = True
+    gui.browser_page = FakePage()
+    logs = []
+    gui.append_log = logs.append
+
+    with patch(
+        "bossmaster.check_selectors_health",
+        side_effect=PageDisconnectedError("与页面的连接已断开。"),
+    ):
+        gui._auto_check_selectors()
+
+    assert gui._selectors_auto_checked is False
+    assert gui.browser_connected is False
+    assert gui.browser_page is None
+    assert logs == ["浏览器页面连接短暂中断，等待自动重连..."]
+
+
+def test_silent_browser_poll_does_not_log_missing_debug_port():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    check_block = source[source.index("def check_browser_connection"):]
+    check_block = check_block[:check_block.index("\n    def _start_browser_auto_check")]
+
+    assert 'if not silent and prev_state != "🔴 未连接":' in check_block
+
+
 def test_run_worker_preserves_scan_completion_state():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     run_block = source[source.index("def run_worker"):]
@@ -1807,7 +2481,7 @@ def test_run_worker_preserves_scan_completion_state():
     start_block = source[source.index("def start_run"):]
     start_block = start_block[:start_block.index("\n    def stop_run")]
 
-    assert 'final_desc.startswith("[可能未扫完]")' in run_block
+    assert 'final_desc.startswith(("[达到轮次上限]", "[可能未扫完]"))' in run_block
     assert 'final_desc.startswith("[扫描中断]")' in run_block
     assert "str(description).startswith('[')" in run_block
     assert "job_match_callback=job_match_callback" in run_block
@@ -1833,16 +2507,70 @@ def test_run_summary_splits_status_prefix_for_fixed_summary_card():
     gui.run_summary_status_label = _FakeWidget()
     gui.run_summary_text_label = _FakeWidget()
 
-    gui._set_run_summary("[可能未扫完] 规则筛选通过 8/30 人，筛选漏斗：主要淘汰：经验不足 10 人")
+    gui._set_run_summary(
+        "[达到轮次上限] 筛选结果\n"
+        "规则筛选：8 / 30 人通过\n\n"
+        "扫描范围\n岗位A：达到 30 轮上限"
+    )
 
     assert gui.run_summary_status_label.configs[-1] == {
-        "text": "可能未扫完",
+        "text": "未确认扫描到底",
         "foreground": "#FA0",
     }
+    assert gui.run_summary_text_label.text == (
+        "筛选结果\n规则筛选：8 / 30 人通过\n\n"
+        "扫描范围\n岗位A：达到 30 轮上限"
+    )
     assert gui.run_summary_text_label.configs[-1] == {
-        "text": "规则筛选通过 8/30 人，筛选漏斗：主要淘汰：经验不足 10 人",
+        "state": "disabled",
+        "height": 5,
         "foreground": "#111",
     }
+
+
+def test_terminal_progress_line_is_short_and_defers_details_to_summary():
+    assert BossFilterGUI._format_terminal_progress_text(
+        "[完成] " + "很长的摘要" * 100
+    ) == "筛选完成，详细结果见下方摘要"
+    assert BossFilterGUI._format_terminal_progress_text(
+        "[达到轮次上限] " + "很长的摘要" * 100
+    ) == "本轮处理完成；尚未确认扫描到底，详见下方摘要"
+    assert BossFilterGUI._format_terminal_progress_text(
+        "正在扫描候选人"
+    ) == ""
+
+
+def test_run_summary_caps_at_ten_rows_and_only_then_shows_scrollbar():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.run_summary_text_label = _FakeWidget()
+    gui.run_summary_scrollbar = _FakePackFrame()
+
+    gui._update_run_summary_text("\n".join(f"第{i}行" for i in range(12)), "#111")
+
+    assert gui.run_summary_text_label.configs[-1]["height"] == 10
+    assert gui.run_summary_scrollbar.winfo_manager() == "pack"
+
+    gui._update_run_summary_text("简短摘要", "#666")
+
+    assert gui.run_summary_text_label.configs[-1]["height"] == 3
+    assert gui.run_summary_scrollbar.winfo_manager() == ""
+
+
+def test_terminal_log_keeps_one_status_line_without_repeating_summary():
+    final_desc = (
+        "[达到轮次上限] 筛选结果\n规则筛选：3 / 118 人通过\n"
+        "扫描范围\n达到 30 轮上限"
+    )
+
+    assert BossFilterGUI._format_terminal_log_text(final_desc) == (
+        "本轮处理完成，扫描达到轮次上限"
+    )
+
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    run_block = source[source.index("def run_worker"):]
+    run_block = run_block[:run_block.index("\n    def on_closing")]
+    assert "terminal_log = self._format_terminal_log_text(final_desc)" in run_block
+    assert 'self.append_log(f"[{datetime.now().strftime(\'%H:%M:%S\')}] {final_desc}")' not in run_block
 
 
 def test_passed_filter_uses_enlarged_original_people_icon():
@@ -1923,10 +2651,13 @@ def test_stats_page_review_entry_is_row_level_not_toolbar_button():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     create_block = source[source.index("def create_stats_page"):]
     create_block = create_block[:create_block.index("\n    def _load_stats_candidates")]
+    context_block = source[source.index("def _show_stats_context_menu"):]
+    context_block = context_block[:context_block.index("\n    def _selected_stats_job_name")]
 
     assert "btn_job_review" not in create_block
     assert 'self.stats_tree.bind("<Double-Button-1>", lambda e: self._show_selected_job_review())' in create_block
     assert 'self.stats_tree.bind("<Button-3>", self._show_stats_context_menu)' in create_block
+    assert "self.icons.button('chart', self.colors['primary'])" in context_block
 
 
 def test_feedback_dialog_status_control_stays_inside_form_content():
@@ -2573,11 +3304,154 @@ def test_candidate_has_ai_eval_helper():
     assert _candidate_has_ai_eval({'llm_evaluated': None}) is False
 
 
+def test_batch_ai_eval_menu_hides_without_eligible_candidates_and_counts_the_rest():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._ai_eval_in_progress = False
+    gui._ai_evaluating_ids = set()
+
+    assert gui._batch_ai_eval_menu_label([
+        {'geek_id': 'a', 'llm_evaluated': True},
+        {'geek_id': 'b', 'resume_eval_adjustment': 0},
+    ]) == ""
+
+    assert gui._batch_ai_eval_menu_label([
+        {'geek_id': 'a', 'llm_evaluated': True},
+        {'geek_id': 'fresh-1'},
+        {'geek_id': 'fresh-2'},
+    ]) == " 批量AI评估（2人）"
+
+    gui._ai_eval_in_progress = True
+    assert gui._batch_ai_eval_menu_label([
+        {'geek_id': 'c'},
+    ]) == ""
+
+
+def test_batch_ai_eval_partition_reports_evaluated_and_running_candidates():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._ai_evaluating_ids = {'running'}
+    fresh = {'geek_id': 'fresh', 'name': '未评估'}
+
+    eligible, skipped = gui._partition_candidates_for_ai_eval([
+        fresh,
+        {'geek_id': 'done', 'name': '已完成', 'llm_evaluated': True},
+        {'geek_id': 'running', 'name': '进行中'},
+    ])
+
+    assert eligible == [fresh]
+    assert [(item['name'], item['reason']) for item in skipped] == [
+        ('已完成', '已评估过'),
+        ('进行中', '正在评估'),
+    ]
+
+
+def test_batch_ai_eval_groups_candidates_by_job_and_counts_all_skips():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._ai_eval_in_progress = False
+    gui._ai_evaluating_ids = set()
+    gui._ai_eval_results = {}
+    gui.api_config = {
+        'api_provider': 'qwen',
+        'base_url': 'https://example.test/v1',
+    }
+    gui._get_job_rules_cached = Mock(return_value={
+        'Java': {'original_requirement': 'Java 岗位要求', 'min_exp': 3},
+        'Python': {'original_requirement': 'Python 岗位要求', 'min_exp': 2},
+    })
+    gui.refresh_results = Mock()
+    gui.root = Mock()
+    gui.root.after.return_value = 'timer-1'
+    java = {'geek_id': 'java-1', 'name': '甲', 'job_name': 'Java'}
+    python = {'geek_id': 'python-1', 'name': '乙', 'job_name': 'Python'}
+    evaluated = {
+        'geek_id': 'done-1', 'name': '丙', 'job_name': 'Java',
+        'llm_evaluated': True,
+    }
+
+    with patch('security.get_api_key', return_value='secret'), \
+            patch('gui_main.messagebox.showinfo') as showinfo, \
+            patch('gui_main.messagebox.askyesno', return_value=True), \
+            patch('gui_main.threading.Thread') as thread:
+        gui._ai_eval_selected_candidates([java, python, evaluated])
+
+    evaluation_groups = thread.call_args.kwargs['args'][0]
+    assert [([candidate['geek_id'] for candidate in group], requirement) for group, requirement, _rule in evaluation_groups] == [
+        (['java-1'], 'Java 岗位要求'),
+        (['python-1'], 'Python 岗位要求'),
+    ]
+    assert gui._ai_eval_batch_summary['selected_count'] == 3
+    assert gui._ai_eval_batch_summary['eval_count'] == 2
+    assert gui._ai_eval_batch_summary['skipped'] == [
+        {'name': '丙', 'reason': '已评估过'},
+    ]
+    assert gui._ai_evaluating_ids == {'java-1', 'python-1'}
+    showinfo.assert_called_once()
+    thread.return_value.start.assert_called_once()
+
+
+def test_batch_ai_eval_does_not_invent_requirement_for_missing_job_config():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._get_job_rules_cached = Mock(return_value={})
+
+    requirement, rule = gui._get_job_requirement_for_candidates([
+        {'job_name': ' 已删除岗位 '},
+    ])
+
+    assert requirement == ""
+    assert rule == {}
+
+
+def test_batch_ai_eval_worker_uses_each_jobs_requirement_and_merges_results():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._ai_eval_total = 2
+    gui._ai_eval_done = 0
+    gui._ai_eval_in_progress = True
+    gui._ai_evaluating_ids = {'java-1', 'python-1'}
+    gui._ai_eval_results = {}
+    gui._ai_eval_batch_summary = {
+        'enabled': True, 'selected_count': 2, 'skipped': [],
+        'success': [], 'failed': [],
+    }
+    gui._save_ai_eval_results = Mock()
+    gui._on_ai_eval_complete = Mock()
+    gui.root = Mock()
+    java = {'geek_id': 'java-1', 'name': '甲'}
+    python = {'geek_id': 'python-1', 'name': '乙'}
+    groups = [
+        ([java], 'Java 岗位要求', {'min_exp': 3}),
+        ([python], 'Python 岗位要求', {'min_exp': 2}),
+    ]
+
+    def evaluate(candidates, requirement, *_args, **_kwargs):
+        candidates[0]['llm_evaluated'] = True
+        candidates[0]['llm_adjustment'] = 2 if requirement.startswith('Java') else -1
+
+    with patch('llm_eval.evaluate_batch', side_effect=evaluate) as evaluate_batch:
+        gui._do_ai_eval_batch(groups, {'api_provider': 'qwen'}, 'secret')
+
+    assert [call.args[1] for call in evaluate_batch.call_args_list] == [
+        'Java 岗位要求', 'Python 岗位要求',
+    ]
+    assert gui._ai_eval_batch_summary['success'] == [
+        {'name': '甲', 'adjustment': 2},
+        {'name': '乙', 'adjustment': -1},
+    ]
+    assert gui._ai_eval_batch_summary['failed'] == []
+    assert gui._ai_eval_done == 2
+    assert gui._ai_evaluating_ids == set()
+    assert gui._save_ai_eval_results.call_count == 2
+    gui.root.after.assert_called_once_with(0, gui._on_ai_eval_complete)
+
+
 def test_ai_eval_batch_guard_uses_has_ai_eval_helper():
-    """批量评估守卫必须调用 _candidate_has_ai_eval，否则已导入简历的候选人会被重复评估、
-    叠加两次调整并污染 rule_score（guard 在 _ai_eval_selected_candidates 内，难以端到端测试，用源码断言固化）。"""
+    """统一分流守卫必须识别一次评估和简历二次评估，避免重复叠加调整分。"""
     source = Path(gui_main.__file__).read_text(encoding="utf-8")
-    assert "_candidate_has_ai_eval(c)" in source, "守卫未调用 _candidate_has_ai_eval(c)"
+    skip_block = source[source.index("def _candidate_ai_eval_skip_reason"):]
+    skip_block = skip_block[:skip_block.index("\n    def _partition_candidates_for_ai_eval")]
+    selection_block = source[source.index("def _ai_eval_selected_candidates"):]
+    selection_block = selection_block[:selection_block.index("\n    def _get_job_requirement_for_candidates")]
+
+    assert "_candidate_has_ai_eval(candidate)" in skip_block
+    assert "self._partition_candidates_for_ai_eval(candidates)" in selection_block
 
 
 # === _resolve_rule_score 还原真实规则分（regression: 未跑一次评估却导入简历时撤回还原）===
