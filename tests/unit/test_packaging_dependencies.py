@@ -58,6 +58,8 @@ def test_pr_checks_run_stable_validation_for_master_pull_requests():
     assert "pull_request:" in workflow
     assert "branches: [master]" in workflow
     assert "runs-on: windows-latest" in workflow
+    assert "uses: actions/checkout@v6" in workflow
+    assert "uses: actions/setup-python@v6" in workflow
     assert "PYTHONIOENCODING: utf-8" in workflow
     assert 'PYTHONUTF8: "1"' in workflow
     assert 'python -c "import build; build._check_source_compiles()"' in workflow
