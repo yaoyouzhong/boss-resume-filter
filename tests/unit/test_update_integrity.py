@@ -213,6 +213,13 @@ def test_release_workflow_only_runs_when_explicitly_dispatched():
     assert "tags:" not in workflow
 
 
+def test_gitee_sync_never_force_pushes_master():
+    workflow = (build.BASE_DIR / ".github" / "workflows" / "sync-gitee.yml").read_text(encoding="utf-8")
+
+    assert "git push gitee master:master" in workflow
+    assert "--force" not in workflow
+
+
 def test_ensure_github_release_asset_matches_local_reuploads_until_digest_matches():
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "BOSS_ResumeFilter.exe"
@@ -1142,6 +1149,162 @@ def test_release_version_rules_reject_zero_patch_tags():
     assert build._is_valid_release_tag("v2.9.1") is True
     assert build._is_valid_release_tag("v2.9.0") is False
     assert build._is_valid_release_tag("2.9.1") is False
+
+
+def test_release_tag_guard_allows_same_commit_resume():
+    head = "a" * 40
+    original_local_ref = build._local_ref_commit
+    original_remote_tag = build._remote_tag_commit
+    try:
+        build._local_ref_commit = lambda ref: head
+        build._remote_tag_commit = lambda remote, tag: head
+        build._assert_release_tag_reusable("9.9.9")
+    finally:
+        build._local_ref_commit = original_local_ref
+        build._remote_tag_commit = original_remote_tag
+
+
+def test_release_tag_guard_rejects_different_remote_commit():
+    head = "a" * 40
+    original_local_ref = build._local_ref_commit
+    original_remote_tag = build._remote_tag_commit
+    try:
+        build._local_ref_commit = lambda ref: head if ref == "HEAD" else None
+        build._remote_tag_commit = lambda remote, tag: "b" * 40
+        try:
+            build._assert_release_tag_reusable("9.9.9")
+        except SystemExit as exc:
+            assert exc.code == 1
+        else:
+            raise AssertionError("conflicting remote tag should stop the release")
+    finally:
+        build._local_ref_commit = original_local_ref
+        build._remote_tag_commit = original_remote_tag
+
+
+def test_release_tag_guard_rejects_reuse_when_commit_will_change():
+    head = "a" * 40
+    original_local_ref = build._local_ref_commit
+    original_remote_tag = build._remote_tag_commit
+    try:
+        build._local_ref_commit = lambda ref: head
+        build._remote_tag_commit = lambda remote, tag: head
+        try:
+            build._assert_release_tag_reusable("9.9.9", will_create_commit=True)
+        except SystemExit as exc:
+            assert exc.code == 1
+        else:
+            raise AssertionError("an existing tag cannot be reused for a new commit")
+    finally:
+        build._local_ref_commit = original_local_ref
+        build._remote_tag_commit = original_remote_tag
+
+
+def test_git_tag_never_force_moves_existing_tag():
+    original_local_ref = build._local_ref_commit
+    original_run = build.subprocess.run
+    calls = []
+    try:
+        build._local_ref_commit = lambda ref: "a" * 40 if ref == "HEAD" else "b" * 40
+        build.subprocess.run = lambda args, **kwargs: calls.append(args)
+        try:
+            build._git_tag("9.9.9")
+        except SystemExit as exc:
+            assert exc.code == 1
+        else:
+            raise AssertionError("_git_tag should reject a conflicting local tag")
+    finally:
+        build._local_ref_commit = original_local_ref
+        build.subprocess.run = original_run
+
+    assert calls == []
+
+
+def test_git_push_rejects_remote_tag_before_pushing_master():
+    original_local_ref = build._local_ref_commit
+    original_remote_tag = build._remote_tag_commit
+    original_run = build.subprocess.run
+    calls = []
+    try:
+        build._local_ref_commit = lambda ref: "a" * 40
+        build._remote_tag_commit = lambda remote, tag: "b" * 40
+        build.subprocess.run = lambda args, **kwargs: calls.append(args)
+        try:
+            build._git_push("9.9.9", auto=True)
+        except SystemExit as exc:
+            assert exc.code == 1
+        else:
+            raise AssertionError("_git_push should reject a conflicting remote tag")
+    finally:
+        build._local_ref_commit = original_local_ref
+        build._remote_tag_commit = original_remote_tag
+        build.subprocess.run = original_run
+
+    assert calls == []
+
+
+def test_git_push_skips_same_remote_tag_without_force():
+    original_local_ref = build._local_ref_commit
+    original_remote_tag = build._remote_tag_commit
+    original_run = build.subprocess.run
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    try:
+        build._local_ref_commit = lambda ref: "a" * 40
+        build._remote_tag_commit = lambda remote, tag: "a" * 40
+        build.subprocess.run = lambda args, **kwargs: calls.append(args) or Result()
+        build._git_push("9.9.9", auto=True)
+    finally:
+        build._local_ref_commit = original_local_ref
+        build._remote_tag_commit = original_remote_tag
+        build.subprocess.run = original_run
+
+    assert calls == [["git", "push", "origin", "master"]]
+
+
+def test_verify_latest_manifest_matches_public_release_metadata():
+    version = "9.9.9"
+    notes = "### 新增功能\n\n- test"
+    github_assets = {
+        "BOSS_ResumeFilter.exe": {"size": 111, "digest": "sha256:" + "a" * 64},
+        "BOSS_ResumeFilter_mac.zip": {"size": 222, "digest": "sha256:" + "b" * 64},
+        "BOSS_ResumeFilter.dmg": {"size": 333, "digest": "sha256:" + "c" * 64},
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        dist_dir = tmp_path / "dist"
+        dist_dir.mkdir()
+        latest = {
+            "version": version,
+            "downloads": {
+                "windows": f"https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter.exe",
+                "macos": f"https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter_mac.zip",
+                "macos_dmg": f"https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter.dmg",
+            },
+            "downloads_cn": {
+                "windows": f"https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter.exe",
+                "macos": f"https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter_mac.zip",
+                "macos_dmg": f"https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter.dmg",
+            },
+            "assets": {
+                "windows": {"size": 111, "sha256": "a" * 64},
+                "macos": {"size": 222, "sha256": "b" * 64},
+                "macos_dmg": {"size": 333, "sha256": "c" * 64},
+            },
+            "release_notes": notes,
+        }
+        (tmp_path / "latest.json").write_text(json.dumps(latest), encoding="utf-8")
+
+        with _with_build_context(tmp_path, dist_dir, is_win=True, is_mac=False):
+            assert build._verify_latest_manifest(version, github_assets, notes) is True
+            latest["assets"]["windows"]["sha256"] = "0" * 64
+            (tmp_path / "latest.json").write_text(json.dumps(latest), encoding="utf-8")
+            assert build._verify_latest_manifest(version, github_assets, notes) is False
 
 
 def test_version_history_integrity_ignores_invalid_zero_patch_local_tag():

@@ -11,6 +11,7 @@ BOSS 简历筛选器 - 打包脚本
   python build.py --github-upload X.Y.Z 手动补传产物到 GitHub Release
   python build.py --gitee-upload X.Y.Z 手动补传产物到 Gitee Release
   python build.py --verify-gitee-integrity X.Y.Z 严格回下载校验 Gitee SHA256
+  python build.py --verify-release X.Y.Z 只读核验双远端、Release 与 latest.json
 """
 import argparse
 import ast
@@ -2062,6 +2063,195 @@ def _verify_release_assets_complete(tag, release_cache=None, report=None,
     )
 
 
+def _remote_ref_commit(remote: str, ref: str) -> str | None:
+    """Return the commit advertised for one remote ref, without fetching it."""
+    result = subprocess.run(
+        ["git", "ls-remote", remote, ref],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=BASE_DIR,
+    )
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1] == ref:
+            return parts[0]
+    return None
+
+
+def _get_github_release_info(tag: str) -> dict | None:
+    """Read public GitHub Release metadata without changing the release."""
+    result = subprocess.run(
+        ["gh", "release", "view", tag, "--json",
+         "tagName,name,body,isDraft,isPrerelease"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=BASE_DIR,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def _get_gitee_release_read_only(version: str) -> tuple[dict, dict] | None:
+    """Read one Gitee Release and its assets without creating or editing it."""
+    owner = "yaoyouzhong"
+    repo = "boss-resume-filter"
+    tag = f"v{version}"
+    token = os.environ.get("GITEE_TOKEN")
+    api_base = f"https://gitee.com/api/v5/repos/{owner}/{repo}"
+    try:
+        releases = _gitee_fetch_releases(api_base, token)
+        release = next((item for item in releases if item.get("tag_name") == tag), None)
+        if not release:
+            return None
+        assets = _gitee_fetch_assets(api_base, token, release["id"])
+    except (KeyError, requests.exceptions.RequestException):
+        return None
+    return release, {
+        "token": token,
+        "owner": owner,
+        "repo": repo,
+        "tag": tag,
+        "api_base": api_base,
+        "release_id": release["id"],
+        "existing": assets,
+    }
+
+
+def _verify_latest_manifest(version: str, github_assets: dict,
+                            release_notes: str, report=None) -> bool:
+    """Cross-check latest.json against one verified GitHub Release."""
+    report = report or (lambda message: print(f"  {message}"))
+    latest_path = BASE_DIR / "latest.json"
+    try:
+        data = json.loads(latest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        report(f"[错误] latest.json 无法读取: {exc}")
+        return False
+
+    ok = True
+    if data.get("version") != version:
+        report(f"[错误] latest.json 版本为 {data.get('version')!r}，预期 {version!r}")
+        ok = False
+
+    expected_downloads = {
+        "windows": f"https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter.exe",
+        "macos": f"https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter_mac.zip",
+        "macos_dmg": f"https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter.dmg",
+    }
+    if data.get("downloads") != expected_downloads:
+        report("[错误] latest.json GitHub 下载地址与版本不一致")
+        ok = False
+
+    expected_cn = {
+        "windows": f"https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter.exe",
+        "macos": f"https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter_mac.zip",
+        "macos_dmg": f"https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter.dmg",
+    }
+    if data.get("downloads_cn") != expected_cn:
+        report("[错误] latest.json Gitee 下载地址与版本不一致")
+        ok = False
+
+    manifest_assets = data.get("assets") or {}
+    asset_names = {
+        "windows": "BOSS_ResumeFilter.exe",
+        "macos": "BOSS_ResumeFilter_mac.zip",
+        "macos_dmg": "BOSS_ResumeFilter.dmg",
+    }
+    for key, name in asset_names.items():
+        remote = github_assets.get(name) or {}
+        expected_sha = _asset_digest_sha256(remote)
+        try:
+            expected_size = int(remote.get("size") or 0)
+            actual_size = int((manifest_assets.get(key) or {}).get("size") or 0)
+        except (TypeError, ValueError):
+            expected_size = actual_size = 0
+        actual_sha = (manifest_assets.get(key) or {}).get("sha256")
+        if expected_size <= 0 or actual_size != expected_size or actual_sha != expected_sha:
+            report(f"[错误] latest.json {key} 的 size/SHA256 与 GitHub Release 不一致")
+            ok = False
+
+    if _normalize_markdown(data.get("release_notes", "")) != _normalize_markdown(release_notes):
+        report("[错误] latest.json release_notes 与公开 Release 不一致")
+        ok = False
+
+    if ok:
+        report("[OK] latest.json 版本、下载地址、发布说明和附件完整性元数据一致")
+    return ok
+
+
+def _verify_release_remote_state(version: str) -> bool:
+    """Run the read-only post-release verification used by --verify-release."""
+    tag = f"v{version}"
+    print(f"\n>>> 只读核验正式发布 {tag}")
+    ok = True
+
+    origin_master = _remote_ref_commit("origin", "refs/heads/master")
+    gitee_master = _remote_ref_commit("gitee", "refs/heads/master")
+    origin_tag = _remote_tag_commit("origin", tag)
+    gitee_tag = _remote_tag_commit("gitee", tag)
+    if not origin_master or not gitee_master or origin_master != gitee_master:
+        print("  [错误] GitHub/Gitee master 未同步")
+        ok = False
+    else:
+        print(f"  [OK] GitHub/Gitee master 一致: {origin_master[:12]}")
+    if not origin_tag or not gitee_tag or origin_tag != gitee_tag:
+        print("  [错误] GitHub/Gitee tag 缺失或指向不一致")
+        ok = False
+    else:
+        print(f"  [OK] GitHub/Gitee {tag} 一致: {origin_tag[:12]}")
+
+    expected_title, expected_notes = _extract_changelog_release(version)
+    github_release = _get_github_release_info(tag)
+    if not github_release:
+        print(f"  [错误] GitHub Release {tag} 不存在或无法读取")
+        return False
+    if github_release.get("isDraft"):
+        print(f"  [错误] GitHub Release {tag} 仍为草稿")
+        ok = False
+    if github_release.get("tagName") != tag:
+        print("  [错误] GitHub Release tagName 不一致")
+        ok = False
+    if github_release.get("name") != expected_title:
+        print("  [错误] GitHub Release 标题与 CHANGELOG 不一致")
+        ok = False
+    if _normalize_markdown(github_release.get("body", "")) != _normalize_markdown(expected_notes):
+        print("  [错误] GitHub Release 正文与 CHANGELOG 不一致")
+        ok = False
+
+    github_assets = _verify_github_release_assets_complete(tag)
+    if github_assets is None:
+        return False
+
+    gitee_result = _get_gitee_release_read_only(version)
+    if not gitee_result:
+        print(f"  [错误] Gitee Release {tag} 不存在或无法读取")
+        return False
+    gitee_release, release_cache = gitee_result
+    if gitee_release.get("name") != expected_title:
+        print("  [错误] Gitee Release 标题与 CHANGELOG 不一致")
+        ok = False
+    if _normalize_markdown(gitee_release.get("body", "")) != _normalize_markdown(expected_notes):
+        print("  [错误] Gitee Release 正文与 CHANGELOG 不一致")
+        ok = False
+    if not _verify_gitee_release_assets_complete(tag, github_assets, release_cache):
+        ok = False
+    if not _verify_latest_manifest(version, github_assets, expected_notes):
+        ok = False
+
+    print(f"\n>>> {tag} 远端发布核验{'通过' if ok else '失败'}")
+    return ok
+
+
 def _gitee_asset_matches_local(local_path, remote_asset, owner, repo, tag, token=None):
     """Return True when a Gitee Release asset has identical file content."""
     local_size = local_path.stat().st_size
@@ -2656,6 +2846,76 @@ def _git_status():
     return bool(status_text), status_text
 
 
+def _local_ref_commit(ref: str) -> str | None:
+    """Return the commit for a local ref, or None when the ref does not exist."""
+    result = subprocess.run(
+        ["git", "rev-list", "-n", "1", ref],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=BASE_DIR,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _remote_tag_commit(remote: str, tag: str) -> str | None:
+    """Return a remote tag commit without fetching or mutating local refs."""
+    result = subprocess.run(
+        ["git", "ls-remote", "--tags", remote,
+         f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=BASE_DIR,
+    )
+    if result.returncode != 0:
+        print(f"[错误] 无法读取 {remote} 的 {tag}: {result.stderr.strip()}")
+        sys.exit(1)
+
+    direct = peeled = None
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        commit, ref = parts
+        if ref.endswith("^{}"):
+            peeled = commit
+        elif ref == f"refs/tags/{tag}":
+            direct = commit
+    return peeled or direct
+
+
+def _abort_tag_conflict(tag: str, source: str, actual: str, expected: str) -> None:
+    """Stop before a release can rewrite an existing tag."""
+    print(f"[错误] {source} 的 {tag} 指向 {actual[:12]}，当前提交为 {expected[:12]}")
+    print("已公开或已存在的 tag 不得移动；请发布更高补丁版本，或人工处理未公开的冲突 tag。")
+    sys.exit(1)
+
+
+def _assert_release_tag_reusable(version: str, will_create_commit: bool = False) -> None:
+    """Allow a release tag only when absent or already on the current commit."""
+    tag = f"v{version}"
+    head_commit = _local_ref_commit("HEAD")
+    if not head_commit:
+        print("[错误] 无法读取当前 HEAD，停止发布")
+        sys.exit(1)
+
+    local_commit = _local_ref_commit(tag)
+    remote_commit = _remote_tag_commit("origin", tag)
+    if will_create_commit and (local_commit or remote_commit):
+        print(f"[错误] {tag} 已存在，但当前发布还会创建新提交")
+        print("不能让既有 tag 改指向新提交；请发布更高补丁版本。")
+        sys.exit(1)
+    if local_commit and local_commit != head_commit:
+        _abort_tag_conflict(tag, "本地", local_commit, head_commit)
+    if remote_commit and remote_commit != head_commit:
+        _abort_tag_conflict(tag, "origin", remote_commit, head_commit)
+
+
 def _git_commit(version, allowed_paths=None):
     """只提交明确允许的发布相关变更"""
     has_changes, status_text = _git_status()
@@ -2749,36 +3009,43 @@ def update_latest_json(version, release_notes, downloads_cn=None, quiet=False,
 
 
 def _git_tag(version):
-    """创建或更新本地 tag，返回旧 tag 指向的 commit（用于 CI 检查）"""
+    """创建本地 tag；同名 tag 仅在已指向当前提交时允许续跑。"""
     tag = f"v{version}"
-    old_tag_commit = None
-    existing = subprocess.run(["git", "tag", "-l", tag], capture_output=True, text=True, cwd=BASE_DIR)
-    if existing.stdout.strip():
-        # 保存旧 tag 指向的 commit，用于后续 CI 检查时 diff
-        old_ref = subprocess.run(["git", "rev-list", "-n", "1", tag], capture_output=True, text=True, cwd=BASE_DIR)
-        old_tag_commit = old_ref.stdout.strip() if old_ref.returncode == 0 else None
-        subprocess.run(["git", "tag", "-f", tag], cwd=BASE_DIR, check=True)
-        print(f"  [OK] 已更新本地 tag: {tag}")
-    else:
-        subprocess.run(["git", "tag", tag], cwd=BASE_DIR, check=True)
-        print(f"  [OK] 已创建本地 tag: {tag}")
-    return old_tag_commit
+    head_commit = _local_ref_commit("HEAD")
+    if not head_commit:
+        print("[错误] 无法读取当前 HEAD，停止创建 tag")
+        sys.exit(1)
+    old_tag_commit = _local_ref_commit(tag)
+    if old_tag_commit:
+        if old_tag_commit != head_commit:
+            _abort_tag_conflict(tag, "本地", old_tag_commit, head_commit)
+        print(f"  [跳过] 本地 tag 已指向当前提交: {tag}")
+        return old_tag_commit
+
+    subprocess.run(["git", "tag", tag], cwd=BASE_DIR, check=True)
+    print(f"  [OK] 已创建本地 tag: {tag}")
+    return None
 
 
 def _git_push(version, auto=False):
     """推送 master 和 tag 到远程"""
     tag = f"v{version}"
-
-    # 检查远程是否已有 tag（需要 force）
-    remote_tags = subprocess.run(["git", "ls-remote", "--tags", "origin", tag],
-                                 capture_output=True, text=True, cwd=BASE_DIR)
-    tag_exists_remote = bool(remote_tags.stdout.strip())
+    head_commit = _local_ref_commit("HEAD")
+    local_tag_commit = _local_ref_commit(tag)
+    remote_tag_commit = _remote_tag_commit("origin", tag)
+    if not head_commit or local_tag_commit != head_commit:
+        print(f"[错误] 本地 {tag} 未指向当前 HEAD，停止推送")
+        sys.exit(1)
+    if remote_tag_commit and remote_tag_commit != head_commit:
+        _abort_tag_conflict(tag, "origin", remote_tag_commit, head_commit)
 
     print(f"\n{'='*60}")
     print(f"  即将推送到远程：")
     print(f"    1. git push origin master")
-    cmd2 = f"    2. git push origin {tag}" + (" --force" if tag_exists_remote else "")
-    print(cmd2)
+    if remote_tag_commit:
+        print(f"    2. {tag} 已存在且提交一致，跳过 tag 推送")
+    else:
+        print(f"    2. git push origin {tag}")
     print(f"{'='*60}")
 
     if auto:
@@ -2802,14 +3069,14 @@ def _git_push(version, auto=False):
             else:
                 raise
 
-    push_cmd = ["git", "push", "origin", tag]
-    if tag_exists_remote:
-        push_cmd.append("--force")
+    if remote_tag_commit:
+        print(f"  [跳过] origin/{tag} 已指向当前提交")
+        return
 
     # 推送 tag，带重试
     for attempt in range(3):
         try:
-            subprocess.run(push_cmd, cwd=BASE_DIR, check=True)
+            subprocess.run(["git", "push", "origin", tag], cwd=BASE_DIR, check=True)
             print(f"  [OK] {tag} 已推送")
             break
         except subprocess.CalledProcessError as e:
@@ -3057,10 +3324,10 @@ def _gh_release(version, release_title, release_notes, progress=None,
 
 
 def _get_changed_files_since_tag(old_tag_commit=None):
-    """获取 tag 更新前的旧 commit 到当前 HEAD 之间变更的文件列表。
+    """获取已有发布 tag 的 commit 到当前 HEAD 之间变更的文件列表。
 
-    用于判断是否需要触发跨平台 CI 重建。传入 tag force 更新前的旧 commit，
-    对比当前 HEAD，只包含本次发布实际变更的文件。
+    用于判断是否需要触发跨平台 CI 重建。中断重入时可传入已有 tag 的 commit，
+    与当前 HEAD 对比，只包含本次发布实际变更的文件。
     如果没有旧 commit（首次发布），则用 git describe 查找上一个 tag。
     如果 old_tag_commit 等于 HEAD（中断重入场景），回退到上一个版本 tag。
     """
@@ -3309,7 +3576,7 @@ def _verify_assets_deleted(tag, asset_names):
 
 
 def _trigger_cross_platform_ci(tag, old_tag_commit=None):
-    """覆盖发布后，删除对端旧产物并触发 CI 重建。
+    """新版本发布或同提交断点续跑时，按需触发对端 CI 重建。
 
     Windows 发布 → 删旧 DMG/ZIP → CI 自动构建 macOS
     macOS 发布 → 删旧 EXE → CI 自动构建 Windows
@@ -4106,6 +4373,8 @@ def main():
                         help="手动补传产物到 Gitee Release（需要 GITEE_TOKEN）")
     parser.add_argument("--verify-gitee-integrity", type=str, default=None, metavar="X.Y.Z",
                         help="回下载 Gitee Release 产物并逐文件校验 SHA256")
+    parser.add_argument("--verify-release", type=str, default=None, metavar="X.Y.Z",
+                        help="只读核验双远端分支/tag、Release 附件和 latest.json")
     parser.add_argument("--gitee-clean-old-assets", type=str, default=None, metavar="X.Y.Z",
                         help="清理 Gitee 旧版本附件，仅保留指定版本产物；默认只预览")
     parser.add_argument("--github-upload", type=str, default=None, metavar="X.Y.Z",
@@ -4158,6 +4427,13 @@ def main():
 
     if args.check:
         _preflight_checks(require_clean=True, strict_changelog=args.strict_changelog)
+        return
+
+    if args.verify_release:
+        version = args.verify_release.lstrip("v")
+        _validate_version_format(version)
+        if not _verify_release_remote_state(version):
+            sys.exit(1)
         return
 
     if args.gitee_clean_old_assets:
@@ -4477,6 +4753,13 @@ def main():
     old_tag_commit = None
     if args.release and not args.ci:
         progress.start_step(1)
+
+        # 任何已有 tag 都必须与当前提交一致；存在待提交变更时不能复用旧 tag。
+        has_pending_changes, _status_text = _git_status()
+        _assert_release_tag_reusable(
+            current_version,
+            will_create_commit=has_pending_changes,
+        )
 
         # 2a: 提交变更（如 --version 导致的版本号修改）
         allowed = ["gui_main.py"] if args.version else []

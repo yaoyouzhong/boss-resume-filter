@@ -19,8 +19,8 @@ jobs:
       - name: Push to Gitee
         run: |
           git remote add gitee https://yaoyouzhong:${{ secrets.GITEE_TOKEN }}@gitee.com/yaoyouzhong/boss-resume-filter.git || true
-          git push gitee master --force || {
-            echo "Push failed, retrying in 5s..."
+          git push gitee master:master || {
+            echo "Push failed. Retrying once in 5s; non-fast-forward divergence will not be overwritten."
             sleep 5
-            git push gitee master --force
+            git push gitee master:master
           }
