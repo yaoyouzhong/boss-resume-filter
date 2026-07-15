@@ -15,11 +15,11 @@ boss-resume-filter/
 ├── greeting_failure.py   # 打招呼失败原因归类模块
 ├── release_user_audit.py # 用户视角发布审计模块
 ├── storage.py            # 候选人数据持久化模块（去重、原子写入、备份恢复）
-├── gui_main.py           # 图形界面主程序（v2.18）
+├── gui_main.py           # 图形界面主程序（v2.19）
 ├── gui_dialogs.py        # 独立对话框模块（更新日志、关于弹窗、CHANGELOG 渲染）
 ├── changelog_parser.py   # CHANGELOG 解析模块（版本段落提取、标题解析）
 ├── updater.py            # 自动更新模块（Gitee/GitHub 双源检查、下载替换、完整性校验、启动时自动检查）
-├── icons.py              # 图标绘制模块（Pillow 矢量图标，36个图标函数 + IconCache）
+├── icons.py              # 图标绘制模块（Pillow 矢量图标 + IconCache）
 ├── doc_parser.py         # 招聘需求文档解析器（JD → 必要条件 + 职位要求）
 ├── education_certificate.py # 毕业证书图片识别、字段校验与学信网页面填写
 ├── education_tool.py    # 独立学历证书核验助手入口（复用 gui_main 学历核验模式）
@@ -143,7 +143,7 @@ boss-resume-filter/
 - 运行前先执行岗位配置体检：错误必须阻断，警告由用户确认；BOSS 当前岗位与所选配置不一致时必须明确确认后才能继续。
 - GUI 需要区分未登录、非推荐页、无已发布职位和页面无候选人；无已发布职位或无候选人时跳过卡片选择器检查，不能误报为选择器异常。
 - 自动打招呼必须在候选人筛选完成后展示待发送数量并等待确认；用户取消时保留筛选结果，不发送消息。
-- 运行结束、停止、中断和异常都要生成可读的本轮结果摘要；日志保留过程细节，摘要用于判断是否完整结束。
+- 运行结束、停止、中断和异常都要生成可读的本轮结果摘要；摘要最少 3 行、最多 10 行，超出后内部滚动，日志只保留过程细节和一行终态。达到滚动轮次上限属于本轮正常结束，整体状态显示成功，但摘要必须用黄色“未确认扫描到底”提示范围不确定性。
 
 ### 停止机制
 
@@ -160,6 +160,7 @@ boss-resume-filter/
 
 - 运行页每 2 秒轮询 Chrome 连接状态；手动检测时自动启动 Chrome（动态端口 + 独立 profile，保留登录态）
 - `_browser_check_running` 互斥标志防重复启动；端口预检防止自动启动
+- 页面整体刷新或局部重绘造成的临时上下文失效应等待后重试，不能记为选择器失败；Chrome 关闭或页面连接断开应直接转为浏览器未连接状态，不能弹出选择器异常
 - GUI 手动打招呼前检测 page 连接有效性，断开时自动重连，重连失败弹窗提醒
 
 ### 反爬对抗
@@ -263,6 +264,7 @@ boss-resume-filter/
 
 - `api_config.json` 是发布默认模板；源码运行时用户配置写入 ignored 的 `api_config.local.json`，避免模型列表刷新和本机模型切换污染发布 diff
 - API Key 加密存储在系统钥匙串，配置文件只保存 provider/base_url/model 等非密钥信息
+- 服务类型、显示名称、并发数和默认超时统一复用 `ai_adapter.classify_api_endpoint()`：结合服务商身份与官方文档登记域名判断，官方 API 及 Token Plan、Coding Plan、Step Plan 等官方套餐入口仍属于官方服务；未知域名或服务商与域名不匹配时才按中转/自定义服务处理，禁止只按模型名或 URL 包含词判断
 - 支持动态获取模型列表、保存模型库、在“使用中的模型”中显式选择默认 AI 模型、测试连接（并行双策略）
 - 新电脑部署：首次启动检测 API Key 缺失并引导重新配置
 
@@ -278,6 +280,7 @@ boss-resume-filter/
 - 系统设置的“使用中的模型”可显式选择学历核验模型；未指定时跟随默认 AI 模型
 - `api_config.local.json` / 打包后的 `api_config.json` 的 `education_model_ref` 字段存储指定模型（`{api_provider, base_url, model}`），未设置时回退默认 AI 模型
 - 独立学历证书核验助手固定使用 `token-plan.cn-beijing.maas.aliyuncs.com` 的 `kimi-k2.6`
+- 学信网验证支持多选证书并为每人创建独立标签页；系统填写姓名和证书编号、识别图片验证码并提交，识别失败时转人工输入或重试，手机扫码和最终结果确认始终由 HR 完成
 - 正在作为默认 AI 模型或学历核验模型使用的已保存模型，需先在“使用中的模型”中切换后才能删除
 - 实现位置：`gui_main.py:_on_education_model_selected()`、`gui_main.py:_get_education_api_config()`
 
