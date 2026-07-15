@@ -1171,6 +1171,7 @@ def test_version_history_integrity_ignores_invalid_zero_patch_local_tag():
             ]),
             encoding="utf-8",
         )
+        (tmp_path / "gui_main.py").write_text('__version__ = "2.10.1"', encoding="utf-8")
 
         original_run = build.subprocess.run
 
@@ -1179,6 +1180,57 @@ def test_version_history_integrity_ignores_invalid_zero_patch_local_tag():
                 class Result:
                     returncode = 0
                     stdout = "v2.10.1\nv2.9.0\nv2.9.1\nv2.9\n"
+                return Result()
+            return original_run(args, **kwargs)
+
+        with _with_build_context(tmp_path, dist_dir, is_win=True, is_mac=False):
+            build.subprocess.run = fake_run
+            try:
+                build._check_version_history_integrity()
+            finally:
+                build.subprocess.run = original_run
+
+
+def test_version_history_integrity_includes_untagged_current_version():
+    """发布前的新版本尚无 tag，README 最近三版仍应以源码版本为首。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        dist_dir = tmp_path / "dist"
+        dist_dir.mkdir()
+        (tmp_path / "gui_main.py").write_text('__version__ = "2.11"', encoding="utf-8")
+        (tmp_path / "CHANGELOG.md").write_text(
+            "\n".join([
+                "## v2.11",
+                "- current",
+                "## v2.10.1",
+                "- patch",
+                "## v2.9.1",
+                "- patch",
+                "## v2.9",
+                "- major",
+            ]),
+            encoding="utf-8",
+        )
+        (tmp_path / "README.md").write_text(
+            "\n".join([
+                "### v2.11",
+                "- current",
+                "### v2.10.1",
+                "- patch",
+                "### v2.9.1",
+                "- patch",
+                "### v2.9 及更早版本",
+            ]),
+            encoding="utf-8",
+        )
+
+        original_run = build.subprocess.run
+
+        def fake_run(args, **kwargs):
+            if args[:4] == ["git", "tag", "-l", "v*"]:
+                class Result:
+                    returncode = 0
+                    stdout = "v2.10.1\nv2.9.1\nv2.9\n"
                 return Result()
             return original_run(args, **kwargs)
 

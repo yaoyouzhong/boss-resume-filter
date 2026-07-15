@@ -1242,6 +1242,14 @@ def _check_code_to_changelog_coverage(strict=False):
     def _context_keywords(fpath: str, line: str) -> list[str]:
         lowered = f"{fpath} {line}".lower()
         keywords: list[str] = []
+        if fpath.endswith("api_config.json"):
+            # 发布模板中的服务商、模型库和探测缓存都属于“模型配置”语义。
+            # 避免仅凭 providers/fetched_models 等内部键名制造无法落到用户文案的误报。
+            keywords.extend(["模型", "配置"])
+        if fpath.endswith("ui_config.json"):
+            keywords.extend(["界面", "布局"])
+        if fpath.endswith("constants.py") and "recommend" in lowered:
+            keywords.extend(["候选人", "推荐"])
         if (
             "updater.py" in fpath
             or "gui_dialogs.py" in fpath
@@ -1255,6 +1263,9 @@ def _check_code_to_changelog_coverage(strict=False):
         semantic_keywords = (
             (r"greet", ["打招呼"]),
             (r"candidate", ["候选人"]),
+            (r"scan", ["扫描"]),
+            (r"page|refresh", ["浏览器", "刷新"]),
+            (r"date|time_range", ["时间"]),
             (r"browser|chromium|chrome", ["浏览器", "连接"]),
             (r"model|capability|protocol|provider|api_key", ["模型", "兼容"]),
             (r"qualification|education|edu_", ["学历", "资格"]),
@@ -1301,7 +1312,7 @@ def _check_code_to_changelog_coverage(strict=False):
                 name, value = m.group(1), m.group(2).strip()[:60]
                 signals.append((
                     "新配置", f"{fpath}: {name} = {value}",
-                    _keywords(f"{name} {value}"),
+                    _keywords(f"{name} {value}") + _context_keywords(fpath, name),
                     "体验优化",
                 ))
 
@@ -1311,7 +1322,7 @@ def _check_code_to_changelog_coverage(strict=False):
                 if group not in ("version",):
                     signals.append((
                         "新配置", f"{fpath}: {group}",
-                        _keywords(group),
+                        _keywords(group) + _context_keywords(fpath, group),
                         "新增功能" if fpath.endswith("selectors.json") else "体验优化",
                     ))
 
@@ -1331,7 +1342,12 @@ def _check_code_to_changelog_coverage(strict=False):
             for m in re.finditer(r"^def\s+([a-z]\w{5,})\s*\(", joined, re.MULTILINE):
                 fname = m.group(1)
                 after = joined[m.end():m.end()+300]
-                signals.append(("新函数", f"{fpath}: {fname}", _keywords(f"{fname} {after}"), "新增功能"))
+                signals.append((
+                    "新函数",
+                    f"{fpath}: {fname}",
+                    _keywords(f"{fname} {after}") + _context_keywords(fpath, fname),
+                    "新增功能",
+                ))
 
         # 4. UI 文案 / 弹窗 / 用户可见输出
         if fpath.endswith(".py"):
@@ -1385,6 +1401,7 @@ def _check_code_to_changelog_coverage(strict=False):
                     and field_match.group(1) in {
                         "status", "error", "msg", "message", "time",
                         "response_time", "capability", "reason", "adjustment",
+                        "name", "skip",
                     }
                     and not re.search(r"candidate|qualification|llm_|followup|feedback|blacklist|resume", line)
                 ):
@@ -2540,6 +2557,12 @@ def _check_version_history_integrity():
 
     # 过滤出有效的公开版本标签（v1.0, v2.8.12 等；v2.9.0 属非法历史 tag）
     versions = [tag[1:] for tag in all_tags if _is_valid_release_tag(tag)]  # 去掉 'v' 前缀
+
+    # 发布前检查发生在新 tag 创建之前，当前源码版本也必须纳入“最近 3 个版本”。
+    # 否则 README 同时保留当前版本和最近 3 个旧 tag 时会超过上限，形成无法满足的门禁。
+    current_version = _read_version()
+    if current_version not in versions:
+        versions.append(current_version)
 
     if not versions:
         print("  [跳过] 版本历史检查：没有找到有效的语义化版本")
