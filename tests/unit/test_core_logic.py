@@ -77,8 +77,12 @@ def test_scan_summary_separates_rule_passed_and_ai_final_counts():
     )
 
     assert message == (
-        "[完成] 筛选完成：规则筛选通过 13/375 人，"
-        "AI复核成功 4 人，复核淘汰 1 人，最终保留 12 人，0 人已打招呼"
+        "[完成] 筛选结果\n"
+        "规则筛选：13 / 375 人通过\n"
+        "AI 复核：成功 4 人\n"
+        "AI 淘汰：1 人\n"
+        "最终保留：12 人\n"
+        "本轮打招呼：0 人"
     )
 
 
@@ -93,7 +97,13 @@ def test_scan_summary_without_ai_does_not_repeat_final_count():
         total_greeted=3,
     )
 
-    assert message == "[完成] 筛选完成：规则筛选通过 12/100 人，3 人已打招呼"
+    assert message == (
+        "[完成] 筛选结果\n"
+        "规则筛选：12 / 100 人通过\n"
+        "AI 复核：未执行\n"
+        "最终保留：12 人\n"
+        "本轮打招呼：3 人"
+    )
 
 
 def test_scan_summary_exposes_ai_failures_even_when_all_evaluations_fail():
@@ -109,9 +119,12 @@ def test_scan_summary_exposes_ai_failures_even_when_all_evaluations_fail():
     )
 
     assert message == (
-        "[完成] 筛选完成：规则筛选通过 13/100 人，"
-        "AI复核成功 0 人、失败 13 人（按规则结果保留），"
-        "复核淘汰 0 人，最终保留 13 人，0 人已打招呼"
+        "[完成] 筛选结果\n"
+        "规则筛选：13 / 100 人通过\n"
+        "AI 复核：成功 0 人，失败 13 人（按规则结果保留）\n"
+        "AI 淘汰：0 人\n"
+        "最终保留：13 人\n"
+        "本轮打招呼：0 人"
     )
 
 
@@ -120,8 +133,13 @@ def test_scan_outcome_summary_uses_worst_job_status():
         {"job_name": "岗位A", "status": "complete", "reason": "检测到页面底部"},
         {"job_name": "岗位B", "status": "partial", "reason": "达到 30 轮上限"},
     ])
-    assert status == "可能未扫完"
-    assert detail == "岗位A：检测到页面底部；岗位B：达到 30 轮上限"
+    assert status == "达到轮次上限"
+    assert detail == (
+        "岗位B：达到 30 轮上限\n"
+        "说明：尚未检测到列表底部，也未连续 5 轮无新增候选人，"
+        "因此不能确认候选人已全部加载。\n"
+        "建议：适当提高“滚动轮次”后重新运行。"
+    )
 
     status, _ = bossmaster._summarize_scan_outcomes([
         {"job_name": "岗位A", "status": "partial", "reason": "达到 30 轮上限"},
@@ -145,11 +163,13 @@ def test_filter_audit_detail_reports_top_rejection_reasons_and_skips():
     )
 
     assert detail == (
-        "黑名单跳过 2 人；已沟通跳过 3 人；"
-        "主要淘汰：经验不足（要求3年以上） 7 人、"
-        "学历不符/不足（要求本科） 4 人、"
-        "薪资不匹配（岗位最高25K） 2 人；"
-        "AI淘汰：硬条件 1 人、降分 2 人"
+        "已屏蔽跳过：2 人\n"
+        "已沟通跳过：3 人\n"
+        "主要淘汰原因\n"
+        "- 经验不足（要求3年以上）：7 人\n"
+        "- 学历不符/不足（要求本科）：4 人\n"
+        "- 薪资不匹配（岗位最高25K）：2 人\n"
+        "AI 淘汰：硬条件 1 人、降分 2 人"
     )
 
 
@@ -166,6 +186,66 @@ def test_selector_health_rejects_disconnected_page_before_iframe_lookup():
         bossmaster.check_selectors_health(DisconnectedPage())
     except RuntimeError as exc:
         raised = "连接已断开" in str(exc)
+
+    assert raised is True
+
+
+def test_selector_health_retries_instead_of_reporting_stale_iframe_as_failure():
+    class ContextLostError(Exception):
+        pass
+
+    class RefreshingFrame:
+        def attr(self, name):
+            return "https://www.zhipin.com/web/frame/recommend/" if name == "src" else ""
+
+        def eles(self, _selector):
+            raise ContextLostError("页面被刷新，请等待页面加载完成")
+
+    class FakePage:
+        def __init__(self):
+            self.frame = RefreshingFrame()
+
+        def run_js(self, _script):
+            return 1
+
+        def eles(self, _selector):
+            return [self.frame]
+
+    raised = False
+    try:
+        bossmaster.check_selectors_health(FakePage())
+    except ContextLostError:
+        raised = True
+
+    assert raised is True
+
+
+def test_selector_health_propagates_disconnect_during_card_check():
+    class PageDisconnectedError(Exception):
+        pass
+
+    class DisconnectingFrame:
+        def attr(self, name):
+            return "https://www.zhipin.com/web/frame/recommend/" if name == "src" else ""
+
+        def eles(self, _selector):
+            raise PageDisconnectedError("与页面的连接已断开。")
+
+    class FakePage:
+        def __init__(self):
+            self.frame = DisconnectingFrame()
+
+        def run_js(self, _script):
+            return 1
+
+        def eles(self, _selector):
+            return [self.frame]
+
+    raised = False
+    try:
+        bossmaster.check_selectors_health(FakePage())
+    except PageDisconnectedError:
+        raised = True
 
     assert raised is True
 
@@ -392,7 +472,7 @@ def test_run_smart_scan_includes_ai_failures_in_final_summary():
         )
 
     assert progress[-1][0] == 100
-    assert "AI复核成功 0 人、失败 3 人（按规则结果保留）" in progress[-1][1]
+    assert "AI 复核：成功 0 人，失败 3 人（按规则结果保留）" in progress[-1][1]
 
 
 def test_run_job_config_diagnostics_ignores_info_only():
@@ -1435,6 +1515,48 @@ def test_export_to_excel_keeps_full_candidate_summary_in_detail_column():
         avg_col = summary_headers.index("平均分") + 1
         assert summary_sheet.cell(row=2, column=total_col).value == 1
         assert summary_sheet.cell(row=2, column=avg_col).value == "80.0"
+
+
+def test_export_to_excel_can_preserve_explicit_low_score_and_blacklisted_input():
+    candidates = [
+        {
+            "geek_id": "low-score",
+            "name": "低分待复核",
+            "job_name": "Java",
+            "match_score": 53,
+            "llm_evaluated": True,
+        },
+        {
+            "geek_id": "blacklisted",
+            "name": "已屏蔽候选人",
+            "job_name": "Java",
+            "match_score": 70,
+            "blacklisted": True,
+        },
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output = os.path.join(tmpdir, "visible-candidates.xlsx")
+
+        assert bossmaster.export_to_excel(
+            candidates,
+            output,
+            preserve_input=True,
+        ) is True
+
+        from openpyxl import load_workbook
+        workbook = load_workbook(output)
+        sheet = workbook["全部候选人"]
+        headers = [cell.value for cell in sheet[1]]
+        name_col = headers.index("姓名") + 1
+        level_col = headers.index("推荐指数") + 1
+        blacklisted_col = headers.index("是否屏蔽") + 1
+        assert sheet.max_row == 3
+        assert [sheet.cell(row=row, column=name_col).value for row in (2, 3)] == [
+            "已屏蔽候选人",
+            "低分待复核",
+        ]
+        assert sheet.cell(row=2, column=blacklisted_col).value == "是"
+        assert sheet.cell(row=3, column=level_col).value == "未通过"
 
 
 def test_auto_greet_skips_manual_review_candidates():

@@ -111,6 +111,34 @@ GREET_CONTEXT_BATCH_PAUSE_CENTER = 5.0
 GREET_CONTEXT_BATCH_PAUSE_SPREAD = 2.5
 
 
+def is_transient_page_refresh_error(exc: Exception) -> bool:
+    """Return whether DrissionPage failed because the page/iframe was rebuilt."""
+    error_name = type(exc).__name__
+    error_text = str(exc).lower()
+    return (
+        error_name in {"ContextLostError", "ElementLostError"}
+        or "context lost" in error_text
+        or "页面被刷新" in error_text
+        or "元素对象已失效" in error_text
+    )
+
+
+def is_page_connection_error(exc: Exception) -> bool:
+    """Return whether DrissionPage lost the browser/page connection."""
+    error_name = type(exc).__name__
+    error_text = str(exc).lower()
+    return (
+        error_name in {"PageDisconnectedError", "BrowserConnectError"}
+        or "连接已断开" in error_text
+        or "page disconnected" in error_text
+    )
+
+
+def _should_abort_selector_health_check(exc: Exception) -> bool:
+    """Do not report page lifecycle failures as broken selectors."""
+    return is_transient_page_refresh_error(exc) or is_page_connection_error(exc)
+
+
 def _ensure_recommend_page(page: Any, notice_callback=None, context: str = "运行") -> bool:
     """确认当前仍在推荐牛人页面；页面跑偏时通知 GUI 并让调用方停止本轮。"""
     error_detail = "无法读取当前页面 URL"
@@ -412,7 +440,12 @@ def extract_summary_info(text: str) -> dict[str, Any]:
     return info
 
 
-def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
+def export_to_excel(
+    candidates: list[dict[str, Any]],
+    filename: str,
+    *,
+    preserve_input: bool = False,
+) -> bool:
     """将候选人数据导出为 Excel - 增强版
 
     功能：
@@ -546,7 +579,11 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
 
     try:
         # 按匹配分从高到低排序
-        visible_candidates = [c for c in candidates if not c.get('blacklisted')]
+        visible_candidates = (
+            list(candidates)
+            if preserve_input
+            else [c for c in candidates if not c.get('blacklisted')]
+        )
         sorted_candidates = sorted(visible_candidates, key=lambda x: x.get('match_score', 0), reverse=True)
 
         data = []
@@ -560,7 +597,9 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
             elif score >= SCORE_THRESHOLD_PASS:
                 recommend_level = "待定"
             else:
-                continue  # 低于通过分直接过滤，不进入导出
+                if not preserve_input:
+                    continue  # 默认导出仍保持历史的通过分门槛
+                recommend_level = "未通过"
 
             summary_info = extract_summary_info(c.get('summary', ''))
             # API 结构化数据覆盖文本解析（与 smart_scan_candidates 一致）
@@ -615,6 +654,7 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
                 '行业匹配': dims.get('industry_fit', ''),
                 '发展潜力': dims.get('growth_potential', ''),
                 # ⑤ 跟进
+                '是否屏蔽': '是' if c.get('blacklisted') else '否',
                 '是否打招呼': '是' if c.get('greet_sent', False) else '否',
                 '跟进状态': c.get('followup_status') or ('已打招呼' if c.get('greet_sent', False) else '未沟通'),
                 '跟进备注': c.get('followup_note', ''),
@@ -639,7 +679,7 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
             '年龄', '工作年限', '学历', '学历明细', '薪资', '求职状态', '城市', '最近公司', '技能',
             '匹配分', '推荐指数', '技能匹配', '评分拆解', '评分解释', '命中证据',
             '简历评估', '简历评估理由', '技能深度', '经验质量', '行业匹配', '发展潜力',
-            '是否打招呼', '跟进状态', '跟进备注', '跟进时间',
+            '是否屏蔽', '是否打招呼', '跟进状态', '跟进备注', '跟进时间',
             '人工反馈', '反馈原因', '反馈备注', '反馈时间',
             '是否需人工确认', '风险提示', '自动打招呼阻断原因',
             '首次发现', '最近评估', '详细信息',
@@ -819,7 +859,7 @@ def export_to_excel(candidates: list[dict[str, Any]], filename: str) -> bool:
         return False
 
 
-def get_iframe(page: ChromiumPage):
+def get_iframe(page: ChromiumPage, *, raise_transient: bool = False):
     """获取包含推荐列表的 iframe"""
     try:
         frames = page.eles(_sel('iframe', 'selector', 'tag:iframe'))
@@ -830,6 +870,8 @@ def get_iframe(page: ChromiumPage):
         if frames:
             return frames[0]
     except Exception as e:
+        if raise_transient and _should_abort_selector_health_check(e):
+            raise
         logger.error("获取 iframe 失败：%s", e)
     return None
 
@@ -3194,6 +3236,8 @@ def check_selectors_health(page: ChromiumPage) -> list[dict[str, Any]]:
                 results.append({'group': group, 'name': name, 'status': 'ok',
                                'detail': '检查通过'})
         except Exception as e:
+            if _should_abort_selector_health_check(e):
+                raise
             results.append({'group': group, 'name': name, 'status': 'fail',
                            'detail': f'异常：{type(e).__name__}: {str(e)[:80]}'})
 
@@ -3206,7 +3250,7 @@ def check_selectors_health(page: ChromiumPage) -> list[dict[str, Any]]:
 
     # 2. 候选人卡片
     cards_sel = _sel('candidate_card', 'all_cards_xpath', 'xpath://*[@data-geekid]')
-    iframe = get_iframe(page)
+    iframe = get_iframe(page, raise_transient=True)
     target = iframe if iframe else page
     def _test_cards():
         els = target.eles(cards_sel)
@@ -3229,6 +3273,8 @@ def check_selectors_health(page: ChromiumPage) -> list[dict[str, Any]]:
                 results.append({'group': 'candidate_card', 'name': 'all_cards', 'status': 'warn',
                                'detail': '未找到匹配元素（可能页面未加载或选择器已失效）'})
     except Exception as e:
+        if _should_abort_selector_health_check(e):
+            raise
         card_count = 0
         results.append({'group': 'candidate_card', 'name': 'all_cards', 'status': 'fail',
                        'detail': f'异常：{type(e).__name__}: {str(e)[:80]}'})
@@ -3241,7 +3287,9 @@ def check_selectors_health(page: ChromiumPage) -> list[dict[str, Any]]:
             el = page.ele(f'css:{css}', timeout=0.3)
             if el and el.states.is_displayed:
                 captcha_found.append(css)
-        except Exception:
+        except Exception as e:
+            if _should_abort_selector_health_check(e):
+                raise
             continue
     if captcha_found:
         results.append({'group': 'captcha_detection', 'name': 'css_containers',
@@ -3264,6 +3312,8 @@ def check_selectors_health(page: ChromiumPage) -> list[dict[str, Any]]:
                 results.append({'group': 'limit_detection', 'name': 'keywords',
                                'status': 'ok', 'detail': '无限制弹窗'})
         except Exception as e:
+            if _should_abort_selector_health_check(e):
+                raise
             results.append({'group': 'limit_detection', 'name': 'keywords',
                            'status': 'fail', 'detail': f'JS 执行失败：{str(e)[:60]}'})
 
@@ -3280,6 +3330,8 @@ def check_selectors_health(page: ChromiumPage) -> list[dict[str, Any]]:
                                    'status': 'ok' if btn else 'warn',
                                    'detail': '找到按钮' if btn else '第一张卡片未找到按钮'})
         except Exception as e:
+            if _should_abort_selector_health_check(e):
+                raise
             results.append({'group': 'greet_button', 'name': 'button_xpath',
                            'status': 'fail', 'detail': str(e)[:80]})
 
@@ -3390,7 +3442,11 @@ def _build_auto_greet_confirm_text(
     if pending_count:
         lines.append(f"已跳过上次发送待确认：{pending_count} 人")
     if scan_stats and scan_stats.get('scan_status') == 'partial':
-        lines.append(f"提示：本岗位可能未扫完（{scan_stats.get('scan_reason', '未取得停止原因')}）")
+        lines.append(
+            "提示：扫描已达到轮次上限，尚未确认候选人已全部加载"
+            f"（{scan_stats.get('scan_reason', '未取得停止原因')}）"
+        )
+        lines.append("建议先取消发送，适当提高“滚动轮次”后重新运行。")
     if preview:
         lines.append("")
         lines.append("将先发送：")
@@ -4173,11 +4229,25 @@ def _summarize_scan_outcomes(scan_outcomes: list[dict[str, str]]) -> tuple[str, 
     if any(item['status'] == 'interrupted' for item in scan_outcomes):
         final_status = "扫描中断"
     elif any(item['status'] == 'partial' for item in scan_outcomes):
-        final_status = "可能未扫完"
-    detail = "；".join(
-        f"{item['job_name']}：{item['reason']}" for item in scan_outcomes
-    )
-    return final_status, detail
+        final_status = "达到轮次上限"
+
+    incomplete = [item for item in scan_outcomes if item['status'] != 'complete']
+    if not incomplete:
+        return final_status, ""
+
+    lines = [f"{item['job_name']}：{item['reason']}" for item in incomplete]
+    if final_status == "达到轮次上限":
+        lines.extend([
+            "说明：尚未检测到列表底部，也未连续 5 轮无新增候选人，"
+            "因此不能确认候选人已全部加载。",
+            "建议：适当提高“滚动轮次”后重新运行。",
+        ])
+    else:
+        lines.extend([
+            "说明：扫描在确认列表到底前中断，当前结果仅包含已处理的候选人。",
+            "建议：处理上述中断原因后重新运行。",
+        ])
+    return final_status, "\n".join(lines)
 
 
 def _format_filter_audit_detail(
@@ -4187,26 +4257,26 @@ def _format_filter_audit_detail(
     ai_hard_rejected: int = 0,
     ai_score_rejected: int = 0,
 ) -> str:
-    """Format the compact rejection funnel detail for the final run summary."""
-    parts = []
+    """Format rejection details as readable business lines."""
+    lines = []
     if skipped_blacklisted:
-        parts.append(f"黑名单跳过 {skipped_blacklisted} 人")
+        lines.append(f"已屏蔽跳过：{skipped_blacklisted} 人")
     if skipped_already_greeted:
-        parts.append(f"已沟通跳过 {skipped_already_greeted} 人")
+        lines.append(f"已沟通跳过：{skipped_already_greeted} 人")
     top_reasons = sorted(
         (rule_failed_reasons or {}).items(), key=_filter_reason_sort_key
     )[:3]
     if top_reasons:
-        reason_text = "、".join(f"{reason} {count} 人" for reason, count in top_reasons)
-        parts.append(f"主要淘汰：{reason_text}")
+        lines.append("主要淘汰原因")
+        lines.extend(f"- {reason}：{count} 人" for reason, count in top_reasons)
     ai_parts = []
     if ai_hard_rejected:
         ai_parts.append(f"硬条件 {ai_hard_rejected} 人")
     if ai_score_rejected:
         ai_parts.append(f"降分 {ai_score_rejected} 人")
     if ai_parts:
-        parts.append(f"AI淘汰：{'、'.join(ai_parts)}")
-    return "；".join(parts)
+        lines.append(f"AI 淘汰：{'、'.join(ai_parts)}")
+    return "\n".join(lines)
 
 
 def _format_scan_summary(
@@ -4220,19 +4290,26 @@ def _format_scan_summary(
     detail: str = "",
     total_ai_failed: int = 0,
 ) -> str:
-    """Format the final scan summary with rule and AI counts kept separate."""
-    prefix = "筛选完成：" if status == "完成" else ""
-    message = f"[{status}] {prefix}规则筛选通过 {total_rule_passed}/{total_raw} 人"
+    """Format the final scan summary as readable business sections."""
+    lines = [
+        f"[{status}] 筛选结果",
+        f"规则筛选：{total_rule_passed} / {total_raw} 人通过",
+    ]
     if total_ai_evaluated > 0 or total_ai_failed > 0:
-        ai_result = f"AI复核成功 {total_ai_evaluated} 人"
+        ai_result = f"成功 {total_ai_evaluated} 人"
         if total_ai_failed:
-            ai_result += f"、失败 {total_ai_failed} 人（按规则结果保留）"
-        message += (
-            f"，{ai_result}，复核淘汰 {total_ai_downgraded} 人，"
-            f"最终保留 {total_passed} 人"
-        )
-    message = f"{message}，{total_greeted} 人已打招呼"
-    return f"{message}，{detail}" if detail else message
+            ai_result += f"，失败 {total_ai_failed} 人（按规则结果保留）"
+        lines.append(f"AI 复核：{ai_result}")
+        lines.append(f"AI 淘汰：{total_ai_downgraded} 人")
+    else:
+        lines.append("AI 复核：未执行")
+    lines.extend([
+        f"最终保留：{total_passed} 人",
+        f"本轮打招呼：{total_greeted} 人",
+    ])
+    if detail:
+        lines.extend(["", detail])
+    return "\n".join(lines)
 
 
 def _build_run_job_config_diagnostics(
@@ -4680,9 +4757,9 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
             )
             detail_parts = []
             if scan_detail:
-                detail_parts.append(f"扫描结束：{scan_detail}")
+                detail_parts.append(f"扫描范围\n{scan_detail}")
             if filter_detail:
-                detail_parts.append(f"筛选漏斗：{filter_detail}")
+                detail_parts.append(f"筛选明细\n{filter_detail}")
             msg = _format_scan_summary(
                 final_status,
                 total_rule_passed,
@@ -4691,7 +4768,7 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                 total_ai_downgraded,
                 total_passed,
                 total_greeted,
-                "；".join(detail_parts),
+                "\n\n".join(detail_parts),
                 total_ai_failed=total_ai_failed,
             )
             progress_callback(100, msg)
