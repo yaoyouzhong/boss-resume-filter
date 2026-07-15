@@ -9,7 +9,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
-from urllib.parse import urlparse
 from constants import (
     SCORE_THRESHOLD_PASS,
     SCORE_THRESHOLD_RECOMMEND,
@@ -28,6 +27,7 @@ from constants import (
 import requests
 from ai_adapter import (
     build_request,
+    classify_api_endpoint,
     detect_protocol,
     friendly_http_error,
     load_capability,
@@ -40,32 +40,9 @@ logger = logging.getLogger(__name__)
 # 429 限流退避延迟（秒），无 Retry-After header 时按此阶梯退避
 _BACKOFF_DELAYS = (5, 15, 30)
 _NETWORK_BACKOFF_DELAYS = (3, 8, 15)
-_OFFICIAL_API_HOSTS = {
-    "qwen": ("dashscope.aliyuncs.com",),
-    "deepseek": ("api.deepseek.com",),
-    "kimi": ("api.moonshot.cn",),
-    "zhipu": ("open.bigmodel.cn",),
-    "minimax": ("api.minimaxi.com",),
-    "xiaomi": ("api.ai.xiaomi.com", "token-plan-cn.xiaomimimo.com"),
-    "stepfun": ("api.stepfun.com",),
-    "openai": ("api.openai.com",),
-    "anthropic": ("api.anthropic.com",),
-}
-
-
 def _is_relay_endpoint(api_config: dict) -> bool:
     """Return whether the configured API endpoint is a relay service."""
-    provider = str(api_config.get("api_provider") or "").lower()
-    hostname = (urlparse(str(api_config.get("base_url") or "")).hostname or "").lower()
-    official_hosts = _OFFICIAL_API_HOSTS.get(provider)
-    return bool(
-        hostname
-        and (
-            provider == "custom"
-            or not official_hosts
-            or not any(hostname == host or hostname.endswith(f".{host}") for host in official_hosts)
-        )
-    )
+    return bool(classify_api_endpoint(api_config)["is_relay"])
 
 
 def _resolve_request_timeout(api_config: dict) -> tuple[int, int]:

@@ -613,6 +613,19 @@ def test_eval_workers_use_five_for_official_api_and_three_for_relay():
     assert relay_detected is True
 
 
+def test_token_plan_is_recognized_as_official_qwen_service():
+    workers, is_relay = _resolve_eval_workers(
+        {
+            "api_provider": "qwen",
+            "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        },
+        None,
+    )
+
+    assert workers == 5
+    assert is_relay is False
+
+
 def test_request_timeout_uses_120_seconds_only_for_relay():
     official_timeout = _resolve_request_timeout({
         "api_provider": "qwen",
@@ -625,6 +638,13 @@ def test_request_timeout_uses_120_seconds_only_for_relay():
 
     assert official_timeout == (10, 60)
     assert relay_timeout == (10, 120)
+
+
+def test_token_plan_uses_official_service_timeout():
+    assert _resolve_request_timeout({
+        "api_provider": "qwen",
+        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    }) == (10, 60)
 
 
 @patch('llm_eval.time.sleep')

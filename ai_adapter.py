@@ -15,6 +15,110 @@ from paths import BASE_DIR
 CAPABILITY_CACHE_PATH = BASE_DIR / ".storage" / "model_capabilities.json"
 DEFAULT_AZURE_API_VERSION = "2024-10-21"
 
+# Official endpoint evidence is kept beside the matching rule so updates can be
+# reviewed against provider documentation instead of extending ad-hoc lists.
+OFFICIAL_API_ENDPOINT_RULES = {
+    "qwen": {
+        "exact_hosts": (
+            "dashscope.aliyuncs.com",
+            "dashscope-intl.aliyuncs.com",
+            "dashscope-us.aliyuncs.com",
+            "coding.dashscope.aliyuncs.com",
+            "coding-intl.dashscope.aliyuncs.com",
+        ),
+        "suffix_hosts": ("maas.aliyuncs.com",),
+        "service_name": "阿里云百炼",
+        "docs_url": "https://help.aliyun.com/zh/model-studio/base-url",
+    },
+    "deepseek": {
+        "exact_hosts": ("api.deepseek.com",),
+        "service_name": "DeepSeek",
+        "docs_url": "https://api-docs.deepseek.com/",
+    },
+    "kimi": {
+        "exact_hosts": ("api.moonshot.ai", "api.moonshot.cn"),
+        "service_name": "Kimi",
+        "docs_url": "https://platform.kimi.ai/docs/api/overview",
+    },
+    "zhipu": {
+        "exact_hosts": ("open.bigmodel.cn",),
+        "service_name": "智谱开放平台",
+        "docs_url": "https://docs.bigmodel.cn/cn/guide/develop/http/introduction",
+    },
+    "minimax": {
+        "exact_hosts": ("api.minimax.io", "api.minimaxi.com"),
+        "service_name": "MiniMax",
+        "docs_url": "https://platform.minimax.io/docs/token-plan/other-tools",
+    },
+    "xiaomi": {
+        "exact_hosts": ("api.xiaomimimo.com",),
+        "suffix_hosts": ("xiaomimimo.com",),
+        "service_name": "小米 MiMo",
+        "docs_url": "https://mimo.mi.com/docs/zh-CN/tokenplan/integration/tools-overview",
+    },
+    "stepfun": {
+        "exact_hosts": ("api.stepfun.com",),
+        "service_name": "阶跃星辰",
+        "docs_url": "https://platform.stepfun.com/docs/zh/api-reference/files/create",
+    },
+    "openai": {
+        "exact_hosts": ("api.openai.com",),
+        "service_name": "OpenAI",
+        "docs_url": "https://platform.openai.com/docs/api-reference/models",
+    },
+    "anthropic": {
+        "exact_hosts": ("api.anthropic.com",),
+        "service_name": "Anthropic",
+        "docs_url": "https://platform.claude.com/docs/en/api/overview",
+    },
+}
+
+
+def classify_api_endpoint(api_config: dict) -> dict[str, Any]:
+    """Classify an endpoint using provider identity and documented host ownership.
+
+    Exact hosts cover fixed public APIs. Suffix rules are only used for provider-
+    controlled regional/workspace hosts documented by that provider. An unknown
+    host is treated as relay/custom; a missing host remains unknown.
+    """
+    provider = str(api_config.get("api_provider") or "").strip().lower()
+    parsed = urlsplit(str(api_config.get("base_url") or ""))
+    hostname = (parsed.hostname or "").lower()
+    path = (parsed.path or "").lower()
+    rule = OFFICIAL_API_ENDPOINT_RULES.get(provider, {})
+    exact_hosts = tuple(rule.get("exact_hosts", ()))
+    suffix_hosts = tuple(rule.get("suffix_hosts", ()))
+    is_official = bool(
+        hostname
+        and (
+            hostname in exact_hosts
+            or any(hostname == suffix or hostname.endswith(f".{suffix}") for suffix in suffix_hosts)
+        )
+    )
+
+    service_name = str(rule.get("service_name") or provider or "未配置服务")
+    if is_official:
+        if hostname == "token-plan.cn-beijing.maas.aliyuncs.com":
+            service_name = "阿里云百炼 Token Plan"
+        elif hostname in {"coding.dashscope.aliyuncs.com", "coding-intl.dashscope.aliyuncs.com"}:
+            service_name = "阿里云百炼 Coding Plan"
+        elif provider == "xiaomi" and hostname.startswith("token-plan-"):
+            service_name = "小米 MiMo Token Plan"
+        elif provider == "zhipu" and "/api/coding/" in path:
+            service_name = "智谱 GLM Coding Plan"
+        elif provider == "stepfun" and path.startswith("/step_plan"):
+            service_name = "阶跃星辰 Step Plan"
+
+    return {
+        "provider": provider,
+        "hostname": hostname,
+        "channel_type": "official" if is_official else ("relay" if hostname else "unknown"),
+        "is_official": is_official,
+        "is_relay": bool(hostname and not is_official),
+        "service_name": service_name,
+        "docs_url": str(rule.get("docs_url") or ""),
+    }
+
 
 def detect_protocol(api_config: dict) -> str:
     """Return the wire protocol required by the configured endpoint."""
