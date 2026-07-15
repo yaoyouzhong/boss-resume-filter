@@ -17,12 +17,40 @@ from PIL import ImageGrab
 ROOT = Path(__file__).resolve().parents[3]
 OUT_DIR = Path(__file__).resolve().parent
 DEMO_DATA_PATH = OUT_DIR / "_demo-candidates-user-guide.json"
+DEMO_API_CONFIG_PATH = OUT_DIR / "_demo-api-config-user-guide.json"
 sys.path.insert(0, str(ROOT))
 
 import gui_main
 
 
 DEMO_JOB = "证券IT开发工程师（演示岗位）"
+DEMO_API_CONFIG = {
+    "api_provider": "qwen",
+    "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/v1",
+    "model": "kimi-k2.6",
+    "saved_models": [
+        {
+            "api_provider": "qwen",
+            "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/v1",
+            "model": "kimi-k2.6",
+            "capability": {"status": "compatible", "output_mode": "tool"},
+        },
+        {
+            "api_provider": "deepseek",
+            "base_url": "https://api.deepseek.com",
+            "model": "deepseek-chat",
+            "capability": {"status": "compatible", "output_mode": "tool"},
+        },
+    ],
+    "providers": {},
+    "fetched_models": {},
+    "llm_read_timeout": 60,
+    "education_model_ref": {
+        "api_provider": "qwen",
+        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/v1",
+        "model": "kimi-k2.6",
+    },
+}
 DEMO_JOB_RULE = {
     "min_exp": 4,
     "edu": "本科",
@@ -164,9 +192,15 @@ def capture_dialog(root: tk.Tk, title: str, filename: str) -> None:
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     DEMO_DATA_PATH.write_text(json.dumps(build_demo_candidates(), ensure_ascii=False, indent=2), encoding="utf-8")
+    DEMO_API_CONFIG_PATH.write_text(
+        json.dumps(DEMO_API_CONFIG, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
     gui_main.CANDIDATES_PATH = DEMO_DATA_PATH
     gui_main.CANDIDATES_XLSX_PATH = OUT_DIR / "_demo-candidates-user-guide.xlsx"
+    gui_main.get_api_config_path = lambda for_write=False: DEMO_API_CONFIG_PATH
+    gui_main.get_api_key = lambda provider, base_url=None: "demo-api-key"
     gui_main._enable_high_dpi_awareness()
     gui_main.BossFilterGUI._load_startup_updater = lambda self: None
 

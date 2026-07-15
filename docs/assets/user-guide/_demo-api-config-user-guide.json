@@ -1,0 +1,33 @@
+{
+  "api_provider": "qwen",
+  "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/v1",
+  "model": "kimi-k2.6",
+  "saved_models": [
+    {
+      "api_provider": "qwen",
+      "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/v1",
+      "model": "kimi-k2.6",
+      "capability": {
+        "status": "compatible",
+        "output_mode": "tool"
+      }
+    },
+    {
+      "api_provider": "deepseek",
+      "base_url": "https://api.deepseek.com",
+      "model": "deepseek-chat",
+      "capability": {
+        "status": "compatible",
+        "output_mode": "tool"
+      }
+    }
+  ],
+  "providers": {},
+  "fetched_models": {},
+  "llm_read_timeout": 60,
+  "education_model_ref": {
+    "api_provider": "qwen",
+    "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/v1",
+    "model": "kimi-k2.6"
+  }
+}
