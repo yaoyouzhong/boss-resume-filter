@@ -46,3 +46,35 @@ def test_release_workflow_does_not_upload_to_gitee_from_github_runner():
 
     assert "GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}" not in workflow
     assert '--gitee-upload-local "$VERSION"' not in workflow
+
+
+def test_pr_checks_run_stable_validation_for_master_pull_requests():
+    """Every master-bound PR should compile and run both stable test entrypoints."""
+    workflow = (BASE_DIR / ".github" / "workflows" / "pr-checks.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "name: PR Checks" in workflow
+    assert "pull_request:" in workflow
+    assert "branches: [master]" in workflow
+    assert "runs-on: windows-latest" in workflow
+    assert "uses: actions/checkout@v6" in workflow
+    assert "uses: actions/setup-python@v6" in workflow
+    assert "PYTHONIOENCODING: utf-8" in workflow
+    assert 'PYTHONUTF8: "1"' in workflow
+    assert 'python -c "import build; build._check_source_compiles()"' in workflow
+    assert "python tests/run_unit_tests.py" in workflow
+    assert "python tests/test_import.py" in workflow
+
+
+def test_pr_checks_never_publish_or_sync_releases():
+    """PR validation must stay read-only and separate from release delivery."""
+    workflow = (BASE_DIR / ".github" / "workflows" / "pr-checks.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "contents: read" in workflow
+    assert "workflow_dispatch:" not in workflow
+    assert "build.py --ci --release" not in workflow
+    assert "softprops/action-gh-release" not in workflow
+    assert "GITEE_TOKEN" not in workflow

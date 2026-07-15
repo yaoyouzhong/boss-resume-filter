@@ -49,7 +49,7 @@ Release 页面最终包含：
 - macOS 使用 `macos-latest`（Apple Silicon M1）runner，生成的 .app 兼容 Apple Silicon Mac；Intel Mac 用户建议从源码运行
 - 虚拟环境（`.venv-ci`）按 `requirements.txt` hash 缓存，依赖不变时跳过安装
 - 支持 `workflow_dispatch` 手动触发
-- 覆盖发布时自动触发对端重建，无需手动删除产物
+- 新版本发布时自动触发对端重建，无需手动删除产物
 
 ### Gitee Release 上传（本地并行中转）
 
@@ -74,7 +74,7 @@ Release 页面最终包含：
 
 **完整性校验**：发布主流程只校验 Gitee 附件齐全且 size 与 GitHub 一致，避免发布后再次回下载三个大文件。需要逐文件 SHA256 审计时运行 `python build.py --verify-gitee-integrity X.Y.Z`。
 
-**覆盖发布**：重新发布同一版本时，增量比对后只重传有变化的文件；同时同步 Release 标题和正文（均以 CHANGELOG 为准）。
+**tag 不可变**：同名 tag 仅在已经指向当前提交时允许断点续跑；本地或远端 tag 指向其他提交时发布立即中止，不自动覆盖。公开版本出错必须发布更高补丁版本。
 
 `latest.json` 字段说明：
 - `downloads`：GitHub 下载链接（国际）
@@ -129,6 +129,9 @@ python build.py --release
 
 # 自动更新版本号 + 一键发布
 python build.py --release --version 2.5
+
+# 发布完成后只读核验 GitHub/Gitee、附件和 latest.json
+python build.py --verify-release 2.5
 
 # 或手动打包（不推荐，缺少依赖检查和 PIL 完整收集）
 pyinstaller --onefile --noconsole \

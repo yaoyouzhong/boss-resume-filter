@@ -71,6 +71,15 @@ boss-resume-filter/
 - 浏览器、BOSS 页面、人工登录、网络/API 测试只放在 `tests/manual/`，不纳入默认回归
 - 历史调试脚本放在 `tests/archive/`，默认不维护、不保证可运行
 
+### 开发与交付流程
+
+- 低风险文档、测试和局部文案可在当前工作区修改；普通代码任务使用 `codex/<task>` 短期分支，并行、脏工作区、长周期或高风险任务才创建独立 worktree
+- PR 不作统一要求；核心筛选、自动打招呼、存储、更新器、发布脚本、CI/CD 或大范围修改应使用 PR；面向 `master` 的 PR 由 `PR Checks` 自动执行源码编译、稳定回归和导入烟测，合并 `master` 不等于正式发布
+- 推送、公开发布、删除分支/worktree/临时文件须分别获得用户授权
+- 发布前执行 `/neat-freak`、严格发布门禁和风险相关实测；发布后核验公开下载、自动更新及本次核心链路
+- 已公开 tag 不得移动或覆盖，修复必须发布更高补丁版本；同一提交允许断点续跑
+- `candidates_all.json`、本地 API 配置、Chrome profile 和登录状态不属于任务临时文件，禁止收尾时自动清理
+
 ### 打包发布
 
 #### 版本号规范（必须遵守）
@@ -90,28 +99,18 @@ boss-resume-filter/
   - `build.py --check` 自动扫描规则 4（STYLE_KEYWORDS + 反引号）；`--strict-changelog` 升级为硬门禁
 - 发布前 `build.py --check` 验证一致性
 
-#### 发布命令
+#### 发布命令与门禁
 
-- `python build.py --check`：仅发布前检查，不打包不提交不推送；确定性校验（版本、README/CHANGELOG 当前版本、历史版本、发布分类、测试）失败会中断；CHANGELOG 语义覆盖、README 逐条镜像、latest.json release_notes 同步默认只提示
-- `python build.py --check --strict-changelog`：启用严格文案门禁，将 CHANGELOG 启发式覆盖、README 逐条镜像和 latest.json 同步检查也作为硬失败
+- `python build.py --check [--strict-changelog]`：仅发布前检查；严格模式将 CHANGELOG 启发式覆盖、README 逐条镜像和 latest.json 同步提示升级为硬失败
 - `python build.py --sync-release-notes`：修正 CHANGELOG 后同步 GitHub + Gitee Release 说明，不重新打包
 - `python build.py`：自动打包（Windows EXE / macOS .app+ZIP+DMG），`IS_MAC`/`IS_WIN` 自动检测
 - `python build.py --release [--auto] [--version X.Y]`：打包→提交→tag→推送确认→GitHub Release 上传→Gitee 同步
-- **发布前必须先执行 `/neat-freak` skill**，完成文档与代码的洁癖级审查同步，再进入 `build.py --release`
-- **发布前必须对 CHANGELOG 当前版本段落做润色**：逐条对照 memory/readme-style.md 删技术黑话和字段名，保持简洁专业（不是大白话）；`build.py --check` 规则 4 会自动扫描常见违规
-- `__version__` 在 `gui_main.py` 中定义，唯一版本号来源；`build.py` 通过 AST 解析提取
-- 智能跳过打包：`.build_state.json` 构建指纹未变时复用产物，`--force-build` 强制重建
-- 打包命令：Windows `--onefile --noconsole --runtime-tmpdir %LOCALAPPDATA%`；macOS `--onedir --windowed`；DMG 用 `dmgbuild`
-- 打包前 `_preflight_checks()` 验证依赖、敏感文件、源码编译、CHANGELOG/README 同步、CLAUDE.md 行数（≤300）、回归测试
-- 新增/修改 `requirements.txt` 依赖时同步更新 `build.py:REQUIRED_IMPORTS`；`build.py` 显式收集 Tk 运行库防 `No module named 'tkinter'`
-- Release 模式只自动提交 `--version` 引起的版本号变化，其他变更须先手工提交
-- 推送前 `input()` 确认 [y/N]；tag 冲突时自动 `--force`（master 除外）
-
-#### CHANGELOG 核实规范（双向验证）
-
-- **硬门禁**：当前版本段落、发布分类顺序、README 当前版本入口、历史版本完整性、源码编译和回归测试必须通过
-- **提示项**：条目质量、正向覆盖（CHANGELOG → 代码）、反向覆盖（代码 → CHANGELOG）、README 与 CHANGELOG 逐条一致、latest.json release_notes 同步默认只提示，避免启发式误报反复打断开发
-- **严格模式**：需要发布文案洁癖审查时运行 `python build.py --check --strict-changelog`，此时上述提示项升级为硬门禁
+- `python build.py --verify-release X.Y.Z`：只读核验双远端分支/tag、GitHub/Gitee Release、附件完整性和 latest.json，不打包不推送
+- 发布前必须执行 `/neat-freak` 并润色 CHANGELOG 当前版本段落；`gui_main.py` 的 `__version__` 是唯一版本号来源
+- `.build_state.json` 指纹未变时复用产物，`--force-build` 强制重建；Windows 使用 `--onefile --noconsole`，macOS 使用 `--onedir --windowed`
+- `_preflight_checks()` 验证依赖、敏感文件、源码编译、文档同步和回归测试；依赖变更须同步 `build.py:REQUIRED_IMPORTS`
+- Release 模式只自动提交 `--version` 引起的版本号变化，其他变更须先手工提交；推送前 `input()` 确认 [y/N]，同名 tag 仅在指向当前提交时允许续跑，任何冲突都中止且不得自动 `--force`
+- CHANGELOG 硬门禁包括当前版本、分类顺序、README 入口、历史完整性、源码编译和回归测试；正反向覆盖等启发式检查默认提示、严格模式阻断
 
 ## 代码规范
 
