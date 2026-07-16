@@ -16,7 +16,7 @@ boss-resume-filter/
 ├── release_user_audit.py # 用户视角发布审计模块
 ├── storage.py            # 候选人数据持久化模块（去重、原子写入、备份恢复）
 ├── contact_queue.py      # GUI 候选人联系清单持久化与恢复模块
-├── gui_main.py           # 图形界面主程序（v2.19）
+├── gui_main.py           # 图形界面主程序（v2.20）
 ├── gui_dialogs.py        # 独立对话框模块（更新日志、关于弹窗、CHANGELOG 渲染）
 ├── ui_messagebox.py      # 统一居中提示与确认弹窗（兼容 tkinter.messagebox）
 ├── changelog_parser.py   # CHANGELOG 解析模块（版本段落提取、标题解析）
@@ -234,12 +234,9 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 - 黑名单：`blacklisted`、`blacklist_reason`、`blacklisted_at`；按 `geek_id` 跨岗位屏蔽，后续扫描、统计和默认 Excel 导出跳过，清空候选人时保留；结果页主动显示黑名单后导出当前表格时允许保留，并在 Excel 标明屏蔽状态
 - 打招呼上下文：`greet_context`、`greet_context_updated_at`；去重时保留（高分新记录覆盖其他字段时不丢失上下文）
 - 资格审查：`qualification_status`（`qualified` / `rejected` / `manual_review`）、`qualification_reasons`、`qualification_evidence`；去重时保留。规则筛选输出初始状态，AI 硬条件复核可升级为 `rejected`
-- 实现位置：`filtering.py:filter_candidate()`
-
 ### AI 辅助评估
 
-- 对 ≥55 分候选人 LLM 二次评估，按规则评分降序处理，调整分 ±15 叠加规则评分
-- 调整后重算推荐等级；默认并发 5 路 + 429 限流退避；默认不再限制 50 人；实现位置：`llm_eval.py`
+- 对 ≥55 分候选人 LLM 二次评估，按规则评分降序处理，调整分 ±15 叠加规则评分并重算推荐等级；默认并发 5 路 + 429 限流退避，不再限制 50 人
 - **AI 响应超时**：`api_config.json` 的 `llm_read_timeout` 字段，GUI 运行控制页可调（步长 10s）；连接超时固定 10 秒；默认值按服务商自动区分（官方 API 60s，中转服务 120s）
 - **AI 硬条件复核**：LLM 评估同时检查硬条件（学历、经验、年龄、薪资、地点、求职状态），返回结论和原文证据；高置信度淘汰发现经规则二次验证（`_validated_hard_failures()`）后执行淘汰，证据不足或低置信度转 `manual_review`
 - **简历二次评估**：导入候选人简历（PDF/Word/TXT/MD/RTF/HTML）后，基于完整简历做第二轮 LLM 评估（±15），有简历时替代一次评估调整值：`final = rule_score + resume_adjustment`（不累加 llm_adjustment）；一次评估的硬条件复核结论保留；GUI 支持导入简历、撤回评估；Excel 新增"简历评估"和"简历评估理由"列
@@ -299,8 +296,6 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 - 选择模型对话框内置搜索框；`fetched_models` 字段存储上次列表，对比找出新增模型（绿色高亮 + 弹窗提醒）和下线模型（弹窗提醒）
 - 对话框支持 EXTENDED 多选（Ctrl+点击切换、Shift+点击范围、Ctrl+A 全选）；右键菜单可批量测试连通性
 - 连通性测试多线程并行，识别常见业务错误（未开通/配额超限/免费额度用完）给出人性化提示
-- 实现位置：`gui_main.py:fetch_model_list()`、`gui_main.py:show_model_dialog()`
-
 ### 学历核验模型独立配置
 
 - 系统设置的“使用中的模型”可显式选择学历核验模型；未指定时跟随默认 AI 模型
@@ -308,8 +303,6 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 - 独立学历证书核验助手固定使用 `token-plan.cn-beijing.maas.aliyuncs.com` 的 `kimi-k2.6`
 - 学信网验证支持多选证书并为每人创建独立标签页；系统填写姓名和证书编号、识别图片验证码并提交，识别失败时转人工输入或重试，手机扫码和最终结果确认始终由 HR 完成
 - 正在作为默认 AI 模型或学历核验模型使用的已保存模型，需先在“使用中的模型”中切换后才能删除
-- 实现位置：`gui_main.py:_on_education_model_selected()`、`gui_main.py:_get_education_api_config()`
-
 ## 自动更新
 
 - 启动时延迟 12 秒检查（updater 模块延迟加载避免阻塞冷启动），**自适应冷却**（发现新版本 24h / 无更新 4h / 失败 15min 指数退避）；Gitee 优先 → GitHub fallback（Gitee "无更新"时 GitHub 复核防漏报）
@@ -321,8 +314,6 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 - **Gitee Release 上传**：GitHub CI 只上传 GitHub Release；本地发布机将 CI 对端产物下载后同步 Gitee。macOS ZIP/DMG 使用最多 2 路并发流水传输，小文件最多 3 路并发；上传/下载超时 600s，4xx 不重试
 - **Gitee 完整性校验**：发布主流程只校验附件齐全和 size 与 GitHub 一致，不回下载大文件；需要逐文件 SHA256 时手动运行 `python build.py --verify-gitee-integrity X.Y.Z`
 - **Gitee Token**：本地使用环境变量 `GITEE_TOKEN`；GitHub Repository Secret 不参与当前发布流程
-- 实现位置：`updater.py`（客户端），`build.py`（上传）
-
 ## 低频专项说明
 
 低频踩坑、平台差异和专项背景放在 `.agent/notes.md`。这是项目级稳定说明，可以进 git；不要把会话记忆、临时调试日志或自动生成的 agent 记忆放进去。
