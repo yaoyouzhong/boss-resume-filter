@@ -18,7 +18,7 @@ def test_candidate_decision_separates_screening_review_and_communication():
     assert decision.screening_result == "推荐"
     assert decision.result_view == "推荐候选人"
     assert decision.review_reasons == ()
-    assert decision.communication_status == "发送待确认"
+    assert decision.communication_status == "发送待核实"
     assert "核实发送结果" in decision.next_action
 
 
@@ -199,7 +199,7 @@ def test_daily_actions_assign_each_candidate_to_one_highest_priority_group():
     ])
 
     assert [(item.candidate["geek_id"], item.group) for item in items] == [
-        ("send-pending", "发送结果待确认"),
+        ("send-pending", "发送结果待核实"),
         ("reply-and-resume", "已回复待推进"),
     ]
 

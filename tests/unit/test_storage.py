@@ -17,9 +17,40 @@ from storage import (
     mark_candidate_greeted,
     merge_candidates_all,
     persist_candidate_greeted,
+    persist_candidate_greeting_pending,
+    resolve_candidate_greeting_confirmation,
     save_candidates_all,
     update_candidate_greeted,
 )
+
+
+def test_resolve_greeting_confirmation_as_sent_clears_pending_and_marks_contacted():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "candidates.json")
+        candidate = {"geek_id": "g1", "job_name": "Java", "match_score": 80}
+        save_candidates_all([candidate], path)
+        persist_candidate_greeting_pending(candidate, "button unchanged", path)
+
+        assert resolve_candidate_greeting_confirmation(candidate, sent=True, path=path)
+        saved = load_candidates_all(path)[0]
+        assert saved["greet_sent"] is True
+        assert saved["followup_status"] == "已打招呼"
+        assert saved["greet_method"] == "manual_confirmed"
+        assert "greet_confirmation_pending" not in saved
+
+
+def test_resolve_greeting_confirmation_as_not_sent_allows_safe_retry():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "candidates.json")
+        candidate = {"geek_id": "g1", "job_name": "Java", "match_score": 80}
+        save_candidates_all([candidate], path)
+        persist_candidate_greeting_pending(candidate, "button unchanged", path)
+
+        assert resolve_candidate_greeting_confirmation(candidate, sent=False, path=path)
+        saved = load_candidates_all(path)[0]
+        assert saved["greet_sent"] is False
+        assert "greet_confirmation_pending" not in saved
+        assert "greet_confirmation_reason" not in saved
 
 
 # ========== _dedupe_candidates ==========

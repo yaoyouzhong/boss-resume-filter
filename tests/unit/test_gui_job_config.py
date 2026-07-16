@@ -3,11 +3,12 @@ import queue
 import re
 import sys
 import tempfile
+import threading
 import time
 import types
 from datetime import date
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import gui_main
 import icons
@@ -852,7 +853,7 @@ def test_result_page_keeps_workflow_actions_visible_and_groups_utilities():
     review_button_block = result_block[result_block.index("self.result_review_button = ttk.Button("):]
     review_button_block = review_button_block[:review_button_block.index("self.result_review_button._icon_ref")]
     assert "style='Accent.TButton'" not in review_button_block
-    assert 'text=" 打招呼队列"' in result_block
+    assert 'text=" 联系候选人"' in result_block
     assert 'text="更多操作"' in result_block
     assert 'label=" 查看今日待办"' not in result_block
     assert 'label=" 候选人状态体检"' in result_block
@@ -1319,7 +1320,7 @@ def test_candidate_status_surfaces_pending_greeting_confirmation():
         "greet_confirmation_pending": True,
     }
 
-    assert gui._format_candidate_status(candidate) == "发送待确认"
+    assert gui._format_candidate_status(candidate) == "发送待核实"
 
 
 def test_candidate_status_shows_temporary_ai_eval_state_and_expires():
@@ -1343,8 +1344,47 @@ def test_candidate_status_shows_temporary_ai_eval_state_and_expires():
     assert "123" not in gui._ai_eval_results
 
     candidate["llm_error"] = "请求超时"
-    assert gui._format_candidate_status(candidate) == (
-        "未沟通｜待复核：AI 评估失败，需人工判断或重试"
+    assert gui._format_candidate_status(candidate) == "未沟通｜待复核"
+    assert candidate["_full_status"] == (
+        "复核原因：AI 评估失败，需人工判断或重试"
+    )
+
+
+def test_result_status_tooltip_shows_hidden_review_reason():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidate = {
+        "geek_id": "review-1",
+        "followup_status": "未沟通",
+        "llm_error": "请求超时",
+    }
+    assert gui._format_candidate_status(candidate) == "未沟通｜待复核"
+
+    gui.result_tree = Mock()
+    gui.result_tree.identify_row.return_value = "row-1"
+    gui.result_tree.identify_column.return_value = "#8"
+    gui.result_tree.cget.return_value = (
+        "name", "exp", "salary", "skill", "score", "ai", "level", "status"
+    )
+    gui._item_to_candidate = {"row-1": candidate}
+    gui._tooltip = None
+    gui._tooltip_item = None
+    gui._tooltip_after_id = None
+    gui.root = Mock()
+    gui.root.winfo_pointerx.return_value = 100
+    gui.root.winfo_pointery.return_value = 200
+    gui._hide_tooltip = Mock()
+    gui._show_tooltip = Mock()
+
+    gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
+
+    gui.root.after.assert_called_once()
+    callback = gui.root.after.call_args.args[1]
+    callback()
+    gui._show_tooltip.assert_called_once_with(
+        "复核原因：AI 评估失败，需人工判断或重试",
+        115,
+        210,
+        ("row-1", "status"),
     )
 
 
@@ -1462,12 +1502,16 @@ def test_refresh_results_keeps_ai_evaluated_and_failed_candidates_below_pass_sco
         assert values[4] == 52
         assert values[5] == "-3"
         assert values[6] == "未通过"
-        assert values[7] == "未沟通｜待复核：评分低于通过线（52 分）"
+        assert values[7] == "未沟通｜待复核"
+        first_candidate = gui._item_to_candidate["item-1"]
+        assert first_candidate["_full_status"] == (
+            "复核原因：评分低于通过线（52 分）"
+        )
         failed_values = gui.result_tree.items[1]["values"]
         assert failed_values[4] == 51
         assert failed_values[5] == "—"
         assert failed_values[6] == "未通过"
-        assert failed_values[7] == "未沟通｜待复核：AI 评估失败，需人工判断或重试"
+        assert failed_values[7] == "未沟通｜待复核"
 
 
 def test_refresh_results_keeps_full_dataset_and_uses_stable_metric_scope():
@@ -1711,7 +1755,7 @@ def test_candidate_review_workbench_exposes_navigation_tabs_and_direct_actions()
     assert "height = min(1120, preferred_height" in block
     assert "max_height_ratio=0.98" in block
     assert '"确认通过"' in block
-    assert '"加入打招呼队列"' in block
+    assert '"加入联系清单"' in block
     assert '"更新跟进"' in block
     assert '"标记反馈"' in block
     assert '"导入简历"' in block
@@ -1745,7 +1789,7 @@ def test_candidate_context_menu_uses_review_workbench_wording():
     assert "self.icons.button('candidate_review', self.colors['primary'])" in block
     assert "self.icons.button('ai_spark', self.colors['primary'])" in block
     assert 'label=" 查看详情"' not in block
-    assert 'label=" 加入打招呼队列"' in block
+    assert 'label=" 加入联系清单"' in block
     assert 'label=" 打招呼"' not in block
     assert "candidate_greet_skip_reason(candidate)" in block
     assert "not _candidate_has_ai_eval(candidate)" in block
@@ -2004,14 +2048,14 @@ def test_result_page_greeted_detail_uses_passed_candidates_only():
 
 
 def test_result_page_has_greet_queue_entry():
-    """筛选结果页提供显性的打招呼队列入口。"""
+    """筛选结果页提供显性的候选人联系入口。"""
     source = Path("gui_main.py").read_text(encoding="utf-8")
     result_block = source[source.index("def create_result_page"):]
     result_block = result_block[:result_block.index("\n    def create_education_page")]
 
-    assert 'text=" 打招呼队列"' in result_block
+    assert 'text=" 联系候选人"' in result_block
     assert "command=self._show_greet_queue_dialog" in result_block
-    assert result_block.index('text=" 打招呼队列"') < result_block.index('label=" 导出 Excel"')
+    assert result_block.index('text=" 联系候选人"') < result_block.index('label=" 导出 Excel"')
 
 
 def test_result_page_hides_technical_json_button():
@@ -2028,7 +2072,7 @@ def test_batch_greet_context_menu_adds_to_queue_instead_of_direct_send():
     """多选右键只加入队列，不再直接启动批量发送黑盒流程。"""
     source = Path("gui_main.py").read_text(encoding="utf-8")
 
-    assert 'label=" 加入打招呼队列"' in source
+    assert 'label=" 加入联系清单"' in source
     assert 'menu.add_command(label=" 批量打招呼"' not in source
     assert "_collect_selected_candidates_for_queue" in source
     assert "_add_candidates_to_greet_queue" in source
@@ -2042,7 +2086,9 @@ def test_greet_queue_add_filters_before_enqueue():
     assert "self._greet_queue_skip_reason(candidate)" in add_block
     assert 'skip_reason = "已在队列"' in add_block
     assert "self._build_greet_queue_item(candidate" in add_block
-    assert "没有可加入队列的候选人" in add_block
+    assert "没有可加入联系清单的候选人" in add_block
+    assert "self._show_text_dialog(" in add_block
+    assert "messagebox.showinfo" not in add_block
 
 
 def test_greet_queue_item_builds_only_sendable_pending_items():
@@ -2056,8 +2102,142 @@ def test_greet_queue_item_builds_only_sendable_pending_items():
     })
 
     assert direct["status"] == "待发送"
-    assert direct["method"] == "可直接发送"
+    assert gui._greet_queue_readiness_label(direct["candidate"]) == "已就绪"
     assert direct["message"] == ""
+
+    page_checked = {"job_name": "中高级 AI 工程师"}
+    assert gui._greet_queue_readiness_label(page_checked) == "发送时检查"
+    tooltip = gui._greet_queue_readiness_tooltip(page_checked)
+    assert "发送时会检查" in tooltip
+    assert "中高级 AI 工程师" in tooltip
+
+
+def test_contact_summary_dialog_keeps_scrollbar_and_confirmation_visible():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _show_text_dialog"):]
+    block = block[:block.index("\n    def refresh_stats")]
+    add_block = source[source.index("def _add_candidates_to_greet_queue"):]
+    add_block = add_block[:add_block.index("\n    @staticmethod\n    def _format_greet_queue_skip_summary")]
+
+    assert 'body.grid(row=0, column=0, sticky="nsew")' in block
+    assert 'scroll.grid(row=0, column=1, sticky="ns")' in block
+    assert 'btn_row.grid(row=1, column=0, sticky="ew")' in block
+    assert 'text=button_text' in block
+    assert add_block.count('button_text="确定"') == 2
+    assert add_block.count('button_align="center"') == 2
+    assert 'horizontal_padding if button_align == "center" else 0' in block
+    assert 'if button_align == "center":' in block
+    assert "button.pack()" in block
+
+
+def test_contact_queue_readiness_column_has_explanatory_tooltip():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    dialog_block = source[source.index("def _show_greet_queue_dialog"):]
+    dialog_block = dialog_block[:dialog_block.index("\n    def _on_greet_queue_group_selected")]
+    tooltip_block = source[source.index("def _on_greet_queue_motion"):]
+    tooltip_block = tooltip_block[:tooltip_block.index("\n    def _close_greet_queue_window")]
+
+    assert 'tree.bind("<Motion>", self._on_greet_queue_motion)' in dialog_block
+    assert 'tree.bind("<Leave>", self._hide_tooltip)' in dialog_block
+    assert 'tree.bind("<Button-3>", self._show_greet_queue_context_menu)' in dialog_block
+    assert 'column_id != "#5"' in tooltip_block
+    assert "self._greet_queue_readiness_tooltip" in tooltip_block
+
+
+def test_contact_queue_context_menu_preserves_multi_selection_and_sends_it():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    first = {"queue_id": "q1", "status": "待发送"}
+    second = {"queue_id": "q2", "status": "待发送"}
+    gui.greet_queue_items = [first, second]
+    gui.greet_queue_tree = Mock()
+    gui.greet_queue_tree.identify_row.return_value = "q1"
+    gui.greet_queue_tree.selection.return_value = ("q1", "q2")
+    gui._update_greet_queue_action_states = Mock()
+    gui._start_greet_queue = Mock()
+    gui.greet_queue_window = None
+    gui.root = Mock()
+    gui.font_scale = 1.25
+    gui.icons = Mock()
+    gui.icons.button.side_effect = ["review-icon", "send-icon"]
+    gui.colors = {"success": "#16A34A", "primary": "#2563EB"}
+    event = Mock(y=10, x_root=100, y_root=120)
+
+    with patch("gui_main.tk.Menu") as menu_class:
+        menu = menu_class.return_value
+        gui._show_greet_queue_context_menu(event)
+
+    gui.greet_queue_tree.selection_set.assert_not_called()
+    menu_class.assert_called_once_with(
+        gui.root,
+        tearoff=0,
+        font=(gui_main.FONT_FAMILY, int(11 * gui.font_scale)),
+    )
+    assert menu.add_command.call_args_list[0].kwargs == {
+        "label": " 联系选中候选人（2 人）",
+        "image": "send-icon",
+        "compound": gui_main.tk.LEFT,
+        "command": gui._start_greet_queue,
+        "state": "normal",
+    }
+    menu.tk_popup.assert_called_once_with(100, 120)
+
+
+def test_contact_queue_single_menu_matches_result_menu_alignment_and_order():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    item = {"queue_id": "q1", "status": "待发送"}
+    gui.greet_queue_items = [item]
+    gui.greet_queue_tree = Mock()
+    gui.greet_queue_tree.identify_row.return_value = "q1"
+    gui.greet_queue_tree.selection.return_value = ("q1",)
+    gui._update_greet_queue_action_states = Mock()
+    gui._start_greet_queue = Mock()
+    gui._show_selected_greet_queue_detail = Mock()
+    gui.greet_queue_window = Mock()
+    gui.root = Mock()
+    gui.font_scale = 1.25
+    gui.icons = Mock()
+    gui.icons.button.side_effect = ["review-icon", "send-icon"]
+    gui.colors = {"success": "#16A34A", "primary": "#2563EB"}
+    event = Mock(y=10, x_root=100, y_root=120)
+
+    with patch("gui_main.tk.Menu") as menu_class:
+        menu = menu_class.return_value
+        gui._show_greet_queue_context_menu(event)
+
+    assert menu.add_command.call_args_list[0].kwargs == {
+        "label": " 查看与复核",
+        "image": "review-icon",
+        "compound": gui_main.tk.LEFT,
+        "command": gui._show_selected_greet_queue_detail,
+    }
+    assert menu.add_command.call_args_list[1].kwargs["label"] == " 联系此候选人"
+    assert menu.add_command.call_args_list[1].kwargs["image"] == "send-icon"
+    menu.add_separator.assert_not_called()
+
+
+def test_contact_queue_ctrl_a_selects_all_visible_candidates():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.greet_queue_tree = Mock()
+    gui.greet_queue_tree.winfo_exists.return_value = True
+    gui.greet_queue_tree.get_children.return_value = ("q1", "q2", "q3")
+    gui._update_greet_queue_action_states = Mock()
+
+    result = gui._select_all_greet_queue_rows()
+
+    assert result == "break"
+    gui.greet_queue_tree.selection_set.assert_called_once_with(("q1", "q2", "q3"))
+    gui.greet_queue_tree.focus.assert_called_once_with("q1")
+    gui.greet_queue_tree.see.assert_called_once_with("q1")
+    gui._update_greet_queue_action_states.assert_called_once_with()
+
+
+def test_contact_queue_binds_ctrl_a_for_visible_rows():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    dialog_block = source[source.index("def _show_greet_queue_dialog"):]
+    dialog_block = dialog_block[:dialog_block.index("\n    def _on_greet_queue_group_selected")]
+
+    assert 'tree.bind("<Control-a>", self._select_all_greet_queue_rows' in dialog_block
+    assert 'tree.bind("<Control-A>", self._select_all_greet_queue_rows' in dialog_block
 
 
 def test_greet_queue_skip_reason_filters_non_sendable_candidates():
@@ -2067,7 +2247,7 @@ def test_greet_queue_skip_reason_filters_non_sendable_candidates():
     assert BossFilterGUI._greet_queue_skip_reason({
         "geek_id": "g1",
         "greet_confirmation_pending": True,
-    }) == "发送结果待确认"
+    }) == "发送结果待核实"
     assert BossFilterGUI._greet_queue_skip_reason({
         "geek_id": "g1",
         "manual_review_required": True,
@@ -2076,6 +2256,112 @@ def test_greet_queue_skip_reason_filters_non_sendable_candidates():
     assert BossFilterGUI._greet_queue_skip_reason({
         "geek_id": "g1", "match_score": 70,
     }) == ""
+
+
+def test_contact_queue_revalidates_latest_candidate_state_before_sending():
+    assert BossFilterGUI._revalidate_greet_queue_candidate({
+        "geek_id": "ready", "match_score": 70,
+    }) == ("待发送", "")
+    assert BossFilterGUI._revalidate_greet_queue_candidate({
+        "geek_id": "blocked", "match_score": 80, "blacklisted": True,
+    }) == ("已跳过", "已加入黑名单")
+    assert BossFilterGUI._revalidate_greet_queue_candidate({
+        "geek_id": "review", "match_score": 80, "manual_review_required": True,
+    }) == ("已跳过", "硬性条件需要人工确认")
+    assert BossFilterGUI._revalidate_greet_queue_candidate({
+        "geek_id": "sent", "match_score": 80, "greet_sent": True,
+    }) == ("已发送", "本地已标记为已沟通")
+    assert BossFilterGUI._revalidate_greet_queue_candidate({
+        "geek_id": "pending",
+        "match_score": 80,
+        "greet_confirmation_pending": True,
+        "greet_confirmation_reason": "button unchanged",
+    }) == ("待核实", "button unchanged")
+
+
+def test_restored_contact_list_reflects_latest_blocked_state_immediately():
+    candidate = {
+        "geek_id": "blocked",
+        "job_name": "Java Engineer",
+        "match_score": 80,
+        "blacklisted": True,
+    }
+    item = {
+        "queue_id": "q1",
+        "key": ("blocked", "JavaEngineer"),
+        "candidate": candidate,
+        "status": "发送失败",
+        "message": "old failure",
+    }
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._greet_queue_loaded = False
+    gui.greet_queue_items = []
+    gui.append_log = Mock()
+    gui._persist_greet_queue = Mock()
+
+    with patch("gui_main.load_candidates_all", return_value=[candidate]), patch(
+        "gui_main.load_contact_queue", return_value=[item]
+    ):
+        gui._ensure_greet_queue_loaded()
+
+    assert item["status"] == "已跳过"
+    assert item["message"] == "已加入黑名单"
+    gui._persist_greet_queue.assert_called_once()
+
+
+def test_scan_contact_policy_selects_threshold_then_reuses_queue_validation():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = object()
+    gui.append_log = Mock()
+    gui._add_candidates_to_greet_queue = Mock(return_value=1)
+    candidates = [
+        {"geek_id": "strong", "match_score": 80},
+        {"geek_id": "normal", "match_score": 70},
+        {"geek_id": "pending", "match_score": 60},
+    ]
+
+    assert gui._add_scan_candidates_to_contact_queue(
+        candidates, "将强烈推荐加入联系清单"
+    ) == 1
+    selected = gui._add_candidates_to_greet_queue.call_args.args[0]
+    assert [candidate["geek_id"] for candidate in selected] == ["strong"]
+
+    gui._add_candidates_to_greet_queue.reset_mock()
+    gui._add_scan_candidates_to_contact_queue(
+        candidates, "将推荐及以上加入联系清单"
+    )
+    selected = gui._add_candidates_to_greet_queue.call_args.args[0]
+    assert [candidate["geek_id"] for candidate in selected] == ["strong", "normal"]
+
+
+def test_page_dependent_contact_fails_closed_on_wrong_job_page():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.browser_page = object()
+    gui._get_greet_queue_page_state = Mock(return_value=(
+        True,
+        "https://www.zhipin.com/web/frame/recommend/?jobid=1",
+        "",
+        "",
+    ))
+    with patch("bossmaster.get_iframe", return_value=None), patch(
+        "bossmaster._read_recommend_page_identity",
+        return_value={"job_title": "Python Engineer"},
+    ), patch("bossmaster._job_titles_match", return_value=False):
+        ready, message = gui._greet_queue_candidate_page_ready({"job_name": "Java Engineer"})
+
+    assert ready is False
+    assert "Python Engineer" in message
+    assert "Java Engineer" in message
+
+
+def test_legacy_gui_contact_methods_only_add_to_contact_list():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _greet_single_candidate"):]
+    block = block[:block.index("\n    def _update_greet_status")]
+
+    assert block.count("self._add_candidates_to_greet_queue(") == 2
+    assert "send_greeting_with_context" not in block
+    assert "send_greeting_on_list_page" not in block
 
 
 def test_greet_queue_skip_summary_is_user_readable():
@@ -2095,13 +2381,17 @@ def test_greet_queue_dialog_has_status_groups_and_double_click_detail():
     refresh_block = source[source.index("def _refresh_greet_queue_dialog"):]
     refresh_block = refresh_block[:refresh_block.index("\n    def _set_greet_queue_item_state")]
 
-    assert "队列状态" in dialog_block
+    assert "联系状态" in dialog_block
     assert "self.greet_queue_group_tree" in dialog_block
     assert "self.greet_queue_detail_title_var" in dialog_block
     assert "GreetQueue.Small.TButton" in dialog_block
     assert "GreetQueue.Primary.TButton" not in dialog_block
-    assert 'text="开始发送队列"' in dialog_block
+    assert 'win.title("联系候选人")' in dialog_block
+    assert 'text="联系待发送"' in dialog_block
+    assert 'width=14' in dialog_block
     assert 'text="暂停",' in dialog_block and 'width=8' in dialog_block
+    assert 'text="确认已发送"' in dialog_block
+    assert 'text="确认未发送"' in dialog_block
     assert 'text="移除选中",' in dialog_block
     assert 'queue_actions.pack(side="right", padx=(0, int(8 * scale)))' in dialog_block
     assert "padding=(int(6 * scale), int(10 * scale))" in dialog_block
@@ -2112,12 +2402,284 @@ def test_greet_queue_dialog_has_status_groups_and_double_click_detail():
     assert 'padx=(int(10 * scale), int(8 * scale))' in dialog_block
     assert "selected_actions = ttk.Frame(detail_header)" in dialog_block
     assert "selected_actions.grid(row=0, column=1, sticky=\"e\")" in dialog_block
-    assert 'group_tree.column("#0", width=int(120 * scale), minwidth=int(100 * scale), anchor="center")' in dialog_block
+    assert 'group_tree.column("#0", width=int(130 * scale), minwidth=int(110 * scale), anchor="w")' in dialog_block
     assert 'group_tree.column("count", width=int(58 * scale), minwidth=int(48 * scale), anchor="center")' in dialog_block
-    assert 'group_order = ("全部", "待确认", "失败", "需人工确认", "待发送", "发送中", "已发送")' in refresh_block
-    assert "队列为空" in refresh_block
+    assert 'group_order = ("全部", "待核实", "发送失败", "待发送", "发送中", "已发送", "已跳过")' in refresh_block
+    assert 'iid="全部"' in refresh_block
+    assert 'open=True' in refresh_block
+    assert 'for group in group_order[1:]:' in refresh_block
+    assert 'group_tree.insert(\n                    "全部",' in refresh_block
+    assert "联系清单为空" in refresh_block
     assert "需处理" in refresh_block
     assert 'tree.bind("<Double-Button-1>", lambda _event: self._show_selected_greet_queue_detail())' in dialog_block
+
+
+def test_contact_queue_persists_intent_and_revalidates_before_each_send():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    load_block = source[source.index("def _ensure_greet_queue_loaded"):]
+    load_block = load_block[:load_block.index("\n    @staticmethod\n    def _has_direct_send_context")]
+    worker_block = source[source.index("def _run_greet_queue_worker"):]
+    worker_block = worker_block[:worker_block.index("\n    @staticmethod\n    def _candidate_identity_key")]
+    resolve_block = source[source.index("def _resolve_selected_greet_queue_pending"):]
+    resolve_block = resolve_block[:resolve_block.index("\n    def _pause_greet_queue")]
+
+    assert "load_contact_queue(candidates, CONTACT_QUEUE_PATH)" in load_block
+    assert "save_contact_queue(self.greet_queue_items, CONTACT_QUEUE_PATH)" in load_block
+    assert worker_block.index("self._reload_greet_queue_candidate(item)") < worker_block.index(
+        "self._revalidate_greet_queue_candidate(candidate)"
+    )
+    assert worker_block.index("self._revalidate_greet_queue_candidate(candidate)") < worker_block.index(
+        'self._set_greet_queue_item_state(item, "发送中", "")'
+    )
+    assert worker_block.count("self._reload_greet_queue_candidate(item)") == 2
+    assert worker_block.count("self._greet_queue_candidate_page_ready(candidate)") >= 2
+    assert "resolve_candidate_greeting_confirmation(" in resolve_block
+    assert 'item[\'status\'] = "已发送"' in resolve_block
+    assert 'item[\'status\'] = "待发送"' in resolve_block
+
+
+def test_pending_verification_cannot_be_discarded_without_resolution():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    item = {"queue_id": "q1", "status": "待核实"}
+    gui.greet_queue_items = [item]
+    gui.greet_queue_window = None
+    gui.root = object()
+    gui._selected_greet_queue_items = Mock(return_value=[item])
+    gui._persist_greet_queue = Mock()
+    gui._refresh_greet_queue_dialog = Mock()
+
+    with patch("gui_main.messagebox.showwarning") as warning:
+        gui._remove_selected_greet_queue_items()
+
+    assert gui.greet_queue_items == [item]
+    warning.assert_called_once()
+    assert "不能直接移除" in warning.call_args.args[1]
+    gui._persist_greet_queue.assert_not_called()
+
+
+def _contact_worker_gui(candidate):
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    item = gui._build_greet_queue_item(candidate)
+    gui.greet_queue_items = [item]
+    gui.greet_queue_window = None
+    gui.root = Mock()
+    gui.browser_page = object()
+    gui.stop_event = threading.Event()
+    gui.greet_queue_running = True
+    gui.greet_queue_paused = False
+    gui._browser_connection_lock = threading.Lock()
+    gui._ensure_greet_queue_browser = Mock(return_value=True)
+    gui._make_greet_queue_captcha_callback = Mock(return_value=None)
+    gui._reload_greet_queue_candidate = Mock(return_value=(candidate, ""))
+    gui._persist_greet_queue = Mock()
+    gui.append_log = Mock()
+    gui.refresh_results = Mock()
+    gui.refresh_home_stats = Mock()
+    gui._refresh_greet_queue_dialog = Mock()
+    gui._show_greet_queue_run_result = Mock()
+
+    def set_state(queue_item, status, message=""):
+        queue_item["status"] = status
+        queue_item["message"] = message
+
+    gui._set_greet_queue_item_state = Mock(side_effect=set_state)
+    return gui, item
+
+
+def test_contact_success_with_local_save_failure_stays_pending_verification():
+    candidate = {
+        "geek_id": "g1",
+        "job_name": "Java Engineer",
+        "name": "Candidate A",
+        "match_score": 80,
+        "greet_context": {"chat_start": {"jid": "j1"}},
+    }
+    gui, item = _contact_worker_gui(candidate)
+    gui._update_greet_status = Mock(return_value=False)
+
+    with patch(
+        "bossmaster.send_greeting_with_context", return_value=(True, "sent")
+    ), patch("gui_main.time.sleep", return_value=None):
+        gui._run_greet_queue_worker()
+
+    assert item["status"] == "待核实"
+    assert "本地状态保存失败" in item["message"]
+    assert any("成功 0 人" in call.args[0] for call in gui.append_log.call_args_list)
+
+
+def test_contact_worker_exception_recovers_sending_item_as_pending_verification():
+    candidate = {
+        "geek_id": "g1",
+        "job_name": "Java Engineer",
+        "name": "Candidate A",
+        "match_score": 80,
+        "greet_context": {"chat_start": {"jid": "j1"}},
+    }
+    gui, item = _contact_worker_gui(candidate)
+    gui._update_greet_status = Mock(return_value=True)
+
+    with patch(
+        "bossmaster.send_greeting_with_context",
+        side_effect=RuntimeError("connection lost after click"),
+    ):
+        gui._run_greet_queue_worker()
+
+    assert item["status"] == "待核实"
+    assert "意外中断" in item["message"]
+    gui._persist_greet_queue.assert_called()
+    feedback_callbacks = [
+        call.args[1] for call in gui.root.after.call_args_list
+        if len(call.args) > 1
+    ]
+    for callback in feedback_callbacks:
+        callback()
+    gui._show_greet_queue_run_result.assert_called_once()
+    assert "connection lost after click" in gui._show_greet_queue_run_result.call_args.args[0]["error"]
+
+
+def test_contact_worker_does_not_delay_result_after_final_candidate():
+    candidate = {
+        "geek_id": "g1",
+        "job_name": "Java Engineer",
+        "name": "Candidate A",
+        "match_score": 80,
+        "greet_context": {"chat_start": {"jid": "j1"}},
+    }
+    gui, _item = _contact_worker_gui(candidate)
+
+    with patch(
+        "bossmaster.send_greeting_with_context", return_value=(False, "send failed")
+    ), patch("gui_main.time.sleep") as sleep:
+        gui._run_greet_queue_worker()
+
+    sleep.assert_not_called()
+
+
+def test_contact_worker_keeps_delay_between_candidates_only():
+    first = {
+        "geek_id": "g1",
+        "job_name": "Java Engineer",
+        "name": "Candidate A",
+        "match_score": 80,
+        "greet_context": {"chat_start": {"jid": "j1"}},
+    }
+    second = {
+        "geek_id": "g2",
+        "job_name": "Java Engineer",
+        "name": "Candidate B",
+        "match_score": 80,
+        "greet_context": {"chat_start": {"jid": "j2"}},
+    }
+    gui, _item = _contact_worker_gui(first)
+    gui.greet_queue_items.append(gui._build_greet_queue_item(second))
+    gui._reload_greet_queue_candidate = Mock(
+        side_effect=lambda item: (item["candidate"], "")
+    )
+
+    with patch(
+        "bossmaster.send_greeting_with_context", return_value=(False, "send failed")
+    ), patch("gui_main.random.uniform", return_value=2.5), patch(
+        "gui_main.time.sleep"
+    ) as sleep:
+        gui._run_greet_queue_worker()
+
+    sleep.assert_called_once_with(2.5)
+
+
+def test_browser_reconnect_method_reuses_existing_live_page():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.browser_page = Mock()
+    gui.browser_page.run_js.return_value = 1
+    gui.browser_connected = False
+
+    assert gui._try_reconnect_browser() is True
+    assert gui.browser_connected is True
+
+
+def test_contact_browser_reconnect_launches_recommend_page_when_chrome_is_absent():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.append_log = Mock()
+    gui._try_reconnect_browser = Mock(return_value=False)
+    gui._launch_boss_browser = Mock(return_value=True)
+
+    assert gui._reconnect_browser_or_warn(None, "浏览器未连接", "", "") is True
+    gui._launch_boss_browser.assert_called_once_with()
+    assert any(
+        "自动启动推荐牛人页面" in call.args[0]
+        for call in gui.append_log.call_args_list
+    )
+
+
+def test_launch_boss_browser_uses_managed_profile_and_recommend_url():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.stop_event = threading.Event()
+    gui.browser_page = Mock(url='https://www.zhipin.com/web/chat/recommend')
+    gui._try_reconnect_browser = Mock(return_value=True)
+    port_socket = MagicMock()
+    port_socket.__enter__.return_value.getsockname.return_value = ('127.0.0.1', 45678)
+    connection = MagicMock()
+
+    with patch("gui_main.sys.platform", "win32"), \
+            patch("gui_main.os.path.exists", return_value=True), \
+            patch("gui_main.socket.socket", return_value=port_socket), \
+            patch("gui_main.socket.create_connection", return_value=connection), \
+            patch("gui_main.subprocess.Popen") as popen, \
+            patch("pathlib.Path.mkdir"), \
+            patch("pathlib.Path.write_text"), \
+            patch("gui_main.time.sleep", return_value=None):
+        assert gui._launch_boss_browser() is True
+
+    command = popen.call_args.args[0]
+    assert '--remote-debugging-port=45678' in command
+    assert any(arg.startswith('--user-data-dir=') for arg in command)
+    assert 'https://www.zhipin.com/web/chat/recommend' in command
+    assert gui.browser_address == '127.0.0.1:45678'
+    gui._try_reconnect_browser.assert_called_once_with()
+
+
+def test_greet_queue_run_feedback_covers_success_and_visible_errors():
+    success = BossFilterGUI._build_greet_queue_run_feedback({"success": 1})
+    assert success == (
+        "发送完成",
+        "发送完成",
+        "成功：1 人\n状态：联系结果已保存",
+        "info",
+    )
+
+    error = BossFilterGUI._build_greet_queue_run_feedback({
+        "error": "无法连接到 Chrome 浏览器。",
+    })
+    assert error == (
+        "发送未完成",
+        "本轮未发送",
+        "无法连接到 Chrome 浏览器。",
+        "error",
+    )
+
+    partial = BossFilterGUI._build_greet_queue_run_feedback({
+        "success": 1,
+        "failed": 1,
+        "page_waiting": 2,
+        "page_waiting_jobs": {"Java": 1, "Python": 1},
+    })
+    assert partial[0] == "发送结果"
+    assert partial[1] == "发送部分完成"
+    assert "成功：1 人" in partial[2]
+    assert "失败：1 人" in partial[2]
+    assert "待切换岗位：2 人" in partial[2]
+    assert "Java（1 人）" in partial[2]
+    assert "Python（1 人）" in partial[2]
+    assert "下一步：切换对应岗位后再次发送" in partial[2]
+
+
+def test_greet_queue_result_dialog_uses_compact_fonts_and_adaptive_width():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _show_greet_queue_run_result"):]
+    block = block[:block.index("\n    @staticmethod\n    def _candidate_identity_key")]
+
+    assert "font_delta=self.font_log[1] - self.font_label[1]" in block
+    assert 'min_width=620 if message.count("\\n") >= 2 else 540' in block
+    assert "content_bottom_padding=28" in block
 
 
 def test_candidate_state_diagnostics_detail_does_not_repeat_severity_column():
@@ -2154,6 +2716,29 @@ def test_candidate_workflow_dialog_subtitles_use_neutral_text_color():
     assert "foreground=self.colors['text_secondary']" in queue_block
     assert "textvariable=self.greet_queue_detail_title_var" in queue_block
     assert "background=self.colors['bg_card']" in queue_block
+
+
+def test_information_and_workbench_windows_do_not_lock_main_window():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    dialog_source = Path("gui_dialogs.py").read_text(encoding="utf-8")
+    blocks = [
+        source[source.index("def show_stat_detail"):source.index("\n    def show_result_stat_detail")],
+        source[source.index("def show_result_stat_detail"):source.index("\n    def _get_job_rules_cached")],
+        source[source.index("def _show_daily_candidate_actions_dialog"):source.index("\n    def _show_candidate_state_diagnostics_dialog")],
+        source[source.index("def _show_candidate_state_diagnostics_dialog"):source.index("\n    def _clip_table_text")],
+        source[source.index("def _show_greet_queue_dialog"):source.index("\n    def _on_greet_queue_group_selected")],
+        source[source.index("def _open_candidate_review_workbench"):source.index("\n    def _render_candidate_review_workbench")],
+        dialog_source[dialog_source.index("def show_about_dialog"):dialog_source.index("\ndef show_changelog_dialog")],
+        dialog_source[dialog_source.index("def show_changelog_dialog"):],
+    ]
+
+    assert all(".grab_set()" not in block for block in blocks)
+
+    modal_block = source[
+        source.index("def _show_job_config_diagnostics_dialog"):
+        source.index("\n    def _should_prompt_run_job_config")
+    ]
+    assert ".grab_set()" in modal_block
 
 
 def test_daily_actions_dialog_uses_consistent_title_and_review_subgroups_only():
@@ -2195,6 +2780,18 @@ def test_workflow_context_menu_opens_review_and_uses_shared_decision_rules():
     assert "self._open_candidate_review_workbench(candidate)" in menu_block
     assert "candidate_greet_skip_reason(candidate)" in menu_block
     assert "candidate.get('qualification_status') == 'manual_review'" in menu_block
+    assert 'label=" 核实发送结果"' in menu_block
+    assert "self._focus_candidate_in_greet_queue(candidate)" in menu_block
+
+
+def test_review_workbench_promotes_pending_send_verification():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    action_block = source[source.index("def _render_candidate_review_actions"):]
+    action_block = action_block[:action_block.index("\n    def _navigate_candidate_review")]
+
+    assert "if candidate.get('greet_confirmation_pending'):" in action_block
+    assert '"核实发送结果"' in action_block
+    assert "self._focus_candidate_in_greet_queue(candidate)" in action_block
 
 
 def test_daily_followup_action_promotes_followup_context_menu_entry():
@@ -2217,21 +2814,357 @@ def test_greet_queue_start_requires_confirmation():
     confirm_block = confirm_block[:confirm_block.index("\n    def _make_greet_queue_captcha_callback")]
 
     assert "self._confirm_start_greet_queue(pending)" in start_block
-    assert "可直接发送" in confirm_block
-    assert "需要推荐页支持" in confirm_block
-    assert "待确认不会自动重发" in confirm_block
+    assert "self._build_greet_queue_confirmation_content(pending)" in confirm_block
+    assert 'yes_label="开始联系"' in confirm_block
+    assert 'no_label="取消"' in confirm_block
+    assert 'headline=headline' in confirm_block
+    assert 'show_icon=False' in confirm_block
+    assert 'min_width=620' in confirm_block
+    assert "font_delta=self.font_log[1] - self.font_label[1]" in confirm_block
+    assert "当前已就绪" not in confirm_block
+    assert "待核实不会自动重发" not in confirm_block
+    assert "失败待重试" not in confirm_block
+    assert "每位候选人发送前都会重新检查" not in confirm_block
     assert "messagebox.askyesno" in confirm_block
 
 
-def test_initial_auto_greet_requires_confirmation_before_run_sends():
+def test_greet_queue_confirmation_explains_page_requirements_by_send_path():
+    direct = {
+        "candidate": {
+            "job_name": "Java",
+            "greet_context": {"chat_start": {"jid": "j1"}},
+        }
+    }
+    java_page = {"candidate": {"job_name": "Java"}}
+    python_page = {"candidate": {"job_name": "Python"}}
+
+    headline, direct_message = BossFilterGUI._build_greet_queue_confirmation_content([direct])
+    assert headline == "联系 1 名候选人？"
+    assert "Chrome：已连接，推荐牛人页面已就绪" in direct_message
+    assert "登录：BOSS 账号已登录" in direct_message
+    assert "岗位：无需切换岗位页面" in direct_message
+
+    _, page_message = BossFilterGUI._build_greet_queue_confirmation_content([java_page])
+    assert "岗位：需要切换到 Java（1 人）" in page_message
+    assert "Java（1 人）" in page_message
+
+    _, mixed_message = BossFilterGUI._build_greet_queue_confirmation_content(
+        [direct, java_page, python_page]
+    )
+    assert "岗位：1 人无需切换；2 人需要" in mixed_message
+    assert "Java（1 人）" in mixed_message
+    assert "Python（1 人）" in mixed_message
+    assert "当前岗位不一致的候选人会保留" in mixed_message
+
+
+def test_greet_queue_click_prepares_browser_before_confirmation():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.greet_queue_running = False
+    gui.greet_queue_preparing = False
+    gui.greet_queue_paused = True
+    gui.is_running = False
+    gui.greet_queue_items = [{"status": "待发送", "candidate": {"geek_id": "g1"}}]
+    gui.greet_queue_tree = None
+    gui.stop_event = Mock()
+    gui._ensure_greet_queue_loaded = Mock()
+    gui._confirm_start_greet_queue = Mock(return_value=True)
+    gui._update_greet_queue_action_states = Mock()
+    gui.append_log = Mock()
+
+    with patch("gui_main.threading.Thread") as thread:
+        gui._start_greet_queue()
+
+    gui._confirm_start_greet_queue.assert_not_called()
+    gui.stop_event.clear.assert_called_once_with()
+    assert gui.greet_queue_preparing is True
+    assert gui.greet_queue_running is False
+    thread.assert_called_once_with(
+        target=gui._prepare_greet_queue_start,
+        args=(gui.greet_queue_items,),
+        daemon=True,
+    )
+    thread.return_value.start.assert_called_once_with()
+
+
+def test_greet_queue_preparation_status_is_not_rendered_inside_send_button():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.greet_queue_items = [
+        {"status": "待发送"},
+        {"status": "待发送"},
+    ]
+    gui.greet_queue_preparing = True
+    gui.greet_queue_prepare_text = "正在打开推荐牛人页面..."
+    gui.greet_queue_running = False
+    gui.greet_queue_paused = False
+    gui.greet_queue_tree = None
+    gui.greet_queue_summary_var = Mock()
+    gui.greet_queue_start_btn = Mock()
+    gui.greet_queue_start_btn.winfo_exists.return_value = True
+
+    gui._update_greet_queue_action_states()
+
+    gui.greet_queue_summary_var.set.assert_called_once_with(
+        "发送准备：正在打开推荐牛人页面..."
+    )
+    gui.greet_queue_start_btn.configure.assert_called_once_with(
+        text="联系待发送（2 人）",
+        state="disabled",
+    )
+
+
+def test_ready_browser_prompts_confirmation_then_starts_send_worker():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    pending = [{"status": "待发送", "candidate": {"geek_id": "g1"}}]
+    gui.greet_queue_preparing = True
+    gui.greet_queue_prepare_text = "正在连接 Chrome..."
+    gui._update_greet_queue_action_states = Mock()
+    gui._confirm_start_greet_queue = Mock(return_value=True)
+    gui._begin_greet_queue_send = Mock()
+
+    gui._finish_greet_queue_preparation(pending)
+
+    assert gui.greet_queue_preparing is False
+    assert gui.greet_queue_prepare_text == ""
+    gui._confirm_start_greet_queue.assert_called_once_with(pending)
+    gui._begin_greet_queue_send.assert_called_once_with(pending)
+
+
+def test_contact_queue_sends_only_selected_pending_candidate():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    selected = {"queue_id": "q1", "status": "待发送"}
+    other = {"queue_id": "q2", "status": "待发送"}
+    gui.greet_queue_items = [selected, other]
+    gui.greet_queue_running = False
+    gui.greet_queue_preparing = False
+    gui.greet_queue_paused = False
+    gui.is_running = False
+    gui.stop_event = Mock()
+    gui._ensure_greet_queue_loaded = Mock()
+    gui._selected_greet_queue_items = Mock(return_value=[selected])
+    gui._update_greet_queue_action_states = Mock()
+    gui.append_log = Mock()
+
+    with patch("gui_main.threading.Thread") as thread:
+        gui._start_greet_queue()
+
+    thread.assert_called_once_with(
+        target=gui._prepare_greet_queue_start,
+        args=([selected],),
+        daemon=True,
+    )
+
+
+def test_contact_browser_readiness_only_checks_selected_pending_candidates():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    selected = {
+        "status": "待发送",
+        "candidate": {"greet_context": {"chat_start": {"jid": "j1"}}},
+    }
+    other = {"status": "待发送", "candidate": {}}
+    gui.greet_queue_items = [selected, other]
+    gui.browser_page = Mock()
+    gui.append_log = Mock()
+    gui._get_greet_queue_page_state = Mock(
+        return_value=(True, "https://www.zhipin.com/web/geek/chat", "", "")
+    )
+    gui._is_boss_recommend_url = Mock(return_value=False)
+
+    assert gui._ensure_greet_queue_browser(None, [selected]) is True
+
+    gui._is_boss_recommend_url.assert_not_called()
+
+
+def test_contact_queue_does_not_fall_back_to_all_when_selection_is_not_pending():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    selected = {"queue_id": "q1", "status": "已发送"}
+    other = {"queue_id": "q2", "status": "待发送"}
+    gui.greet_queue_items = [selected, other]
+    gui.greet_queue_running = False
+    gui.greet_queue_preparing = False
+    gui.is_running = False
+    gui.greet_queue_window = None
+    gui.root = Mock()
+    gui._ensure_greet_queue_loaded = Mock()
+    gui._selected_greet_queue_items = Mock(return_value=[selected])
+
+    with patch("gui_main.threading.Thread") as thread, patch(
+        "gui_main.messagebox.showinfo"
+    ) as showinfo:
+        gui._start_greet_queue()
+
+    thread.assert_not_called()
+    assert "选中的候选人当前不可联系" in showinfo.call_args.args[1]
+
+
+def test_contact_queue_send_button_reflects_selected_scope():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    selected = {"queue_id": "q1", "status": "待发送"}
+    other = {"queue_id": "q2", "status": "待发送"}
+    gui.greet_queue_items = [selected, other]
+    gui.greet_queue_running = False
+    gui.greet_queue_preparing = False
+    gui.greet_queue_paused = False
+    gui.greet_queue_summary_var = Mock()
+    gui.greet_queue_start_btn = Mock()
+    gui.greet_queue_start_btn.winfo_exists.return_value = True
+    gui._selected_greet_queue_items = Mock(return_value=[selected])
+
+    gui._update_greet_queue_action_states()
+
+    gui.greet_queue_start_btn.configure.assert_called_once_with(
+        text="联系选中（1 人）",
+        state="normal",
+    )
+
+
+def test_contact_queue_send_worker_receives_confirmed_selection():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    pending = [{"queue_id": "q1", "status": "待发送"}]
+    gui.greet_queue_running = False
+    gui.greet_queue_paused = True
+    gui._update_greet_queue_action_states = Mock()
+
+    with patch("gui_main.threading.Thread") as thread:
+        gui._begin_greet_queue_send(pending)
+
+    thread.assert_called_once_with(
+        target=gui._run_greet_queue_worker,
+        args=(pending,),
+        daemon=True,
+    )
+
+
+def test_ready_browser_restores_queue_summary_before_confirmation():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    pending = [{"status": "待发送", "candidate": {"geek_id": "g1"}}]
+    gui.greet_queue_items = pending
+    gui.greet_queue_preparing = True
+    gui.greet_queue_prepare_text = "正在连接 Chrome..."
+    gui.greet_queue_running = False
+    gui.greet_queue_paused = False
+    gui.greet_queue_tree = None
+    gui.greet_queue_summary_var = Mock()
+    gui._begin_greet_queue_send = Mock()
+
+    def confirm(_pending):
+        gui.greet_queue_summary_var.set.assert_called_with(
+            "联系清单共 1 人｜待发送 1 人"
+        )
+        return False
+
+    gui._confirm_start_greet_queue = Mock(side_effect=confirm)
+
+    gui._finish_greet_queue_preparation(pending)
+
+    gui._confirm_start_greet_queue.assert_called_once_with(pending)
+    gui._begin_greet_queue_send.assert_not_called()
+
+
+def test_browser_preflight_waits_for_login_before_showing_confirmation():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    pending = [{"status": "待发送", "candidate": {"geek_id": "g1"}}]
+    gui.greet_queue_window = None
+    gui.root = Mock()
+    gui.browser_page = Mock()
+    gui.stop_event = threading.Event()
+    gui._browser_connection_lock = threading.Lock()
+    gui._is_browser_page_alive = Mock(return_value=True)
+    gui._set_greet_queue_prepare_status = Mock()
+    gui._finish_greet_queue_preparation = Mock()
+    gui.append_log = Mock()
+    gui._get_greet_queue_page_state = Mock(side_effect=[
+        (False, "https://www.zhipin.com/web/user/", "", "当前停留在 BOSS 登录页，请先完成登录"),
+        (True, "https://www.zhipin.com/web/chat/recommend", "", ""),
+    ])
+
+    with patch("gui_main.time.sleep", return_value=None):
+        gui._prepare_greet_queue_start(pending)
+
+    callback = gui.root.after.call_args.args[1]
+    callback()
+    assert gui._get_greet_queue_page_state.call_count == 2
+    assert any(
+        "请在 Chrome 中完成 BOSS 登录" in call.args[0]
+        for call in gui.append_log.call_args_list
+    )
+    gui._finish_greet_queue_preparation.assert_called_once_with(pending, "")
+
+
+def test_browser_preflight_navigates_existing_chrome_to_recommend_page():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    pending = [{"status": "待发送", "candidate": {"geek_id": "g1"}}]
+    gui.greet_queue_window = None
+    gui.root = Mock()
+    gui.browser_page = Mock()
+    gui.stop_event = threading.Event()
+    gui._browser_connection_lock = threading.Lock()
+    gui._is_browser_page_alive = Mock(return_value=True)
+    gui._set_greet_queue_prepare_status = Mock()
+    gui._finish_greet_queue_preparation = Mock()
+    gui.append_log = Mock()
+    gui._get_greet_queue_page_state = Mock(side_effect=[
+        (False, "https://example.com", "", "当前页面不是 BOSS 直聘页面"),
+        (True, "https://www.zhipin.com/web/chat/recommend", "", ""),
+    ])
+
+    with patch("gui_main.time.sleep", return_value=None):
+        gui._prepare_greet_queue_start(pending)
+
+    gui.browser_page.get.assert_called_once_with(
+        "https://www.zhipin.com/web/chat/recommend"
+    )
+    gui.root.after.call_args.args[1]()
+    gui._finish_greet_queue_preparation.assert_called_once_with(pending, "")
+
+
+def test_gui_run_builds_contact_list_without_direct_sending():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    run_page_block = source[source.index("def create_run_page"):]
+    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
     worker_block = source[source.index("def run_worker"):]
     worker_block = worker_block[:worker_block.index("\n        # 启动后台线程")]
 
-    assert "def greet_confirm_callback(message):" in worker_block
-    assert '"确认自动打招呼"' in worker_block
+    assert 'value="仅保存筛选结果"' in run_page_block
+    assert '"将强烈推荐加入联系清单"' in run_page_block
+    assert '"将推荐及以上加入联系清单"' in run_page_block
+    assert "greet=False" in worker_block
+    assert "scanned_candidates = run_smart_scan(" in worker_block
+    assert "self._add_scan_candidates_to_contact_queue(" in worker_block
+    assert "def greet_confirm_callback(message):" not in worker_block
     assert "job_config_callback=job_config_callback" in worker_block
-    assert "greet_confirm_callback=greet_confirm_callback" in worker_block
+    assert "greet_confirm_callback=" not in worker_block
+
+
+def test_run_page_describes_actual_ai_score_adjustment_range():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    run_page_block = source[source.index("def create_run_page"):]
+    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+
+    assert '_note_suffix = "15分调整)"' in run_page_block
+    assert '_note_suffix = "10分调整)"' not in run_page_block
+
+
+def test_result_tree_ctrl_a_selects_all_visible_candidates():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.result_tree = Mock()
+    gui.result_tree.get_children.return_value = ("row-1", "row-2")
+
+    result = gui._select_all_result_rows()
+
+    assert result == "break"
+    gui.result_tree.selection_set.assert_called_once_with(("row-1", "row-2"))
+    gui.result_tree.focus.assert_called_once_with("row-1")
+    gui.result_tree.see.assert_called_once_with("row-1")
+
+
+def test_result_tree_binds_ctrl_a_for_batch_selection():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    bind_block = source[source.index("def _bind_treeview_context_menu"):]
+    bind_block = bind_block[:bind_block.index("\n    def _on_tree_motion")]
+
+    assert "self._select_all_result_rows" in bind_block
+    assert "'<Control-a>'" in bind_block
+    assert "'<Control-A>'" in bind_block
 
 
 def test_greet_queue_page_state_detects_boss_login_page():

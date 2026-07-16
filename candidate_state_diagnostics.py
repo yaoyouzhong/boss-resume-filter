@@ -112,8 +112,8 @@ def _diagnose_individual_candidates(candidates: Iterable[dict[str, Any]]) -> lis
 
         if candidate.get("greet_confirmation_pending") and candidate.get("greet_sent") is True:
             issues.append(_issue(
-                candidate, "error", "打招呼成功与待确认并存",
-                "同一候选人同时标记为已发送成功和发送结果待确认。",
+                candidate, "error", "已发送与待核实并存",
+                "同一候选人同时标记为已发送成功和发送结果待核实。",
                 "核实 BOSS 沟通列表后，只保留一个确定状态。",
             ))
 

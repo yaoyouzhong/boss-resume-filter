@@ -3440,7 +3440,7 @@ def _build_auto_greet_confirm_text(
     if manual_review_count:
         lines.append(f"已跳过需人工确认：{manual_review_count} 人")
     if pending_count:
-        lines.append(f"已跳过上次发送待确认：{pending_count} 人")
+        lines.append(f"已跳过上次发送待核实：{pending_count} 人")
     if scan_stats and scan_stats.get('scan_status') == 'partial':
         lines.append(
             "提示：扫描已达到轮次上限，尚未确认候选人已全部加载"
@@ -4003,7 +4003,7 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
             if blocked_count:
                 print(f"  已跳过 {blocked_count} 人：需要人工确认后再打招呼")
             if pending_count:
-                print(f"  已跳过 {pending_count} 人：上次发送结果待确认，请先在 BOSS 沟通列表核实")
+                print(f"  已跳过 {pending_count} 人：上次发送结果待核实，请先在 BOSS 沟通列表核实")
 
         # 点击顺序按扫描/页面顺序，减少虚拟列表反复回顶和跳跃滚动。
         to_greet_list.sort(key=lambda x: raw_order_by_geek_id.get(str(x.get('geek_id')), len(raw_order_by_geek_id)))
@@ -4097,9 +4097,9 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                     persist_candidate_greeting_pending(candidate, msg)
                     greet_pending_count += 1
                     consecutive_uncertain += 1
-                    print(f"待确认：{msg}")
+                    print(f"待核实：{msg}")
                     if consecutive_uncertain >= GREET_UNCERTAIN_LIMIT:
-                        print(f"\n连续 {consecutive_uncertain} 人发送结果待确认，停止打招呼并请人工核实")
+                        print(f"\n连续 {consecutive_uncertain} 人发送结果待核实，停止打招呼并请人工核实")
                         break
                     continue
                 if success:
@@ -4151,7 +4151,7 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
 
         print(
             f"\n打招呼完成：成功 {greet_success_count} 人，失败 {greet_fail_count} 人，"
-            f"待确认 {greet_pending_count} 人"
+            f"待核实 {greet_pending_count} 人"
         )
 
     # 提交本轮评估结果，并撤下本轮已评估但未通过的旧记录。
@@ -4549,9 +4549,9 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                             skip_count += 1
                             persist_candidate_greeting_pending(c, msg)
                             consecutive_uncertain += 1
-                            print(f"待确认：{msg}")
+                            print(f"待核实：{msg}")
                             if consecutive_uncertain >= GREET_UNCERTAIN_LIMIT:
-                                print(f"\n连续 {consecutive_uncertain} 人发送结果待确认，停止补打招呼并请人工核实")
+                                print(f"\n连续 {consecutive_uncertain} 人发送结果待核实，停止补打招呼并请人工核实")
                                 break
                             continue
                         if success:
@@ -4581,7 +4581,7 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                     print(f"已保存 {success_count} 个成功打招呼的候选人状态")
                     raise
 
-                print(f"\n补打招呼完成：成功 {success_count} 人，失败 {fail_count} 人，待确认 {skip_count} 人")
+                print(f"\n补打招呼完成：成功 {success_count} 人，失败 {fail_count} 人，待核实 {skip_count} 人")
                 merge_candidates_all(candidates_all)
                 print(f"已更新 candidates_all.json")
 
@@ -4772,6 +4772,7 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                 total_ai_failed=total_ai_failed,
             )
             progress_callback(100, msg)
+        return all_candidates
 
     except StopRequested:
         print(f"\n\n⏹ 用户停止，保存当前进度...")

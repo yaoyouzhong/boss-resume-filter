@@ -21,7 +21,7 @@ import socket
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
-from tkinter import filedialog, font, messagebox, ttk
+from tkinter import filedialog, font, ttk
 from urllib.parse import urlparse
 
 import icons
@@ -43,6 +43,12 @@ from candidate_state_diagnostics import (
 )
 from ai_adapter import classify_api_endpoint
 from greeting_failure import diagnose_greeting_failure, format_greeting_failure_message
+from contact_queue import (
+    build_contact_queue_item,
+    candidate_identity as contact_queue_candidate_identity,
+    load_contact_queue,
+    save_contact_queue,
+)
 from job_config_diagnostics import diagnose_job_config, summarize_job_config_diagnostics
 from constants import (
     API_CANDIDATE_LIMIT_DEFAULT,
@@ -54,16 +60,25 @@ from constants import (
     GREET_UNCERTAIN_LIMIT,
 )
 from storage import (
+    load_candidates_all,
     mark_candidate_greeted,
     persist_candidate_greeted,
     persist_candidate_greeting_pending,
+    resolve_candidate_greeting_confirmation,
     save_candidates_all,
 )
 import gui_dialogs
+from ui_messagebox import messagebox
 
 # ========== 路径常量 - 解决相对路径问题 ==========
 # PyInstaller --onefile 模式下 __file__ 指向临时解压目录，需特殊处理
-from paths import BASE_DIR, get_base_dir, ensure_config_files, get_api_config_path
+from paths import (
+    BASE_DIR,
+    CONTACT_QUEUE_PATH,
+    get_base_dir,
+    ensure_config_files,
+    get_api_config_path,
+)
 
 CONFIG_PATH = BASE_DIR / "job_config.json"
 CANDIDATES_PATH = BASE_DIR / "candidates_all.json"
@@ -575,6 +590,9 @@ def _place_window_centered(
     return width, height, x, y
 
 
+messagebox.set_window_placer(_place_window_centered)
+
+
 def _get_parent_titlebar_center_offset(parent):
     """估算父窗口标题栏导致的视觉中心下偏，只修正纵向中心。"""
     try:
@@ -851,6 +869,10 @@ class BossFilterGUI:
         self.greet_queue_selected_group = "全部"
         self.greet_queue_running = False
         self.greet_queue_paused = False
+        self.greet_queue_preparing = False
+        self.greet_queue_prepare_text = ""
+        self.greet_queue_thread = None
+        self._greet_queue_loaded = False
         self._greet_queue_status_vars = {}
 
         # 浏览器状态
@@ -1051,6 +1073,11 @@ class BossFilterGUI:
         self.font_stat_label = (FONT_FAMILY, int(15 * page_fs))
         self.font_log = (FONT_FAMILY, int(11 * page_fs))
         self.font_table = (FONT_FAMILY, int(12 * page_fs))  # 表格字体
+        messagebox.set_ui_fonts(
+            headline=(FONT_FAMILY, self.font_label[1], 'bold'),
+            message=self.font_label,
+            button=self.font_label,
+        )
 
         # 设置 Combobox 下拉列表字体（与 font_label 保持一致）
         # 必须用元组格式 + priority 80，确保 Tk option database 正确解析并覆盖默认值
@@ -1605,7 +1632,7 @@ class BossFilterGUI:
                                background=self.colors['bg_card'])
         title_label.pack(anchor="w")
 
-        subtitle_label = ttk.Label(header_frame, text="智能解析、智能匹配、AI 评估、自动打招呼、学历核验、人工反馈、跟进状态、数据复盘",
+        subtitle_label = ttk.Label(header_frame, text="智能解析、智能匹配、AI 评估、候选人联系、学历核验、人工反馈、跟进状态、数据复盘",
                                    font=self.font_label, foreground=self.colors['text_secondary'],
                                    background=self.colors['bg_card'])
         subtitle_label.pack(anchor="w", pady=(int(10 * self.dpi_scale * self.zoom_factor), 0))
@@ -3551,33 +3578,42 @@ class BossFilterGUI:
                  foreground=self.colors['text_muted'],
                  background=self.colors['bg_card']).pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
 
-        # 打招呼等级
+        # 筛选完成后的联系策略。GUI 发送统一进入联系清单。
         row2 = ttk.Frame(param_frame, style='TFrame')
         row2.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
-        ttk.Label(row2, text="自动打招呼:", font=self.font_label, width=12,
+        ttk.Label(row2, text="筛选完成后:", font=self.font_label, width=12,
                  background=self.colors['bg_card']).pack(side="left")
-        self.greet_level_var = tk.StringVar(value="仅强烈推荐")
-        greet_combo = ttk.Combobox(row2, textvariable=self.greet_level_var,
-                                    values=["不打招呼（仅筛选）", "仅强烈推荐", "强烈推荐 + 推荐"],
-                                    width=20, state="readonly", font=self.font_label)
-        greet_combo.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
-        # 动态备注：根据选择的打招呼等级实时变化
-        self._greet_note_label = ttk.Label(row2, text="",
+        self.contact_after_scan_var = tk.StringVar(value="仅保存筛选结果")
+        contact_combo = ttk.Combobox(
+            row2,
+            textvariable=self.contact_after_scan_var,
+            values=[
+                "仅保存筛选结果",
+                "将强烈推荐加入联系清单",
+                "将推荐及以上加入联系清单",
+            ],
+            width=28,
+            state="readonly",
+            font=self.font_label,
+        )
+        contact_combo.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
+        self._contact_after_scan_note_label = ttk.Label(row2, text="",
                  font=(FONT_FAMILY, int(11 * self.font_scale)),
                  foreground=self.colors['text_muted'], background=self.colors['bg_card'])
-        self._greet_note_label.pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
+        self._contact_after_scan_note_label.pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
 
-        def _update_greet_note(*_):
-            level = self.greet_level_var.get()
-            if level == "不打招呼（仅筛选）":
-                self._greet_note_label.config(text="不自动打招呼")
-            elif level == "仅强烈推荐":
-                self._greet_note_label.config(text=f"给评分≥{SCORE_THRESHOLD_STRONG}分的候选人打招呼")
+        def _update_contact_after_scan_note(*_):
+            policy = self.contact_after_scan_var.get()
+            if policy == "仅保存筛选结果":
+                text = "扫描完成后进入筛选结果页处理"
+            elif policy == "将强烈推荐加入联系清单":
+                text = f"评分≥{SCORE_THRESHOLD_STRONG}分且已完成复核"
             else:
-                self._greet_note_label.config(text=f"给评分≥{SCORE_THRESHOLD_RECOMMEND}分的候选人打招呼")
+                text = f"评分≥{SCORE_THRESHOLD_RECOMMEND}分且已完成复核"
+            self._contact_after_scan_note_label.config(text=text)
 
-        _update_greet_note()
-        greet_combo.bind("<<ComboboxSelected>>", _update_greet_note)
+        _update_contact_after_scan_note()
+        contact_combo.bind("<<ComboboxSelected>>", _update_contact_after_scan_note)
 
         # AI 辅助评估开关
         row_ai = ttk.Frame(param_frame, style='TFrame')
@@ -3626,7 +3662,7 @@ class BossFilterGUI:
         )
         # 备注：+- 分色显示
         _note_prefix = "(对通过筛选的候选人进行 LLM 二次评分，"
-        _note_suffix = "10分调整)"
+        _note_suffix = "15分调整)"
         _note_font = (FONT_FAMILY, int(11 * self.font_scale))
         _sign_font = (FONT_FAMILY, int(14 * self.font_scale))  # +/- 显式加大
         tk.Label(row_ai, text=_note_prefix, font=_note_font,
@@ -4065,6 +4101,7 @@ class BossFilterGUI:
             displaycolumns=base_display_columns,
             show="headings",
             height=4,
+            selectmode="extended",
         )
 
         self.result_tree.heading("name", text="姓名")
@@ -4160,7 +4197,7 @@ class BossFilterGUI:
         btn_greet_queue = ttk.Button(
             btn_inner,
             image=icon_greet_queue,
-            text=" 打招呼队列",
+            text=" 联系候选人",
             compound=tk.LEFT,
             command=self._show_greet_queue_dialog,
         )
@@ -5342,6 +5379,183 @@ class BossFilterGUI:
         except Exception:
             return False
 
+    def _try_reconnect_browser(self) -> bool:
+        """Reconnect to the existing debug Chrome without forcing navigation."""
+        if self._is_browser_page_alive(self.browser_page):
+            self.browser_connected = True
+            return True
+
+        addresses = []
+        current_address = str(getattr(self, 'browser_address', '') or '').strip()
+        if current_address:
+            addresses.append(current_address)
+        try:
+            saved_port = CHROME_DEBUG_PORT_FILE.read_text(encoding='utf-8').strip()
+            if saved_port.isdigit():
+                addresses.append(f"127.0.0.1:{saved_port}")
+        except OSError:
+            pass
+        addresses.append("127.0.0.1:9222")
+
+        for address in dict.fromkeys(addresses):
+            try:
+                host, port_text = address.rsplit(':', 1)
+                with socket.create_connection(
+                    (host, int(port_text)), timeout=0.5
+                ):
+                    pass
+            except (OSError, ValueError):
+                continue
+
+            connection = {}
+
+            def connect(target_address=address):
+                try:
+                    from DrissionPage import ChromiumOptions, ChromiumPage
+                    options = ChromiumOptions()
+                    options.set_address(target_address)
+                    page = ChromiumPage(options)
+                    selected_page = page
+                    try:
+                        tabs = list(page.get_tabs() or [])
+                    except Exception:
+                        tabs = []
+                    for tab in tabs:
+                        try:
+                            if "zhipin.com" in str(tab.url or '').lower():
+                                selected_page = tab
+                                break
+                        except Exception:
+                            continue
+                    selected_page.run_js("return 1")
+                    connection["page"] = selected_page
+                    connection["address"] = str(
+                        getattr(page, 'address', '') or target_address
+                    )
+                except Exception as exc:
+                    connection["error"] = exc
+
+            worker = threading.Thread(target=connect, daemon=True)
+            worker.start()
+            worker.join(timeout=4)
+            page = connection.get("page")
+            if worker.is_alive():
+                self.browser_page = None
+                self.browser_connected = False
+                return False
+            if not self._is_browser_page_alive(page):
+                continue
+            self.browser_page = page
+            self.browser_address = connection.get("address", address)
+            self.browser_connected = True
+            return True
+
+        self.browser_page = None
+        self.browser_connected = False
+        return False
+
+    def _launch_boss_browser(self) -> bool:
+        """Start the app-managed Chrome profile on the BOSS recommendation page."""
+        if sys.platform == 'darwin':
+            candidates = [
+                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+                os.path.expanduser(
+                    '~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+                ),
+            ]
+        elif sys.platform == 'win32':
+            candidates = [
+                os.path.expandvars(
+                    r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe'
+                ),
+                r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+                r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+            ]
+        else:
+            candidates = [
+                shutil.which('google-chrome'),
+                shutil.which('google-chrome-stable'),
+                shutil.which('chromium'),
+            ]
+        chrome_path = next(
+            (path for path in candidates if path and os.path.exists(path)),
+            None,
+        )
+        if not chrome_path:
+            self._greet_queue_browser_error = "未找到 Chrome 浏览器，请安装后重试。"
+            return False
+
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as port_socket:
+                port_socket.bind(('127.0.0.1', 0))
+                debug_port = int(port_socket.getsockname()[1])
+
+            profile_dir = BASE_DIR / '.chrome_profile'
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            subprocess.Popen(
+                [
+                    chrome_path,
+                    f'--remote-debugging-port={debug_port}',
+                    f'--user-data-dir={profile_dir}',
+                    '--no-first-run',
+                    '--no-default-browser-check',
+                    'https://www.zhipin.com/web/chat/recommend',
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                CHROME_DEBUG_PORT_FILE.write_text(str(debug_port), encoding='utf-8')
+            except OSError:
+                pass
+        except (OSError, ValueError) as exc:
+            self._greet_queue_browser_error = f"Chrome 启动失败：{str(exc)[:80]}"
+            return False
+
+        self.browser_address = f'127.0.0.1:{debug_port}'
+        stop_event = getattr(self, 'stop_event', None)
+        for _ in range(40):
+            if stop_event is not None and stop_event.is_set():
+                self._greet_queue_browser_error = "发送已停止。"
+                return False
+            time.sleep(0.5)
+            try:
+                with socket.create_connection(
+                    ('127.0.0.1', debug_port), timeout=0.5
+                ):
+                    break
+            except OSError:
+                continue
+        else:
+            self._greet_queue_browser_error = (
+                "Chrome 启动超时，请关闭应用专用 Chrome 后重试。"
+            )
+            return False
+
+        if not self._try_reconnect_browser():
+            self._greet_queue_browser_error = (
+                "Chrome 已启动，但程序无法连接页面，请稍后再次发送。"
+            )
+            return False
+
+        recommend_url = 'https://www.zhipin.com/web/chat/recommend'
+        try:
+            current_url = str(getattr(self.browser_page, 'url', '') or '')
+            if not self._is_boss_recommend_url(current_url):
+                self.browser_page.get(recommend_url)
+            for _ in range(10):
+                current_url = str(getattr(self.browser_page, 'url', '') or '')
+                if "zhipin.com" in current_url.lower():
+                    return True
+                time.sleep(0.5)
+        except Exception as exc:
+            self._greet_queue_browser_error = (
+                f"Chrome 已启动，但推荐牛人页面打开失败：{str(exc)[:80]}"
+            )
+            return False
+        self._greet_queue_browser_error = "Chrome 已启动，但推荐牛人页面未能打开。"
+        return False
+
     def _get_education_api_key(self, config: dict) -> str:
         """按运行模式取得学历核验专用 API Key。"""
         if self._education_api_key_provider is not None:
@@ -5754,16 +5968,28 @@ class BossFilterGUI:
 
         return suggestions or ["- 暂无明确规则调整方向；继续积累结构化反馈后再复盘。"]
 
-    def _show_text_dialog(self, title, text, width=700, height=520):
+    def _show_text_dialog(
+        self,
+        title,
+        text,
+        width=700,
+        height=520,
+        button_text="关闭",
+        button_align="right",
+    ):
         win = tk.Toplevel(self.root)
         win.title(title)
         win.transient(self.root)
         win.grab_set()
         win.withdraw()
         scale = self.dpi_scale * self.zoom_factor
+        win.grid_rowconfigure(0, weight=1)
+        win.grid_columnconfigure(0, weight=1)
 
         body = ttk.Frame(win, style='Page.TFrame', padding=int(16 * scale))
-        body.pack(fill="both", expand=True)
+        body.grid(row=0, column=0, sticky="nsew")
+        body.grid_rowconfigure(0, weight=1)
+        body.grid_columnconfigure(0, weight=1)
         text_widget = tk.Text(
             body,
             wrap="word",
@@ -5777,18 +6003,33 @@ class BossFilterGUI:
         text_widget.configure(yscrollcommand=scroll.set)
         text_widget.insert("1.0", text)
         text_widget.configure(state="disabled")
-        text_widget.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        text_widget.grid(row=0, column=0, sticky="nsew")
+        scroll.grid(row=0, column=1, sticky="ns")
 
-        btn_row = ttk.Frame(win, style='Page.TFrame', padding=(0, 0, int(16 * scale), int(12 * scale)))
-        btn_row.pack(fill="x")
+        horizontal_padding = int(16 * scale)
+        btn_row = ttk.Frame(
+            win,
+            style='Page.TFrame',
+            padding=(
+                horizontal_padding if button_align == "center" else 0,
+                0,
+                horizontal_padding,
+                int(12 * scale),
+            ),
+        )
+        btn_row.grid(row=1, column=0, sticky="ew")
 
         def close():
             win.grab_release()
             win.destroy()
 
-        ttk.Button(btn_row, text="关闭", command=close).pack(side="right")
+        button = ttk.Button(btn_row, text=button_text, command=close)
+        if button_align == "center":
+            button.pack()
+        else:
+            button.pack(side="right")
         win.protocol("WM_DELETE_WINDOW", close)
+        win.bind("<Escape>", lambda _event: close())
         _place_window_centered(win, int(width * scale), int(height * scale), parent=self.root)
         win.deiconify()
 
@@ -6312,7 +6553,6 @@ class BossFilterGUI:
             # 创建详情窗口
             detail_window = tk.Toplevel(self.root)
             detail_window.transient(self.root)
-            detail_window.grab_set()
             detail_window.title(title)
             detail_window.configure(bg=self.colors['bg_main'])
 
@@ -6470,7 +6710,7 @@ class BossFilterGUI:
                     icon_greet = self.icons.button('chat', self.colors['success'])
                     menu._icon_refs = [icon_export_menu, icon_trash_menu, icon_greet]
                     menu.add_command(
-                        label=" 加入打招呼队列",
+                        label=" 加入联系清单",
                         image=icon_greet,
                         compound=tk.LEFT,
                         command=lambda: self._add_candidates_to_greet_queue(
@@ -6703,7 +6943,6 @@ class BossFilterGUI:
             # 创建详情窗口
             detail_window = tk.Toplevel(self.root)
             detail_window.transient(self.root)
-            detail_window.grab_set()
             detail_window.title(title)
             detail_window.configure(bg=self.colors['bg_main'])
 
@@ -6889,7 +7128,7 @@ class BossFilterGUI:
                     icon_greet = self.icons.button('chat', self.colors['success'])
                     menu._icon_refs = [icon_export_menu, icon_trash_menu, icon_greet]
                     menu.add_command(
-                        label=" 加入打招呼队列",
+                        label=" 加入联系清单",
                         image=icon_greet,
                         compound=tk.LEFT,
                         command=lambda: self._add_candidates_to_greet_queue(
@@ -11163,6 +11402,11 @@ class BossFilterGUI:
         """开始运行"""
         if self.is_running:
             return
+        if getattr(self, 'greet_queue_running', False) or getattr(
+            self, 'greet_queue_preparing', False
+        ):
+            messagebox.showinfo("联系候选人", "候选人联系任务正在执行，请先暂停或等待发送完成。")
+            return
 
         # 立即禁用按钮，防止重复点击
         self.start_btn.config(state="disabled")
@@ -11215,6 +11459,8 @@ class BossFilterGUI:
 
         old_stdout = sys.stdout
         final_progress = {'desc': ''}
+        scanned_candidates = []
+        contact_policy_text = self.contact_after_scan_var.get()
         try:
             class LogRedirector:
                 def __init__(self, callback):
@@ -11238,16 +11484,17 @@ class BossFilterGUI:
 
             rounds = int(self.rounds_var.get())
             effective_max_candidates = API_CANDIDATE_LIMIT_DEFAULT
-            # 将中文打招呼等级映射为程序参数
-            greet_level_text = self.greet_level_var.get()
-            no_greet = greet_level_text == "不打招呼（仅筛选）"
-            greet_level = "strong" if greet_level_text == "仅强烈推荐" else "normal"
+            greet_level = (
+                "strong"
+                if contact_policy_text == "将强烈推荐加入联系清单"
+                else "normal"
+            )
 
             from bossmaster import load_job_config, ChromiumPage, time, run_smart_scan
             import argparse
 
             self.append_log(f">>> BOSS 直聘候选人智能提取工具 v{__version__} [图形界面模式]")
-            self.append_log(f"滚动轮次：{rounds}, 自动打招呼：{greet_level_text}")
+            self.append_log(f"滚动轮次：{rounds}, 筛选完成后：{contact_policy_text}")
             self.append_log("提取链路：listener + refresh 优先捕获结构化数据；DOM 扫描确认可点击候选人；必要时 API 最后补全已出现候选人")
 
             # 获取选择的岗位
@@ -11290,7 +11537,7 @@ class BossFilterGUI:
             args = argparse.Namespace(
                 clear=False,
                 job=job_arg,
-                greet=not no_greet,
+                greet=False,
                 re_greet=False,
                 greet_level=greet_level,
                 greet_names=None,
@@ -11435,34 +11682,19 @@ class BossFilterGUI:
                 self._remember_run_job_config_warning(text, has_error, result[0])
                 return result[0]
 
-            def greet_confirm_callback(message):
-                """自动打招呼发送前确认 — 用户取消时只保存筛选结果。"""
-                event = threading.Event()
-                result = [False]
-
-                def show_dialog():
-                    result[0] = messagebox.askyesno(
-                        "确认自动打招呼",
-                        message,
-                        parent=self.root,
-                    )
-                    event.set()
-
-                self.run_on_ui(show_dialog)
-                while not event.is_set():
-                    if self.stop_event.is_set():
-                        break
-                    event.wait(timeout=0.5)
-                return result[0]
-
             # 调用 run_smart_scan 并传入参数和进度回调
-            run_smart_scan(args, progress_callback=on_progress, confirm_callback=confirm_callback,
-                           stop_event=self.stop_event, existing_page=self.browser_page,
-                           captcha_callback=captcha_callback, notice_callback=notice_callback,
-                           blocking_notice_callback=blocking_notice_callback,
-                           job_match_callback=job_match_callback,
-                           job_config_callback=job_config_callback,
-                           greet_confirm_callback=greet_confirm_callback)
+            scanned_candidates = run_smart_scan(
+                args,
+                progress_callback=on_progress,
+                confirm_callback=confirm_callback,
+                stop_event=self.stop_event,
+                existing_page=self.browser_page,
+                captcha_callback=captcha_callback,
+                notice_callback=notice_callback,
+                blocking_notice_callback=blocking_notice_callback,
+                job_match_callback=job_match_callback,
+                job_config_callback=job_config_callback,
+            ) or []
 
         except KeyboardInterrupt:
             if not final_progress['desc']:
@@ -11491,6 +11723,15 @@ class BossFilterGUI:
             else:
                 status_text, status_color = "🔴 运行出错", self.colors['danger']
             progress_text = self._format_terminal_progress_text(final_desc)
+            should_build_contact_list = bool(
+                contact_policy_text != "仅保存筛选结果"
+                and scanned_candidates
+                and final_desc.startswith((
+                    "[完成]",
+                    "[达到轮次上限]",
+                    "[可能未扫完]",
+                ))
+            )
 
             def finish_ui():
                 self.status_label.config(text=status_text, foreground=status_color)
@@ -11502,20 +11743,44 @@ class BossFilterGUI:
                 )
                 self._set_run_summary(final_desc)
                 self.root.after(100, self.refresh_results)
+                if should_build_contact_list:
+                    self._add_scan_candidates_to_contact_queue(
+                        scanned_candidates,
+                        contact_policy_text,
+                    )
 
             self.run_on_ui(finish_ui)
 
     def on_closing(self):
         """窗口关闭处理 - 安全等待工作线程结束"""
-        if self.is_running:
-            if messagebox.askokcancel("退出", "程序正在运行，确定要强行退出吗？\n未保存的进度可能会丢失。"):
-                self.is_running = False
-                # 等待工作线程结束（最多 5 秒）
-                if hasattr(self, 'worker_thread') and self.worker_thread and self.worker_thread.is_alive():
-                    self.worker_thread.join(timeout=5)
-                self.root.destroy()
-        else:
-            self.root.destroy()
+        active_scan = self.is_running
+        active_contact = self.greet_queue_running or getattr(
+            self, 'greet_queue_preparing', False
+        )
+        if active_scan or active_contact:
+            operations = []
+            if active_scan:
+                operations.append("候选人扫描")
+            if active_contact:
+                operations.append("候选人联系")
+            if not messagebox.askokcancel(
+                "退出",
+                f"{'、'.join(operations)}正在运行，确定退出吗？\n\n"
+                "程序会停止当前任务并保留联系清单；发送中的候选人下次启动后需要人工核实。",
+            ):
+                return
+
+        self.is_running = False
+        self.stop_event.set()
+        self._persist_greet_queue()
+        for thread in (
+            getattr(self, 'worker_thread', None),
+            getattr(self, 'greet_queue_thread', None),
+        ):
+            if thread and thread.is_alive():
+                thread.join(timeout=5)
+        self._persist_greet_queue()
+        self.root.destroy()
 
     def on_run_job_selected(self, event=None):
         """运行页选择岗位后，提醒切换到 BOSS 对应发布职位"""
@@ -11803,7 +12068,6 @@ class BossFilterGUI:
         win = tk.Toplevel(self.root)
         win.title("今日待办")
         win.transient(self.root)
-        win.grab_set()
         win.withdraw()
         scale = self.dpi_scale * self.zoom_factor
 
@@ -11811,7 +12075,7 @@ class BossFilterGUI:
         body.pack(fill="both", expand=True)
 
         group_order = [
-            "发送结果待确认",
+            "发送结果待核实",
             "已回复待推进",
             "待复核",
             "待完成简历评估",
@@ -12097,7 +12361,6 @@ class BossFilterGUI:
                 messagebox.showerror("今日待办", f"导出失败：{exc}", parent=win)
 
         def close():
-            win.grab_release()
             win.destroy()
 
         ttk.Button(btn_row, text="导出报告", command=export_report).pack(side="left")
@@ -12111,7 +12374,6 @@ class BossFilterGUI:
         win = tk.Toplevel(self.root)
         win.title("候选人状态体检")
         win.transient(self.root)
-        win.grab_set()
         win.withdraw()
         scale = self.dpi_scale * self.zoom_factor
 
@@ -12430,7 +12692,6 @@ class BossFilterGUI:
                 messagebox.showerror("状态体检", f"导出失败：{exc}", parent=win)
 
         def close():
-            win.grab_release()
             win.destroy()
 
         ttk.Button(btn_row, text="导出报告", command=export_report).pack(side="left")
@@ -12499,13 +12760,21 @@ class BossFilterGUI:
 
         def add_queue():
             menu.add_command(
-                label=" 加入打招呼队列",
+                label=" 加入联系清单",
                 image=icon_queue,
                 compound=tk.LEFT,
                 command=lambda: (
                     self._add_candidates_to_greet_queue([candidate], parent=parent),
                     refresh_later(),
                 ),
+            )
+
+        def add_verify_sent():
+            menu.add_command(
+                label=" 核实发送结果",
+                image=icon_confirm,
+                compound=tk.LEFT,
+                command=lambda: self._focus_candidate_in_greet_queue(candidate),
             )
 
         def add_resume():
@@ -12533,9 +12802,13 @@ class BossFilterGUI:
             candidate.get('manual_review_required')
             or candidate.get('qualification_status') == 'manual_review'
         )
+        needs_send_verification = bool(candidate.get('greet_confirmation_pending'))
         can_queue = not candidate_greet_skip_reason(candidate)
 
-        if primary_action == "confirm" and needs_review:
+        if needs_send_verification:
+            add_verify_sent()
+            menu.add_separator()
+        elif primary_action == "confirm" and needs_review:
             add_confirm()
             menu.add_separator()
         elif primary_action == "queue" and can_queue:
@@ -12689,9 +12962,10 @@ class BossFilterGUI:
             name = str(cand.get('name', '')).lower()
             score_str = str(cand.get('match_score', '')).lower()
             level = str(cand.get('recommend_level', '')).lower()
-            status = str(
-                cand.get('_full_status') or cand.get('followup_status', '')
-            ).lower()
+            status = " ".join(filter(None, (
+                str(cand.get('_display_status') or cand.get('followup_status', '')),
+                str(cand.get('_full_status', '')),
+            ))).lower()
             if query == name:
                 return 'exact_name'
             if query in name:
@@ -12755,12 +13029,23 @@ class BossFilterGUI:
         """绑定 Treeview 右键菜单和双击"""
         self.result_tree.bind('<Button-3>', self._show_context_menu)
         self.result_tree.bind('<Double-Button-1>', self._on_tree_double_click)
+        self.result_tree.bind('<Control-a>', self._select_all_result_rows, add='+')
+        self.result_tree.bind('<Control-A>', self._select_all_result_rows, add='+')
         # 状态列 tooltip（截断时显示完整状态）
         self._tooltip = None
         self._tooltip_after_id = None
         self._tooltip_item = None
         self.result_tree.bind('<Motion>', self._on_tree_motion)
         self.result_tree.bind('<Leave>', self._hide_tooltip)
+
+    def _select_all_result_rows(self, _event=None):
+        """Select every candidate currently visible in the result table."""
+        rows = self.result_tree.get_children("")
+        if rows:
+            self.result_tree.selection_set(rows)
+            self.result_tree.focus(rows[0])
+            self.result_tree.see(rows[0])
+        return "break"
 
     def _on_tree_motion(self, event):
         """Treeview 鼠标移动：长状态、学校和公司显示完整 tooltip。"""
@@ -12782,7 +13067,8 @@ class BossFilterGUI:
         full = ''
         if cand and column_name == 'status':
             full = cand.get('_full_status', '')
-            show_tooltip = full.count('｜') >= 2
+            display = cand.get('_display_status', '')
+            show_tooltip = bool(full and full != display)
         elif cand and column_name in ('school', 'company'):
             extra = cand.get('_extra_fields') or ('', '', '', '', '')
             school, company = extra[3], extra[4]
@@ -12936,7 +13222,8 @@ class BossFilterGUI:
                 return
             candidate = self._find_candidate_in_detail_tree(tree, item, filtered_ref)
             full = candidate.get('_full_status', '') if candidate else ''
-            if not full or full.count('｜') < 2:
+            display = candidate.get('_display_status', '') if candidate else ''
+            if not full or full == display:
                 _hide_all()
                 return
             # 同一行同一列：已显示就保持，有待显示就保持
@@ -13047,7 +13334,7 @@ class BossFilterGUI:
                 self.refresh_home_stats()
 
             menu.add_command(
-                label=" 加入打招呼队列",
+                label=" 加入联系清单",
                 image=icon_greet,
                 compound=tk.LEFT,
                 command=lambda: self._add_candidates_to_greet_queue(
@@ -13149,7 +13436,7 @@ class BossFilterGUI:
 
         if not candidate_greet_skip_reason(candidate):
             menu.add_command(
-                label=" 加入打招呼队列",
+                label=" 加入联系清单",
                 image=icon_greet,
                 compound=tk.LEFT,
                 command=lambda: self._add_candidates_to_greet_queue(
@@ -13274,11 +13561,16 @@ class BossFilterGUI:
         return ''
 
     def _format_candidate_status(self, candidate):
-        """生成结果表中的候选人状态文本。超过 3 段且列未拉伸时截断，完整文本存 _full_status。"""
+        """生成简短状态文本，并将完整状态和复核原因保存供 tooltip 使用。"""
+        def _store_status(display, details=None):
+            candidate['_display_status'] = display
+            candidate['_full_status'] = details or display
+            return display
+
         # AI评估中状态（使用全局集合，refresh_results 后仍有效）
         geek_id = str(candidate.get('geek_id', ''))
         if geek_id in getattr(self, '_ai_evaluating_ids', set()):
-            return "AI评估中..."
+            return _store_status("AI评估中...")
 
         # AI评估结果状态（显示约3秒后自动恢复）
         ai_eval_results = getattr(self, '_ai_eval_results', {})
@@ -13287,28 +13579,31 @@ class BossFilterGUI:
             # 检查是否在3秒内
             if time.time() - result.get('timestamp', 0) < 3:
                 if result['status'] == 'success':
-                    return f"✓ {result['message']}"
+                    return _store_status(f"✓ {result['message']}")
                 else:
-                    return f"✗ {result['message']}"
+                    return _store_status(f"✗ {result['message']}")
             else:
                 # 超过3秒，清除结果
                 del ai_eval_results[geek_id]
 
         decision = derive_candidate_decision(candidate)
         status_parts = [decision.communication_status]
+        tooltip_text = ""
         if decision.result_view == "待复核":
-            status_parts.append(
-                f"待复核：{decision.primary_review_reason or '请人工确认'}"
+            status_parts.append("待复核")
+            tooltip_text = (
+                f"复核原因：{decision.primary_review_reason or '请人工确认'}"
             )
         elif decision.result_view == "淘汰记录":
-            status_parts.append(decision.primary_review_reason or "淘汰记录")
+            rejection_reason = decision.primary_review_reason or "淘汰记录"
+            status_parts.append(rejection_reason)
         if candidate.get('feedback_status'):
-            status_parts.append(candidate.get('feedback_status'))
+            feedback_status = candidate.get('feedback_status')
+            status_parts.append(feedback_status)
         if candidate.get('blacklisted'):
             status_parts.append("已屏蔽")
-        full = "｜".join(status_parts)
-        candidate['_full_status'] = full
-        return full
+        display = "｜".join(status_parts)
+        return _store_status(display, tooltip_text or display)
 
     @staticmethod
     def _get_greet_confirmation_hint(candidate):
@@ -14473,7 +14768,7 @@ class BossFilterGUI:
             "确认通过",
             f"确认 {name} 的人工审查已通过？\n\n"
             f"审查原因：\n{risk_text}\n\n"
-            f"确认后将清除「需人工确认」标记。如需联系此人，可加入打招呼队列。",
+            f"确认后将清除「需人工确认」标记。如需联系此人，可加入联系清单。",
             parent=parent or self.root
         ):
             return
@@ -14514,7 +14809,7 @@ class BossFilterGUI:
         if not messagebox.askyesno(
             "批量确认通过",
             f"确认以下 {len(to_confirm)} 人的人工审查已通过？\n\n{names}\n\n"
-            f"确认后将清除「需人工确认」标记。如需联系，请加入打招呼队列。",
+            f"确认后将清除「需人工确认」标记。如需联系，请加入联系清单。",
             parent=parent or self.root
         ):
             return
@@ -15199,38 +15494,99 @@ class BossFilterGUI:
 
     @staticmethod
     def _greet_queue_key(candidate):
-        geek_id = str(candidate.get('geek_id') or '').strip()
-        job_name = str(candidate.get('job_name') or '').replace(" ", "")
-        return f"{geek_id}|{job_name}"
+        return contact_queue_candidate_identity(candidate)
+
+    def _ensure_greet_queue_loaded(self):
+        """Lazily restore active queue intent against the latest candidate data."""
+        if self._greet_queue_loaded:
+            return
+        try:
+            candidates = load_candidates_all(CANDIDATES_PATH)
+            self.greet_queue_items = load_contact_queue(candidates, CONTACT_QUEUE_PATH)
+            if self.greet_queue_items:
+                self.append_log(f"[联系候选人] 已恢复 {len(self.greet_queue_items)} 个未完成任务")
+        except Exception as exc:
+            self.greet_queue_items = []
+            self.append_log(f"[联系候选人] 恢复联系清单失败：{exc}")
+        self._greet_queue_loaded = True
+        changed = False
+        for item in self.greet_queue_items:
+            if item.get('status') == "待核实":
+                continue
+            status, message = self._revalidate_greet_queue_candidate(
+                item.get('candidate') or {}
+            )
+            if status != "待发送":
+                item['status'] = status
+                item['message'] = message
+                item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
+                changed = True
+        if changed:
+            self._persist_greet_queue()
+
+    def _persist_greet_queue(self):
+        """Persist active queue intent; completed rows remain session-local."""
+        if not self._greet_queue_loaded:
+            return
+        try:
+            save_contact_queue(self.greet_queue_items, CONTACT_QUEUE_PATH)
+        except Exception as exc:
+            self.append_log(f"[联系候选人] 保存联系清单失败：{exc}")
 
     @staticmethod
     def _has_direct_send_context(candidate):
         return bool((candidate.get('greet_context') or {}).get('chat_start'))
 
     @staticmethod
+    def _greet_queue_readiness_label(candidate):
+        if BossFilterGUI._has_direct_send_context(candidate):
+            return "已就绪"
+        return "发送时检查"
+
+    @staticmethod
+    def _greet_queue_readiness_tooltip(candidate):
+        if BossFilterGUI._has_direct_send_context(candidate):
+            return "发送前仍会检查 Chrome、BOSS 登录状态和推荐牛人页面。"
+        job_name = str(candidate.get('job_name') or '对应岗位')
+        return (
+            "发送时会检查当前推荐牛人页面。"
+            f"如岗位不一致，将保留在清单并提示切换到“{job_name}”后重试。"
+        )
+
+    @staticmethod
     def _greet_queue_method_label(candidate):
-        return "可直接发送" if BossFilterGUI._has_direct_send_context(candidate) else "需要页面支持"
+        """Compatibility alias for existing callers and older queue tests."""
+        return BossFilterGUI._greet_queue_readiness_label(candidate)
 
     def _build_greet_queue_item(self, candidate, source="manual"):
-        key = self._greet_queue_key(candidate)
-        method = self._greet_queue_method_label(candidate)
-        return {
-            "queue_id": f"{int(time.time() * 1000)}_{len(self.greet_queue_items)}_{key}",
-            "key": key,
-            "candidate": candidate,
-            "status": "待发送",
-            "message": "",
-            "method": method,
-            "source": source,
-            "attempts": 0,
-            "updated_at": datetime.now().strftime("%H:%M:%S"),
-        }
+        return build_contact_queue_item(candidate, source=source)
 
     @staticmethod
     def _greet_queue_skip_reason(candidate):
         return candidate_greet_skip_reason(candidate)
 
+    def _add_scan_candidates_to_contact_queue(self, candidates, policy):
+        threshold = (
+            SCORE_THRESHOLD_STRONG
+            if policy == "将强烈推荐加入联系清单"
+            else SCORE_THRESHOLD_RECOMMEND
+        )
+        selected = [
+            candidate for candidate in candidates
+            if int(candidate.get('match_score') or 0) >= threshold
+        ]
+        if not selected:
+            self.append_log("[联系候选人] 本轮没有符合联系清单策略的候选人")
+            return 0
+        return self._add_candidates_to_greet_queue(
+            selected,
+            parent=self.root,
+            source="scan",
+            open_dialog=True,
+        )
+
     def _add_candidates_to_greet_queue(self, candidates, parent=None, source="manual", open_dialog=True):
+        self._ensure_greet_queue_loaded()
         _parent = parent or self.root
         existing_keys = {item.get('key') for item in self.greet_queue_items}
         added = 0
@@ -15249,12 +15605,27 @@ class BossFilterGUI:
         if open_dialog:
             self._show_greet_queue_dialog(parent=_parent)
         if added:
+            self._persist_greet_queue()
             skip_text = self._format_greet_queue_skip_summary(skipped_reasons)
-            self.append_log(f"[打招呼队列] 已加入 {added} 人" + (f"，已跳过 {sum(skipped_reasons.values())} 人" if skipped_reasons else ""))
+            self.append_log(f"[联系候选人] 已加入 {added} 人" + (f"，已跳过 {sum(skipped_reasons.values())} 人" if skipped_reasons else ""))
             if skip_text:
-                messagebox.showinfo("打招呼队列", f"已加入 {added} 人\n\n已跳过：\n{skip_text}", parent=_parent)
+                self._show_text_dialog(
+                    "联系候选人",
+                    f"已加入联系清单：{added} 人\n\n已跳过：\n{skip_text}",
+                    width=500,
+                    height=280,
+                    button_text="确定",
+                    button_align="center",
+                )
         elif skipped_reasons:
-            messagebox.showinfo("打招呼队列", f"没有可加入队列的候选人。\n\n已跳过：\n{self._format_greet_queue_skip_summary(skipped_reasons)}", parent=_parent)
+            self._show_text_dialog(
+                "联系候选人",
+                f"没有可加入联系清单的候选人。\n\n已跳过：\n{self._format_greet_queue_skip_summary(skipped_reasons)}",
+                width=500,
+                height=280,
+                button_text="确定",
+                button_align="center",
+            )
         return added
 
     @staticmethod
@@ -15279,15 +15650,17 @@ class BossFilterGUI:
         return candidates
 
     def _show_greet_queue_dialog(self, parent=None):
+        self._ensure_greet_queue_loaded()
         _parent = parent or self.root
         if self.greet_queue_window and self.greet_queue_window.winfo_exists():
+            self.greet_queue_window.deiconify()
             self.greet_queue_window.lift()
             self._refresh_greet_queue_dialog()
             return
 
         scale = self.dpi_scale * self.zoom_factor
         win = tk.Toplevel(_parent)
-        win.title("打招呼队列")
+        win.title("联系候选人")
         win.transient(_parent)
         win.withdraw()
         win.configure(bg=self.colors['bg_main'])
@@ -15309,26 +15682,30 @@ class BossFilterGUI:
 
         queue_actions = ttk.Frame(header, style='Page.TFrame')
         queue_actions.pack(side="right", padx=(0, int(8 * scale)))
-        ttk.Button(
+        self.greet_queue_start_btn = ttk.Button(
             queue_actions,
-            text="开始发送队列",
+            text="联系待发送",
             command=self._start_greet_queue,
             style="GreetQueue.Small.TButton",
-        ).pack(side="left", padx=(0, int(6 * scale)))
-        ttk.Button(
+            width=14,
+        )
+        self.greet_queue_start_btn.pack(side="left", padx=(0, int(6 * scale)))
+        self.greet_queue_pause_btn = ttk.Button(
             queue_actions,
             text="暂停",
             command=self._pause_greet_queue,
             style="GreetQueue.Small.TButton",
             width=8,
-        ).pack(side="left", padx=(0, int(6 * scale)))
-        ttk.Button(
+        )
+        self.greet_queue_pause_btn.pack(side="left", padx=(0, int(6 * scale)))
+        self.greet_queue_resume_btn = ttk.Button(
             queue_actions,
             text="继续",
             command=self._resume_greet_queue,
             style="GreetQueue.Small.TButton",
             width=8,
-        ).pack(side="left")
+        )
+        self.greet_queue_resume_btn.pack(side="left")
 
         self.greet_queue_status_filter_var = tk.StringVar(value=self.greet_queue_selected_group)
 
@@ -15354,7 +15731,7 @@ class BossFilterGUI:
         nav_frame.pack(side="left", fill="y", padx=(0, int(8 * scale)))
         ttk.Label(
             nav_frame,
-            text="队列状态",
+            text="联系状态",
             font=self.font_label,
             foreground=self.colors['text_primary'],
             background=self.colors['bg_card'],
@@ -15370,8 +15747,12 @@ class BossFilterGUI:
         self.greet_queue_group_tree = group_tree
         group_tree.heading("#0", text="状态")
         group_tree.heading("count", text="人数")
-        group_tree.column("#0", width=int(120 * scale), minwidth=int(100 * scale), anchor="center")
+        group_tree.column("#0", width=int(130 * scale), minwidth=int(110 * scale), anchor="w")
         group_tree.column("count", width=int(58 * scale), minwidth=int(48 * scale), anchor="center")
+        group_tree.tag_configure(
+            "all_statuses",
+            font=(FONT_FAMILY, int(11 * self.font_scale), "bold"),
+        )
         group_tree.pack(fill="y", expand=True)
         group_tree.bind("<<TreeviewSelect>>", lambda _event: self._on_greet_queue_group_selected())
 
@@ -15390,22 +15771,38 @@ class BossFilterGUI:
         ).grid(row=0, column=0, sticky="w", padx=(0, int(10 * scale)))
         selected_actions = ttk.Frame(detail_header)
         selected_actions.grid(row=0, column=1, sticky="e")
-        ttk.Button(
+        self.greet_queue_confirm_sent_btn = ttk.Button(
             selected_actions,
-            text="移除选中",
-            command=self._remove_selected_greet_queue_items,
+            text="确认已发送",
+            command=lambda: self._resolve_selected_greet_queue_pending(sent=True),
             style="GreetQueue.Small.TButton",
-            width=8,
-        ).pack(side="left", padx=(0, int(6 * scale)))
-        ttk.Button(
+        )
+        self.greet_queue_confirm_sent_btn.pack(side="left", padx=(0, int(6 * scale)))
+        self.greet_queue_confirm_not_sent_btn = ttk.Button(
+            selected_actions,
+            text="确认未发送",
+            command=lambda: self._resolve_selected_greet_queue_pending(sent=False),
+            style="GreetQueue.Small.TButton",
+        )
+        self.greet_queue_confirm_not_sent_btn.pack(side="left", padx=(0, int(6 * scale)))
+        self.greet_queue_retry_btn = ttk.Button(
             selected_actions,
             text="重试失败",
             command=self._retry_failed_greet_queue_items,
             style="GreetQueue.Small.TButton",
             width=8,
-        ).pack(side="left")
+        )
+        self.greet_queue_retry_btn.pack(side="left", padx=(0, int(6 * scale)))
+        self.greet_queue_remove_btn = ttk.Button(
+            selected_actions,
+            text="移除选中",
+            command=self._remove_selected_greet_queue_items,
+            style="GreetQueue.Small.TButton",
+            width=8,
+        )
+        self.greet_queue_remove_btn.pack(side="left")
 
-        columns = ("name", "job", "score", "level", "method", "status", "message")
+        columns = ("name", "job", "score", "level", "readiness", "status", "message")
         tree = ttk.Treeview(
             tree_frame,
             columns=columns,
@@ -15420,7 +15817,7 @@ class BossFilterGUI:
             "job": "岗位",
             "score": "分数",
             "level": "推荐",
-            "method": "发送方式",
+            "readiness": "发送准备",
             "status": "状态",
             "message": "最近结果",
         }
@@ -15429,7 +15826,7 @@ class BossFilterGUI:
             "job": 150,
             "score": 55,
             "level": 70,
-            "method": 95,
+            "readiness": 145,
             "status": 80,
             "message": 260,
         }
@@ -15445,10 +15842,16 @@ class BossFilterGUI:
         tree_frame.grid_rowconfigure(1, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
         tree.bind("<Double-Button-1>", lambda _event: self._show_selected_greet_queue_detail())
+        tree.bind("<<TreeviewSelect>>", lambda _event: self._update_greet_queue_action_states())
+        tree.bind("<Motion>", self._on_greet_queue_motion)
+        tree.bind("<Leave>", self._hide_tooltip)
+        tree.bind("<Button-3>", self._show_greet_queue_context_menu)
+        tree.bind("<Control-a>", self._select_all_greet_queue_rows, add="+")
+        tree.bind("<Control-A>", self._select_all_greet_queue_rows, add="+")
 
-        win.protocol("WM_DELETE_WINDOW", win.destroy)
+        win.protocol("WM_DELETE_WINDOW", self._close_greet_queue_window)
         self._refresh_greet_queue_dialog()
-        _place_window_centered(win, int(1040 * scale), int(560 * scale), parent=_parent)
+        _place_window_centered(win, int(1160 * scale), int(620 * scale), parent=_parent)
         win.deiconify()
 
     def _on_greet_queue_group_selected(self):
@@ -15465,13 +15868,52 @@ class BossFilterGUI:
             self.greet_queue_status_filter_var.set(selected_group)
         self._refresh_greet_queue_dialog()
 
+    def _focus_candidate_in_greet_queue(self, candidate):
+        """Open the contact workbench at a candidate awaiting verification."""
+        self._ensure_greet_queue_loaded()
+        key = self._greet_queue_key(candidate)
+        item = next(
+            (item for item in self.greet_queue_items if item.get('key') == key),
+            None,
+        )
+        if item is None and candidate.get('greet_confirmation_pending'):
+            item = self._build_greet_queue_item(candidate, source="candidate_state")
+            item['status'] = "待核实"
+            item['message'] = (
+                candidate.get('greet_confirmation_reason')
+                or "上次发送结果需要人工核实"
+            )
+            self.greet_queue_items.append(item)
+            self._persist_greet_queue()
+        elif item is not None and candidate.get('greet_confirmation_pending'):
+            item['candidate'] = candidate
+            item['status'] = "待核实"
+            item['message'] = (
+                candidate.get('greet_confirmation_reason')
+                or "上次发送结果需要人工核实"
+            )
+            item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._persist_greet_queue()
+        self._show_greet_queue_dialog(parent=self.root)
+        if item is None:
+            return
+        self.greet_queue_selected_group = "待核实"
+        self._refresh_greet_queue_dialog()
+        if self.greet_queue_tree and self.greet_queue_tree.winfo_exists():
+            queue_id = item.get('queue_id')
+            if queue_id in self.greet_queue_tree.get_children():
+                self.greet_queue_tree.selection_set(queue_id)
+                self.greet_queue_tree.focus(queue_id)
+                self.greet_queue_tree.see(queue_id)
+                self._update_greet_queue_action_states()
+
     def _refresh_greet_queue_dialog(self):
         if not self.greet_queue_tree or not self.greet_queue_tree.winfo_exists():
             return
         tree = self.greet_queue_tree
         tree.delete(*tree.get_children())
         counts = {}
-        group_order = ("全部", "待确认", "失败", "需人工确认", "待发送", "发送中", "已发送")
+        group_order = ("全部", "待核实", "发送失败", "待发送", "发送中", "已发送", "已跳过")
         for item in self.greet_queue_items:
             status = item.get('status') or "待发送"
             counts[status] = counts.get(status, 0) + 1
@@ -15480,9 +15922,23 @@ class BossFilterGUI:
             group_tree = self.greet_queue_group_tree
             previous_selection = self.greet_queue_selected_group or "全部"
             group_tree.delete(*group_tree.get_children())
-            for group in group_order:
-                count = len(self.greet_queue_items) if group == "全部" else counts.get(group, 0)
-                group_tree.insert("", "end", iid=group, text=group, values=(count,))
+            group_tree.insert(
+                "",
+                "end",
+                iid="全部",
+                text="全部",
+                values=(len(self.greet_queue_items),),
+                tags=("all_statuses",),
+                open=True,
+            )
+            for group in group_order[1:]:
+                group_tree.insert(
+                    "全部",
+                    "end",
+                    iid=group,
+                    text=group,
+                    values=(counts.get(group, 0),),
+                )
             if previous_selection not in group_order:
                 previous_selection = "全部"
             self.greet_queue_selected_group = previous_selection
@@ -15508,7 +15964,7 @@ class BossFilterGUI:
                     candidate.get('job_name', ''),
                     candidate.get('match_score', ''),
                     candidate.get('recommend_level', ''),
-                    item.get('method') or self._greet_queue_method_label(candidate),
+                    self._greet_queue_readiness_label(candidate),
                     status,
                     item.get('message', ''),
                 ),
@@ -15516,32 +15972,111 @@ class BossFilterGUI:
         if self.greet_queue_detail_title_var:
             self.greet_queue_detail_title_var.set(f"{selected_status}：{visible_count} 人")
         if self.greet_queue_summary_var:
-            total = len(self.greet_queue_items)
-            needs_attention = (
-                counts.get('待确认', 0)
-                + counts.get('失败', 0)
-                + counts.get('需人工确认', 0)
-            )
-            pending = counts.get('待发送', 0)
-            if total == 0:
-                summary = "队列为空"
-            elif needs_attention:
-                summary = f"队列共 {total} 人｜需处理 {needs_attention} 人｜待发送 {pending} 人"
-            else:
-                summary = f"队列共 {total} 人｜待发送 {pending} 人"
-            self.greet_queue_summary_var.set(summary)
+            self.greet_queue_summary_var.set(self._greet_queue_summary_text())
+        self._update_greet_queue_action_states()
+
+    def _greet_queue_summary_text(self):
+        """Return the idle summary shown above the contact queue."""
+        counts = Counter(
+            (item.get('status') or "待发送") for item in self.greet_queue_items
+        )
+        total = len(self.greet_queue_items)
+        needs_attention = counts.get('待核实', 0) + counts.get('发送失败', 0)
+        pending = counts.get('待发送', 0)
+        if total == 0:
+            return "联系清单为空"
+        if needs_attention:
+            return f"联系清单共 {total} 人｜需处理 {needs_attention} 人｜待发送 {pending} 人"
+        return f"联系清单共 {total} 人｜待发送 {pending} 人"
 
     def _set_greet_queue_item_state(self, item, status, message=""):
         item['status'] = status
-        if message:
-            item['message'] = message
-        item['updated_at'] = datetime.now().strftime("%H:%M:%S")
-        self.root.after(0, self._refresh_greet_queue_dialog)
+        item['message'] = message
+        item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._persist_greet_queue()
+        try:
+            self.root.after(0, self._refresh_greet_queue_dialog)
+        except tk.TclError:
+            pass
+
+    def _update_greet_queue_action_states(self):
+        selected = self._selected_greet_queue_items()
+        selected_statuses = {item.get('status') for item in selected}
+        pending_count = sum(
+            1 for item in self.greet_queue_items
+            if item.get('status') == "待发送"
+        )
+        selected_pending_count = sum(
+            1 for item in selected if item.get('status') == "待发送"
+        )
+        action_pending_count = selected_pending_count if selected else pending_count
+
+        start_btn = getattr(self, 'greet_queue_start_btn', None)
+        preparing = getattr(self, 'greet_queue_preparing', False)
+        if self.greet_queue_summary_var:
+            if preparing:
+                prepare_text = (
+                    getattr(self, 'greet_queue_prepare_text', '')
+                    or "正在准备浏览器..."
+                )
+                summary = f"发送准备：{prepare_text}"
+            else:
+                summary = self._greet_queue_summary_text()
+            self.greet_queue_summary_var.set(summary)
+        if start_btn and start_btn.winfo_exists():
+            if selected:
+                start_text = (
+                    f"联系选中（{selected_pending_count} 人）"
+                    if selected_pending_count
+                    else "选中项不可联系"
+                )
+            else:
+                start_text = (
+                    f"联系待发送（{pending_count} 人）"
+                    if pending_count
+                    else "没有待联系"
+                )
+            start_btn.configure(
+                text=start_text,
+                state=(
+                    "disabled"
+                    if preparing or self.greet_queue_running or not action_pending_count
+                    else "normal"
+                ),
+            )
+        pause_btn = getattr(self, 'greet_queue_pause_btn', None)
+        if pause_btn and pause_btn.winfo_exists():
+            pause_btn.configure(
+                state="normal" if self.greet_queue_running and not self.greet_queue_paused else "disabled"
+            )
+        resume_btn = getattr(self, 'greet_queue_resume_btn', None)
+        if resume_btn and resume_btn.winfo_exists():
+            resume_btn.configure(
+                state="normal" if self.greet_queue_running and self.greet_queue_paused else "disabled"
+            )
+        queue_idle = not self.greet_queue_running and not getattr(
+            self, 'greet_queue_preparing', False
+        )
+        for attr, enabled in (
+            ('greet_queue_confirm_sent_btn', queue_idle and bool(selected) and selected_statuses == {"待核实"}),
+            ('greet_queue_confirm_not_sent_btn', queue_idle and bool(selected) and selected_statuses == {"待核实"}),
+            ('greet_queue_retry_btn', queue_idle and bool(selected) and selected_statuses == {"发送失败"}),
+            (
+                'greet_queue_remove_btn',
+                queue_idle
+                and bool(selected)
+                and not selected_statuses.intersection({"发送中", "待核实"}),
+            ),
+        ):
+            button = getattr(self, attr, None)
+            if button and button.winfo_exists():
+                button.configure(state="normal" if enabled else "disabled")
 
     def _selected_greet_queue_items(self):
-        if not self.greet_queue_tree or not self.greet_queue_tree.winfo_exists():
+        tree = getattr(self, 'greet_queue_tree', None)
+        if not tree or not tree.winfo_exists():
             return []
-        selected = set(self.greet_queue_tree.selection())
+        selected = set(tree.selection())
         return [item for item in self.greet_queue_items if item.get('queue_id') in selected]
 
     def _show_selected_greet_queue_detail(self):
@@ -15551,79 +16086,301 @@ class BossFilterGUI:
         candidate = selected[0].get('candidate') or {}
         if not candidate:
             return
-        title = f"候选人详情 - {candidate.get('name', '未知')}"
-        detail = self._format_candidate_detail(candidate)
-        self._show_text_dialog(title, detail, width=860, height=620)
+        self._open_candidate_review_workbench(candidate)
 
     def _remove_selected_greet_queue_items(self):
         selected = self._selected_greet_queue_items()
         if not selected:
             return
         if any(item.get('status') == "发送中" for item in selected):
-            messagebox.showwarning("打招呼队列", "发送中的候选人不能移除，请先暂停并等待当前发送完成。", parent=self.greet_queue_window or self.root)
+            messagebox.showwarning("联系候选人", "发送中的候选人不能移除，请先暂停并等待当前发送完成。", parent=self.greet_queue_window or self.root)
+            return
+        if any(item.get('status') == "待核实" for item in selected):
+            messagebox.showwarning(
+                "联系候选人",
+                "待核实的候选人不能直接移除，请先确认已发送或未发送。",
+                parent=self.greet_queue_window or self.root,
+            )
             return
         remove_ids = {item.get('queue_id') for item in selected}
         self.greet_queue_items = [item for item in self.greet_queue_items if item.get('queue_id') not in remove_ids]
+        self._persist_greet_queue()
         self._refresh_greet_queue_dialog()
 
     def _retry_failed_greet_queue_items(self):
+        selected = self._selected_greet_queue_items()
         changed = 0
-        for item in self.greet_queue_items:
-            if item.get('status') == "失败":
+        for item in selected:
+            if item.get('status') == "发送失败":
                 item['status'] = "待发送"
                 item['message'] = "等待重试"
+                item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
                 changed += 1
         if changed:
+            self._persist_greet_queue()
             self._refresh_greet_queue_dialog()
 
+    def _resolve_selected_greet_queue_pending(self, *, sent):
+        selected = [
+            item for item in self._selected_greet_queue_items()
+            if item.get('status') == "待核实"
+        ]
+        if not selected:
+            return
+        action = "已发送" if sent else "未发送"
+        if not messagebox.askyesno(
+            f"确认{action}",
+            f"请确认已在 BOSS 沟通列表逐一核实。\n\n"
+            f"将选中的 {len(selected)} 人标记为“{action}”，是否继续？",
+            parent=self.greet_queue_window or self.root,
+        ):
+            return
+
+        resolved = 0
+        for item in selected:
+            candidate = item.get('candidate') or {}
+            try:
+                ok = resolve_candidate_greeting_confirmation(
+                    candidate,
+                    sent=sent,
+                    path=CANDIDATES_PATH,
+                )
+            except Exception as exc:
+                ok = False
+                self.append_log(f"[联系候选人] 核实 {candidate.get('name', '')} 失败：{exc}")
+            if not ok:
+                item['message'] = "未能保存核实结果"
+                continue
+            resolved += 1
+            if sent:
+                item['status'] = "已发送"
+                item['message'] = "已由用户在 BOSS 沟通列表确认"
+            else:
+                item['status'] = "待发送"
+                item['message'] = "已确认未发送，可以重新发送"
+            item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        self._persist_greet_queue()
+        self._refresh_greet_queue_dialog()
+        self.refresh_results(force=True)
+        self.refresh_home_stats()
+        self.append_log(f"[联系候选人] 已完成 {resolved} 人发送结果核实")
+
     def _pause_greet_queue(self):
+        if not self.greet_queue_running:
+            return
         self.greet_queue_paused = True
-        self.append_log("[打招呼队列] 已暂停，当前发送完成后停止推进")
+        self.append_log("[联系候选人] 已暂停，当前发送完成后停止推进")
+        self._update_greet_queue_action_states()
 
     def _resume_greet_queue(self):
-        if not self.greet_queue_running:
-            self.greet_queue_paused = False
-            self._start_greet_queue()
+        if not self.greet_queue_running or not self.greet_queue_paused:
             return
         self.greet_queue_paused = False
-        self.append_log("[打招呼队列] 已继续")
+        self.append_log("[联系候选人] 已继续")
+        self._update_greet_queue_action_states()
 
     def _start_greet_queue(self):
-        if self.greet_queue_running:
-            messagebox.showinfo("打招呼队列", "队列正在发送中", parent=self.greet_queue_window or self.root)
+        self._ensure_greet_queue_loaded()
+        if getattr(self, 'greet_queue_preparing', False):
             return
-        pending = [item for item in self.greet_queue_items if item.get('status') == "待发送"]
+        if self.greet_queue_running:
+            messagebox.showinfo("联系候选人", "联系任务正在执行", parent=self.greet_queue_window or self.root)
+            return
+        if self.is_running:
+            messagebox.showinfo("联系候选人", "候选人扫描正在运行，请等待扫描完成后再发送。", parent=self.greet_queue_window or self.root)
+            return
+        selected = self._selected_greet_queue_items()
+        source_items = selected if selected else self.greet_queue_items
+        pending = [item for item in source_items if item.get('status') == "待发送"]
         if not pending:
-            messagebox.showinfo("打招呼队列", "没有待发送候选人", parent=self.greet_queue_window or self.root)
+            message = "选中的候选人当前不可联系" if selected else "没有待联系候选人"
+            messagebox.showinfo(
+                "联系候选人", message, parent=self.greet_queue_window or self.root
+            )
+            return
+        self.stop_event.clear()
+        self.greet_queue_preparing = True
+        self.greet_queue_prepare_text = "正在准备浏览器..."
+        self._update_greet_queue_action_states()
+        self.append_log("[联系候选人] 正在准备 Chrome 和 BOSS 推荐牛人页面...")
+        self.greet_queue_thread = threading.Thread(
+            target=self._prepare_greet_queue_start,
+            args=(pending,),
+            daemon=True,
+        )
+        self.greet_queue_thread.start()
+
+    def _begin_greet_queue_send(self, pending):
+        """Start the send worker after browser readiness and user confirmation."""
+        self.greet_queue_paused = False
+        self.greet_queue_running = True
+        self._update_greet_queue_action_states()
+        self.greet_queue_thread = threading.Thread(
+            target=self._run_greet_queue_worker,
+            args=(pending,),
+            daemon=True,
+        )
+        self.greet_queue_thread.start()
+
+    def _set_greet_queue_prepare_status(self, text):
+        self.greet_queue_prepare_text = text
+        try:
+            self.root.after(0, self._update_greet_queue_action_states)
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def _prepare_greet_queue_start(self, pending):
+        """Wait for Chrome, BOSS login and the recommendation page before confirm."""
+        parent = self.greet_queue_window or self.root
+        error = ""
+        connection_lock_acquired = False
+        try:
+            connection_lock_acquired = self._browser_connection_lock.acquire(timeout=8)
+            if not connection_lock_acquired:
+                error = "浏览器正在执行其他操作，请稍后再试。"
+                return
+
+            self._set_greet_queue_prepare_status("正在连接 Chrome...")
+            if not self.browser_page or not self._is_browser_page_alive(self.browser_page):
+                if not self._reconnect_browser_or_warn(
+                    parent,
+                    "浏览器未就绪",
+                    "浏览器未就绪",
+                    "无法连接或启动 Chrome。",
+                ):
+                    error = getattr(
+                        self,
+                        '_greet_queue_browser_error',
+                        "无法连接或启动 Chrome。",
+                    )
+                    return
+
+            recommend_url = 'https://www.zhipin.com/web/chat/recommend'
+            deadline = time.monotonic() + 120
+            navigation_attempted = False
+            login_prompted = False
+            while time.monotonic() < deadline and not self.stop_event.is_set():
+                ok, current_url, _page_text, reason = self._get_greet_queue_page_state()
+                if ok and self._is_boss_recommend_url(current_url):
+                    self.append_log("[联系候选人] Chrome、BOSS 登录和推荐牛人页面已就绪")
+                    return
+
+                if "登录" in reason:
+                    if not login_prompted:
+                        self.append_log("[联系候选人] 请在 Chrome 中完成 BOSS 登录，程序将自动继续")
+                        login_prompted = True
+                    navigation_attempted = False
+                    self._set_greet_queue_prepare_status("请在 Chrome 完成登录...")
+                    time.sleep(1)
+                    continue
+
+                if not navigation_attempted and self._is_browser_page_alive(
+                    self.browser_page
+                ):
+                    self._set_greet_queue_prepare_status("正在打开推荐牛人页面...")
+                    try:
+                        self.browser_page.get(recommend_url)
+                        navigation_attempted = True
+                    except Exception as exc:
+                        error = f"推荐牛人页面打开失败：{str(exc)[:80]}"
+                        return
+                    time.sleep(1)
+                    continue
+
+                if not ok:
+                    error = reason or "浏览器页面尚未就绪。"
+                    return
+                time.sleep(1)
+
+            error = "等待 BOSS 登录或推荐牛人页面超时，请检查 Chrome 后重试。"
+        finally:
+            if connection_lock_acquired:
+                self._browser_connection_lock.release()
+            try:
+                self.root.after(
+                    0,
+                    lambda items=pending, message=error: self._finish_greet_queue_preparation(
+                        items, message
+                    ),
+                )
+            except (tk.TclError, RuntimeError):
+                pass
+
+    def _finish_greet_queue_preparation(self, pending, error=""):
+        """Show send confirmation only after the browser preflight completes."""
+        self.greet_queue_preparing = False
+        self.greet_queue_prepare_text = ""
+        self._update_greet_queue_action_states()
+        if error:
+            messagebox.showerror(
+                "发送前检查未完成",
+                error,
+                parent=self.greet_queue_window or self.root,
+                headline="浏览器尚未就绪",
+                show_icon=False,
+                min_width=620,
+            )
             return
         if not self._confirm_start_greet_queue(pending):
             return
-        self.greet_queue_paused = False
-        threading.Thread(target=self._run_greet_queue_worker, daemon=True).start()
+        self._begin_greet_queue_send(pending)
+
+    @staticmethod
+    def _build_greet_queue_confirmation_content(pending):
+        direct_count = 0
+        page_jobs = Counter()
+        for item in pending:
+            candidate = item.get('candidate') or {}
+            if BossFilterGUI._has_direct_send_context(candidate):
+                direct_count += 1
+                continue
+            job_name = str(candidate.get('job_name') or '未指定岗位').strip()
+            page_jobs[job_name] += 1
+
+        page_count = len(pending) - direct_count
+        headline = f"联系 {len(pending)} 名候选人？"
+        common = (
+            "Chrome：已连接，推荐牛人页面已就绪\n"
+            "登录：BOSS 账号已登录"
+        )
+        if not page_count:
+            message = (
+                f"{common}\n"
+                "岗位：无需切换岗位页面"
+            )
+            return headline, message
+
+        jobs_text = "、".join(
+            f"{job_name}（{count} 人）"
+            for job_name, count in page_jobs.items()
+        )
+        if not direct_count:
+            message = (
+                f"{common}\n"
+                f"岗位：需要切换到 {jobs_text}"
+            )
+        else:
+            message = (
+                f"{common}\n"
+                f"岗位：{direct_count} 人无需切换；{page_count} 人需要 {jobs_text}"
+            )
+        if len(page_jobs) > 1:
+            message += "\n提醒：当前岗位不一致的候选人会保留，切换后可再次发送"
+        return headline, message
 
     def _confirm_start_greet_queue(self, pending):
-        direct = sum(
-            1 for item in pending
-            if self._has_direct_send_context(item.get('candidate') or {})
-        )
-        list_page = len(pending) - direct
-        pending_confirm = sum(1 for item in self.greet_queue_items if item.get('status') == "待确认")
-        manual_review = sum(1 for item in self.greet_queue_items if item.get('status') == "需人工确认")
-        failed = sum(1 for item in self.greet_queue_items if item.get('status') == "失败")
-        message = (
-            "即将开始发送打招呼队列。\n\n"
-            f"- 待发送：{len(pending)} 人\n"
-            f"- 可直接发送：{direct} 人\n"
-            f"- 需要推荐页支持：{list_page} 人\n"
-            f"- 待确认不会自动重发：{pending_confirm} 人\n"
-            f"- 需人工确认不会自动发送：{manual_review} 人\n"
-            f"- 失败待重试：{failed} 人\n\n"
-            "发送过程中遇到登录页、非推荐页、验证码或沟通上限会停止队列。"
-        )
+        headline, message = self._build_greet_queue_confirmation_content(pending)
         return messagebox.askyesno(
-            "确认开始发送",
+            "确认联系",
             message,
             parent=self.greet_queue_window or self.root,
+            yes_label="开始联系",
+            no_label="取消",
+            headline=headline,
+            show_icon=False,
+            min_width=620,
+            font_delta=self.font_log[1] - self.font_label[1],
         )
 
     def _make_greet_queue_captcha_callback(self, parent):
@@ -15748,17 +16505,31 @@ class BossFilterGUI:
         return True, current_url, page_text, ""
 
     def _reconnect_browser_or_warn(self, parent, log_prefix, warn_title, warn_text):
-        """Try to reconnect the browser; return True on success."""
-        self.append_log(f"[打招呼队列] {log_prefix}，正在尝试重连...")
-        if not self._try_reconnect_browser():
-            self.root.after(0, lambda: messagebox.showwarning(
-                warn_title, warn_text, parent=parent,
-            ))
-            return False
-        self.append_log("[打招呼队列] 浏览器重连成功")
-        return True
+        """Try to reconnect the browser and retain an actionable failure reason."""
+        self.append_log(f"[联系候选人] {log_prefix}，正在尝试重连...")
+        if self._try_reconnect_browser():
+            self.append_log("[联系候选人] 浏览器重连成功")
+            return True
 
-    def _ensure_greet_queue_browser(self, parent):
+        self.append_log(
+            "[联系候选人] 未检测到可用 Chrome，正在自动启动推荐牛人页面..."
+        )
+        if self._launch_boss_browser():
+            self.append_log("[联系候选人] Chrome 已启动并打开 BOSS 推荐牛人页面")
+            return True
+        if not getattr(self, '_greet_queue_browser_error', ''):
+            self._greet_queue_browser_error = warn_text
+        return False
+
+    def _ensure_greet_queue_browser(self, parent, pending=None):
+        pending_items = list(
+            pending if pending is not None
+            else (
+                item for item in self.greet_queue_items
+                if item.get('status') == "待发送"
+            )
+        )
+        self._greet_queue_browser_error = ""
         if not self.browser_page:
             if not self._reconnect_browser_or_warn(
                 parent, "浏览器未连接", "浏览器未连接",
@@ -15775,76 +16546,200 @@ class BossFilterGUI:
                 return False
         ok, current_url, _page_text, reason = self._get_greet_queue_page_state()
         if not ok:
-            self.append_log(f"[打招呼队列] {reason}")
-            self.root.after(0, lambda: messagebox.showwarning(
-                "无法开始打招呼",
-                f"{reason}。\n\n"
-                "请先在浏览器中登录 BOSS 直聘，并打开对应岗位的「推荐牛人」页面后再开始发送。\n\n"
-                f"当前页面：{current_url or '未知'}",
-                parent=parent,
-            ))
+            self.append_log(f"[联系候选人] {reason}")
+            needs_job_page = any(
+                not self._has_direct_send_context(item.get('candidate') or {})
+                for item in pending_items
+            )
+            if needs_job_page:
+                action = "请登录 BOSS，并打开对应岗位的“推荐牛人”页面。"
+            else:
+                action = "请在 Chrome 中登录 BOSS 账号，无需打开“推荐牛人”页面。"
+            self._greet_queue_browser_error = f"{reason}。\n\n{action}"
             return False
 
-        pending_items = [item for item in self.greet_queue_items if item.get('status') == "待发送"]
-        needs_list_page = any(
-            not self._has_direct_send_context(item.get('candidate') or {})
-            for item in pending_items
+        direct_count = sum(
+            1 for item in pending_items
+            if self._has_direct_send_context(item.get('candidate') or {})
         )
-        if needs_list_page and not self._is_boss_recommend_url(current_url):
-            self.append_log("[打招呼队列] 队列中存在需要页面支持的候选人，当前不在推荐牛人页面")
-            self.root.after(0, lambda: messagebox.showwarning(
-                "请打开推荐牛人页面",
-                "队列中有候选人缺少可直接发送的信息，需要通过当前推荐牛人页面定位发送。\n\n"
-                "请先在浏览器中打开对应岗位的「推荐牛人」页面，再开始队列发送。\n\n"
-                f"当前页面：{current_url or '未知'}",
-                parent=parent,
-            ))
+        list_page_count = len(pending_items) - direct_count
+        if list_page_count and not self._is_boss_recommend_url(current_url):
+            if direct_count:
+                self.append_log(
+                    f"[联系候选人] 当前不在推荐页，将先发送已就绪的 {direct_count} 人；"
+                    f"其余 {list_page_count} 人保留待发送"
+                )
+                return True
+            self.append_log("[联系候选人] 待发送候选人需要对应岗位推荐页")
+            self._greet_queue_browser_error = (
+                "请在 Chrome 中登录 BOSS，并打开对应岗位的“推荐牛人”页面后再次发送。"
+            )
             return False
         return True
 
-    def _run_greet_queue_worker(self):
+    def _reload_greet_queue_candidate(self, item):
+        """Bind an item to the latest durable candidate state before sending."""
+        key = item.get('key') or self._greet_queue_key(item.get('candidate') or {})
+        try:
+            candidates = load_candidates_all(CANDIDATES_PATH)
+        except Exception as exc:
+            return None, f"读取最新候选人状态失败：{exc}"
+        candidate = next(
+            (candidate for candidate in candidates if self._greet_queue_key(candidate) == key),
+            None,
+        )
+        if candidate is None:
+            return None, "候选人记录已不存在"
+        item['candidate'] = candidate
+        return candidate, ""
+
+    @staticmethod
+    def _revalidate_greet_queue_candidate(candidate):
+        """Map the latest candidate truth to a safe queue action."""
+        skip_reason = candidate_greet_skip_reason(candidate)
+        if not skip_reason:
+            return "待发送", ""
+        if skip_reason == "已打招呼":
+            return "已发送", "本地已标记为已沟通"
+        if skip_reason == "发送结果待核实":
+            return (
+                "待核实",
+                candidate.get('greet_confirmation_reason') or "发送结果待核实",
+            )
+        return "已跳过", skip_reason
+
+    def _greet_queue_candidate_page_ready(self, candidate):
+        """Fail closed when a list-page send is not on the candidate's job page."""
+        ok, current_url, _page_text, reason = self._get_greet_queue_page_state()
+        if not ok:
+            return False, reason
+        if not self._is_boss_recommend_url(current_url):
+            return False, f"请打开“{candidate.get('job_name') or '对应'}”岗位推荐页"
+        try:
+            from bossmaster import get_iframe, _job_titles_match, _read_recommend_page_identity
+            target = get_iframe(self.browser_page) or self.browser_page
+            actual_job = str(
+                (_read_recommend_page_identity(target) or {}).get('job_title') or ''
+            ).strip()
+            matched = _job_titles_match(candidate.get('job_name', ''), actual_job)
+        except Exception as exc:
+            return False, f"无法确认当前岗位页面：{str(exc)[:60]}"
+        if matched is True:
+            return True, ""
+        if not actual_job:
+            return False, f"无法读取当前岗位，请打开“{candidate.get('job_name') or '对应'}”岗位推荐页"
+        return False, (
+            f"当前是“{actual_job}”岗位，请切换到“{candidate.get('job_name') or '对应'}”岗位推荐页"
+        )
+
+    def _run_greet_queue_worker(self, pending=None):
         connection_lock_acquired = False
-        parent = self.root
+        parent = self.greet_queue_window or self.root
+        queue_snapshot = list(
+            self.greet_queue_items if pending is None else pending
+        )
         success_count = 0
         fail_count = 0
         pending_count = 0
+        skipped_count = 0
+        page_waiting_count = 0
+        page_waiting_jobs = Counter()
         consecutive_uncertain = 0
+        run_error = ""
         try:
-            self.greet_queue_running = True
             connection_lock_acquired = self._browser_connection_lock.acquire(timeout=8)
             if not connection_lock_acquired:
-                self.append_log("[打招呼队列] 浏览器正在执行其他连接操作，请稍后重试")
+                run_error = "浏览器正在执行其他操作，请稍后再次发送。"
+                self.append_log(f"[联系候选人] {run_error}")
                 return
-            if not self._ensure_greet_queue_browser(parent):
+            if not self._ensure_greet_queue_browser(parent, queue_snapshot):
+                run_error = getattr(
+                    self,
+                    '_greet_queue_browser_error',
+                    "浏览器未准备好，请检查 Chrome 和 BOSS 登录状态。",
+                )
                 return
 
             from bossmaster import send_greeting_on_list_page, send_greeting_with_context
             captcha_callback = self._make_greet_queue_captcha_callback(parent)
 
-            for item in list(self.greet_queue_items):
+            for item_index, item in enumerate(queue_snapshot):
                 if self.stop_event.is_set():
-                    self.append_log("[打招呼队列] 用户停止操作")
+                    self.append_log("[联系候选人] 用户停止操作")
                     break
                 while self.greet_queue_paused and not self.stop_event.is_set():
                     time.sleep(0.2)
+                if item not in self.greet_queue_items:
+                    continue
                 if item.get('status') != "待发送":
                     continue
 
-                candidate = item.get('candidate') or {}
+                candidate, reload_error = self._reload_greet_queue_candidate(item)
+                if candidate is None:
+                    skipped_count += 1
+                    self._set_greet_queue_item_state(item, "已跳过", reload_error)
+                    continue
                 name = candidate.get('name', '')
-                if candidate.get('greet_sent'):
-                    self._set_greet_queue_item_state(item, "已发送", "本地已标记为已沟通")
-                    continue
-                if candidate.get('greet_confirmation_pending'):
-                    self._set_greet_queue_item_state(item, "待确认", candidate.get('greet_confirmation_reason') or "发送结果待确认")
-                    pending_count += 1
-                    continue
-                if candidate.get('manual_review_required'):
-                    self._set_greet_queue_item_state(item, "需人工确认", candidate.get('auto_greet_blocked_reason') or "需人工确认后再联系")
+                revalidated_status, revalidated_message = self._revalidate_greet_queue_candidate(candidate)
+                if revalidated_status != "待发送":
+                    self._set_greet_queue_item_state(
+                        item,
+                        revalidated_status,
+                        revalidated_message,
+                    )
+                    if revalidated_status == "待核实":
+                        pending_count += 1
+                    elif revalidated_status == "已跳过":
+                        skipped_count += 1
                     continue
 
+                if not self._has_direct_send_context(candidate):
+                    page_ready, page_message = self._greet_queue_candidate_page_ready(candidate)
+                    if not page_ready:
+                        page_waiting_count += 1
+                        page_waiting_jobs[
+                            str(candidate.get('job_name') or '未指定岗位').strip()
+                        ] += 1
+                        item['message'] = page_message
+                        item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        self._persist_greet_queue()
+                        self.root.after(0, self._refresh_greet_queue_dialog)
+                        continue
+
+                candidate, reload_error = self._reload_greet_queue_candidate(item)
+                if candidate is None:
+                    skipped_count += 1
+                    self._set_greet_queue_item_state(item, "已跳过", reload_error)
+                    continue
+                name = candidate.get('name', '')
+                revalidated_status, revalidated_message = self._revalidate_greet_queue_candidate(candidate)
+                if revalidated_status != "待发送":
+                    self._set_greet_queue_item_state(
+                        item,
+                        revalidated_status,
+                        revalidated_message,
+                    )
+                    if revalidated_status == "待核实":
+                        pending_count += 1
+                    elif revalidated_status == "已跳过":
+                        skipped_count += 1
+                    continue
+
+                if not self._has_direct_send_context(candidate):
+                    page_ready, page_message = self._greet_queue_candidate_page_ready(candidate)
+                    if not page_ready:
+                        page_waiting_count += 1
+                        page_waiting_jobs[
+                            str(candidate.get('job_name') or '未指定岗位').strip()
+                        ] += 1
+                        item['message'] = page_message
+                        item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        self._persist_greet_queue()
+                        self.root.after(0, self._refresh_greet_queue_dialog)
+                        continue
+
                 self._set_greet_queue_item_state(item, "发送中", "")
-                self.append_log(f"[打招呼队列] 正在向 {name} 打招呼...")
+                self.append_log(f"[联系候选人] 正在向 {name} 打招呼...")
 
                 context = candidate.get('greet_context') or {}
                 if self._has_direct_send_context(candidate):
@@ -15856,13 +16751,17 @@ class BossFilterGUI:
                     )
                     method = "queue_context"
                     if not success and ("缺少" in msg or "字段" in msg):
-                        success, msg = send_greeting_on_list_page(
-                            self.browser_page,
-                            candidate.get('geek_id'),
-                            stop_event=self.stop_event,
-                            captcha_callback=captcha_callback,
-                        )
-                        method = "queue_list"
+                        page_ready, page_message = self._greet_queue_candidate_page_ready(candidate)
+                        if page_ready:
+                            success, msg = send_greeting_on_list_page(
+                                self.browser_page,
+                                candidate.get('geek_id'),
+                                stop_event=self.stop_event,
+                                captcha_callback=captcha_callback,
+                            )
+                            method = "queue_list"
+                        else:
+                            success, msg = False, page_message
                 else:
                     success, msg = send_greeting_on_list_page(
                         self.browser_page,
@@ -15873,34 +16772,41 @@ class BossFilterGUI:
                     method = "queue_list"
 
                 item['attempts'] = item.get('attempts', 0) + 1
+                self._persist_greet_queue()
                 if success is None:
                     persist_candidate_greeting_pending(candidate, msg, CANDIDATES_PATH)
                     pending_count += 1
                     consecutive_uncertain += 1
                     pending_message = format_greeting_failure_message(msg)
-                    self._set_greet_queue_item_state(item, "待确认", pending_message)
-                    self.append_log(f"[打招呼队列] {name} 待确认：{pending_message}")
+                    self._set_greet_queue_item_state(item, "待核实", pending_message)
+                    self.append_log(f"[联系候选人] {name} 待核实：{pending_message}")
                     if consecutive_uncertain >= GREET_UNCERTAIN_LIMIT:
-                        self.append_log("[打招呼队列] 连续发送结果待确认，已暂停队列，请人工核实")
+                        self.append_log("[联系候选人] 连续发送结果待核实，已暂停，请人工核实")
                         self.greet_queue_paused = True
                         break
                 elif success:
                     persisted = self._update_greet_status(candidate, method)
-                    success_count += 1
                     consecutive_uncertain = 0
-                    self._set_greet_queue_item_state(item, "已发送", msg if persisted else "已发送但本地保存失败")
-                    self.append_log(f"[打招呼队列] {name} 发送成功")
-                    self.root.after(0, self.refresh_results)
-                    self.root.after(0, self.refresh_home_stats)
+                    if persisted:
+                        success_count += 1
+                        self._set_greet_queue_item_state(item, "已发送", msg)
+                        self.append_log(f"[联系候选人] {name} 发送成功")
+                        self.root.after(0, self.refresh_results)
+                        self.root.after(0, self.refresh_home_stats)
+                    else:
+                        pending_count += 1
+                        pending_message = "BOSS 已返回发送成功，但本地状态保存失败，请先核实"
+                        self._set_greet_queue_item_state(item, "待核实", pending_message)
+                        self.append_log(f"[联系候选人] {name} 待核实：{pending_message}")
                 else:
                     fail_count += 1
                     consecutive_uncertain = 0
                     fail_message = format_greeting_failure_message(msg)
                     diagnosis = diagnose_greeting_failure(msg)
-                    self._set_greet_queue_item_state(item, "失败", fail_message)
-                    self.append_log(f"[打招呼队列] {name} 失败：{fail_message}")
+                    self._set_greet_queue_item_state(item, "发送失败", fail_message)
+                    self.append_log(f"[联系候选人] {name} 发送失败：{fail_message}")
                     if "上限" in msg or "次数" in msg:
-                        self.append_log("[打招呼队列] 沟通次数已达上限，停止队列")
+                        self.append_log("[联系候选人] 沟通次数已达上限，停止发送")
                         self.root.after(0, lambda: messagebox.showwarning(
                             diagnosis.title,
                             f"{diagnosis.action}\n\n原始信息：{msg}",
@@ -15908,22 +16814,118 @@ class BossFilterGUI:
                         ))
                         break
                     if "验证" in msg:
-                        self.append_log("[打招呼队列] 检测到安全验证，已停止队列")
+                        self.append_log("[联系候选人] 检测到安全验证，已停止发送")
                         break
 
                 if self.stop_event.is_set():
                     break
-                time.sleep(random.uniform(2, 4))
+                has_later_pending = any(
+                    later_item in self.greet_queue_items
+                    and later_item.get('status') == "待发送"
+                    for later_item in queue_snapshot[item_index + 1:]
+                )
+                if has_later_pending:
+                    time.sleep(random.uniform(2, 4))
         except Exception as exc:
-            self.append_log(f"[打招呼队列] 异常：{exc}")
+            run_error = f"发送过程出现异常：{exc}"
+            self.append_log(f"[联系候选人] 异常：{exc}")
         finally:
             self.greet_queue_running = False
+            self.greet_queue_paused = False
+            for item in self.greet_queue_items:
+                if item.get('status') == "发送中":
+                    item['status'] = "待核实"
+                    item['message'] = "发送流程意外中断，请先到 BOSS 沟通列表核实"
+                    item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    pending_count += 1
             if connection_lock_acquired:
                 self._browser_connection_lock.release()
-            self.root.after(0, self._refresh_greet_queue_dialog)
+            self._persist_greet_queue()
+            try:
+                self.root.after(0, self._refresh_greet_queue_dialog)
+            except (tk.TclError, RuntimeError):
+                pass
             self.append_log(
-                f"[打招呼队列] 完成：成功 {success_count} 人，失败 {fail_count} 人，待确认 {pending_count} 人"
+                f"[联系候选人] 完成：成功 {success_count} 人，失败 {fail_count} 人，"
+                f"待核实 {pending_count} 人，待切换岗位页 {page_waiting_count} 人，"
+                f"已跳过 {skipped_count} 人"
             )
+            feedback = {
+                "success": success_count,
+                "failed": fail_count,
+                "pending": pending_count,
+                "page_waiting": page_waiting_count,
+                "page_waiting_jobs": dict(page_waiting_jobs),
+                "skipped": skipped_count,
+                "stopped": self.stop_event.is_set(),
+                "error": run_error,
+            }
+            try:
+                self.root.after(
+                    0,
+                    lambda result=feedback: self._show_greet_queue_run_result(result),
+                )
+            except (tk.TclError, RuntimeError):
+                pass
+
+    @staticmethod
+    def _build_greet_queue_run_feedback(result):
+        success = int(result.get("success") or 0)
+        failed = int(result.get("failed") or 0)
+        pending = int(result.get("pending") or 0)
+        page_waiting = int(result.get("page_waiting") or 0)
+        page_waiting_jobs = result.get("page_waiting_jobs") or {}
+        skipped = int(result.get("skipped") or 0)
+        error = str(result.get("error") or "").strip()
+        if error:
+            headline = f"已发送 {success} 人，流程中断" if success else "本轮未发送"
+            return "发送未完成", headline, error, "error"
+
+        if success and not any((failed, pending, page_waiting, skipped, result.get("stopped"))):
+            return "发送完成", "发送完成", f"成功：{success} 人\n状态：联系结果已保存", "info"
+
+        headline = "发送部分完成" if success else "本轮未发送"
+        lines = []
+        if success:
+            lines.append(f"成功：{success} 人")
+        if failed:
+            lines.append(f"失败：{failed} 人（可在“发送失败”中重试）")
+        if pending:
+            lines.append(f"待核实：{pending} 人（请到 BOSS 沟通列表确认）")
+        if page_waiting:
+            jobs_text = "、".join(
+                f"{job_name}（{count} 人）"
+                for job_name, count in page_waiting_jobs.items()
+            )
+            lines.append(f"待切换岗位：{page_waiting} 人")
+            if jobs_text:
+                lines.append(f"涉及岗位：{jobs_text}")
+            lines.append("下一步：切换对应岗位后再次发送")
+        if skipped:
+            lines.append(f"已跳过：{skipped} 人（候选人状态已变化）")
+        if result.get("stopped"):
+            lines.append("状态：发送已停止，未处理候选人仍保留")
+        if not lines:
+            lines.append("结果：没有符合发送条件的候选人")
+        return "发送结果", headline, "\n".join(lines), "warning"
+
+    def _show_greet_queue_run_result(self, result):
+        title, headline, message, level = self._build_greet_queue_run_feedback(result)
+        show = {
+            "info": messagebox.showinfo,
+            "warning": messagebox.showwarning,
+            "error": messagebox.showerror,
+        }[level]
+        show(
+            title,
+            message,
+            parent=self.greet_queue_window or self.root,
+            headline=headline,
+            show_icon=False,
+            min_width=620 if message.count("\n") >= 2 else 540,
+            font_delta=self.font_log[1] - self.font_label[1],
+            content_bottom_padding=28,
+        )
 
     @staticmethod
     def _candidate_identity_key(candidate):
@@ -16259,6 +17261,111 @@ class BossFilterGUI:
         self._render_candidate_review_workbench()
         win.deiconify()
 
+    def _on_greet_queue_motion(self, event):
+        """Explain the readiness column without presenting a premature warning."""
+        tree = self.greet_queue_tree
+        item_id = tree.identify_row(event.y)
+        column_id = tree.identify_column(event.x)
+        if not item_id or column_id != "#5":
+            self._hide_tooltip()
+            return
+        queue_item = next(
+            (item for item in self.greet_queue_items if item.get('queue_id') == item_id),
+            None,
+        )
+        if queue_item is None:
+            self._hide_tooltip()
+            return
+        full_text = self._greet_queue_readiness_tooltip(
+            queue_item.get('candidate') or {}
+        )
+        tooltip_key = ("greet_queue", item_id, column_id)
+        if (
+            tooltip_key == getattr(self, "_tooltip_item", None)
+            and getattr(self, "_tooltip", None)
+            and self._tooltip.winfo_exists()
+        ):
+            return
+        self._hide_tooltip()
+        self._tooltip_item = tooltip_key
+        x = event.x_root + 12
+        y = event.y_root + 12
+        parent = tree.winfo_toplevel()
+        self._tooltip_after_id = self.root.after(
+            250,
+            lambda: self._show_tooltip(
+                full_text, x, y, tooltip_key, parent=parent
+            ),
+        )
+
+    def _show_greet_queue_context_menu(self, event):
+        """Send only the pending candidates in the right-click selection."""
+        tree = self.greet_queue_tree
+        item_id = tree.identify_row(event.y)
+        if not item_id:
+            return
+        if item_id not in tree.selection():
+            tree.selection_set(item_id)
+        tree.focus(item_id)
+        self._update_greet_queue_action_states()
+
+        selected = self._selected_greet_queue_items()
+        pending_count = sum(
+            1 for item in selected if item.get('status') == "待发送"
+        )
+        context_menu_font = (FONT_FAMILY, int(11 * self.font_scale))
+        parent = self.greet_queue_window or self.root
+        menu = tk.Menu(parent, tearoff=0, font=context_menu_font)
+        icon_detail = self.icons.button(
+            'candidate_review', self.colors['primary']
+        )
+        icon_send = self.icons.button('chat', self.colors['success'])
+        menu._icon_refs = [icon_detail, icon_send]
+        if len(selected) == 1:
+            menu.add_command(
+                label=" 查看与复核",
+                image=icon_detail,
+                compound=tk.LEFT,
+                command=self._show_selected_greet_queue_detail,
+            )
+        send_label = (
+            "联系此候选人"
+            if len(selected) == 1
+            else f"联系选中候选人（{pending_count} 人）"
+        )
+        menu.add_command(
+            label=f" {send_label}",
+            image=icon_send,
+            compound=tk.LEFT,
+            command=self._start_greet_queue,
+            state="normal" if pending_count else "disabled",
+        )
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _select_all_greet_queue_rows(self, _event=None):
+        """Select every candidate currently visible in the contact table."""
+        tree = getattr(self, 'greet_queue_tree', None)
+        if tree is None or not tree.winfo_exists():
+            return "break"
+        item_ids = tree.get_children()
+        if item_ids:
+            tree.selection_set(item_ids)
+            tree.focus(item_ids[0])
+            tree.see(item_ids[0])
+        self._update_greet_queue_action_states()
+        return "break"
+
+    def _close_greet_queue_window(self):
+        if not self.greet_queue_window or not self.greet_queue_window.winfo_exists():
+            return
+        if self.greet_queue_running:
+            self.greet_queue_window.withdraw()
+            return
+        self.greet_queue_window.destroy()
+
     def _create_review_text_area(self, parent):
         container = ttk.Frame(parent, style='Page.TFrame')
         container.pack(fill='both', expand=True, padx=int(4 * self.dpi_scale), pady=int(8 * self.dpi_scale))
@@ -16383,7 +17490,16 @@ class BossFilterGUI:
         on_saved = lambda: self._candidate_review_action_saved(key)
         primary_action = ""
 
-        if candidate.get('manual_review_required') or candidate.get('qualification_status') == 'manual_review':
+        if candidate.get('greet_confirmation_pending'):
+            primary_action = "verify_sent"
+            self._add_candidate_review_action(
+                self.candidate_review_primary_actions,
+                "核实发送结果",
+                'stamp_check',
+                self.colors['warning'],
+                lambda: self._focus_candidate_in_greet_queue(candidate),
+            )
+        elif candidate.get('manual_review_required') or candidate.get('qualification_status') == 'manual_review':
             primary_action = "confirm"
             self._add_candidate_review_action(
                 self.candidate_review_primary_actions,
@@ -16401,7 +17517,7 @@ class BossFilterGUI:
             primary_action = "greet"
             self._add_candidate_review_action(
                 self.candidate_review_primary_actions,
-                "加入打招呼队列",
+                "加入联系清单",
                 'chat',
                 self.colors['success'],
                 lambda: self._add_candidates_to_greet_queue(
@@ -16531,646 +17647,20 @@ class BossFilterGUI:
             messagebox.showerror("错误", f"打开查看与复核失败：{e}")
 
     def _greet_single_candidate(self, item, candidate=None, parent=None, tree=None, tree_item=None):
-        """对单个候选人打招呼（在后台线程执行）"""
+        """Compatibility entry that routes every GUI contact action through the contact list."""
         _parent = parent or self.root
-        _tree = tree or self.result_tree
-        _tree_item = tree_item if tree_item is not None else item
-        name = "该候选人"
-        score = 0
-
-        if candidate is None:
+        if candidate is None and item is not None:
             candidate = self._find_candidate_by_tree_item(item)
-            if candidate:
-                name = candidate.get('name', '')
-                score = candidate.get('match_score', 0)
-        else:
-            name = candidate.get('name', '')
-            score = candidate.get('match_score', 0)
-
         if not candidate:
-            messagebox.showwarning("警告", f"未找到候选人 {name} 的数据", parent=_parent)
+            messagebox.showwarning("联系候选人", "未找到候选人信息。", parent=_parent)
             return
-
-        geek_id = candidate.get('geek_id')
-        if not geek_id:
-            messagebox.showwarning("警告", f"未找到候选人 {name} 的数据", parent=_parent)
-            return
-
-        # 确认操作
-        job_name = candidate.get('job_name', '未知岗位')
-        risk_text = ""
-        if candidate.get('manual_review_required'):
-            risk_flags = candidate.get('risk_flags') or []
-            risk_text = "\n\n风险提示：\n" + "\n".join(f"- {flag}" for flag in risk_flags)
-            risk_text += "\n\n该候选人已被自动流程跳过。继续操作视为人工确认后手动打招呼。"
-        greet_hint = self._get_greet_confirmation_hint(candidate)
-        if not messagebox.askyesno("确认打招呼",
-                                   f"确定要向 {name}（{candidate.get('recommend_level', '')}，{score}分）打招呼吗？\n\n"
-                                   f"岗位：{job_name}"
-                                   f"{risk_text}\n\n"
-                                   f"{greet_hint}",
-                                   parent=_parent):
-            return
-
-        # 立即更新表格状态为"打招呼中..."，给用户即时反馈
-        if _tree_item is not None:
-            try:
-                _tree.set(_tree_item, 'status', '打招呼中...')
-                _tree.update_idletasks()
-            except Exception:
-                pass
-
-        # 后台线程执行打招呼
-        def greet_worker():
-            connection_lock_acquired = False
-            try:
-                connection_lock_acquired = self._browser_connection_lock.acquire(timeout=8)
-                if not connection_lock_acquired:
-                    self.append_log("[打招呼] ❌ 浏览器正在执行其他连接操作，请稍后重试")
-                    def _revert_busy():
-                        if _tree_item is not None:
-                            try:
-                                _tree.set(_tree_item, 'status', self._format_candidate_status(candidate))
-                            except Exception:
-                                pass
-                    _parent.after(0, _revert_busy)
-                    return
-
-                # 浏览器未连接时自动尝试重连（读取持久化端口）
-                if not self.browser_page:
-                    self.append_log(f"[打招呼] 浏览器未连接，正在尝试重连...")
-                    def _revert_connecting():
-                        if _tree_item is not None:
-                            try:
-                                _tree.set(_tree_item, 'status', self._format_candidate_status(candidate))
-                            except Exception:
-                                pass
-                    if not self._try_reconnect_browser():
-                        self.append_log(f"[打招呼] ❌ 浏览器重连失败，请先在「运行控制」页连接浏览器")
-                        _parent.after(0, _revert_connecting)
-                        _parent.after(0, lambda: messagebox.showwarning(
-                            "浏览器未连接",
-                            "无法连接到 Chrome 浏览器。\n请切换到「运行控制」页点击「检测/连接浏览器」。",
-                            parent=_parent))
-                        return
-                    self.append_log(f"[打招呼] ✅ 浏览器重连成功")
-
-                # 检查 page 连接是否还活着（标签页可能已关闭或切换导致引用失效）
-                try:
-                    self.browser_page.run_js('return 1')
-                except Exception:
-                    self.append_log(f"[打招呼] 浏览器连接已断开，正在尝试重连...")
-                    def _revert_stale():
-                        if _tree_item is not None:
-                            try:
-                                _tree.set(_tree_item, 'status', self._format_candidate_status(candidate))
-                            except Exception:
-                                pass
-                    if not self._try_reconnect_browser():
-                        self.append_log(f"[打招呼] ❌ 浏览器重连失败，请先在「运行控制」页连接浏览器")
-                        _parent.after(0, _revert_stale)
-                        _parent.after(0, lambda: messagebox.showwarning(
-                            "浏览器连接断开",
-                            "浏览器连接已断开且无法自动重连。\n请切换到「运行控制」页点击「检测/连接浏览器」。",
-                            parent=_parent))
-                        return
-                    self.append_log(f"[打招呼] ✅ 浏览器重连成功")
-
-                from bossmaster import send_greeting_on_list_page, send_greeting_with_context
-                self.append_log(f"[打招呼] 正在向 {name} 打招呼...")
-
-                def captcha_callback(detail):
-                    result = [False]
-                    done = threading.Event()
-
-                    def show_dialog():
-                        answer = messagebox.askyesno(
-                            "检测到安全验证弹窗",
-                            f"程序检测到安全验证弹窗\n（{detail}）\n\n"
-                            "请在浏览器中手动完成验证。\n\n"
-                            "点击「是」继续等待验证完成\n"
-                            "点击「否」停止当前操作",
-                            parent=_parent,
-                        )
-                        result[0] = answer
-                        done.set()
-
-                    _parent.after(0, show_dialog)
-                    while not done.is_set():
-                        if self.stop_event.is_set():
-                            result[0] = False
-                            done.set()
-                            break
-                        done.wait(timeout=0.5)
-                    return result[0]
-
-                greet_context = candidate.get('greet_context') or {}
-                greet_method = "manual_list"
-                if greet_context.get('chat_start'):
-                    self.append_log(f"[打招呼] 使用已保存上下文发送，不依赖推荐牛人页面")
-                    success, msg = send_greeting_with_context(
-                        self.browser_page, greet_context, stop_event=self.stop_event,
-                        captcha_callback=captcha_callback
-                    )
-                    if success:
-                        greet_method = "manual_context"
-                    if not success:
-                        self.append_log(f"[打招呼] 上下文直接发送失败（{msg}），尝试回退到推荐列表按钮")
-                        # 回退路径需要浏览器在对应岗位的推荐牛人页面，提示用户切换
-                        ack_done = threading.Event()
-                        def _ask_switch_page():
-                            messagebox.showinfo(
-                                "直接发送失败",
-                                f"向 {name} 直接发送打招呼未成功（{msg}）。\n\n"
-                                f"接下来将尝试从推荐列表页面发送，\n"
-                                f"请确认浏览器已打开「{job_name}」的推荐牛人页面。\n\n"
-                                f"点击「确定」继续尝试。",
-                                parent=_parent,
-                            )
-                            ack_done.set()
-                        _parent.after(0, _ask_switch_page)
-                        ack_done.wait(timeout=30)
-                        if self.stop_event.is_set():
-                            return
-                        success, msg = send_greeting_on_list_page(
-                            self.browser_page, geek_id, stop_event=self.stop_event,
-                            captcha_callback=captcha_callback
-                        )
-                else:
-                    success, msg = send_greeting_on_list_page(
-                        self.browser_page, geek_id, stop_event=self.stop_event,
-                        captcha_callback=captcha_callback
-                    )
-                if success is None:
-                    pending_message = format_greeting_failure_message(msg)
-                    self.append_log(f"[打招呼] ⚠️ {name} 待确认：{msg}")
-                    persist_candidate_greeting_pending(candidate, msg)
-                    if _tree_item is not None:
-                        _parent.after(
-                            0,
-                            lambda: self._safe_tree_set(
-                                _tree,
-                                _tree_item,
-                                'status',
-                                self._format_candidate_status(candidate),
-                            ),
-                        )
-                    _parent.after(0, lambda: messagebox.showwarning(
-                        "发送结果待确认",
-                        f"{name} 的打招呼操作已点击，但页面没有返回明确成功状态。\n\n"
-                        f"{pending_message}\n\n"
-                        "程序未将其标记为已沟通，请先在 BOSS 沟通列表核实，避免重复发送。",
-                        parent=_parent))
-                elif success:
-                    self.append_log(f"[打招呼] ✅ {name} — {msg}")
-                    persisted = self._update_greet_status(
-                        candidate, greet_method
-                    )
-                    if persisted:
-                        # 手动打招呼成功 → 视为人工确认，清除标记
-                        if candidate.get('manual_review_required'):
-                            self._clear_manual_review(
-                                candidate.get('geek_id'), candidate.get('job_name', '')
-                            )
-                            candidate['manual_review_required'] = False
-                            candidate['qualification_status'] = 'qualified'
-                        self._regenerate_excel()
-                    else:
-                        self.append_log(
-                            f"[打招呼] ⚠️ {name} 已发送成功，但本地状态保存失败"
-                        )
-                        _parent.after(0, lambda: messagebox.showerror(
-                            "本地保存失败",
-                            f"{name} 已在 BOSS 直聘发送成功，但本地状态未能保存。\n"
-                            "请勿重复发送，并检查 candidates_all.json。",
-                            parent=_parent,
-                        ))
-                    # 刷新结果页和首页统计
-                    _parent.after(0, self.refresh_results)
-                    _parent.after(0, self.refresh_home_stats)
-                else:
-                    diagnosis = diagnose_greeting_failure(msg)
-                    self.append_log(f"[打招呼] ❌ {name} 失败：{diagnosis.title}；{diagnosis.action}（{msg}）")
-                    # 恢复表格状态（item 可能已被刷新删除，需 try/except）
-                    def _revert_status():
-                        if _tree_item is not None:
-                            try:
-                                _tree.set(_tree_item, 'status', self._format_candidate_status(candidate))
-                            except Exception:
-                                pass
-                    _parent.after(0, _revert_status)
-                    # 沟通次数上限
-                    if "上限" in msg or "次数" in msg:
-                        _parent.after(0, lambda: messagebox.showwarning(
-                            diagnosis.title,
-                            f"{diagnosis.action}\n\n原始信息：{msg}",
-                            parent=_parent))
-                    else:
-                        _parent.after(0, lambda: messagebox.showwarning(
-                            diagnosis.title,
-                            f"{diagnosis.action}\n\n原始信息：{msg}",
-                            parent=_parent))
-            except Exception as e:
-                diagnosis = diagnose_greeting_failure(str(e))
-                self.append_log(f"[打招呼] ❌ {name} 异常：{diagnosis.title}；{diagnosis.action}（{e}）")
-                def _revert_status_exc():
-                    if _tree_item is not None:
-                        try:
-                            _tree.set(_tree_item, 'status', self._format_candidate_status(candidate))
-                        except Exception:
-                            pass
-                _parent.after(0, _revert_status_exc)
-            finally:
-                if connection_lock_acquired:
-                    self._browser_connection_lock.release()
-
-        threading.Thread(target=greet_worker, daemon=True).start()
+        self._add_candidates_to_greet_queue([candidate], parent=_parent)
 
     def _greet_selected_candidates(self, selection, filtered_ref, tree, parent=None):
-        """批量打招呼（在后台线程执行）"""
-        _parent = parent or self.root
+        """Compatibility entry that adds multi-selected candidates to the contact list."""
+        candidates = self._collect_selected_candidates_for_queue(selection, filtered_ref, tree)
+        self._add_candidates_to_greet_queue(candidates, parent=parent or self.root)
 
-        # 收集选中的候选人数据
-        candidates_to_greet = []
-        for sel_item in selection:
-            if tree is getattr(self, 'result_tree', None):
-                candidate = self._find_candidate_by_tree_item(sel_item)
-            else:
-                candidate = self._find_candidate_in_detail_tree(
-                    tree, sel_item, filtered_ref
-                )
-            if candidate and not candidate_greet_skip_reason(candidate):
-                candidates_to_greet.append((sel_item, candidate))
-
-        if not candidates_to_greet:
-            messagebox.showinfo("提示", "选中的候选人已全部打过招呼", parent=_parent)
-            return
-
-        # 分组：有 greet_context 和没有 greet_context 的候选人
-        with_context = []
-        without_context = []
-        for item, c in candidates_to_greet:
-            greet_context = c.get('greet_context') or {}
-            if greet_context.get('chat_start'):
-                with_context.append((item, c))
-            else:
-                without_context.append((item, c))
-
-        # 构建确认信息
-        names_with = [c.get('name', '') for _, c in with_context[:3]]
-        names_without = [c.get('name', '') for _, c in without_context[:3]]
-
-        confirm_parts = []
-        if with_context:
-            confirm_parts.append(f"✅ 可直接发送（{len(with_context)} 人）：{'、'.join(names_with)}{'...' if len(with_context) > 3 else ''}")
-        if without_context:
-            confirm_parts.append(f"⚠️ 需要页面支持（{len(without_context)} 人）：{'、'.join(names_without)}{'...' if len(without_context) > 3 else ''}")
-
-        confirm_text = "批量打招呼将按以下分组执行：\n\n" + "\n\n".join(confirm_parts)
-        if without_context:
-            confirm_text += "\n\n⚠️ 没有打招呼上下文的候选人，需要浏览器在对应岗位的推荐牛人页面才能发送。\n如果页面不对，这些候选人会发送失败。"
-
-        if not messagebox.askyesno("确认批量打招呼", confirm_text, parent=_parent):
-            return
-
-        # 后台线程执行批量打招呼
-        def batch_greet_worker():
-            connection_lock_acquired = False
-            try:
-                connection_lock_acquired = self._browser_connection_lock.acquire(timeout=8)
-                if not connection_lock_acquired:
-                    self.append_log("[批量打招呼] ❌ 浏览器正在执行其他连接操作，请稍后重试")
-                    return
-
-                # 浏览器未连接时自动尝试重连
-                if not self.browser_page:
-                    self.append_log("[批量打招呼] 浏览器未连接，正在尝试重连...")
-                    if not self._try_reconnect_browser():
-                        self.append_log("[批量打招呼] ❌ 浏览器重连失败，请先在「运行控制」页连接浏览器")
-                        _parent.after(0, lambda: messagebox.showwarning(
-                            "浏览器未连接",
-                            "无法连接到 Chrome 浏览器。\n请切换到「运行控制」页点击「检测/连接浏览器」。",
-                            parent=_parent))
-                        return
-                    self.append_log("[批量打招呼] ✅ 浏览器重连成功")
-
-                # 检查 page 连接是否还活着
-                try:
-                    self.browser_page.run_js('return 1')
-                except Exception:
-                    self.append_log("[批量打招呼] 浏览器连接已断开，正在尝试重连...")
-                    if not self._try_reconnect_browser():
-                        self.append_log("[批量打招呼] ❌ 浏览器重连失败，请先在「运行控制」页连接浏览器")
-                        _parent.after(0, lambda: messagebox.showwarning(
-                            "浏览器连接断开",
-                            "浏览器连接已断开且无法自动重连。\n请切换到「运行控制」页点击「检测/连接浏览器」。",
-                            parent=_parent))
-                        return
-                    self.append_log("[批量打招呼] ✅ 浏览器重连成功")
-
-                from bossmaster import send_greeting_on_list_page, send_greeting_with_context
-
-                success_count = 0
-                fail_count = 0
-                skip_count = 0
-                consecutive_uncertain = 0
-
-                # 先处理有 greet_context 的候选人（稳定，不依赖页面）
-                if with_context:
-                    self.append_log(f"[批量打招呼] 处理 {len(with_context)} 个有上下文的候选人...")
-                    for tree_item, candidate in with_context:
-                        if self.stop_event.is_set():
-                            self.append_log("[批量打招呼] 用户停止操作")
-                            break
-
-                        name = candidate.get('name', '')
-                        geek_id = candidate.get('geek_id')
-
-                        if not geek_id:
-                            self.append_log(f"[批量打招呼] ⚠️ {name} 缺少 geek_id，跳过")
-                            skip_count += 1
-                            continue
-
-                        # 更新表格状态为"打招呼中..."
-                        _parent.after(0, lambda t=tree_item: self._safe_tree_set(tree, t, 'status', '打招呼中...'))
-
-                        self.append_log(f"[批量打招呼] 正在向 {name} 打招呼（使用上下文）...")
-
-                        def captcha_callback(detail):
-                            result = [False]
-                            done = threading.Event()
-
-                            def show_dialog():
-                                answer = messagebox.askyesno(
-                                    "检测到安全验证弹窗",
-                                    f"程序检测到安全验证弹窗\n（{detail}）\n\n"
-                                    "请在浏览器中手动完成验证。\n\n"
-                                    "点击「是」继续等待验证完成\n"
-                                    "点击「否」停止当前操作",
-                                    parent=_parent,
-                                )
-                                result[0] = answer
-                                done.set()
-
-                            _parent.after(0, show_dialog)
-                            while not done.is_set():
-                                if self.stop_event.is_set():
-                                    result[0] = False
-                                    done.set()
-                                    break
-                                done.wait(timeout=0.5)
-                            return result[0]
-
-                        greet_context = candidate.get('greet_context') or {}
-                        success, msg = send_greeting_with_context(
-                            self.browser_page, greet_context, stop_event=self.stop_event,
-                            captcha_callback=captcha_callback
-                        )
-
-                        if success:
-                            self.append_log(f"[批量打招呼] ✅ {name} — {msg}")
-                            persisted = self._update_greet_status(candidate, "manual_context")
-                            if persisted:
-                                if candidate.get('manual_review_required'):
-                                    self._clear_manual_review(
-                                        candidate.get('geek_id'), candidate.get('job_name', '')
-                                    )
-                                    candidate['manual_review_required'] = False
-                                    candidate['qualification_status'] = 'qualified'
-                                success_count += 1
-                            else:
-                                self.append_log(f"[批量打招呼] ⚠️ {name} 已发送成功，但本地状态保存失败")
-                                success_count += 1
-                            # 更新表格状态
-                            _parent.after(0, lambda t=tree_item, c=candidate: self._safe_tree_set(tree, t, 'status', self._format_candidate_status(c)))
-                        else:
-                            fail_message = format_greeting_failure_message(msg)
-                            diagnosis = diagnose_greeting_failure(msg)
-                            self.append_log(f"[批量打招呼] ❌ {name} 失败：{fail_message}")
-                            fail_count += 1
-                            # 恢复表格状态
-                            _parent.after(0, lambda t=tree_item, c=candidate: self._safe_tree_set(tree, t, 'status', self._format_candidate_status(c)))
-                            # 沟通次数上限时停止
-                            if "上限" in msg or "次数" in msg:
-                                self.append_log("[批量打招呼] 沟通次数已达上限，停止批量打招呼")
-                                _parent.after(0, lambda: messagebox.showwarning(
-                                    diagnosis.title,
-                                    f"{diagnosis.action}\n\n原始信息：{msg}",
-                                    parent=_parent))
-                                break
-
-                        # 打招呼间隔，避免触发风控
-                        if self.stop_event.is_set():
-                            break
-                        time.sleep(random.uniform(2, 4))
-
-                # 再处理没有 greet_context 的候选人（需要页面支持）
-                if without_context and not self.stop_event.is_set():
-                    self.append_log(f"[批量打招呼] 处理 {len(without_context)} 个需要页面支持的候选人...")
-
-                    # 弹出提示框，让用户确认浏览器是否在正确的页面上
-                    page_confirm_done = threading.Event()
-                    page_confirm_result = [False]
-
-                    def show_page_confirm():
-                        job_names = list(set(c.get('job_name', '未知岗位') for _, c in without_context))
-                        job_text = "、".join(job_names[:3])
-                        if len(job_names) > 3:
-                            job_text += "等"
-
-                        answer = messagebox.askyesno(
-                            "需要切换页面",
-                            f"接下来需要处理 {len(without_context)} 个没有打招呼上下文的候选人。\n\n"
-                            f"这些候选人需要浏览器在对应岗位的推荐牛人页面才能发送打招呼。\n\n"
-                            f"涉及岗位：{job_text}\n\n"
-                            f"请确认浏览器已打开对应的推荐牛人页面。\n\n"
-                            f"点击「是」继续执行\n"
-                            f"点击「否」跳过这些候选人",
-                            parent=_parent,
-                        )
-                        page_confirm_result[0] = answer
-                        page_confirm_done.set()
-
-                    _parent.after(0, show_page_confirm)
-                    page_confirm_done.wait(timeout=30)
-
-                    if not page_confirm_result[0]:
-                        self.append_log("[批量打招呼] 用户选择跳过需要页面支持的候选人")
-                        skip_count += len(without_context)
-                    else:
-                        for tree_item, candidate in without_context:
-                            if self.stop_event.is_set():
-                                self.append_log("[批量打招呼] 用户停止操作")
-                                break
-
-                            name = candidate.get('name', '')
-                            geek_id = candidate.get('geek_id')
-                            job_name = candidate.get('job_name', '未知岗位')
-
-                            if not geek_id:
-                                self.append_log(f"[批量打招呼] ⚠️ {name} 缺少 geek_id，跳过")
-                                skip_count += 1
-                                continue
-
-                            # 更新表格状态为"打招呼中..."
-                            _parent.after(0, lambda t=tree_item: self._safe_tree_set(tree, t, 'status', '打招呼中...'))
-
-                            self.append_log(f"[批量打招呼] 正在向 {name} 打招呼（需要页面支持）...")
-
-                            def captcha_callback2(detail):
-                                result = [False]
-                                done = threading.Event()
-
-                                def show_dialog():
-                                    answer = messagebox.askyesno(
-                                        "检测到安全验证弹窗",
-                                        f"程序检测到安全验证弹窗\n（{detail}）\n\n"
-                                        "请在浏览器中手动完成验证。\n\n"
-                                        "点击「是」继续等待验证完成\n"
-                                        "点击「否」停止当前操作",
-                                        parent=_parent,
-                                    )
-                                    result[0] = answer
-                                    done.set()
-
-                                _parent.after(0, show_dialog)
-                                while not done.is_set():
-                                    if self.stop_event.is_set():
-                                        result[0] = False
-                                        done.set()
-                                        break
-                                    done.wait(timeout=0.5)
-                                return result[0]
-
-                            success, msg = send_greeting_on_list_page(
-                                self.browser_page, geek_id, stop_event=self.stop_event,
-                                captcha_callback=captcha_callback2
-                            )
-
-                            if success is None:
-                                pending_message = format_greeting_failure_message(msg)
-                                self.append_log(f"[批量打招呼] ⚠️ {name} 待确认：{pending_message}")
-                                skip_count += 1
-                                persist_candidate_greeting_pending(candidate, msg)
-                                consecutive_uncertain += 1
-                                _parent.after(0, lambda t=tree_item, c=candidate: self._safe_tree_set(tree, t, 'status', self._format_candidate_status(c)))
-                                if consecutive_uncertain >= GREET_UNCERTAIN_LIMIT:
-                                    self.append_log(
-                                        f"[批量打招呼] 连续 {consecutive_uncertain} 人发送结果待确认，"
-                                        "停止批量打招呼并请人工核实"
-                                    )
-                                    break
-                                time.sleep(random.uniform(2, 4))
-                                continue
-                            if success:
-                                self.append_log(f"[批量打招呼] ✅ {name} — {msg}")
-                                consecutive_uncertain = 0
-                                persisted = self._update_greet_status(candidate, "manual_list")
-                                if persisted:
-                                    if candidate.get('manual_review_required'):
-                                        self._clear_manual_review(
-                                            candidate.get('geek_id'), candidate.get('job_name', '')
-                                        )
-                                        candidate['manual_review_required'] = False
-                                        candidate['qualification_status'] = 'qualified'
-                                    success_count += 1
-                                else:
-                                    self.append_log(f"[批量打招呼] ⚠️ {name} 已发送成功，但本地状态保存失败")
-                                    success_count += 1
-                                # 更新表格状态
-                                _parent.after(0, lambda t=tree_item, c=candidate: self._safe_tree_set(tree, t, 'status', self._format_candidate_status(c)))
-                            else:
-                                fail_message = format_greeting_failure_message(msg)
-                                diagnosis = diagnose_greeting_failure(msg)
-                                self.append_log(f"[批量打招呼] ❌ {name} 失败：{fail_message}")
-                                fail_count += 1
-                                consecutive_uncertain = 0
-                                # 恢复表格状态
-                                _parent.after(0, lambda t=tree_item, c=candidate: self._safe_tree_set(tree, t, 'status', self._format_candidate_status(c)))
-                                # 沟通次数上限时停止
-                                if "上限" in msg or "次数" in msg:
-                                    self.append_log("[批量打招呼] 沟通次数已达上限，停止批量打招呼")
-                                    _parent.after(0, lambda: messagebox.showwarning(
-                                        diagnosis.title,
-                                        f"{diagnosis.action}\n\n原始信息：{msg}",
-                                        parent=_parent))
-                                    break
-
-                            # 打招呼间隔，避免触发风控
-                            if self.stop_event.is_set():
-                                break
-                            time.sleep(random.uniform(2, 4))
-
-                # 完成后刷新结果
-                _parent.after(0, self.refresh_results)
-                _parent.after(0, self.refresh_home_stats)
-                self.append_log(f"[批量打招呼] 完成：成功 {success_count} 人，失败 {fail_count} 人，跳过 {skip_count} 人")
-
-            except Exception as e:
-                self.append_log(f"[批量打招呼] ❌ 异常：{e}")
-            finally:
-                if connection_lock_acquired:
-                    self._browser_connection_lock.release()
-
-        threading.Thread(target=batch_greet_worker, daemon=True).start()
-
-    def _safe_tree_set(self, tree, item, column, value):
-        """安全设置 Treeview 单元格值（忽略已删除的 item）"""
-        try:
-            tree.set(item, column, value)
-        except Exception:
-            pass
-
-    def _try_reconnect_browser(self) -> bool:
-        """尝试重连浏览器（读取持久化端口，不启动新 Chrome）
-
-        用于筛选结果页打招呼等场景：用户可能没去过运行控制页，
-        但 Chrome 已经在运行（上次扫描启动的）。
-
-        Returns:
-            True 表示连接成功，self.browser_page 已赋值
-        """
-        if self.standalone_education:
-            return False
-        import socket
-        try:
-            # 读取持久化端口
-            addr = getattr(self, 'browser_address', None)
-            if not addr:
-                try:
-                    saved_port = CHROME_DEBUG_PORT_FILE.read_text(encoding='utf-8').strip()
-                    if saved_port.isdigit():
-                        addr = f'127.0.0.1:{saved_port}'
-                except OSError:
-                    pass
-            if not addr:
-                addr = '127.0.0.1:9222'
-
-            host, port = addr.rsplit(':', 1)
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1)
-            port_open = s.connect_ex((host, int(port))) == 0
-            s.close()
-
-            if not port_open:
-                return False
-
-            # 端口开放，尝试 DrissionPage 连接
-            from DrissionPage import ChromiumPage, ChromiumOptions
-            co = ChromiumOptions()
-            co.set_address(f'{host}:{port}')
-            page = ChromiumPage(co)
-
-            self.browser_page = page
-            self.browser_address = page.address
-            self.browser_connected = True
-            return True
-
-        except Exception as e:
-            self.append_log(f"[浏览器] 重连失败：{e}")
-            self.browser_page = None
-            self.browser_connected = False
-            return False
 
     def _update_greet_status(self, candidate, method) -> bool:
         """更新 candidates_all.json 中指定候选人的打招呼状态"""

@@ -276,6 +276,17 @@ def mark_candidate_greeting_pending(
     candidate['greet_confirmation_updated_at'] = pending_at
 
 
+def clear_candidate_greeting_pending(candidate: dict[str, Any]) -> None:
+    """Mark a manually verified uncertain greeting as not sent."""
+    candidate['greet_sent'] = False
+    candidate.pop('greet_confirmation_pending', None)
+    candidate.pop('greet_confirmation_reason', None)
+    candidate.pop('greet_confirmation_updated_at', None)
+    if candidate.get('followup_status') == "已打招呼":
+        candidate['followup_status'] = "未沟通"
+        candidate['followup_updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
 def merge_candidates_all(
     candidates: list[dict[str, Any]],
     path: Optional[str] = None,
@@ -348,13 +359,50 @@ def persist_candidate_greeting_pending(
     reason: str,
     path: Optional[str] = None,
 ) -> bool:
-    """将单个候选人的发送待确认状态立即合并到最新磁盘数据。"""
+    """将单个候选人的发送待核实状态立即合并到最新磁盘数据。"""
     if not candidate.get('geek_id'):
         return False
     with _CANDIDATES_FILE_LOCK:
         mark_candidate_greeting_pending(candidate, reason)
         merge_candidates_all([candidate], path)
         return True
+
+
+def resolve_candidate_greeting_confirmation(
+    candidate: dict[str, Any],
+    *,
+    sent: bool,
+    path: Optional[str] = None,
+) -> bool:
+    """Persist the user's verification of an uncertain greeting result."""
+    geek_id = str(candidate.get('geek_id') or '')
+    normalized_job = str(candidate.get('job_name') or '').replace(' ', '')
+    if not geek_id:
+        return False
+
+    with _CANDIDATES_FILE_LOCK:
+        candidates = load_candidates_all(path)
+        target = next((
+            item for item in candidates
+            if str(item.get('geek_id') or '') == geek_id
+            and str(item.get('job_name') or '').replace(' ', '') == normalized_job
+        ), None)
+        if target is None:
+            return False
+        if sent:
+            mark_candidate_greeted(target, "manual_confirmed")
+        else:
+            clear_candidate_greeting_pending(target)
+        save_candidates_all(candidates, path)
+
+    for field in (
+        'greet_confirmation_pending',
+        'greet_confirmation_reason',
+        'greet_confirmation_updated_at',
+    ):
+        candidate.pop(field, None)
+    candidate.update(target)
+    return True
 
 
 def update_candidate_greeted(

@@ -38,7 +38,7 @@ def test_diagnose_pending_and_success_greeting_conflict():
         ),
     ])
 
-    assert any(issue.severity == "error" and issue.title == "打招呼成功与待确认并存" for issue in issues)
+    assert any(issue.severity == "error" and issue.title == "已发送与待核实并存" for issue in issues)
 
 
 def test_diagnose_manual_review_flag_must_match_qualification_status():

@@ -139,7 +139,7 @@ def candidate_greet_skip_reason(candidate: dict[str, Any]) -> str:
     if candidate.get("greet_sent"):
         return "已打招呼"
     if candidate.get("greet_confirmation_pending"):
-        return "发送结果待确认"
+        return "发送结果待核实"
     decision = derive_candidate_decision(candidate)
     if decision.result_view == "淘汰记录":
         return "已淘汰"
@@ -157,7 +157,7 @@ def build_daily_candidate_actions(
 ) -> list[CandidateActionItem]:
     """Build one highest-priority daily action for each candidate record."""
     buckets: dict[str, list[CandidateActionItem]] = {
-        "发送结果待确认": [],
+        "发送结果待核实": [],
         "已回复待推进": [],
         "待复核": [],
         "待完成简历评估": [],
@@ -172,8 +172,8 @@ def build_daily_candidate_actions(
             continue
 
         if candidate.get("greet_confirmation_pending"):
-            buckets["发送结果待确认"].append(_item(
-                10, "发送结果待确认", candidate,
+            buckets["发送结果待核实"].append(_item(
+                10, "发送结果待核实", candidate,
                 candidate.get("greet_confirmation_reason") or "上次点击后没有明确成功状态",
                 "先去 BOSS 沟通列表核实，确认后再继续发送。",
             ))
@@ -209,10 +209,10 @@ def build_daily_candidate_actions(
             has_context = bool((candidate.get("greet_context") or {}).get("chat_start"))
             if has_context:
                 reason = _score_reason(score)
-                action = "加入打招呼队列。"
+                action = "加入联系清单。"
             else:
                 reason = "候选人已通过筛选，尚未联系"
-                action = "打开对应岗位的推荐牛人页面并重新扫描，再加入打招呼队列。"
+                action = "打开对应岗位的推荐牛人页面并重新扫描，再加入联系清单。"
             buckets["待打招呼"].append(_item(50, "待打招呼", candidate, reason, action))
             continue
 
@@ -224,7 +224,7 @@ def build_daily_candidate_actions(
             ))
 
     ordered_groups = [
-        "发送结果待确认",
+        "发送结果待核实",
         "已回复待推进",
         "待复核",
         "待完成简历评估",
@@ -296,7 +296,7 @@ def _screening_result(score: int) -> str:
 
 def _communication_status(candidate: dict[str, Any]) -> str:
     if candidate.get("greet_confirmation_pending"):
-        return "发送待确认"
+        return "发送待核实"
     followup = str(candidate.get("followup_status") or "").strip()
     if followup:
         return followup
@@ -325,13 +325,13 @@ def _review_next_action(candidate: dict[str, Any], reasons: list[str]) -> str:
 
 
 def _recommended_next_action(candidate: dict[str, Any], communication: str) -> str:
-    if communication == "发送待确认":
+    if communication == "发送待核实":
         return "先在 BOSS 沟通列表核实发送结果，避免重复联系。"
     if candidate.get("greet_sent"):
         if communication == "已回复":
             return "查看回复并推进约面，随后更新跟进状态。"
         return "查看 BOSS 会话；有回复后更新跟进状态。"
-    return "加入打招呼队列，统一确认后发送。"
+    return "加入联系清单，统一确认后发送。"
 
 
 def _unique_texts(values: Any) -> list[str]:
