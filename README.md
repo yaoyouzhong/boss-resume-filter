@@ -282,7 +282,7 @@ boss-resume-filter/
 ├── candidates_all.json   # 累积的候选人数据（累积、去重）
 ├── candidates_all.xlsx   # Excel 导出文件（多工作表 + 统计摘要）
 ├── CLAUDE.md             # AI 协作规范（Claude / Codex 通用）
-├── AGENTS.md             # Codex 专用项目规范（内容与 CLAUDE.md 一致）
+├── AGENTS.md             # Codex 专用项目规范
 ├── README.md             # 项目主文档
 ├── CHANGELOG.md          # 更新日志（嵌入 EXE，运行时从 _MEIPASS 读取）
 ├── docs/                 # 用户操作说明、PDF、PPTX 和配套素材

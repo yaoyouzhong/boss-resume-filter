@@ -7,7 +7,7 @@
 如果浏览器限制本地资源，可在项目根目录运行：
 
 ```powershell
-python -m http.server 8765 --bind 127.0.0.1 --directory "docs\高伟达AI智能招聘演示"
+python -m http.server 8765 --bind 127.0.0.1 --directory "docs\高伟达AI智能招聘分享"
 ```
 
 然后访问：
