@@ -749,7 +749,7 @@ def _check_changelog_updated():
 
     # 检查核心代码是否有变更
     core_files = [
-        "gui_main.py", "gui_dialogs.py", "changelog_parser.py", "bossmaster.py",
+        "gui_main.py", "gui_dialogs.py", "ui_messagebox.py", "changelog_parser.py", "bossmaster.py",
         "filtering.py", "storage.py", "llm_eval.py", "ai_adapter.py", "job_ai_parser.py",
         "job_config_diagnostics.py", "doc_parser.py", "security.py", "updater.py", "icons.py",
         "constants.py", "paths.py", "selectors.json", "ui_config.json",
@@ -1298,7 +1298,7 @@ def _check_code_to_changelog_coverage(strict=False):
         r"export|excel|status|reason|note|updated_at|geek_id|job_name)",
         re.IGNORECASE,
     )
-    ui_files = ("gui_main.py", "gui_dialogs.py", "updater.py")
+    ui_files = ("gui_main.py", "gui_dialogs.py", "ui_messagebox.py", "updater.py")
 
     for fpath in sorted(set(file_additions) | set(file_removals)):
         additions = file_additions.get(fpath, [])

@@ -4,9 +4,10 @@ GUI 对话框模块 - 从 gui_main.py 提取的独立对话框
 import sys
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk
 
 from changelog_parser import normalize_version, parse_changelog_versions, resolve_local_changelog_path
+from ui_messagebox import messagebox
 
 
 def render_changelog_text(
@@ -229,7 +230,6 @@ def show_about_dialog(gui, version):
              fg=gui.colors['text_muted']).pack(pady=(int(10 * _s), int(10 * _s)))
 
     dialog.bind('<Escape>', lambda e: dialog.destroy())
-    dialog.grab_set()
 
 
 def show_changelog_dialog(gui):
@@ -241,18 +241,18 @@ def show_changelog_dialog(gui):
     from paths import BASE_DIR
     changelog_path = resolve_local_changelog_path(BASE_DIR)
     if not changelog_path:
-        messagebox.showinfo("更新日志", "CHANGELOG.md 文件不存在")
+        messagebox.showinfo("更新日志", "CHANGELOG.md 文件不存在", parent=gui.root)
         return
 
     try:
         content = changelog_path.read_text(encoding="utf-8")
     except Exception as e:
-        messagebox.showerror("错误", f"读取更新日志失败：{e}")
+        messagebox.showerror("错误", f"读取更新日志失败：{e}", parent=gui.root)
         return
 
     versions = parse_changelog_versions(content)
     if not versions:
-        messagebox.showinfo("更新日志", "CHANGELOG.md 中没有版本记录")
+        messagebox.showinfo("更新日志", "CHANGELOG.md 中没有版本记录", parent=gui.root)
         return
 
     dialog = tk.Toplevel(gui.root)

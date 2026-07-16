@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from tkinter import messagebox
+from ui_messagebox import messagebox
 
 import requests
 import tkinter as tk

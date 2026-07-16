@@ -27,6 +27,7 @@ output/
 # 候选人数据（累积数据，本地存储）
 candidates_all.json
 candidates_all.xlsx
+contact_queue.json*
 
 # 打包输出
 dist/

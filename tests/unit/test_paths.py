@@ -118,6 +118,17 @@ def test_candidates_path_constant():
     assert paths.CANDIDATES_PATH.name == "candidates_all.json"
 
 
+def test_contact_queue_path_constant():
+    """CONTACT_QUEUE_PATH points to the local queue intent file."""
+    assert isinstance(paths.CONTACT_QUEUE_PATH, Path)
+    assert paths.CONTACT_QUEUE_PATH.name == "contact_queue.json"
+
+
+def test_contact_queue_runtime_files_are_gitignored():
+    gitignore = Path(".gitignore").read_text(encoding="utf-8")
+    assert "contact_queue.json*" in gitignore.splitlines()
+
+
 def test_candidates_xlsx_path_constant():
     """CANDIDATES_XLSX_PATH 指向 candidates_all.xlsx"""
     assert isinstance(paths.CANDIDATES_XLSX_PATH, Path)
