@@ -1,29 +1,29 @@
 {
-  "version": "2.19",
-  "release_date": "2026-07-15",
+  "version": "2.20",
+  "release_date": "2026-07-16",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.19/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.19/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.19/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.20/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.20/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.20/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "windows": {
-      "size": 38793460,
-      "sha256": "306ba916a3c546f7cd060429c4033a4de69a0af5ee1dc0873ff9cc520b9397ee"
+      "size": 38827894,
+      "sha256": "baba59cbb655b07268a71b2d2bbb0df75cf39cdbfd31738d912d50dee4d55314"
     },
     "macos_dmg": {
-      "size": 33348202,
-      "sha256": "7540eda3a99cd8bb8a28ec026ed2691f0c5bc9dd50639d481e7f345a5e52d498"
+      "size": 33375711,
+      "sha256": "17635d098186eddf315144e39bc7cf563222c18be653be6edc01abd59054a7f0"
     },
     "macos": {
-      "size": 34196677,
-      "sha256": "b40e36a5efe506d321773b3deca857aef23d2e7181d497c5300b7fc4c433c7ba"
+      "size": 34229445,
+      "sha256": "efc62b5287871479bd5093e2d505a35d3c94345ea1d9fcfc71a24d2978981839"
     }
   },
-  "release_notes": "### 新增功能\n\n- **连续复核工作台**：筛选结果支持从当前候选人开始连续查看上一位、下一位；候选人明细分开呈现筛选结论、复核状态和沟通状态，并集中展示判断依据、风险与不足、AI 调整分以及确认、跟进、反馈、简历操作\n- **运行前安全确认**：开始扫描前检查岗位配置和当前 BOSS 岗位，严重问题直接阻断、提醒项由用户确认；自动打招呼前展示待发送人数，取消后保留筛选结果\n- **本轮结果摘要**：运行结束、停止或异常后集中展示规则筛选、AI 评估、最终保留、主要淘汰原因和扫描范围，明确本轮是否已确认扫描到底\n- **待复核原因分组**：今日待办中的待复核候选人可按学历形式、工作经验、求职状态、评分等主要原因展开，方便集中处理同类问题\n\n### 体验优化\n\n- **结果范围选择更直观**：时间范围新增“今天”，结果范围默认“全部记录”，首次进入页面即可看到完整结果\n- **今日待办更聚焦**：每位候选人只进入一个优先级最高的任务，“已回复待约面”调整为更准确的“已回复待推进”\n- **批量 AI 评估操作更明确**：右键菜单显示本次可评估人数；所选候选人均无需评估时隐藏该操作，混合选择时汇总跳过人数和原因\n- **模型用途选择更清晰**：默认 AI 模型和学历核验模型统一在“使用中的模型”中明确选择，并分别显示未检测、测试中、可用或测试失败及原因；API Key 查看入口改为轻量图标\n- **操作入口更易识别**：今日待办、查看与复核、候选人状态体检等入口使用语义更明确的高清图标；筛选结果中的黑名单状态简化为无底色的“已屏蔽”\n\n### 问题修复\n\n- **浏览器状态误报修复**：页面刷新或局部重绘时等待并重试，Chrome 关闭或页面连接断开时回到未连接状态；无已发布职位或页面无候选人时跳过不适用的选择器检查\n- **重复扫描结果修复**：候选人重新扫描后未通过当前规则时不再沿用旧推荐结果；部分扫描、主动停止或异常中断不会误清理上一次完整扫描保留的待定记录\n- **待复核数量和展示范围修复**：筛选结果与今日待办统一判断待复核，不再静默截断结果或待办；发送待确认只影响沟通操作，不再改变原筛选分类\n- **Excel 导出范围修复**：严格导出当前岗位、时间、结果范围和屏蔽显示条件下的可见候选人，避免导出与页面所见不一致\n- **官方服务识别修复**：结合服务商和接入地址识别官方 API、Token Plan、Coding Plan、Step Plan 等官方套餐入口，不再把官方套餐误判为中转服务\n- **候选人岗位记录修复**：同一候选人的 AI 评估、确认、跟进、反馈和移除只影响对应岗位，避免不同岗位记录相互覆盖",
+  "release_notes": "### 新增功能\n\n- **扫描与联系分离**：图形界面扫描不再直接打招呼；正常完成、达到轮次上限或可能未扫完时，根据运行前选择生成联系清单，并保留本轮结果和范围提示\n- **联系清单安全恢复**：筛选完成后统一生成联系清单；程序重启后恢复待发送、发送失败和待核实项目，发送中断的候选人不会自动重发\n- **单人和批量联系**：联系候选人工作台支持单选、多选、Ctrl+A 全选和右键联系，可只处理当前选中的候选人，也可统一处理全部待发送人员\n- **发送前安全复核**：每次联系前重新检查候选人最新状态、Chrome 登录状态和对应岗位页面；遇到验证码时展示处理明细并等待人工完成，不再适合联系或岗位不一致时安全跳过或保留待发送\n\n### 体验优化\n\n- **工作台操作优化**：精简联系按钮文字，统一右键菜单以及重试、确认等操作样式，并通过悬停提示说明发送准备状态和需要处理的岗位页面\n- **结果提示更及时**：联系结束后立即显示本轮结果，较长的加入清单摘要支持滚动查看，确认按钮统一居中显示\n- **窗口操作互不干扰**：联系候选人、连续复核、今日待办和数据详情等工作窗口打开时，主界面仍可正常查看和切换；确认和编辑窗口继续保持操作约束\n- **状态信息更简洁**：筛选结果状态列只显示必要的业务标记，悬停时补充具体复核原因，减少同一信息重复展示\n- **界面提示统一**：将“打招呼队列”“待确认”“失败”等旧称统一调整为“联系候选人”“待核实”“发送失败”，并统一筛选、AI 评估、淘汰记录、扫描范围、更新日志和联系结果等提示\n\n### 问题修复\n\n- **AI 调整说明修复**：运行控制页的 AI 评分说明由 10 分修正为实际使用的 15 分，避免界面说明与评分规则不一致\n- **浏览器准备状态修复**：Chrome 已连接且推荐页面就绪后，联系窗口会及时结束“正在连接”提示并展示真实准备状态\n- **联系结果弹窗修复**：修复部分结果窗口出现较晚、内容超出后无法查看或缺少可见确认按钮的问题",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.19/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.19/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.19/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.20/BOSS_ResumeFilter.exe",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.20/BOSS_ResumeFilter.dmg",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.20/BOSS_ResumeFilter_mac.zip"
   }
 }
