@@ -4755,6 +4755,59 @@ def test_education_render_shows_text_placeholder_for_pdf():
     assert label._image_ref is None
 
 
+def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidate = {"geek_id": "g-error", "name": "张三", "job_name": "Java"}
+    gui.all_candidates = [candidate]
+    gui.api_config = {
+        "api_provider": "qwen",
+        "base_url": "https://example.test/v1",
+    }
+    gui.append_log = Mock()
+    gui.refresh_results = Mock()
+    gui._format_candidate_status = Mock(return_value="已导入简历")
+    parent = Mock()
+    tree = Mock()
+    callbacks = []
+    parent.after.side_effect = lambda _delay, callback: callbacks.append(callback)
+
+    def run_thread(*_args, **kwargs):
+        return types.SimpleNamespace(start=kwargs["target"])
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        resume_path = tmp_path / "resume.txt"
+        resume_path.write_text("Java 开发经验 " * 10, encoding="utf-8")
+        with patch("gui_main.filedialog.askopenfilename", return_value=str(resume_path)), \
+                patch("gui_main.messagebox.askyesno", return_value=True), \
+                patch("gui_main.messagebox.showerror") as showerror, \
+                patch("gui_main.save_candidates_all"), \
+                patch("gui_main.get_api_key", return_value="secret"), \
+                patch("paths.get_base_dir", return_value=tmp_path), \
+                patch("llm_eval.evaluate_with_resume", side_effect=RuntimeError("模型故障")), \
+                patch("gui_main.threading.Thread", side_effect=run_thread):
+            gui._import_resume(
+                None,
+                candidate=candidate,
+                parent=parent,
+                tree=tree,
+                tree_item="row-1",
+            )
+
+            assert len(callbacks) == 1
+            callbacks[0]()
+
+    assert gui.append_log.call_args_list[-1].args == (
+        "[简历评估] ❌ 张三 异常：模型故障",
+    )
+    showerror.assert_called_once_with(
+        "评估异常",
+        "二次评估出错：\n模型故障",
+        parent=parent,
+    )
+    tree.set.assert_any_call("row-1", "status", "已导入简历")
+
+
 # === 评分拆解与简历评估的替代关系（regression: resume_adj=0 时不得回退显示 AI 调整值）===
 
 def _breakdown_parts_sum(line: str) -> int:

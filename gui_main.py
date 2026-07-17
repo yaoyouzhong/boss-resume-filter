@@ -14850,9 +14850,9 @@ class BossFilterGUI:
 
                 _parent.after(0, _on_done)
 
-            except Exception as e:
-                def _on_error():
-                    self.append_log(f"[简历评估] ❌ {name} 异常：{e}")
+            except Exception as exc:
+                def _on_error(error=exc):
+                    self.append_log(f"[简历评估] ❌ {name} 异常：{error}")
                     if _tree_item is not None:
                         try:
                             _tree.set(_tree_item, 'status',
@@ -14860,7 +14860,7 @@ class BossFilterGUI:
                         except Exception:
                             pass
                     messagebox.showerror("评估异常",
-                        f"二次评估出错：\n{e}", parent=_parent)
+                        f"二次评估出错：\n{error}", parent=_parent)
                 _parent.after(0, _on_error)
 
         threading.Thread(target=_eval_worker, daemon=True).start()
