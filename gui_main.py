@@ -3208,6 +3208,18 @@ class BossFilterGUI:
         model_name = model_ref.get("model", "") or "未配置"
         return f"{role_label}（{provider_display} / {model_name}）"
 
+    def _assigned_model_test_roles(self, role, model_ref=None):
+        """返回一次测试应同步的用途；实际连接身份相同时双向同步。"""
+        if role not in ("default", "education"):
+            return (role,)
+        model_ref = model_ref or self._get_assigned_model_ref(role)
+        if all(
+            self._model_ref_matches(model_ref, self._get_assigned_model_ref(target_role))
+            for target_role in ("default", "education")
+        ):
+            return ("default", "education")
+        return (role,)
+
     def _set_assigned_model_test_state(self, role, state):
         """更新用途模型的红绿灯和行内状态。"""
         states = getattr(self, "_assigned_model_test_states", None)
@@ -7444,10 +7456,12 @@ class BossFilterGUI:
     def _test_assigned_model(self, role):
         """复用模型库连通性测试，测试指定用途当前实际使用的模型。"""
         model_ref = self._get_assigned_model_ref(role)
-        self._assigned_model_test_tokens[role] += 1
+        synced_roles = self._assigned_model_test_roles(role, model_ref)
+        for target_role in synced_roles:
+            self._assigned_model_test_tokens[target_role] += 1
+            self._assigned_model_test_refs[target_role] = dict(model_ref)
+            self._set_assigned_model_test_state(target_role, "testing")
         test_token = self._assigned_model_test_tokens[role]
-        self._assigned_model_test_refs[role] = dict(model_ref)
-        self._set_assigned_model_test_state(role, "testing")
         self._update_api_status(
             text=f"正在测试{self._assigned_model_test_target_label(role, model_ref)}...",
             foreground=self.colors['warning'],
@@ -7469,7 +7483,8 @@ class BossFilterGUI:
                     assigned_test_token=test_token,
                 )
                 return
-        self._set_assigned_model_test_state(role, "error")
+        for target_role in synced_roles:
+            self._set_assigned_model_test_state(target_role, "error")
         messagebox.showwarning("模型未保存", "当前模型不在已保存模型列表中，请先保存模型配置。")
 
     def _set_education_model(self):
@@ -7915,7 +7930,11 @@ class BossFilterGUI:
         if not hasattr(self, "_assigned_model_test_results"):
             self._assigned_model_test_results = {}
         self._assigned_model_test_results[self._model_ref_key(expected_ref)] = state
-        self._set_assigned_model_test_state(role, state)
+        for target_role in self._assigned_model_test_roles(role, expected_ref):
+            if self._model_ref_matches(
+                expected_ref, self._get_assigned_model_ref(target_role)
+            ):
+                self._set_assigned_model_test_state(target_role, state)
 
     def _save_capability_to_model(
         self, model_name, capability, provider_key=None, base_url=None, refresh=True

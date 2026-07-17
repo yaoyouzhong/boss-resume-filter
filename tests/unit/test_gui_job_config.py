@@ -1000,6 +1000,11 @@ def test_assigned_model_test_result_updates_matching_traffic_light_only():
         "api_provider": "qwen",
         "base_url": "https://example.test/v1",
         "model": "qwen-plus",
+        "education_model_ref": {
+            "api_provider": "kimi",
+            "base_url": "https://example.test/kimi/v1",
+            "model": "k3",
+        },
     }
     gui._assigned_model_test_buttons = {"default": default_button}
     gui._assigned_model_test_icons = {
@@ -1022,6 +1027,85 @@ def test_assigned_model_test_result_updates_matching_traffic_light_only():
 
     assert gui._assigned_model_test_states["default"] == "success"
     assert default_button.configs[-1] == {"image": "green-light"}
+
+
+def test_assigned_model_test_result_syncs_both_roles_when_explicit_model_is_same():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    model_ref = {
+        "api_provider": "kimi",
+        "base_url": "https://api.kimi.com/coding/v1",
+        "model": "k3",
+    }
+    gui.api_config = {
+        **model_ref,
+        "education_model_ref": dict(model_ref),
+    }
+    gui.colors = {
+        "text_secondary": "gray", "warning": "yellow",
+        "success": "green", "danger": "red",
+    }
+    gui._assigned_model_test_buttons = {
+        "default": _FakeWidget(), "education": _FakeWidget(),
+    }
+    gui._assigned_model_test_status_labels = {
+        "default": _FakeWidget(), "education": _FakeWidget(),
+    }
+    gui._assigned_model_test_icons = {
+        "pending": "yellow-light", "success": "green-light", "error": "red-light",
+    }
+    gui._assigned_model_test_states = {"default": "testing", "education": "testing"}
+    gui._assigned_model_test_tokens = {"default": 2, "education": 2}
+
+    gui._apply_assigned_model_test_result({
+        "assigned_role": "default",
+        "assigned_test_token": 2,
+        "assigned_model_ref": model_ref,
+    }, {"status": "success"})
+
+    assert gui._assigned_model_test_states == {
+        "default": "success", "education": "success",
+    }
+    assert gui._assigned_model_test_status_labels["default"].configs[-1] == {
+        "text": "已通过", "foreground": "green",
+    }
+    assert gui._assigned_model_test_status_labels["education"].configs[-1] == {
+        "text": "已通过", "foreground": "green",
+    }
+
+
+def test_education_test_result_syncs_failure_back_to_default_when_following():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    model_ref = {
+        "api_provider": "qwen",
+        "base_url": "https://example.test/v1",
+        "model": "qwen-plus",
+    }
+    gui.api_config = dict(model_ref)
+    gui.colors = {
+        "text_secondary": "gray", "warning": "yellow",
+        "success": "green", "danger": "red",
+    }
+    gui._assigned_model_test_buttons = {
+        "default": _FakeWidget(), "education": _FakeWidget(),
+    }
+    gui._assigned_model_test_status_labels = {
+        "default": _FakeWidget(), "education": _FakeWidget(),
+    }
+    gui._assigned_model_test_icons = {
+        "pending": "yellow-light", "success": "green-light", "error": "red-light",
+    }
+    gui._assigned_model_test_states = {"default": "testing", "education": "testing"}
+    gui._assigned_model_test_tokens = {"default": 7, "education": 7}
+
+    gui._apply_assigned_model_test_result({
+        "assigned_role": "education",
+        "assigned_test_token": 7,
+        "assigned_model_ref": model_ref,
+    }, {"status": "error"})
+
+    assert gui._assigned_model_test_states == {
+        "default": "error", "education": "error",
+    }
 
 
 def test_assigned_model_test_feedback_identifies_role_and_keeps_rows_independent():
