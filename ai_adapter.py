@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,68 @@ from paths import BASE_DIR
 
 CAPABILITY_CACHE_PATH = BASE_DIR / ".storage" / "model_capabilities.json"
 DEFAULT_AZURE_API_VERSION = "2024-10-21"
+
+
+@dataclass(frozen=True)
+class EndpointCandidate:
+    """Documented model-list endpoint for one provider channel."""
+
+    channel: str
+    service_name: str
+    base_url: str
+    auth_style: str = "bearer"
+
+
+@dataclass(frozen=True)
+class EndpointResolution:
+    """Deterministic result of validating credentials against known endpoints."""
+
+    status: str
+    provider: str
+    channel: str = ""
+    service_name: str = ""
+    base_url: str = ""
+    models: tuple[str, ...] = ()
+    http_status: int | None = None
+    message: str = ""
+
+
+API_ENDPOINT_DISCOVERY_RULES: dict[str, tuple[EndpointCandidate, ...]] = {
+    "qwen": (
+        EndpointCandidate("qwen_cn", "阿里云百炼（中国）", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        EndpointCandidate("qwen_intl", "阿里云百炼（国际）", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
+        EndpointCandidate("qwen_us", "阿里云百炼（美国）", "https://dashscope-us.aliyuncs.com/compatible-mode/v1"),
+    ),
+    "deepseek": (
+        EndpointCandidate("deepseek", "DeepSeek", "https://api.deepseek.com"),
+    ),
+    "kimi": (
+        EndpointCandidate("kimi_cn", "Kimi 开放平台（国内）", "https://api.moonshot.cn/v1"),
+        EndpointCandidate("kimi_global", "Kimi 开放平台（海外）", "https://api.moonshot.ai/v1"),
+        EndpointCandidate("kimi_code", "Kimi Code", "https://api.kimi.com/coding/v1"),
+    ),
+    "zhipu": (
+        EndpointCandidate("zhipu", "智谱开放平台", "https://open.bigmodel.cn/api/paas/v4"),
+    ),
+    "minimax": (
+        EndpointCandidate("minimax_cn", "MiniMax（国内）", "https://api.minimaxi.com/v1"),
+        EndpointCandidate("minimax_global", "MiniMax（海外）", "https://api.minimax.io/v1"),
+    ),
+    "xiaomi": (
+        EndpointCandidate("xiaomi", "小米 MiMo", "https://api.xiaomimimo.com/v1"),
+    ),
+    "stepfun": (
+        EndpointCandidate("stepfun", "阶跃星辰", "https://api.stepfun.com/v1"),
+    ),
+    "openai": (
+        EndpointCandidate("openai", "OpenAI", "https://api.openai.com/v1"),
+    ),
+    "anthropic": (
+        EndpointCandidate(
+            "anthropic", "Anthropic", "https://api.anthropic.com/v1", auth_style="anthropic"
+        ),
+    ),
+}
 
 # Official endpoint evidence is kept beside the matching rule so updates can be
 # reviewed against provider documentation instead of extending ad-hoc lists.
@@ -134,6 +197,199 @@ def normalize_api_base_url(api_config: dict) -> str:
     ):
         return urlunsplit((parts.scheme, parts.netloc, "/coding/v1", parts.query, parts.fragment))
     return raw_url
+
+
+def has_endpoint_discovery(provider: str) -> bool:
+    """Return whether a provider has documented endpoints safe to auto-probe."""
+    return str(provider or "").strip().lower() in API_ENDPOINT_DISCOVERY_RULES
+
+
+def model_catalog_cache_key(provider: str, base_url: str) -> str:
+    """Return an endpoint-scoped key for cached model catalog comparisons."""
+    normalized = normalize_api_base_url({
+        "api_provider": provider,
+        "base_url": base_url,
+    })
+    return f"{str(provider or '').strip().lower()}|{normalized.lower()}"
+
+
+def _candidate_headers(candidate: EndpointCandidate, api_key: str) -> dict[str, str]:
+    headers = {"User-Agent": USER_AGENT, "Connection": "close"}
+    if candidate.auth_style == "anthropic":
+        headers.update({
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        })
+    else:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _extract_model_ids(payload: Any) -> tuple[str, ...]:
+    if not isinstance(payload, dict):
+        return ()
+    raw_models = payload.get("data")
+    if raw_models is None:
+        raw_models = payload.get("models")
+    if not isinstance(raw_models, list):
+        return ()
+    models: list[str] = []
+    for item in raw_models:
+        model_id = item.get("id") if isinstance(item, dict) else item
+        model_id = str(model_id or "").strip()
+        if model_id:
+            models.append(model_id)
+    return tuple(dict.fromkeys(models))
+
+
+def _ordered_endpoint_candidates(
+    provider: str,
+    api_key: str,
+    preferred_base_url: str = "",
+) -> tuple[EndpointCandidate, ...]:
+    provider = str(provider or "").strip().lower()
+    candidates = list(API_ENDPOINT_DISCOVERY_RULES.get(provider, ()))
+    if provider == "kimi" and str(api_key or "").startswith("sk-kimi-"):
+        candidates.sort(key=lambda item: item.channel != "kimi_code")
+
+    preferred = normalize_api_base_url({
+        "api_provider": provider,
+        "base_url": preferred_base_url,
+    })
+    if preferred:
+        matched = next(
+            (item for item in candidates if item.base_url.rstrip("/") == preferred),
+            None,
+        )
+        if matched is not None:
+            candidates.remove(matched)
+            candidates.insert(0, matched)
+        else:
+            endpoint = classify_api_endpoint({
+                "api_provider": provider,
+                "base_url": preferred,
+            })
+            candidates.insert(0, EndpointCandidate(
+                "configured",
+                str(endpoint.get("service_name") or "当前配置"),
+                preferred,
+                auth_style="anthropic" if provider == "anthropic" else "bearer",
+            ))
+
+    deduped: list[EndpointCandidate] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = candidate.base_url.rstrip("/").lower()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(candidate)
+    return tuple(deduped)
+
+
+def discover_api_endpoint(
+    provider: str,
+    api_key: str,
+    preferred_base_url: str = "",
+    *,
+    request_get=None,
+    timeout: tuple[int, int] = (5, 10),
+) -> EndpointResolution:
+    """Identify the credential channel through documented model-list endpoints.
+
+    Key prefixes only affect candidate order. A 200 response confirms the
+    endpoint; no inference request is made. Unknown providers are never probed.
+    """
+    provider = str(provider or "").strip().lower()
+    if not api_key:
+        return EndpointResolution("invalid", provider, message="API Key 为空")
+    candidates = _ordered_endpoint_candidates(provider, api_key, preferred_base_url)
+    if not candidates:
+        return EndpointResolution(
+            "unsupported", provider, message="该服务商没有可自动识别的官方端点"
+        )
+
+    if request_get is None:
+        import certifi
+        import requests
+
+        def request_get(url, **kwargs):
+            kwargs.setdefault("verify", certifi.where())
+            return requests.get(url, **kwargs)
+
+    transient: EndpointResolution | None = None
+    last_status: int | None = None
+    for candidate in candidates:
+        models_url = f"{candidate.base_url.rstrip('/')}/models"
+        try:
+            response = request_get(
+                models_url,
+                headers=_candidate_headers(candidate, api_key),
+                timeout=timeout,
+            )
+        except Exception as exc:
+            if transient is None:
+                transient = EndpointResolution(
+                    "unavailable",
+                    provider,
+                    candidate.channel,
+                    candidate.service_name,
+                    candidate.base_url,
+                    message=f"{type(exc).__name__}: {str(exc)[:120]}",
+                )
+            continue
+
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        last_status = status_code
+        if status_code == 200:
+            try:
+                payload = response.json()
+            except (TypeError, ValueError):
+                payload = None
+            return EndpointResolution(
+                "confirmed",
+                provider,
+                candidate.channel,
+                candidate.service_name,
+                candidate.base_url,
+                _extract_model_ids(payload),
+                status_code,
+                "接入渠道和 API Key 已确认",
+            )
+        if status_code in (401, 403, 404):
+            continue
+        if status_code in (402, 429):
+            return EndpointResolution(
+                "probable",
+                provider,
+                candidate.channel,
+                candidate.service_name,
+                candidate.base_url,
+                http_status=status_code,
+                message=(
+                    "接入渠道可能已匹配，但会员状态异常"
+                    if status_code == 402
+                    else "接入渠道可能已匹配，但请求受到限流"
+                ),
+            )
+        if status_code >= 500 and transient is None:
+            transient = EndpointResolution(
+                "unavailable",
+                provider,
+                candidate.channel,
+                candidate.service_name,
+                candidate.base_url,
+                http_status=status_code,
+                message=f"服务暂时不可用（HTTP {status_code}）",
+            )
+
+    if transient is not None:
+        return transient
+    return EndpointResolution(
+        "invalid",
+        provider,
+        http_status=last_status,
+        message="API Key 与已登记的官方接入渠道均不匹配",
+    )
 
 
 def detect_protocol(api_config: dict) -> str:

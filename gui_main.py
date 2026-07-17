@@ -41,7 +41,13 @@ from candidate_state_diagnostics import (
     diagnose_candidate_states,
     summarize_candidate_state_diagnostics,
 )
-from ai_adapter import classify_api_endpoint, normalize_api_base_url
+from ai_adapter import (
+    classify_api_endpoint,
+    discover_api_endpoint,
+    has_endpoint_discovery,
+    model_catalog_cache_key,
+    normalize_api_base_url,
+)
 from greeting_failure import diagnose_greeting_failure, format_greeting_failure_message
 from contact_queue import (
     build_contact_queue_item,
@@ -2808,7 +2814,13 @@ class BossFilterGUI:
 
         # 获取模型列表按钮
         icon_download_models = self.icons.button('download', self.colors['text_primary'])
-        btn_fetch = ttk.Button(row2, image=icon_download_models, text=" 获取模型列表", compound=tk.LEFT, command=self.fetch_model_list)
+        btn_fetch = ttk.Button(
+            row2,
+            image=icon_download_models,
+            text=" 自动识别并获取模型",
+            compound=tk.LEFT,
+            command=self.fetch_model_list,
+        )
         btn_fetch._icon_ref = icon_download_models
         btn_fetch.pack(side="left")
 
@@ -8201,7 +8213,7 @@ class BossFilterGUI:
             messagebox.showwarning("警告", "请先输入 API Key")
             return
 
-        if not base_url:
+        if not base_url and not has_endpoint_discovery(provider):
             messagebox.showwarning("警告", "请先输入 Base URL")
             return
 
@@ -8214,29 +8226,57 @@ class BossFilterGUI:
             self.api_base_url_var.set(base_url)
 
         # 显示加载中状态（不使用 update()，避免重入）
-        self._update_api_status(text="⏳ 正在获取模型列表...", foreground=self.colors['warning'])
+        status_text = (
+            "⏳ 正在识别接入渠道并获取模型..."
+            if has_endpoint_discovery(provider)
+            else "⏳ 正在获取模型列表..."
+        )
+        self._update_api_status(text=status_text, foreground=self.colors['warning'])
 
         def fetch_thread():
+            nonlocal base_url
             try:
-                # 构建模型列表 API 端点
-                # 大部分服务商兼容 OpenAI 格式：GET /v1/models
-                models_url = f"{base_url.rstrip('/')}/models"
+                detected_service_name = ""
+                resolution_status = ""
+                if has_endpoint_discovery(provider):
+                    resolution = discover_api_endpoint(
+                        provider,
+                        api_key,
+                        preferred_base_url=base_url,
+                    )
+                    resolution_status = resolution.status
+                    response_status = resolution.http_status or 0
+                    response_text = resolution.message
+                    if resolution.status == "confirmed":
+                        base_url = resolution.base_url
+                        detected_service_name = resolution.service_name
+                        data = {"data": [{"id": model} for model in resolution.models]}
+                        response_status = 200
 
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "User-Agent": USER_AGENT
-                }
+                        def _apply_resolution():
+                            self.api_base_url_var.set(base_url)
+                            self._verified_api_endpoint = (provider, api_key, base_url)
 
-                # 发送请求，超时 15 秒
-                response = requests.get(
-                    models_url,
-                    headers=headers,
-                    timeout=15,
-                    verify=certifi.where()
-                )
+                        self.root.after(0, _apply_resolution)
+                    else:
+                        data = {}
+                else:
+                    # 自定义/中转地址只验证用户明确输入的 URL，不自动枚举其他域名。
+                    models_url = f"{base_url.rstrip('/')}/models"
+                    response = requests.get(
+                        models_url,
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "User-Agent": USER_AGENT,
+                        },
+                        timeout=15,
+                        verify=certifi.where(),
+                    )
+                    response_status = response.status_code
+                    response_text = response.text
+                    data = response.json() if response_status == 200 else {}
 
-                if response.status_code == 200:
-                    data = response.json()
+                if response_status == 200:
 
                     # 解析模型列表（兼容 OpenAI 格式）
                     raw_models = []
@@ -8272,7 +8312,21 @@ class BossFilterGUI:
 
                         # 对比上次获取的模型列表，找出新增和下线模型
                         fetched_models_map = self.api_config.get("fetched_models", {})
-                        previous_models = set(fetched_models_map.get(provider, []))
+                        catalog_key = model_catalog_cache_key(provider, base_url)
+                        # 兼容旧版仅按服务商保存的模型列表；新记录按端点隔离，
+                        # 避免 Kimi 开放平台与 Kimi Code 等渠道互报上下线。
+                        previous_catalog = fetched_models_map.get(catalog_key)
+                        if previous_catalog is None:
+                            configured_catalog_key = model_catalog_cache_key(
+                                provider,
+                                (self.api_config or {}).get("base_url", ""),
+                            )
+                            previous_catalog = (
+                                fetched_models_map.get(provider, [])
+                                if configured_catalog_key == catalog_key
+                                else []
+                            )
+                        previous_models = set(previous_catalog)
                         current_models = set(models)
                         new_models = current_models - previous_models
                         removed_models = previous_models - current_models
@@ -8280,7 +8334,7 @@ class BossFilterGUI:
                         # 更新已获取模型列表并持久化
                         if "fetched_models" not in self.api_config:
                             self.api_config["fetched_models"] = {}
-                        self.api_config["fetched_models"][provider] = models
+                        self.api_config["fetched_models"][catalog_key] = models
                         try:
                             with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as _f:
                                 json.dump(self._sanitize_config_for_save(self.api_config), _f, ensure_ascii=False, indent=4)
@@ -8695,7 +8749,8 @@ class BossFilterGUI:
                             self._status_clickable_labels.clear()
 
                             # 基础信息
-                            base_text = f"✓ 找到 {_total_count} 个模型"
+                            channel_text = f"已识别 {detected_service_name}，" if detected_service_name else ""
+                            base_text = f"✓ {channel_text}找到 {_total_count} 个模型"
                             if _new_count == 0 and _removed_count == 0:
                                 # 无变更，只显示基础信息
                                 self._update_api_status(
@@ -8777,7 +8832,7 @@ class BossFilterGUI:
                             "未找到模型",
                             f"API 返回的数据中没有模型列表\n\n响应内容：{json.dumps(data, ensure_ascii=False)[:500]}"
                         ))
-                elif response.status_code == 401:
+                elif not resolution_status and response_status == 401:
                     self.root.after(0, lambda: self._update_api_status(
                         text="✗ 认证失败",
                         foreground=self.colors['danger']
@@ -8786,7 +8841,7 @@ class BossFilterGUI:
                         "认证失败",
                         "API Key 无效或已过期\n\n请检查 API Key 是否正确"
                     ))
-                elif response.status_code == 404:
+                elif not resolution_status and response_status == 404:
                     self.root.after(0, lambda: self._update_api_status(
                         text="✗ 接口不存在",
                         foreground=self.colors['danger']
@@ -8800,14 +8855,19 @@ class BossFilterGUI:
                         f"• 参考服务商文档获取可用模型"
                     ))
                 else:
+                    is_temporary = resolution_status in ("probable", "unavailable")
+                    status_color = self.colors['warning'] if is_temporary else self.colors['danger']
+                    status_prefix = "!" if is_temporary else "✗"
                     self.root.after(0, lambda: self._update_api_status(
-                        text=f"✗ 请求失败 ({response.status_code})",
-                        foreground=self.colors['danger']
+                        text=f"{status_prefix} 请求失败 ({response_status or '未确认'})",
+                        foreground=status_color,
                     ))
-                    self.root.after(0, lambda: messagebox.showerror(
-                        "请求失败",
-                        f"HTTP 状态码：{response.status_code}\n\n"
-                        f"响应：{response.text[:300]}"
+                    dialog = messagebox.showwarning if is_temporary else messagebox.showerror
+                    self.root.after(0, lambda s=response_status, m=response_text, d=dialog: d(
+                        "自动识别暂未完成" if is_temporary else (
+                            "自动识别失败" if has_endpoint_discovery(provider) else "请求失败"
+                        ),
+                        (f"HTTP 状态码：{s}\n\n" if s else "") + str(m)[:300],
                     ))
 
             except requests.exceptions.Timeout:

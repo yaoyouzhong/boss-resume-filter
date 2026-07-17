@@ -1264,6 +1264,19 @@ def test_save_api_config_sets_default_when_current_model_is_not_saved():
     assert 'default_summary = "本次保存的模型已设为默认 AI 模型" if should_set_default else "默认 AI 模型保持不变"' in save_block
 
 
+def test_model_discovery_keeps_custom_base_url_explicit_and_scopes_catalog_cache():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    fetch_block = source[source.index("def fetch_model_list"):]
+    fetch_block = fetch_block[:fetch_block.index("\n    def _show_api_key_while_pressed")]
+
+    assert 'self.api_base_url_var = tk.StringVar()' in source
+    assert 'text=" 自动识别并获取模型"' in source
+    assert 'if not base_url and not has_endpoint_discovery(provider):' in fetch_block
+    assert '自定义/中转地址只验证用户明确输入的 URL' in fetch_block
+    assert 'resolution = discover_api_endpoint(' in fetch_block
+    assert 'catalog_key = model_catalog_cache_key(provider, base_url)' in fetch_block
+
+
 def test_use_selected_model_matches_provider_and_base_url_not_model_name_only():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     use_block = source[source.index("def use_selected_model"):]
