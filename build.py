@@ -1191,7 +1191,7 @@ def _check_code_to_changelog_coverage(strict=False):
             "suffix", "tag", "attr", "prop", "field", "token",
             "step", "count", "total", "limit", "rate", "freq", "level",
             "mode", "state", "status", "phase", "stage", "flag", "mask",
-            "score", "updated", "updated_at",
+            "score", "updated", "updated_at", "resolution", "confirmed",
             "before", "after", "between", "during", "while",
             "job", "task", "work", "param", "value", "data", "info",
             "scan", "extract", "extraction", "diagnostics",
@@ -1424,6 +1424,9 @@ def _check_code_to_changelog_coverage(strict=False):
         }
         for line in removals:
             if _is_comment_or_doc_line(line):
+                continue
+            if re.search(r'\\"[A-Za-z_][A-Za-z0-9_]+\\"\s*:', line):
+                # Removed JSON examples inside prompts are implementation details.
                 continue
             if line.strip() in normalized_additions:
                 continue
