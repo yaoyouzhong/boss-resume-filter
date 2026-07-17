@@ -29,12 +29,12 @@ def test_centered_messagebox_accepts_application_scaled_fonts():
     assert box._button_font == ("App Font", 15)
 
 
-def test_gui_uses_smaller_dedicated_modal_fonts():
+def test_gui_uses_readable_dedicated_modal_fonts():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     setup = source[source.index("messagebox.set_ui_fonts("):]
     setup = setup[:setup.index("# 设置 Combobox")]
 
-    assert "modal_font_size = max(9, self.font_log[1] - 1)" in source
+    assert "modal_font_size = max(9, self.font_log[1])" in source
     assert "headline=(FONT_FAMILY, max(10, self.font_log[1]), 'bold')" in setup
     assert setup.count("modal_font_size") == 2
     assert "message=self.font_label" not in setup
@@ -53,6 +53,56 @@ def test_centered_messagebox_can_reduce_dialog_fonts_by_one_level():
     assert box._font_with_delta(("App Font", 16, "bold"), -1) == (
         "App Font", 15, "bold"
     )
+
+
+def test_centered_messagebox_supports_numbered_items_with_aligned_wrapping():
+    box = CenteredMessageBox()
+    parent = Mock()
+    numbered_items = ["一段需要完整展示的较长提醒"]
+    with patch.object(box, "_resolve_parent", return_value=parent), \
+            patch.object(box, "_show", return_value="ok") as show:
+        assert box.showinfo(
+            "AI 解析提醒",
+            "",
+            parent=parent,
+            numbered_items=numbered_items,
+            min_width=820,
+            max_width=900,
+        ) == "ok"
+
+    assert show.call_args.kwargs["numbered_items"] == numbered_items
+    assert show.call_args.kwargs["min_width"] == 820
+    assert show.call_args.kwargs["max_width"] == 900
+    assert show.call_args.kwargs["show_icon"] is False
+
+
+def test_numbered_item_rows_wrap_content_without_splitting_the_number_column():
+    source = Path("ui_messagebox.py").read_text(encoding="utf-8")
+    block = source[source.index("if numbered_items:"):]
+    block = block[:block.index("elif self._message_needs_scroll(message):")]
+
+    assert 'text=f"{index}."' in block
+    assert "column=0" in block
+    assert "column=1" in block
+    assert "wraplength=item_wraplength" in block
+    assert "wraplength=0" not in block
+
+
+def test_centered_messagebox_hides_character_icons_for_all_dialog_types_by_default():
+    box = CenteredMessageBox()
+    parent = Mock()
+    with patch.object(box, "_resolve_parent", return_value=parent), \
+            patch.object(box, "_show", return_value=True) as show:
+        box.showinfo("信息", "完成", parent=parent)
+        box.showwarning("警告", "请检查", parent=parent)
+        box.showerror("错误", "失败", parent=parent)
+        box.askyesno("确认", "继续？", parent=parent)
+        box.askokcancel("确认", "继续？", parent=parent)
+        box.askretrycancel("失败", "重试？", parent=parent)
+        box.askyesnocancel("保存", "保存修改？", parent=parent)
+
+    assert show.call_count == 7
+    assert all(call.kwargs["show_icon"] is False for call in show.call_args_list)
 
 
 def test_centered_messagebox_question_supports_action_labels():

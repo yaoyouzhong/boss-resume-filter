@@ -102,8 +102,10 @@ class CenteredMessageBox:
         parent=None,
         detail=None,
         headline=None,
-        show_icon=True,
+        show_icon=False,
+        numbered_items=None,
         min_width=460,
+        max_width=700,
         font_delta=0,
         content_bottom_padding=8,
     ):
@@ -114,7 +116,9 @@ class CenteredMessageBox:
         message = str(message or "")
         if detail:
             message = f"{message}\n\n{detail}"
-        content_wraplength = max(500, min(640, int(min_width) - 60))
+        max_width = max(int(min_width), int(max_width))
+        content_wraplength = max(500, min(max_width - 60, int(min_width) - 60))
+        item_wraplength = max(460, content_wraplength - 36)
         headline_font = self._font_with_delta(self._headline_font, font_delta)
         message_font = self._font_with_delta(self._message_font, font_delta)
         button_font = self._font_with_delta(self._button_font, font_delta)
@@ -162,8 +166,32 @@ class CenteredMessageBox:
                 anchor="w",
                 wraplength=content_wraplength,
             ).pack(fill="x", anchor="w", pady=(0, 16))
-        is_long = self._message_needs_scroll(message)
-        if is_long:
+        if numbered_items:
+            items_frame = tk.Frame(content, bg="#FFFFFF")
+            items_frame.pack(fill="both", expand=True)
+            items_frame.grid_columnconfigure(1, weight=1)
+            for index, item in enumerate(numbered_items, start=1):
+                row_padding = (0, 8) if index < len(numbered_items) else (0, 0)
+                tk.Label(
+                    items_frame,
+                    text=f"{index}.",
+                    font=message_font,
+                    fg="#1F2937",
+                    bg="#FFFFFF",
+                    justify="right",
+                    anchor="ne",
+                ).grid(row=index - 1, column=0, sticky="ne", padx=(0, 8), pady=row_padding)
+                tk.Label(
+                    items_frame,
+                    text=str(item),
+                    font=message_font,
+                    fg="#1F2937",
+                    bg="#FFFFFF",
+                    justify="left",
+                    anchor="nw",
+                    wraplength=item_wraplength,
+                ).grid(row=index - 1, column=1, sticky="nw", pady=row_padding)
+        elif self._message_needs_scroll(message):
             text_frame = tk.Frame(content, bg="#FFFFFF")
             text_frame.pack(fill="both", expand=True)
             text_widget = tk.Text(
@@ -250,7 +278,7 @@ class CenteredMessageBox:
         window.bind("<Escape>", lambda _event: finish(close_value))
         window.bind("<Return>", lambda _event: finish(buttons[0][1]))
         window.update_idletasks()
-        width = max(int(min_width), min(700, window.winfo_reqwidth()))
+        width = max(int(min_width), min(max_width, window.winfo_reqwidth()))
         max_height = self._max_dialog_height(window.winfo_screenheight())
         height = max(180, min(max_height, window.winfo_reqheight()))
         self._place(window, width, height, parent)
@@ -264,8 +292,10 @@ class CenteredMessageBox:
 
     def showinfo(self, title, message, **options):
         headline = options.pop("headline", None)
-        show_icon = options.pop("show_icon", True)
+        show_icon = options.pop("show_icon", False)
+        numbered_items = options.pop("numbered_items", None)
         min_width = options.pop("min_width", 460)
+        max_width = options.pop("max_width", 700)
         font_delta = options.pop("font_delta", 0)
         content_bottom_padding = options.pop("content_bottom_padding", 8)
         parent = self._resolve_parent(options.get("parent"))
@@ -281,7 +311,9 @@ class CenteredMessageBox:
             detail=options.pop("detail", None),
             headline=headline,
             show_icon=show_icon,
+            numbered_items=numbered_items,
             min_width=min_width,
+            max_width=max_width,
             font_delta=font_delta,
             content_bottom_padding=content_bottom_padding,
         )
@@ -289,7 +321,7 @@ class CenteredMessageBox:
 
     def showwarning(self, title, message, **options):
         headline = options.pop("headline", None)
-        show_icon = options.pop("show_icon", True)
+        show_icon = options.pop("show_icon", False)
         min_width = options.pop("min_width", 460)
         font_delta = options.pop("font_delta", 0)
         content_bottom_padding = options.pop("content_bottom_padding", 8)
@@ -314,7 +346,7 @@ class CenteredMessageBox:
 
     def showerror(self, title, message, **options):
         headline = options.pop("headline", None)
-        show_icon = options.pop("show_icon", True)
+        show_icon = options.pop("show_icon", False)
         min_width = options.pop("min_width", 460)
         font_delta = options.pop("font_delta", 0)
         content_bottom_padding = options.pop("content_bottom_padding", 8)
@@ -339,7 +371,7 @@ class CenteredMessageBox:
 
     def askyesno(self, title, message, **options):
         headline = options.pop("headline", None)
-        show_icon = options.pop("show_icon", True)
+        show_icon = options.pop("show_icon", False)
         min_width = options.pop("min_width", 460)
         font_delta = options.pop("font_delta", 0)
         parent = self._resolve_parent(options.get("parent"))
@@ -364,7 +396,7 @@ class CenteredMessageBox:
 
     def askokcancel(self, title, message, **options):
         headline = options.pop("headline", None)
-        show_icon = options.pop("show_icon", True)
+        show_icon = options.pop("show_icon", False)
         min_width = options.pop("min_width", 460)
         parent = self._resolve_parent(options.get("parent"))
         if parent is None:
@@ -387,7 +419,7 @@ class CenteredMessageBox:
 
     def askretrycancel(self, title, message, **options):
         headline = options.pop("headline", None)
-        show_icon = options.pop("show_icon", True)
+        show_icon = options.pop("show_icon", False)
         min_width = options.pop("min_width", 460)
         parent = self._resolve_parent(options.get("parent"))
         if parent is None:
@@ -413,7 +445,7 @@ class CenteredMessageBox:
 
     def askyesnocancel(self, title, message, **options):
         headline = options.pop("headline", None)
-        show_icon = options.pop("show_icon", True)
+        show_icon = options.pop("show_icon", False)
         min_width = options.pop("min_width", 460)
         parent = self._resolve_parent(options.get("parent"))
         if parent is None:

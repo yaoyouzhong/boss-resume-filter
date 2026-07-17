@@ -17,6 +17,7 @@ from typing import Any
 import requests
 
 from constants import CHINESE_NUMERALS, MAJOR_CITIES, USER_AGENT
+from doc_parser import skill_identity_key
 
 
 AI_PARSE_TIMEOUT = (6, 80)
@@ -33,8 +34,20 @@ _NOISY_KEYWORD_RE = re.compile(
 )
 _SOFT_TRAIT_RE = re.compile(r"服务意识|团队精神|学习能力|执行能力|沟通能力|责任心|抗压能力|主动性|积极性")
 _GENERAL_EXPERIENCE_RE = re.compile(
-    r"(?:^|[，,、;；\s])([0-9零一二三四五六七八九十两]+)\s*年\s*(?:以上|及以上|起|\+)?\s*(?:相关)?(?:工作)?经验"
+    r"([0-9零一二三四五六七八九十两]+)\s*年\s*(?:以上|及以上|起|\+)?\s*(?:相关)?(?:工作)?经验"
 )
+_GENERAL_EXPERIENCE_RANGE_RE = re.compile(
+    r"([0-9零一二三四五六七八九十两]+)\s*[-~～至]\s*"
+    r"[0-9零一二三四五六七八九十两]+\s*年\s*(?:相关)?(?:工作)?经验"
+)
+_HARD_SECTION_HEADING_RE = re.compile(
+    r"^(?:必要条件|硬性条件|硬性约束|硬性要求|必须条件|必备条件|一票否决)"
+)
+_OTHER_SECTION_HEADING_RE = re.compile(
+    r"^(?:职位描述|岗位职责|工作职责|职位要求|岗位要求|任职要求|任职资格|"
+    r"基本信息|优先条件|优先项|加分项)"
+)
+_EXPLICIT_HARD_MARKER_RE = re.compile(r"必须|硬性|一票否决|必备|不可缺少|缺一不可")
 
 
 @dataclass
@@ -46,6 +59,33 @@ class AIParseEnhancementResult:
     reason: str = ""
     model: str = ""
     warnings: list[str] | None = None
+
+
+def _normalize_warnings(raw_warnings: Any) -> list[str]:
+    """Return one clean list item for each AI warning."""
+    if isinstance(raw_warnings, str):
+        values = [raw_warnings]
+    elif isinstance(raw_warnings, (list, tuple)):
+        values = raw_warnings
+    else:
+        return []
+
+    normalized = []
+    seen = set()
+    split_pattern = re.compile(
+        r"(?:\r?\n)+|[；;]+|(?<!\S)(?=\d{1,2}[.、)]\s*)"
+    )
+    prefix_pattern = re.compile(r"^\s*(?:[-*•·]\s*|\d{1,2}[.、)]\s*)")
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        for part in split_pattern.split(text):
+            item = prefix_pattern.sub("", part).strip()
+            if item and item not in seen:
+                normalized.append(item)
+                seen.add(item)
+    return normalized
 
 
 def enhance_config_with_ai(
@@ -72,7 +112,7 @@ def enhance_config_with_ai(
         content = _call_chat_completion(base_url, model, api_key, messages)
         patch = _parse_json_response(content)
         enhanced = _merge_patch(base_config, patch, requirements_text)
-        warnings = [str(w).strip() for w in patch.get("warnings", []) if str(w).strip()]
+        warnings = _normalize_warnings(patch.get("warnings", []))
         return AIParseEnhancementResult(True, enhanced, "AI 增强完成", model=model, warnings=warnings)
     except Exception as exc:
         return AIParseEnhancementResult(False, base_config, str(exc)[:120], model=model)
@@ -86,32 +126,28 @@ def _build_messages(requirements_text: str, regex_config: dict[str, Any]) -> lis
     user = (
         "目标：在正则解析初稿基础上增强岗位配置。\n\n"
         "关键规则：\n"
-        "1. '优先'、'加分'、'更佳'类条件进入 preferred_keywords_add，不进入 required_conditions_add。\n"
-        "2. 只有'必须'、'硬性'、'必要条件'、'一票否决'等明确硬约束才进入 required_conditions_add；"
-        "普通任职要求里的'具备/有/熟练掌握/精通 X 经验'进入 keywords_add。\n"
-        "2a. 技术栈提升为硬条件的标准：原文中出现'必须'、'需要'、'要求'等强约束词修饰的技术栈，"
-        "可以作为 OR 条件加入 required_conditions_add（如'必须熟悉 Spring Cloud 或 Dubbo'）。"
-        "但普通列举（如'熟悉 Spring Boot、MySQL'）不提升，只进 keywords_add。\n"
-        "3. 'A、B、C 等'、'A/B'、'A 或 B'、'至少一种'通常解析为 OR："
-        "{\"type\":\"or\",\"items\":[\"A\",\"B\",\"C\"]}。\n"
-        "4. 只有出现'同时'、'均需'、'全部'才解析为 AND。\n"
-        "5. 学历最低门槛不要被'硕士优先'、'博士优先'覆盖。\n"
-        "6. keywords 是核心技能匹配项，weight 只能 1-3；preferred_keywords 是优先加分项，bonus 默认 2，不要自行放大。\n\n"
-        "7. AI、人工智能、万得/Wind、彭博/Bloomberg、API、数据库技术、数据清洗、因子计算、报表开发、证券行业"
+        "1. '优先'、'加分'、'更佳'类条件进入 preferred_keywords_add，不进入 keywords_add。\n"
+        "2. 必要条件以本地规则为基线；只有原文明确写在必要条件/硬性约束段，或带有必须、硬性、"
+        "一票否决等强约束词时，才可写入 required_conditions_add。普通任职要求不得提升为必要条件。\n"
+        "3. 普通任职要求里的'具备/有/熟练掌握/精通 X 经验'进入 keywords_add。\n"
+        "4. 学历最低门槛不要被'硕士优先'、'博士优先'覆盖。\n"
+        "5. keywords 是核心技能匹配项，weight 只能 1-3；preferred_keywords 是优先加分项，bonus 默认 2，不要自行放大。\n\n"
+        "6. AI、人工智能、万得/Wind、彭博/Bloomberg、API、数据库技术、数据清洗、因子计算、报表开发、证券行业"
         "这类泛化词、数据来源、职责产出或行业词不要加入 keywords。\n"
-        "8. 服务意识、团队精神、学习能力、执行能力等软素质不要加入 required_conditions。\n"
-        "9. 本科及以上、3年以上工作经验这类基础门槛放进 basic_info.edu/min_exp，"
-        "不要作为 required_conditions 字符串；统招本科可保留为 required_conditions 的'统招本科'。\n\n"
+        "7. 本科及以上、3年以上工作经验这类基础门槛只放进 basic_info.edu/min_exp。\n"
+        "8. salary_min、salary_max 的单位固定为 K/月整数，例如 12K 或 12000元都返回 12。"
+        "正则初稿已有明确薪资时不要改写，只补充初稿缺失的薪资字段。\n"
+        "9. warnings 中每个待确认事项必须单独作为一个数组元素，不要用分号合并多件事；"
+        "直接说明用户需要确认什么，避免'属于 OR/AND 关系'等技术表述和同义重复。\n\n"
         "返回 JSON schema：\n"
         "{\n"
         "  \"job_title\": \"可选，岗位名修正\",\n"
         "  \"basic_info\": {\"min_exp\": 可选整数, \"edu\": 可选枚举, \"max_age\": 可选整数或null,"
-        " \"work_location\": 可选字符串, \"salary_min\": 可选整数或null, \"salary_max\": 可选整数或null},\n"
+        " \"work_location\": 可选字符串, \"salary_min\": 可选K/月整数或null, \"salary_max\": 可选K/月整数或null},\n"
         "  \"keywords_add\": [{\"name\":\"技能\", \"weight\":1-3}],\n"
         "  \"keywords_update\": [{\"name\":\"已有技能\", \"weight\":1-3}],\n"
         "  \"preferred_keywords_add\": [{\"name\":\"优先项\", \"bonus\":1-10}],\n"
-        "  \"required_conditions_add\": [\"字符串条件\", {\"type\":\"or|and\", \"items\":[\"项1\",\"项2\"], \"category\":\"可选\"}],\n"
-        "  \"required_conditions_remove\": [\"要移除的字符串条件\"],\n"
+        "  \"required_conditions_add\": [\"明确硬条件\", {\"type\":\"or|and\", \"items\":[\"项1\",\"项2\"], \"category\":\"可选\"}],\n"
         "  \"warnings\": [\"不确定或需要人工确认的点，用普通业务语言说明，不要出现 keywords、"
         "preferred_keywords、required_conditions、JSON 等内部字段名\"]\n"
         "}\n\n"
@@ -283,9 +319,19 @@ def _merge_patch(regex_config: dict[str, Any], patch: dict[str, Any], requiremen
 
     basic = patch.get("basic_info", {})
     if isinstance(basic, dict):
-        for key in ("min_exp", "salary_min", "salary_max"):
-            if key in basic:
-                job[key] = _optional_int(basic.get(key), job.get(key))
+        if "min_exp" in basic:
+            job["min_exp"] = _optional_int(basic.get("min_exp"), job.get("min_exp"))
+
+        original_salary = {
+            key: job.get(key) for key in ("salary_min", "salary_max")
+        }
+        for key in ("salary_min", "salary_max"):
+            if original_salary[key] in (None, "") and key in basic:
+                job[key] = _optional_salary_k(basic.get(key), original_salary[key])
+        salary_min = job.get("salary_min")
+        salary_max = job.get("salary_max")
+        if salary_min is not None and salary_max is not None and salary_min > salary_max:
+            job.update(original_salary)
         if "max_age" in basic and basic.get("max_age") not in (None, ""):
             job["max_age"] = _optional_int(basic.get("max_age"), job.get("max_age"))
         if "edu" in basic:
@@ -325,16 +371,27 @@ def _merge_patch(regex_config: dict[str, Any], patch: dict[str, Any], requiremen
         max_value=10,
         addition_max_value=2,
     )
-    required_additions = patch.get("required_conditions_add", [])
+    preferred_keys = _weighted_name_keys(job["preferred_keywords"])
+    job["keywords"] = [
+        item
+        for item in job["keywords"]
+        if _normalized_weighted_key(item) not in preferred_keys
+    ]
+
+    required_additions = _validated_required_additions(
+        patch.get("required_conditions_add", []), requirements_text
+    )
     exp_from_required = _max_general_experience_years(required_additions)
     if exp_from_required:
         current_exp = job.get("min_exp") if isinstance(job.get("min_exp"), int) else 0
         job["min_exp"] = max(current_exp, exp_from_required)
 
+    # 必要条件会直接淘汰候选人。AI 只能补充有明确原文证据的条件，
+    # 且不能删除本地规则或用户已经确认的条件。
     job["required_conditions"] = _merge_required_conditions(
         job.get("required_conditions", []),
         required_additions,
-        patch.get("required_conditions_remove", []),
+        [],
         job.get("keywords", []),
     )
 
@@ -371,7 +428,7 @@ def _merge_weighted_items(
         if value_key == "weight" and _is_noisy_keyword(name):
             return
         value = _clamp_int(raw_value, default_value, min_value, item_max_value or max_value)
-        key = re.sub(r"\s+", "", name).lower()
+        key = skill_identity_key(name)
         if key in index:
             items[index[key]][value_key] = max(items[index[key]].get(value_key, min_value), value)
         elif allow_add:
@@ -406,6 +463,59 @@ def _merge_required_conditions(existing: Any, additions: Any, removals: Any, key
             conditions.append(cond)
             seen.add(key)
     return conditions
+
+
+def _validated_required_additions(additions: Any, requirements_text: str) -> list[Any]:
+    """Keep only AI hard-condition suggestions backed by explicit source text."""
+    if not isinstance(additions, list):
+        return []
+    evidence_lines = _hard_requirement_evidence_lines(requirements_text)
+    if not evidence_lines:
+        return []
+    return [
+        item for item in additions
+        if _required_condition_has_evidence(item, evidence_lines)
+    ]
+
+
+def _hard_requirement_evidence_lines(requirements_text: str) -> list[str]:
+    lines = []
+    in_hard_section = False
+    for raw_line in (requirements_text or "").splitlines():
+        line = re.sub(r"^\s*(?:[-*•·]|\d+[.、)])\s*", "", raw_line).strip()
+        if not line:
+            continue
+        heading = re.sub(r"[：:]$", "", line).strip()
+        if _HARD_SECTION_HEADING_RE.match(heading):
+            in_hard_section = True
+            continue
+        if _OTHER_SECTION_HEADING_RE.match(heading):
+            in_hard_section = False
+            continue
+        if in_hard_section or _EXPLICIT_HARD_MARKER_RE.search(line):
+            lines.append(line)
+    return lines
+
+
+def _required_condition_has_evidence(condition: Any, evidence_lines: list[str]) -> bool:
+    if isinstance(condition, dict):
+        terms = [_clean_text(item) for item in condition.get("items", []) if _clean_text(item)]
+        return bool(terms) and any(
+            all(_condition_term_in_line(term, line) for term in terms)
+            for line in evidence_lines
+        )
+    text = _clean_text(condition)
+    return bool(text) and any(_condition_term_in_line(text, line) for line in evidence_lines)
+
+
+def _condition_term_in_line(term: str, line: str) -> bool:
+    compact_term = re.sub(r"[\s，,。；;：:（）()]", "", term).lower()
+    compact_line = re.sub(r"[\s，,。；;：:（）()]", "", line).lower()
+    if compact_term and compact_term in compact_line:
+        return True
+    term_years = _general_experience_years(term)
+    line_years = _general_experience_years(line)
+    return bool(term_years and line_years and term_years == line_years)
 
 
 def _normalize_condition(raw: Any) -> Any:
@@ -530,7 +640,7 @@ def _normalized_weighted_key(item: Any) -> str:
     else:
         name = _clean_text(item)
     name = _normalize_weighted_name(name)
-    return re.sub(r"\s+", "", name).lower() if name else ""
+    return skill_identity_key(name) if name else ""
 
 
 def _max_general_experience_years(raw_items: Any) -> int:
@@ -552,6 +662,9 @@ def _max_general_experience_years(raw_items: Any) -> int:
 
 def _general_experience_years(text: str) -> int:
     compact = re.sub(r"\s+", "", text or "")
+    range_match = _GENERAL_EXPERIENCE_RANGE_RE.search(compact)
+    if range_match:
+        return _chinese_or_int(range_match.group(1))
     match = _GENERAL_EXPERIENCE_RE.search(compact)
     if not match:
         return 0
@@ -597,7 +710,7 @@ def _keyword_name_set(keywords: Any) -> set[str]:
     for raw in keywords if isinstance(keywords, list) else []:
         name = _clean_text(raw.get("name")) if isinstance(raw, dict) else _clean_text(raw)
         if name:
-            names.add(re.sub(r"\s+", "", name).lower())
+            names.add(skill_identity_key(name))
     return names
 
 
@@ -609,7 +722,7 @@ def _is_keyword_requirement_condition(cond: Any, keyword_names: set[str]) -> boo
     """
     if not isinstance(cond, str) or not keyword_names:
         return False
-    compact = re.sub(r"\s+", "", cond).lower()
+    compact = skill_identity_key(cond)
     if not re.search(r"具备|具有|有|熟悉|熟练|掌握|精通|开发经验|使用经验|处理数据经验", cond):
         return False
     return any(name and name in compact for name in keyword_names)
@@ -645,6 +758,27 @@ def _optional_int(value: Any, fallback: Any) -> int | None:
     if value is None or value == "":
         return None
     return _clamp_int(value, fallback if fallback is not None else 0, 0, 1000)
+
+
+def _optional_salary_k(value: Any, fallback: Any) -> int | None:
+    """Normalize an AI salary value to an integer monthly K amount."""
+    if value is None or value == "":
+        return fallback
+
+    text = str(value).strip().replace(",", "").replace("，", "")
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([kK]|千|元)?", text)
+    if not match:
+        return fallback
+
+    amount = float(match.group(1))
+    unit = match.group(2) or ""
+    if unit == "元" or (not unit and amount >= 1000):
+        amount /= 1000
+
+    salary_k = int(amount + 0.5)
+    if not 1 <= salary_k <= 1000:
+        return fallback
+    return salary_k
 
 
 def _clamp_int(value: Any, fallback: Any, min_value: int, max_value: int) -> int:

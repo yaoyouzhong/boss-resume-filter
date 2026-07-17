@@ -211,6 +211,12 @@ def _canonical_skill_name(name: str) -> str:
     return str(name or '').strip()
 
 
+def skill_identity_key(name: str) -> str:
+    """Return a stable identity for skill aliases and formatting variants."""
+    canonical = _canonical_skill_name(name)
+    return re.sub(r'[\s._/\-]+', '', canonical).lower()
+
+
 def _find_terms(text: str, terms: list[str]) -> list[str]:
     """在文本中查找词典项，返回 canonical 去重结果。"""
     found = []

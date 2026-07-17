@@ -55,7 +55,11 @@ from contact_queue import (
     load_contact_queue,
     save_contact_queue,
 )
-from job_config_diagnostics import diagnose_job_config, summarize_job_config_diagnostics
+from job_config_diagnostics import (
+    diagnose_job_config,
+    score_job_config_quality,
+    summarize_job_config_diagnostics,
+)
 from constants import (
     API_CANDIDATE_LIMIT_DEFAULT,
     EMPTY_RECOMMEND_MARKS,
@@ -1079,7 +1083,7 @@ class BossFilterGUI:
         self.font_stat_label = (FONT_FAMILY, int(15 * page_fs))
         self.font_log = (FONT_FAMILY, int(11 * page_fs))
         self.font_table = (FONT_FAMILY, int(12 * page_fs))  # 表格字体
-        modal_font_size = max(9, self.font_log[1] - 1)
+        modal_font_size = max(9, self.font_log[1])
         messagebox.set_ui_fonts(
             headline=(FONT_FAMILY, max(10, self.font_log[1]), 'bold'),
             message=(FONT_FAMILY, modal_font_size),
@@ -1734,6 +1738,15 @@ class BossFilterGUI:
     def create_config_page(self):
         """创建岗位配置页面"""
         self.config_page = ttk.Frame(self.pages_frame, style='Page.TFrame')
+        self._job_form_tracking_ready = False
+        self._job_form_loading = False
+        self._job_form_saved_snapshot = None
+        self._job_form_loaded_name = ""
+        self._job_form_status_after_id = None
+        self._job_config_preview = None
+        self._requirement_parse_generation = 0
+        self._active_requirement_parse_id = None
+        self._ai_enhance_pending = False
 
         # 页面标题
         self._create_page_header(self.config_page, "岗位配置")
@@ -1755,25 +1768,64 @@ class BossFilterGUI:
 
         ttk.Label(select_frame, text="选择岗位:", font=self.font_label,
                  background=self.colors['bg_card']).pack(side="left")
-        # 按钮靠右
+        # 高频动作直接显示，低频动作收入菜单。
+        more_menu = tk.Menu(select_frame, tearoff=0, font=self.font_label)
+        icon_import_cfg = self.icons.button('import', self.colors['text_primary'])
+        icon_export_cfg = self.icons.button('export', self.colors['text_primary'])
         icon_trash_small = self.icons.button('trash', self.colors['text_primary'])
-        btn_del = ttk.Button(select_frame, image=icon_trash_small, text="删除", compound=tk.LEFT, command=self.delete_job)
-        btn_del._icon_ref = icon_trash_small
-        btn_del.pack(side="right", padx=(int(8 * self.dpi_scale * self.zoom_factor), 0))
+        more_menu._icon_refs = [icon_import_cfg, icon_export_cfg, icon_trash_small]
+        more_menu.add_command(
+            label=" 导入配置", image=icon_import_cfg, compound=tk.LEFT,
+            command=self.import_config,
+        )
+        more_menu.add_command(
+            label=" 导出配置", image=icon_export_cfg, compound=tk.LEFT,
+            command=self.export_config,
+        )
+        more_menu.add_separator()
+        more_menu.add_command(
+            label=" 删除当前岗位", image=icon_trash_small, compound=tk.LEFT,
+            command=self.delete_job,
+        )
+        more_style = ttk.Style()
+        more_style.configure(
+            'ConfigActions.TMenubutton',
+            font=self.font_label,
+            padding=(20, 13),
+        )
+        btn_more = ttk.Menubutton(
+            select_frame,
+            text="更多操作",
+            menu=more_menu,
+            width=9,
+            style='ConfigActions.TMenubutton',
+        )
+        self.config_more_menu_button = btn_more
+        btn_more.pack(side="right", padx=(int(8 * self.dpi_scale * self.zoom_factor), 0))
+        self._context_menus.append(more_menu)
+
         icon_plus_small = self.icons.button('plus', self.colors['success'])
         btn_add = ttk.Button(select_frame, image=icon_plus_small, text="新建", compound=tk.LEFT, command=self.add_job)
         btn_add._icon_ref = icon_plus_small
         btn_add.pack(side="right", padx=int(8 * self.dpi_scale * self.zoom_factor))
 
-        # "点此新增岗位→" 提示标签（呼吸动画，与三处新提示风格一致）
-        self.btn_add_hint = ttk.Label(select_frame, text="点此新增岗位→", foreground=self.colors['success'],
-                                       background=self.colors['bg_card'], font=self.font_label)
-        self.btn_add_hint.pack(side="right", padx=int(4 * self.dpi_scale * self.zoom_factor))
-        self._start_breathing(self.btn_add_hint, color_key='success', bg_key='bg_card')
+        self.btn_add_hint = None
         # 下拉框
         self.config_job_combo = ttk.Combobox(select_frame, values=list(self.job_rules.keys()), width=28, font=self.font_label)
         self.config_job_combo.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
         self.config_job_combo.bind("<<ComboboxSelected>>", self.on_job_selected)
+        self.job_form_status_var = tk.StringVar(value="未选择岗位")
+        self.job_form_status_label = ttk.Label(
+            select_frame,
+            textvariable=self.job_form_status_var,
+            font=self.font_log,
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+        )
+        self.job_form_status_label.pack(
+            side="left",
+            padx=(0, int(8 * self.dpi_scale * self.zoom_factor)),
+        )
 
         # ===== 新建岗位步骤引导条 =====
         _fs = self.dpi_scale * self.zoom_factor
@@ -1809,8 +1861,46 @@ class BossFilterGUI:
         self._job_step_active = -1  # -1 = 隐藏
 
         # ===== 需求文档解析区域 =====
-        parse_frame = self._create_card(config_container, "需求文档解析（可选）",
-            fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(20 * self.dpi_scale * self.zoom_factor))
+        def _build_requirement_toggle(title_bar, padding):
+            title_bg = '#F7F8FA'
+            self.requirement_title_bar = title_bar
+            self.requirement_header_status_var = tk.StringVar(value="")
+            self.requirement_expand_icon = self.icons.button(
+                'chevron_down', self.colors['text_secondary']
+            )
+            self.requirement_collapse_icon = self.icons.button(
+                'chevron_up', self.colors['text_secondary']
+            )
+            self.requirement_toggle_icon_label = tk.Label(
+                title_bar,
+                image=self.requirement_collapse_icon,
+                bg=title_bg,
+                cursor="hand2",
+            )
+            self.requirement_toggle_icon_label.pack(
+                side="right", padx=(int(8 * _fs), padding)
+            )
+            self.requirement_header_status_label = tk.Label(
+                title_bar,
+                textvariable=self.requirement_header_status_var,
+                font=self.font_log,
+                fg=self.colors['text_secondary'],
+                bg=title_bg,
+                cursor="hand2",
+            )
+            self.requirement_header_status_label.pack(side="right")
+
+        parse_frame = self._create_card(
+            config_container,
+            "招聘需求",
+            title_trailing_builder=_build_requirement_toggle,
+            fill="x",
+            padx=int(25 * self.dpi_scale * self.zoom_factor),
+            pady=int(20 * self.dpi_scale * self.zoom_factor),
+        )
+        self.requirement_parse_frame = parse_frame
+        self.requirement_section_expanded = True
+        self._bind_requirement_header_interaction()
 
         # 需求输入框
         self._req_header_frame = ttk.Frame(parse_frame, style='TFrame')
@@ -1823,13 +1913,7 @@ class BossFilterGUI:
         self.requirement_template_btn._icon_ref = icon_clipboard
         self.requirement_template_btn.pack(side="right")
         self.requirement_template_btn.state(['disabled'])
-        # "点击查看需求示例->" 提示标签（新建岗位时显示）
-        self.requirement_hint_label = ttk.Label(
-            req_header, text="点击查看需求示例->", font=self.font_label,
-            foreground=self.colors['success'], background=self.colors['bg_card'])
-        self.requirement_hint_label.pack(side="right", padx=(0, int(4 * self.dpi_scale * self.zoom_factor)))
-        self.requirement_hint_label.bind("<Button-1>", lambda e: self._insert_requirement_template())
-        self.requirement_hint_label.destroy()  # 初始隐藏（show 时重建）
+        self.requirement_hint_label = None
 
         # 需求输入框 - 白底 + focus蓝边框 + 占位提示
         text_container = ttk.Frame(parse_frame, style='TFrame')
@@ -1869,10 +1953,9 @@ class BossFilterGUI:
 
         self.requirement_text.bind('<FocusIn>', _req_focus_in)
         self.requirement_text.bind('<FocusOut>', _req_focus_out)
-        # 粘贴后显示"点击解析"提示
+        # 粘贴后保持解析入口就近可见。
         def _on_paste(event):
             self._hide_requirement_hint()
-            self._show_parse_hint()
         self.requirement_text.bind('<<Paste>>', _on_paste, add='+')
 
         # Text 控件 Enter/Leave 绑定，防止页面滚动干扰 Text 自身滚动
@@ -1889,12 +1972,7 @@ class BossFilterGUI:
         self.btn_parse_requirement = ttk.Button(parse_btn_frame, image=icon_search_parse, text=" 解析招聘需求", compound=tk.LEFT, command=self.parse_requirement)
         self.btn_parse_requirement._icon_ref = icon_search_parse
         self.btn_parse_requirement.pack(side="left")
-        # "<-点击解析招聘需求" 提示标签（粘贴或填入模板后显示）
-        self.parse_hint_label = ttk.Label(
-            parse_btn_frame, text="<-点击解析招聘需求", font=self.font_label,
-            foreground=self.colors['success'], background=self.colors['bg_card'])
-        self.parse_hint_label.pack(side="left", padx=(int(8 * self.dpi_scale * self.zoom_factor), 0))
-        self.parse_hint_label.destroy()  # 初始隐藏（show 时重建）
+        self.parse_hint_label = None
 
         # 解析结果展示
         self.parse_result_label = ttk.Label(parse_frame, text="", font=self.font_label,
@@ -1907,7 +1985,7 @@ class BossFilterGUI:
         # 先隐藏，等 show_page_config 或 on_job_selected 时再显示
 
         # 基本信息区
-        basic_frame = self._create_card(self.result_detail_frame, "基本信息",
+        basic_frame = self._create_card(self.result_detail_frame, "基础筛选条件",
             fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
 
         # 岗位名称
@@ -1925,7 +2003,7 @@ class BossFilterGUI:
         row2.pack(fill="x", pady=int(10 * self.dpi_scale * self.zoom_factor))
         ttk.Label(row2, text="最低学历:", font=self.font_label, width=UI_CONFIG['entry_width_job'],
                  background=self.colors['bg_card']).pack(side="left")
-        self.edu_var = tk.StringVar(value="本科")
+        self.edu_var = tk.StringVar(value="不限")
         edu_combo = ttk.Combobox(row2, textvariable=self.edu_var,
                                  values=["不限", "高中", "中专", "大专", "本科", "硕士", "博士"],
                                  width=UI_CONFIG['combobox_width_edu'], font=self.font_label)
@@ -1936,7 +2014,7 @@ class BossFilterGUI:
 
         ttk.Label(row2, text="最低经验:", font=self.font_label, width=UI_CONFIG['entry_width_label'],
                  background=self.colors['bg_card']).pack(side="left", padx=(int(30 * self.dpi_scale * self.zoom_factor), 0))
-        self.min_exp_var = tk.StringVar(value="3")
+        self.min_exp_var = tk.StringVar(value="0")
         min_exp_spin = ttk.Spinbox(row2, from_=UI_CONFIG['spinbox_exp_min'], to=UI_CONFIG['spinbox_exp_max'], textvariable=self.min_exp_var, width=15, font=self.font_label)
         min_exp_spin.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
         # 禁用滚轮切换，防止误操作
@@ -1945,7 +2023,7 @@ class BossFilterGUI:
         ttk.Label(row2, text="年", font=self.font_label, background=self.colors['bg_card']).pack(side="left")
 
         # 最大年龄
-        self.max_age_var = tk.StringVar(value="35")
+        self.max_age_var = tk.StringVar(value="")
         row_age = ttk.Frame(basic_frame, style='TFrame')
         row_age.pack(fill="x", pady=int(10 * self.dpi_scale * self.zoom_factor))
         ttk.Label(row_age, text="最大年龄:", font=self.font_label, width=UI_CONFIG['entry_width_job'],
@@ -2000,7 +2078,7 @@ class BossFilterGUI:
                  foreground=self.colors['text_secondary'], background=self.colors['bg_card']).pack(side="left", padx=(int(10 * self.dpi_scale * self.zoom_factor), 0))
 
         # 技能关键词区域（带权重显示）- 左右分栏布局
-        skills_frame = self._create_card(self.result_detail_frame, "技能关键词（可增删技能、可编辑权重）",
+        skills_frame = self._create_card(self.result_detail_frame, "技能评分条件",
             fill="both", side="top", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
 
         # 左右分栏容器
@@ -2030,10 +2108,10 @@ class BossFilterGUI:
         self.skills_tree.heading("source", text="来源")
         self.skills_tree.heading("evidence", text="原文出处")
         # 设置列 - 全部居中
-        self.skills_tree.column("name", width=200, anchor='center')
-        self.skills_tree.column("weight", width=60, anchor='center')
-        self.skills_tree.column("source", width=60, anchor='center')
-        self.skills_tree.column("evidence", width=280, anchor='w')
+        self.skills_tree.column("name", width=160, minwidth=120, stretch=False, anchor='center')
+        self.skills_tree.column("weight", width=60, minwidth=55, stretch=False, anchor='center')
+        self.skills_tree.column("source", width=70, minwidth=60, stretch=False, anchor='center')
+        self.skills_tree.column("evidence", width=320, minwidth=220, stretch=True, anchor='w')
         # 设置颜色标记（带字体）- 覆盖所有情况
         self.skills_tree.tag_configure('high_weight', font=tree_font, background=self.colors['bg_tree_tag_high'])
         self.skills_tree.tag_configure('mid_weight', font=tree_font, background=self.colors['bg_tree_tag_mid'])
@@ -2109,10 +2187,21 @@ class BossFilterGUI:
         ttk.Label(weight_row, text="权重 (1-3):", font=self.font_label,
                  background=self.colors['bg_card'], width=UI_CONFIG['entry_width_label']).pack(side="left")
         self.new_skill_weight_var = tk.StringVar(value="1")
-        weight_entry = ttk.Entry(weight_row, textvariable=self.new_skill_weight_var,
-                                font=self.font_label, width=5, justify='center')
-        weight_entry.pack(side="left")
-        self.bind_entry_context_menu(weight_entry)
+        self.skill_weight_spinbox = ttk.Spinbox(
+            weight_row,
+            from_=1,
+            to=3,
+            increment=1,
+            textvariable=self.new_skill_weight_var,
+            font=self.font_label,
+            width=5,
+            justify='left',
+        )
+        self.skill_weight_spinbox.pack(side="left")
+        self.bind_entry_context_menu(self.skill_weight_spinbox)
+        self._bind_bounded_spinbox_mousewheel(
+            self.skill_weight_spinbox, self.new_skill_weight_var, 1, 3
+        )
 
         # 操作按钮
         icon_pencil_skill = self.icons.button('pencil', self.colors['text_primary'])
@@ -2142,10 +2231,21 @@ class BossFilterGUI:
         ttk.Label(weight_row, text="权重 (1-3):", font=self.font_label,
                  background=self.colors['bg_card'], width=UI_CONFIG['entry_width_label']).pack(side="left")
         self.new_skill_add_weight_var = tk.StringVar(value="1")
-        add_weight_entry = ttk.Entry(weight_row, textvariable=self.new_skill_add_weight_var,
-                                    font=self.font_label, width=5, justify='center')
-        add_weight_entry.pack(side="left")
-        self.bind_entry_context_menu(add_weight_entry)
+        self.add_skill_weight_spinbox = ttk.Spinbox(
+            weight_row,
+            from_=1,
+            to=3,
+            increment=1,
+            textvariable=self.new_skill_add_weight_var,
+            font=self.font_label,
+            width=5,
+            justify='left',
+        )
+        self.add_skill_weight_spinbox.pack(side="left")
+        self.bind_entry_context_menu(self.add_skill_weight_spinbox)
+        self._bind_bounded_spinbox_mousewheel(
+            self.add_skill_weight_spinbox, self.new_skill_add_weight_var, 1, 3
+        )
 
         icon_plus_add = self.icons.button('plus', self.colors['text_primary'])
         btn_add_skill = ttk.Button(add_card, image=icon_plus_add, text=" 添加技能", compound=tk.LEFT, command=self.add_skill)
@@ -2156,12 +2256,13 @@ class BossFilterGUI:
         self.skills_tree.bind("<<TreeviewSelect>>", self.on_skill_selected)
 
         # 必要条件区域
-        required_frame = self._create_card(self.result_detail_frame, "必要条件（硬性约束）",
+        required_frame = self._create_card(self.result_detail_frame, "必要条件",
             fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
 
         # 使用说明
         required_help = ttk.Label(required_frame,
-            text="简单匹配：输入关键词，简历中包含即可通过\n"
+            text="不满足以下任一条件的候选人将直接淘汰。\n"
+                 "简单匹配：输入关键词，简历中包含即可通过\n"
                  "OR（满足任一）：多个关键词用逗号分隔，满足任意一个即通过\n"
                  "AND（全部满足）：多个关键词用逗号分隔，必须全部满足才通过\n"
                  "示例：统招本科  |  微服务,分布式（OR）  |  Spring Boot,MySQL（AND）",
@@ -2229,32 +2330,75 @@ class BossFilterGUI:
 
         # 按钮行（居中布局，固定在页面底部，不随 Canvas 滚动）
         self.btn_frame = ttk.Frame(self.config_page, style='Page.TFrame')
+        quality_bg = '#F7F8FA'
+        quality_frame = tk.Frame(
+            self.btn_frame,
+            bg=quality_bg,
+            highlightbackground=self.colors['border'],
+            highlightthickness=1,
+            cursor="arrow",
+        )
+        self.job_config_quality_frame = quality_frame
+        quality_frame.pack(
+            fill="x",
+            padx=int(18 * self.dpi_scale * self.zoom_factor),
+            pady=(int(6 * self.dpi_scale * self.zoom_factor), int(4 * self.dpi_scale * self.zoom_factor)),
+        )
+        self.job_config_quality_var = tk.StringVar(value="配置质量：待检查")
+        self.job_config_quality_label = tk.Label(
+            quality_frame,
+            textvariable=self.job_config_quality_var,
+            font=self.font_log,
+            fg=self.colors['text_secondary'],
+            bg=quality_bg,
+            cursor="arrow",
+        )
+        self.job_config_quality_label.pack(
+            side="left",
+            padx=(int(12 * self.dpi_scale * self.zoom_factor), 0),
+            pady=int(8 * self.dpi_scale * self.zoom_factor),
+        )
+        self.job_config_quality_link = tk.Label(
+            quality_frame,
+            text="查看详情",
+            font=self.font_log,
+            fg=self.colors['primary'],
+            bg=quality_bg,
+            cursor="hand2",
+        )
+        self.job_config_quality_link.pack(
+            side="right",
+            padx=int(12 * self.dpi_scale * self.zoom_factor),
+        )
+        self.btn_view_job_config_issues = self.job_config_quality_link
+        self._job_config_quality_clickable = False
+        self.job_config_quality_link.bind(
+            '<Button-1>', self._open_job_config_quality_details
+        )
+
         self._btn_inner = ttk.Frame(self.btn_frame, style='Page.TFrame')
         btn_inner = self._btn_inner
-        btn_inner.pack(anchor="center")
+        btn_inner.pack(
+            anchor="center",
+            pady=(int(6 * self.dpi_scale * self.zoom_factor), 0),
+        )
 
-        # "点击保存配置->" 提示标签（解析成功后显示，位于保存按钮左侧）
-        self.save_hint_label = ttk.Label(btn_inner, text="点击保存配置->", font=self.font_label,
-                                          foreground=self.colors['success'], background=self.colors['bg_main'])
-        self.save_hint_label.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
-        self.save_hint_label.destroy()  # 初始隐藏（show 时重建）
+        self.save_hint_label = None
 
         icon_save_cfg = self.icons.button('save', self.colors['text_primary'])
         self.btn_save = ttk.Button(btn_inner, image=icon_save_cfg, text=" 保存配置", compound=tk.LEFT, command=self.save_current_job)
         self.btn_save._icon_ref = icon_save_cfg
         self.btn_save.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
         icon_refresh_cfg = self.icons.button('refresh', self.colors['text_primary'])
-        btn_reset = ttk.Button(btn_inner, image=icon_refresh_cfg, text=" 重置", compound=tk.LEFT, command=self.reset_job_form)
-        btn_reset._icon_ref = icon_refresh_cfg
-        btn_reset.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
-        icon_import_cfg = self.icons.button('import', self.colors['text_primary'])
-        btn_import = ttk.Button(btn_inner, image=icon_import_cfg, text=" 导入配置", compound=tk.LEFT, command=self.import_config)
-        btn_import._icon_ref = icon_import_cfg
-        btn_import.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
-        icon_export_cfg = self.icons.button('export', self.colors['text_primary'])
-        btn_export = ttk.Button(btn_inner, image=icon_export_cfg, text=" 导出配置", compound=tk.LEFT, command=self.export_config)
-        btn_export._icon_ref = icon_export_cfg
-        btn_export.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
+        self.btn_restore_job = ttk.Button(
+            btn_inner,
+            image=icon_refresh_cfg,
+            text=" 恢复已保存",
+            compound=tk.LEFT,
+            command=self._restore_or_clear_job_form,
+        )
+        self.btn_restore_job._icon_ref = icon_refresh_cfg
+        self.btn_restore_job.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
 
         # 存储技能数据的列表（带权重）；source="优先" 时保存到 preferred_keywords
         self.skills_data = []  # [{"name": "Java", "weight": 2, "source": "解析"}, ...]
@@ -2262,6 +2406,7 @@ class BossFilterGUI:
 
         # 设置下拉框的值
         self.config_job_combo['values'] = list(self.job_rules.keys())
+        self._bind_job_form_change_tracking()
 
         # 如果有已存在的岗位，自动加载第一个并显示详细结果区域
         if self.job_rules:
@@ -2269,11 +2414,22 @@ class BossFilterGUI:
             self.config_job_combo.set(first_job)
             rule = self.job_rules[first_job]
             self.load_job_to_form(rule)
+            self._set_requirement_section_expanded(False)
             # 注意：这里不 pack result_detail_frame，因为 config_page 还没有被显示
             # 将在 show_page_config 中 pack
+        else:
+            self._set_requirement_section_expanded(True)
+            self._set_job_form_baseline("")
 
         # 底部按钮固定在页面底部，不随 Canvas 滚动
-        self.btn_frame.pack(fill="x", side="bottom", pady=(int(10 * self.dpi_scale * self.zoom_factor), int(10 * self.dpi_scale * self.zoom_factor)))
+        self.btn_frame.pack(
+            fill="x",
+            side="bottom",
+            pady=(
+                int(10 * self.dpi_scale * self.zoom_factor),
+                int(4 * self.dpi_scale * self.zoom_factor),
+            ),
+        )
 
         # 在所有控件创建完毕后绑定滚轮事件
         self._bind_mousewheel(self.config_canvas, self.config_scrollable_frame)
@@ -2304,6 +2460,30 @@ class BossFilterGUI:
         if sys.platform == 'darwin':
             return -1 if delta > 0 else 1
         return int(-1 * (delta / 120))
+
+    @staticmethod
+    def _bind_bounded_spinbox_mousewheel(spinbox, variable, minimum, maximum):
+        """Adjust a numeric Spinbox with the wheel without scrolling its page."""
+        def _on_wheel(event):
+            delta = getattr(event, 'delta', 0)
+            button = getattr(event, 'num', None)
+            if delta > 0 or button == 4:
+                direction = 1
+            elif delta < 0 or button == 5:
+                direction = -1
+            else:
+                return 'break'
+            try:
+                current = int(variable.get())
+            except (TypeError, ValueError):
+                current = minimum
+            variable.set(str(max(minimum, min(maximum, current + direction))))
+            return 'break'
+
+        spinbox.bind('<MouseWheel>', _on_wheel)
+        if sys.platform != 'win32':
+            spinbox.bind('<Button-4>', _on_wheel)
+            spinbox.bind('<Button-5>', _on_wheel)
 
     @staticmethod
     def _create_scroll_container(parent, bg_color):
@@ -9265,12 +9445,36 @@ class BossFilterGUI:
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
             json.dump(existing, f, ensure_ascii=False, indent=4)
 
+    def _confirm_job_form_transition(self):
+        """Protect unsaved job edits before switching or starting another draft."""
+        if not self._job_form_has_unsaved_changes():
+            return True
+        choice = messagebox.askyesnocancel(
+            "岗位配置尚未保存",
+            "当前岗位有未保存的修改。\n\n是否先保存再继续？",
+            parent=self.root,
+        )
+        if choice is None:
+            return False
+        if choice:
+            return bool(self.save_current_job())
+        return True
+
     def on_job_selected(self, event):
         """岗位选择改变"""
         job_name = self.config_job_combo.get()
+        previous_job = getattr(self, '_job_form_loaded_name', "")
+        if job_name == previous_job:
+            return
+        if job_name != previous_job and not self._confirm_job_form_transition():
+            self.config_job_combo.set(previous_job)
+            return
+        self.config_job_combo.set(job_name)
         if job_name in self.job_rules:
             rule = self.job_rules[job_name]
             self.load_job_to_form(rule)
+            self._set_requirement_section_expanded(False)
+            self.btn_restore_job.configure(text=" 恢复已保存")
             self.requirement_template_btn.state(['disabled'])
             self._hide_requirement_hint()
             self._hide_parse_hint()
@@ -9280,6 +9484,7 @@ class BossFilterGUI:
             # 显示详细结果区域
             self.result_detail_frame.pack(fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
         else:
+            self._invalidate_requirement_parse()
             # 岗位未选中时也隐藏提示
             self._hide_requirement_hint()
             self._hide_parse_hint()
@@ -9287,11 +9492,13 @@ class BossFilterGUI:
 
     def load_job_to_form(self, rule):
         """将岗位配置加载到表单（包含话术模板）"""
+        self._invalidate_requirement_parse()
+        self._job_form_loading = True
         # 岗位名称使用 combo 中选中的名称（而不是 rule 中的 job_title）
         job_name = self.config_job_combo.get()
         self.job_name_var.set(job_name)
         self.min_exp_var.set(str(rule.get("min_exp", 0)))
-        self.max_age_var.set(_optional_int_to_entry(rule.get("max_age", 35)))
+        self.max_age_var.set(_optional_int_to_entry(rule.get("max_age")))
         self.edu_var.set(rule.get("edu", "不限"))
         self.work_location_var.set(rule.get("work_location") or "")
         salary_min = rule.get("salary_min")
@@ -9349,6 +9556,9 @@ class BossFilterGUI:
         else:
             self.requirement_text.insert("1.0", self._req_placeholder_text, "placeholder")
             self._req_placeholder_active = True
+        self.requirement_text.edit_modified(False)
+        self._job_form_loading = False
+        self._set_job_form_baseline(job_name)
 
     def _populate_skills_from_config(self, job_config, source_map, source_override=None):
         """从 job_config 构建 skills_data（含原文出处）。
@@ -9356,36 +9566,61 @@ class BossFilterGUI:
         source_override: 若提供，应为 {normalized_key: source_str} 映射，
         用于 AI 增强阶段保留 regex 阶段的来源标记。未命中时 fallback 为 "AI新增"/"AI优先"。
         """
-        evidence = {item.get("name", ""): item.get("evidence", "")
-                    for item in source_map.get("skills", [])}
+        evidence = {
+            self._skill_identity_key(item.get("name", "")): item.get("evidence", "")
+            for item in source_map.get("skills", [])
+        }
+        normalized_sources = {
+            self._skill_identity_key(key): value
+            for key, value in (source_override or {}).items()
+        }
+        preferred = job_config.get("preferred_keywords", [])
+        preferred_keys = {
+            self._skill_identity_key(
+                item.get("name", "") if isinstance(item, dict) else item
+            )
+            for item in preferred
+        }
         self.skills_data = []
+        seen = set()
+
+        def append_skill(kw, is_preferred=False):
+            name = kw.get("name", "") if isinstance(kw, dict) else kw
+            key = self._skill_identity_key(name)
+            if not key or key in seen or (not is_preferred and key in preferred_keys):
+                return
+            if source_override is not None:
+                source = normalized_sources.get(
+                    key, "AI优先" if is_preferred else "AI新增"
+                )
+            else:
+                source = "优先" if is_preferred else "解析"
+            self.skills_data.append({
+                "name": name,
+                "weight": (
+                    kw.get("bonus", kw.get("weight", 1))
+                    if is_preferred and isinstance(kw, dict)
+                    else kw.get("weight", 1)
+                    if isinstance(kw, dict)
+                    else 1
+                ),
+                "source": source,
+                "evidence": evidence.get(key, ""),
+            })
+            seen.add(key)
+
         for kw in job_config.get("keywords", []):
-            name = kw.get("name", "") if isinstance(kw, dict) else kw
-            if source_override is not None:
-                key = re.sub(r'\s+', '', name).lower()
-                source = source_override.get(key, "AI新增")
-            else:
-                source = "解析"
-            self.skills_data.append({
-                "name": name,
-                "weight": kw.get("weight", 1) if isinstance(kw, dict) else 1,
-                "source": source,
-                "evidence": evidence.get(name, ""),
-            })
-        for kw in job_config.get("preferred_keywords", []):
-            name = kw.get("name", "") if isinstance(kw, dict) else kw
-            if source_override is not None:
-                key = re.sub(r'\s+', '', name).lower()
-                source = source_override.get(key, "AI优先")
-            else:
-                source = "优先"
-            self.skills_data.append({
-                "name": name,
-                "weight": kw.get("bonus", kw.get("weight", 1)) if isinstance(kw, dict) else 1,
-                "source": source,
-                "evidence": evidence.get(name, ""),
-            })
+            append_skill(kw)
+        for kw in preferred:
+            append_skill(kw, is_preferred=True)
         self.refresh_skills_tree()
+
+    @staticmethod
+    def _skill_identity_key(name):
+        """Normalize aliases and formatting before comparing skill rows."""
+        from doc_parser import skill_identity_key
+
+        return skill_identity_key(name)
 
     def _populate_required_from_config(self, job_config, source_map):
         """从 job_config 构建 required_conditions_data（含原文出处）。"""
@@ -9427,6 +9662,7 @@ class BossFilterGUI:
             evidence_display = evidence[:60] + "…" if len(evidence) > 60 else evidence
             self.skills_tree.insert("", "end", values=(skill["name"], weight, skill["source"], evidence_display), tags=(tag,))
         self._skills_tree_fingerprint = self._skills_data_fingerprint()
+        self._schedule_job_form_status_refresh()
 
     def refresh_required_listbox(self):
         """刷新必要条件列表显示"""
@@ -9439,6 +9675,7 @@ class BossFilterGUI:
             else:
                 self.required_listbox.insert(tk.END, str(cond))
         self._required_list_fingerprint = self._required_conditions_fingerprint()
+        self._schedule_job_form_status_refresh()
 
     def _skills_data_fingerprint(self):
         """Return a stable fingerprint for the visible skills list."""
@@ -9489,6 +9726,212 @@ class BossFilterGUI:
             "required_conditions": self._required_conditions_fingerprint(),
         }
 
+    def _job_form_fingerprint(self):
+        """Return the persisted business state represented by the current form."""
+        requirement = ""
+        if hasattr(self, 'requirement_text'):
+            requirement = self._get_requirement_text()
+        skills = tuple(
+            (
+                str(skill.get("name", "")).strip(),
+                skill.get("weight", 1),
+                self._is_preferred_skill_source(skill.get("source")),
+            )
+            for skill in getattr(self, 'skills_data', [])
+        )
+        required = tuple(
+            json.dumps(
+                self._strip_transient_fields(condition),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            if isinstance(condition, dict)
+            else str(condition)
+            for condition in getattr(self, 'required_conditions_data', [])
+        )
+        return (
+            self.job_name_var.get(),
+            self.edu_var.get(),
+            self.min_exp_var.get(),
+            self.max_age_var.get(),
+            self.work_location_var.get(),
+            self.salary_min_var.get(),
+            self.salary_max_var.get(),
+            skills,
+            required,
+            requirement,
+        )
+
+    def _bind_job_form_change_tracking(self):
+        """Refresh save and quality state after editable business fields change."""
+        variables = (
+            self.job_name_var,
+            self.edu_var,
+            self.min_exp_var,
+            self.max_age_var,
+            self.work_location_var,
+            self.salary_min_var,
+            self.salary_max_var,
+        )
+        for variable in variables:
+            variable.trace_add(
+                'write',
+                lambda *_args: self._schedule_job_form_status_refresh(),
+            )
+        self.requirement_text.bind(
+            '<<Modified>>', self._on_requirement_text_modified, add='+'
+        )
+        self.requirement_text.edit_modified(False)
+        self._job_form_tracking_ready = True
+
+    def _on_requirement_text_modified(self, _event=None):
+        if not self.requirement_text.edit_modified():
+            return
+        self.requirement_text.edit_modified(False)
+        self._schedule_job_form_status_refresh()
+
+    def _schedule_job_form_status_refresh(self, delay=300):
+        if (
+            not getattr(self, '_job_form_tracking_ready', False)
+            or getattr(self, '_job_form_loading', False)
+        ):
+            return
+        pending = getattr(self, '_job_form_status_after_id', None)
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except (tk.TclError, ValueError):
+                pass
+        self._job_form_status_after_id = self.root.after(
+            delay, self._refresh_job_form_status
+        )
+
+    def _set_job_form_baseline(self, loaded_job_name):
+        self._job_form_loaded_name = str(loaded_job_name or "")
+        self._job_form_saved_snapshot = self._job_form_fingerprint()
+        if getattr(self, '_job_form_tracking_ready', False):
+            self._refresh_job_form_status()
+
+    def _job_form_has_unsaved_changes(self):
+        baseline = getattr(self, '_job_form_saved_snapshot', None)
+        return baseline is not None and self._job_form_fingerprint() != baseline
+
+    def _refresh_job_form_status(self):
+        """Render unsaved state and deterministic configuration quality."""
+        self._job_form_status_after_id = None
+        selected_job = self.config_job_combo.get()
+        job_name = self.job_name_var.get().strip()
+        dirty = self._job_form_has_unsaved_changes()
+        is_new_draft = (
+            selected_job not in self.job_rules
+            and getattr(self, '_job_step_active', -1) >= 0
+        )
+        if selected_job in self.job_rules:
+            status_text = "有未保存修改" if dirty else "已保存"
+        elif job_name or is_new_draft:
+            status_text = "新岗位，尚未保存"
+        else:
+            status_text = "未选择岗位"
+        status_color = (
+            self.colors['warning']
+            if dirty or is_new_draft or (job_name and selected_job not in self.job_rules)
+            else self.colors['text_secondary']
+        )
+        self.job_form_status_var.set(status_text)
+        self.job_form_status_label.configure(foreground=status_color)
+        self.btn_restore_job.configure(
+            text=" 恢复已保存"
+            if selected_job in self.job_rules
+            else " 清空内容",
+            state="normal" if dirty else "disabled",
+        )
+        self._refresh_requirement_header_state()
+
+        is_new_job_waiting_for_parse = (
+            selected_job not in self.job_rules
+            and 0 <= getattr(self, '_job_step_active', -1) < 2
+            and not self.skills_data
+            and not self.required_conditions_data
+        )
+        if is_new_job_waiting_for_parse:
+            requirement = self._get_requirement_text().strip()
+            self._job_config_quality_clickable = False
+            self._job_config_preview = None
+            self.job_config_quality_var.set(
+                "配置质量：待解析" if requirement else "配置质量：待配置"
+            )
+            self.job_config_quality_label.configure(
+                foreground=self.colors['text_secondary']
+            )
+            self.btn_view_job_config_issues.configure(state="disabled")
+            return
+
+        if not job_name:
+            self._job_config_quality_clickable = False
+            self._job_config_preview = None
+            self.job_config_quality_var.set("配置质量：待配置")
+            self.job_config_quality_label.configure(
+                foreground=self.colors['text_secondary']
+            )
+            self.btn_view_job_config_issues.configure(state="disabled")
+            return
+
+        self.btn_view_job_config_issues.configure(state="normal")
+        self._job_config_quality_clickable = True
+
+        try:
+            preview_name, preview_rule = self._build_current_job_rule_preview()
+        except ValueError as exc:
+            self._job_config_preview = (None, None, [], str(exc))
+            self.job_config_quality_var.set("配置质量：待完善｜阻断 1 项")
+            self.job_config_quality_label.configure(
+                foreground=self.colors['danger']
+            )
+            return
+
+        issues = diagnose_job_config(preview_name, preview_rule)
+        quality = score_job_config_quality(issues)
+        error_count = sum(issue.severity == "error" for issue in issues)
+        warning_count = sum(issue.severity == "warning" for issue in issues)
+        info_count = sum(issue.severity == "info" for issue in issues)
+        self._job_config_preview = (preview_name, preview_rule, issues, "")
+        self.job_config_quality_var.set(
+            f"配置质量：{quality.score} 分｜阻断 {error_count} 项｜"
+            f"提醒 {warning_count} 项｜建议 {info_count} 项"
+        )
+        quality_color = (
+            self.colors['danger']
+            if error_count
+            else self.colors['warning']
+            if warning_count
+            else self.colors['success']
+        )
+        self.job_config_quality_label.configure(foreground=quality_color)
+
+    def _show_current_job_config_diagnostics(self):
+        self._refresh_job_form_status()
+        preview_name, preview_rule, issues, validation_error = (
+            self._job_config_preview
+        )
+        if validation_error:
+            messagebox.showwarning(
+                "配置尚未完成", validation_error, parent=self.root
+            )
+            return
+        text = summarize_job_config_diagnostics(
+            preview_name, preview_rule, issues=issues
+        )
+        self._show_job_config_diagnostics_dialog(
+            text,
+            any(issue.severity == "error" for issue in issues),
+            context="preview",
+        )
+
+    def _open_job_config_quality_details(self, _event=None):
+        if not getattr(self, '_job_config_quality_clickable', False):
+            return
+        self._show_current_job_config_diagnostics()
+
     def _dirty_fields_since_parse_snapshot(self):
         """Detect user edits made while asynchronous AI enhancement was running."""
         baseline = getattr(self, "_ai_parse_edit_snapshot", None)
@@ -9525,16 +9968,22 @@ class BossFilterGUI:
             messagebox.showwarning("警告", "权重必须是 1-3 之间的数字")
             return
 
-        # 检查是否已存在
+        # 检查是否已存在（忽略空格、格式差异和常见别名）
+        new_key = self._skill_identity_key(skill_name)
         for s in self.skills_data:
-            if s["name"].lower() == skill_name.lower():
+            if self._skill_identity_key(s["name"]) == new_key:
                 messagebox.showwarning("警告", "该技能已存在")
                 return
 
         self.skills_data.append({"name": skill_name, "weight": weight, "source": "手动"})
         self.refresh_skills_tree()
         self.new_skill_var.set("")
-        messagebox.showinfo("成功", f"已添加技能：{skill_name}（权重{weight}）")
+        messagebox.showinfo(
+            "成功",
+            f"已添加技能：{skill_name}（权重{weight}）",
+            parent=self.root,
+            show_icon=False,
+        )
 
     def delete_skill(self):
         """删除选中技能"""
@@ -9585,7 +10034,12 @@ class BossFilterGUI:
                     s["weight"] = weight
                     break
         self.refresh_skills_tree()
-        messagebox.showinfo("成功", f"已更新技能权重为 {weight}")
+        messagebox.showinfo(
+            "成功",
+            f"已更新技能权重为 {weight}",
+            parent=self.root,
+            show_icon=False,
+        )
 
     def add_required_condition(self):
         """添加必要条件"""
@@ -9768,68 +10222,118 @@ class BossFilterGUI:
 
         _fade()
 
-    def _show_requirement_hint(self):
-        """显示「点击查看需求示例->」提示标签（重建控件并启动呼吸动画）"""
-        if hasattr(self, 'requirement_hint_label') and self.requirement_hint_label.winfo_exists():
+    def _bind_requirement_header_interaction(self):
+        """Make the full recruitment-requirement header act as one disclosure row."""
+        title_bar = getattr(self, 'requirement_title_bar', None)
+        if title_bar is None:
             return
-        self.requirement_hint_label = ttk.Label(
-            self._req_header_frame, text="点击查看需求示例->", font=self.font_label,
-            foreground=self.colors['success'], background=self.colors['bg_card'])
-        self.requirement_hint_label.pack(side="right", padx=(0, int(4 * self.dpi_scale * self.zoom_factor)))
-        self.requirement_hint_label.bind("<Button-1>", lambda e: self._insert_requirement_template())
-        self._start_breathing(self.requirement_hint_label, color_key='success', bg_key='bg_card')
+        widgets = [title_bar, *title_bar.winfo_children()]
+        for widget in widgets:
+            try:
+                widget.configure(cursor="hand2")
+            except tk.TclError:
+                pass
+            widget.bind('<Button-1>', lambda _event: self._toggle_requirement_section())
+            widget.bind('<Enter>', lambda _event: self._set_requirement_header_hover(True))
+            widget.bind('<Leave>', lambda _event: self._set_requirement_header_hover(False))
+
+    def _set_requirement_header_hover(self, active):
+        title_bar = getattr(self, 'requirement_title_bar', None)
+        if title_bar is None:
+            return
+        background = '#EEF4FC' if active else '#F7F8FA'
+        title_bar.configure(bg=background)
+        for widget in title_bar.winfo_children():
+            if isinstance(widget, tk.Label):
+                widget.configure(bg=background)
+
+    def _refresh_requirement_header_state(self):
+        status_var = getattr(self, 'requirement_header_status_var', None)
+        icon_label = getattr(self, 'requirement_toggle_icon_label', None)
+        if status_var is None or icon_label is None:
+            return
+        expanded = getattr(self, 'requirement_section_expanded', True)
+        if expanded:
+            summary = ""
+            icon = self.requirement_collapse_icon
+        else:
+            requirement = self._get_requirement_text()
+            selected_job = self.config_job_combo.get()
+            if not requirement:
+                summary = "尚未填写招聘需求"
+            elif (
+                selected_job in self.job_rules
+                and self._job_form_has_unsaved_changes()
+            ):
+                summary = "招聘需求已修改"
+            elif selected_job in self.job_rules:
+                summary = "已保存招聘需求"
+            else:
+                summary = "已填写招聘需求"
+            icon = self.requirement_expand_icon
+        status_var.set(summary)
+        icon_label.configure(image=icon)
+
+    def _set_requirement_section_expanded(self, expanded):
+        """Show or hide the requirement source content without losing its state."""
+        frame = getattr(self, 'requirement_parse_frame', None)
+        if frame is None:
+            return
+        self.requirement_section_expanded = bool(expanded)
+        if expanded:
+            if not frame.winfo_manager():
+                padding = int(
+                    UI_CONFIG['label_frame_padding']
+                    * self.dpi_scale
+                    * self.zoom_factor
+                )
+                frame.pack(
+                    fill="both", expand=True, padx=padding, pady=padding
+                )
+        else:
+            frame.pack_forget()
+        self._refresh_requirement_header_state()
+
+    def _toggle_requirement_section(self):
+        self._set_requirement_section_expanded(
+            not getattr(self, 'requirement_section_expanded', True)
+        )
+
+    def _show_requirement_hint(self):
+        """Legacy call retained; the visible template button is self-explanatory."""
+        return
 
     def _hide_requirement_hint(self):
-        """隐藏「点击查看需求示例->」提示标签"""
-        if hasattr(self, 'requirement_hint_label') and self.requirement_hint_label.winfo_exists():
-            self.requirement_hint_label.destroy()
+        label = getattr(self, 'requirement_hint_label', None)
+        if label is not None and label.winfo_exists():
+            label.destroy()
 
     def _show_btn_add_hint(self):
-        """显示「点此新增岗位→」提示标签（重建控件并启动呼吸动画）"""
-        if hasattr(self, 'btn_add_hint') and self.btn_add_hint.winfo_exists():
-            return  # 已显示，不重复创建
-        self.btn_add_hint = ttk.Label(
-            self._config_select_frame, text="点此新增岗位→", font=self.font_label,
-            foreground=self.colors['success'], background=self.colors['bg_card'])
-        self.btn_add_hint.pack(side="right", padx=int(4 * self.dpi_scale * self.zoom_factor))
-        self._start_breathing(self.btn_add_hint, color_key='success', bg_key='bg_card')
+        """Legacy call retained; the New button no longer needs an animated hint."""
+        return
 
     def _hide_btn_add_hint(self):
-        """隐藏「点此新增岗位→」提示标签"""
-        if hasattr(self, 'btn_add_hint') and self.btn_add_hint.winfo_exists():
-            self.btn_add_hint.destroy()
+        label = getattr(self, 'btn_add_hint', None)
+        if label is not None and label.winfo_exists():
+            label.destroy()
 
     def _show_parse_hint(self):
-        """显示「<-点击解析招聘需求」提示标签（重建控件并启动呼吸动画）"""
-        if hasattr(self, 'parse_hint_label') and self.parse_hint_label.winfo_exists():
-            return
-        self.parse_hint_label = ttk.Label(
-            self._parse_btn_frame, text="<-点击解析招聘需求", font=self.font_label,
-            foreground=self.colors['success'], background=self.colors['bg_card'])
-        self.parse_hint_label.pack(side="left", padx=(int(8 * self.dpi_scale * self.zoom_factor), 0))
-        self._start_breathing(self.parse_hint_label, color_key='success', bg_key='bg_card')
+        """Legacy call retained; the parse action remains next to its input."""
+        return
 
     def _hide_parse_hint(self):
-        """隐藏「<-点击解析招聘需求」提示标签"""
-        if hasattr(self, 'parse_hint_label') and self.parse_hint_label.winfo_exists():
-            self.parse_hint_label.destroy()
+        label = getattr(self, 'parse_hint_label', None)
+        if label is not None and label.winfo_exists():
+            label.destroy()
 
     def _show_save_hint(self):
-        """显示「点击保存配置->」提示标签（重建控件并启动呼吸动画）"""
-        if hasattr(self, 'save_hint_label') and self.save_hint_label.winfo_exists():
-            return  # 已显示，不重复创建
-        self.save_hint_label = ttk.Label(
-            self._btn_inner, text="点击保存配置->", font=self.font_label,
-            foreground=self.colors['success'], background=self.colors['bg_main'])
-        self.save_hint_label.pack(side="left", before=self.btn_save,
-                                  padx=int(5 * self.dpi_scale * self.zoom_factor))
-        self.save_hint_label.bind("<Button-1>", lambda e: self.save_current_job())
-        self._start_breathing(self.save_hint_label, color_key='success', bg_key='bg_main')
+        """Legacy call retained; the fixed save action is always visible."""
+        return
 
     def _hide_save_hint(self):
-        """隐藏「点击保存配置->」提示标签"""
-        if hasattr(self, 'save_hint_label') and self.save_hint_label.winfo_exists():
-            self.save_hint_label.destroy()
+        label = getattr(self, 'save_hint_label', None)
+        if label is not None and label.winfo_exists():
+            label.destroy()
 
     def _insert_requirement_template(self):
         """插入招聘需求模板到输入框（模板文本从 job_config.json 读取）"""
@@ -9858,6 +10362,39 @@ class BossFilterGUI:
             return ""
         return self.requirement_text.get("1.0", tk.END).strip()
 
+    def _begin_requirement_parse(self):
+        """Start a parse generation whose callbacks may update the current form."""
+        self._invalidate_requirement_parse()
+        parse_id = self._requirement_parse_generation
+        self._active_requirement_parse_id = parse_id
+        return parse_id
+
+    def _is_current_requirement_parse(self, parse_id):
+        return (
+            parse_id is not None
+            and getattr(self, '_active_requirement_parse_id', None) == parse_id
+        )
+
+    def _complete_requirement_parse(self, parse_id):
+        if not self._is_current_requirement_parse(parse_id):
+            return False
+        self._active_requirement_parse_id = None
+        self._ai_enhance_pending = False
+        self._ai_parse_edit_snapshot = None
+        return True
+
+    def _invalidate_requirement_parse(self):
+        """Invalidate pending callbacks and restore controls without killing the worker."""
+        self._requirement_parse_generation = (
+            getattr(self, '_requirement_parse_generation', 0) + 1
+        )
+        self._active_requirement_parse_id = None
+        self._ai_enhance_pending = False
+        self._ai_parse_edit_snapshot = None
+        self._stop_ai_progress_animation()
+        self._stop_requirement_parse_progress()
+        self._finish_parse_button()
+
     def parse_requirement(self):
         """解析需求文档（两阶段：regex 即时 → AI 异步增强）"""
         self._hide_parse_hint()
@@ -9870,11 +10407,14 @@ class BossFilterGUI:
         ai_base_url = self.api_config.get("base_url", "") if getattr(self, "api_config", None) else ""
         ai_model = self.api_config.get("model", "") if getattr(self, "api_config", None) else ""
         ai_key = get_api_key(ai_provider, ai_base_url) if ai_provider and ai_base_url and ai_model else None
+        parse_id = self._begin_requirement_parse()
         if hasattr(self, "btn_parse_requirement"):
             self._parse_requirement_button_text = self.btn_parse_requirement.cget("text")
             self.btn_parse_requirement.config(state="disabled", text=" 解析中...")
+        if hasattr(self, "btn_save"):
+            self.btn_save.state(['disabled'])
         self._set_parse_result_text("正在解析：使用本地规则提取岗位要求…", self.colors['warning'])
-        self._start_requirement_parse_progress(bool(ai_key))
+        self._start_requirement_parse_progress(bool(ai_key), parse_id)
         # 跟踪用户手动修改的字段，AI 增强时不覆盖
         self._dirty_fields = set()
         self._ai_enhance_pending = bool(ai_key)
@@ -9883,7 +10423,11 @@ class BossFilterGUI:
             try:
                 # 阶段 1：regex 解析（快速）
                 regex_result = self._build_regex_parse_result(requirement_text)
-                self.root.after(0, lambda: self._apply_requirement_parse_result(regex_result))
+                self.root.after(
+                    0,
+                    lambda result=regex_result, task_id=parse_id:
+                        self._apply_requirement_parse_result(result, task_id),
+                )
 
                 # 阶段 2：AI 增强（慢速，仅在有 key 时执行）
                 if ai_key:
@@ -9891,12 +10435,17 @@ class BossFilterGUI:
                         requirement_text, regex_result["config"],
                         ai_provider, ai_base_url, ai_model, ai_key
                     )
-                    self.root.after(0, lambda: self._apply_ai_enhance_result(ai_result))
-                else:
-                    # 无 AI key，恢复按钮
-                    self.root.after(0, self._finish_parse_button)
+                    self.root.after(
+                        0,
+                        lambda result=ai_result, task_id=parse_id:
+                            self._apply_ai_enhance_result(result, task_id),
+                    )
             except Exception as exc:
-                self.root.after(0, lambda e=exc: self._handle_requirement_parse_error(e))
+                self.root.after(
+                    0,
+                    lambda error=exc, task_id=parse_id:
+                        self._handle_requirement_parse_error(error, task_id),
+                )
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -10002,16 +10551,35 @@ class BossFilterGUI:
             ("JSON", "解析结果"),
             ("json", "解析结果"),
             ("null", "空"),
-            ("OR", "满足任一项"),
-            ("AND", "需要同时满足"),
         ]
         for old, new in replacements:
             text = re.sub(re.escape(old), new, text, flags=re.IGNORECASE)
+        text = re.sub(
+            r'(?<![A-Za-z0-9])OR(?![A-Za-z0-9])',
+            '任选其一',
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            r'(?<![A-Za-z0-9])AND(?![A-Za-z0-9])',
+            '全部满足',
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(r'(职位描述第\s*\d+\s*条)(?![：:])', r'\1：', text)
+        text = re.sub(
+            r'其中一种表明[^，。]*?满足其一即可[，,]\s*属于任选其一关系',
+            '任选其一，请确认是否符合预期',
+            text,
+        )
+        text = text.replace('属于任选其一关系', '按任选其一处理')
         text = re.sub(r'\s+', ' ', text).strip()
         return text or "有一处解析结果需要人工确认"
 
-    def _apply_requirement_parse_result(self, result):
+    def _apply_requirement_parse_result(self, result, parse_id):
         """在主线程中把解析结果填回界面。"""
+        if not self._is_current_requirement_parse(parse_id):
+            return
         try:
             self._stop_requirement_parse_progress()
             config = result["config"]
@@ -10026,8 +10594,8 @@ class BossFilterGUI:
             self.config_job_combo.set(job_title)
 
             self.min_exp_var.set(str(job_config.get("min_exp", 0)))
-            self.max_age_var.set(_optional_int_to_entry(job_config.get("max_age", 35)))
-            self.edu_var.set(job_config.get("edu", "本科"))
+            self.max_age_var.set(_optional_int_to_entry(job_config.get("max_age")))
+            self.edu_var.set(job_config.get("edu", "不限"))
             self.work_location_var.set(job_config.get("work_location") or "")
 
             salary_min = job_config.get("salary_min")
@@ -10043,7 +10611,7 @@ class BossFilterGUI:
             preferred_count = len([s for s in self.skills_data if s.get("source") == "优先"])
             required_count = len(self.required_conditions_data)
             parsed_min_exp = job_config.get("min_exp", 0)
-            parsed_edu = job_config.get("edu", "本科")
+            parsed_edu = job_config.get("edu", "不限")
             parsed_location = job_config.get("work_location", "")
             loc_part = f"，地点={parsed_location}" if parsed_location else ""
             if salary_min is not None and salary_max is not None:
@@ -10086,7 +10654,7 @@ class BossFilterGUI:
             else:
                 if getattr(self, '_ai_enhance_pending', False):
                     self._set_parse_result_text(f"✓ 本地规则解析成功：{summary_base}", self.colors['success'])
-                    self._start_ai_progress_animation()
+                    self._start_ai_progress_animation(parse_id)
                 else:
                     self._set_parse_result_text(f"✓ 解析成功：{summary_base}", self.colors['success'])
                 if ai_parse_warnings:
@@ -10116,24 +10684,26 @@ class BossFilterGUI:
         finally:
             # 如果有 AI key，不恢复按钮（等 AI 增强完成后再恢复）
             _ai_pending = getattr(self, '_ai_enhance_pending', False)
-            if not _ai_pending:
+            if self._is_current_requirement_parse(parse_id) and not _ai_pending:
+                self._complete_requirement_parse(parse_id)
                 self._finish_parse_button()
 
-    def _apply_ai_enhance_result(self, result):
+    def _apply_ai_enhance_result(self, result, parse_id):
         """阶段 2：AI 增强完成后，增量更新界面。"""
+        if not self._is_current_requirement_parse(parse_id):
+            return
         self._ai_enhance_pending = False
         self._stop_ai_progress_animation()
         self._stop_requirement_parse_progress()
 
-        if not result.get("ai_success"):
-            # AI 失败，只更新状态文字，保留 regex 结果
-            status = result.get("ai_parse_status", "本地规则")
-            self._set_parse_result_text(f"✓ 解析成功：{status}", self.colors['success'])
-            self._finish_parse_button()
-            return
-
-        # AI 成功，用 AI 结果更新界面（不覆盖用户已修改的字段）
         try:
+            if not result.get("ai_success"):
+                # AI 失败，只更新状态文字，保留 regex 结果
+                status = result.get("ai_parse_status", "本地规则")
+                self._set_parse_result_text(f"✓ 解析成功：{status}", self.colors['success'])
+                return
+
+            # AI 成功，用 AI 结果更新界面（不覆盖用户已修改的字段）
             config = result["config"]
             ai_parse_status = result["ai_parse_status"]
             ai_parse_warnings = result.get("ai_parse_warnings", [])
@@ -10145,11 +10715,11 @@ class BossFilterGUI:
 
             # 只更新非 dirty 字段
             if 'edu' not in dirty:
-                self.edu_var.set(job_config.get("edu", "本科"))
+                self.edu_var.set(job_config.get("edu", "不限"))
             if 'min_exp' not in dirty:
                 self.min_exp_var.set(str(job_config.get("min_exp", 0)))
             if 'max_age' not in dirty:
-                self.max_age_var.set(_optional_int_to_entry(job_config.get("max_age", 35)))
+                self.max_age_var.set(_optional_int_to_entry(job_config.get("max_age")))
             if 'work_location' not in dirty:
                 self.work_location_var.set(job_config.get("work_location") or "")
             if 'salary' not in dirty:
@@ -10179,27 +10749,46 @@ class BossFilterGUI:
             self._set_parse_result_text(f"✓ AI 增强解析完成：{summary}", self.colors['success'])
 
             if ai_parse_warnings:
-                warnings_text = "\n".join(f"• {self._humanize_ai_parse_warning(w)}" for w in ai_parse_warnings[:5])
-                messagebox.showinfo("AI 解析提醒", f"AI 增强解析完成，以下内容需要确认：\n\n{warnings_text}")
+                warning_items = [
+                    self._humanize_ai_parse_warning(warning)
+                    for warning in ai_parse_warnings[:5]
+                ]
+                messagebox.showinfo(
+                    "AI 解析提醒",
+                    "",
+                    parent=self.root,
+                    headline="AI 增强解析完成，请确认以下内容",
+                    numbered_items=warning_items,
+                    min_width=820,
+                    max_width=900,
+                    font_delta=-1,
+                    content_bottom_padding=18,
+                )
 
         except Exception:
             self._set_parse_result_text("✓ AI 增强解析完成（部分字段更新失败）", self.colors['warning'])
         finally:
+            self._complete_requirement_parse(parse_id)
             self._finish_parse_button()
 
-    def _start_ai_progress_animation(self):
+    def _start_ai_progress_animation(self, parse_id):
         """启动 AI 增强进度动画（状态栏文字循环闪烁）"""
         self._ai_anim_base = "\n⏳ AI 增强解析中"
         self._ai_anim_dots = 0
         self._ai_anim_running = True
+        self._ai_anim_parse_id = parse_id
         # 更新按钮文字为 AI 进度
         if hasattr(self, "btn_parse_requirement"):
             self.btn_parse_requirement.config(state="disabled", text=" AI 增强中…")
-        self._tick_ai_animation()
+        self._tick_ai_animation(parse_id)
 
-    def _tick_ai_animation(self):
+    def _tick_ai_animation(self, parse_id):
         """动画帧：循环显示 . / .. / ... / …"""
-        if not getattr(self, '_ai_anim_running', False):
+        if (
+            not getattr(self, '_ai_anim_running', False)
+            or getattr(self, '_ai_anim_parse_id', None) != parse_id
+            or not self._is_current_requirement_parse(parse_id)
+        ):
             return
         self._ai_anim_dots = (self._ai_anim_dots + 1) % 4
         dots = "." * self._ai_anim_dots if self._ai_anim_dots > 0 else "…"
@@ -10208,14 +10797,21 @@ class BossFilterGUI:
         # 移除旧的动画后缀（支持换行分隔）
         base = current_text.split("\n⏳ AI 增强")[0] if "\n⏳ AI 增强" in current_text else current_text
         self.parse_result_label.config(text=f"{base}{self._ai_anim_base}{dots}")
-        self._ai_anim_after_id = self.root.after(500, self._tick_ai_animation)
+        self._ai_anim_after_id = self.root.after(
+            500, lambda task_id=parse_id: self._tick_ai_animation(task_id)
+        )
 
     def _stop_ai_progress_animation(self):
         """停止 AI 增强进度动画"""
         self._ai_anim_running = False
-        if hasattr(self, '_ai_anim_after_id'):
-            self.root.after_cancel(self._ai_anim_after_id)
-            self._ai_anim_after_id = None
+        self._ai_anim_parse_id = None
+        after_id = getattr(self, '_ai_anim_after_id', None)
+        if after_id is not None:
+            try:
+                self.root.after_cancel(after_id)
+            except (tk.TclError, ValueError):
+                pass
+        self._ai_anim_after_id = None
 
     def _finish_parse_button(self):
         """恢复解析按钮状态"""
@@ -10224,19 +10820,21 @@ class BossFilterGUI:
                 state="normal",
                 text=getattr(self, "_parse_requirement_button_text", " 解析招聘需求"),
             )
+        if hasattr(self, "btn_save"):
+            self.btn_save.state(['!disabled'])
 
-    def _handle_requirement_parse_error(self, exc):
+    def _handle_requirement_parse_error(self, exc, parse_id):
+        if not self._is_current_requirement_parse(parse_id):
+            return
+        self._ai_enhance_pending = False
         self._stop_ai_progress_animation()
         self._stop_requirement_parse_progress()
-        if hasattr(self, "btn_parse_requirement"):
-            self.btn_parse_requirement.config(
-                state="normal",
-                text=getattr(self, "_parse_requirement_button_text", " 解析招聘需求"),
-            )
+        self._complete_requirement_parse(parse_id)
+        self._finish_parse_button()
         messagebox.showerror("解析失败", f"这段招聘需求暂时没能解析出来。\n\n原因：{self._friendly_ai_parse_reason(str(exc))}\n\n可以稍后再试，或先手工填写岗位配置。")
         self._set_parse_result_text(f"解析失败：{self._friendly_ai_parse_reason(str(exc))}", self.colors['danger'])
 
-    def _start_requirement_parse_progress(self, use_ai):
+    def _start_requirement_parse_progress(self, use_ai, parse_id):
         self._stop_requirement_parse_progress()
         messages = [
             (7000, "还在处理：正在整理技能、优先项和必要条件。"),
@@ -10250,7 +10848,11 @@ class BossFilterGUI:
         for delay, message in messages:
             after_id = self.root.after(
                 delay,
-                lambda m=message: self._set_parse_result_text(m, self.colors['warning'])
+                lambda m=message, task_id=parse_id: (
+                    self._set_parse_result_text(m, self.colors['warning'])
+                    if self._is_current_requirement_parse(task_id)
+                    else None
+                ),
             )
             self._requirement_parse_after_ids.append(after_id)
 
@@ -10340,19 +10942,32 @@ class BossFilterGUI:
 
     def add_job(self):
         """新建岗位"""
+        if not self._confirm_job_form_transition():
+            return
+        self._initialize_new_job_draft()
+
+    def _initialize_new_job_draft(self):
+        """Reset every job-config surface to the first step of a new draft."""
         self.reset_job_form()
-        self.job_name_var.set("新岗位")
-        self.config_job_combo.set("")  # 清空岗位选择
+        self.config_job_combo.set("")
+        self.btn_restore_job.configure(text=" 清空内容")
+        self._set_requirement_section_expanded(True)
         self.requirement_template_btn.state(['!disabled'])
         self._show_requirement_hint()
-        self._hide_btn_add_hint()  # 新建时隐藏"点此新增岗位→"提示
-        self._update_job_step(0)  # 步骤1：填入需求
+        self._hide_btn_add_hint()
+        self._update_job_step(0)
+        self._refresh_job_form_status()
+        self.config_canvas.yview_moveto(0)
 
     def delete_job(self):
         """删除岗位"""
         job_name = self.config_job_combo.get()
         if job_name in self.job_rules:
-            if messagebox.askyesno("确认", f"确定要删除岗位 '{job_name}' 吗？"):
+            if messagebox.askyesno(
+                "删除岗位",
+                f"确定删除岗位“{job_name}”及其当前未保存修改吗？",
+                parent=self.root,
+            ):
                 del self.job_rules[job_name]
                 self.save_config()
                 self.config_job_combo['values'] = list(self.job_rules.keys())
@@ -10441,16 +11056,26 @@ class BossFilterGUI:
         body = ttk.Frame(win, padding=int(16 * scale))
         body.grid(row=0, column=0, sticky="nsew")
 
-        if context == "run":
+        if context == "preview":
+            summary_text = (
+                "当前配置存在阻断项。"
+                if has_error else
+                "当前配置的检查结果如下。"
+            )
+            continue_text = ""
+            close_text = "关闭"
+        elif context == "run":
             summary_text = (
                 "发现严重问题，必须先修改岗位配置。"
                 if has_error else
                 "发现一些提醒项，可返回修改，也可确认后继续本次运行。"
             )
             continue_text = "仍然运行"
+            close_text = "返回修改"
         else:
             summary_text = "发现严重问题，请返回修改后再保存。" if has_error else "发现一些提醒项，可返回修改，也可确认后继续保存。"
             continue_text = "仍然保存"
+            close_text = "返回修改"
         ttk.Label(
             body,
             text=summary_text,
@@ -10488,8 +11113,8 @@ class BossFilterGUI:
             result["continue"] = True
             win.destroy()
 
-        ttk.Button(btn_row, text="返回修改", command=win.destroy).pack(side="right")
-        if not has_error:
+        ttk.Button(btn_row, text=close_text, command=win.destroy).pack(side="right")
+        if context != "preview" and not has_error:
             ttk.Button(btn_row, text=continue_text, command=_continue).pack(
                 side="right", padx=(0, int(8 * scale))
             )
@@ -10519,18 +11144,25 @@ class BossFilterGUI:
 
     def save_current_job(self):
         """保存当前岗位配置"""
+        if getattr(self, '_active_requirement_parse_id', None) is not None:
+            messagebox.showwarning(
+                "招聘需求正在解析",
+                "请等待解析完成后再保存岗位配置。",
+                parent=self.root,
+            )
+            return False
         self._hide_save_hint()
         job_name = self.job_name_var.get().strip()
         if not job_name:
             messagebox.showwarning("警告", "岗位名称不能为空")
-            return
+            return False
 
         # 先验证表单输入（薪资、经验、年龄等），再弹交互提示
         try:
             normalized_job_name, rule = self._build_current_job_rule_preview()
         except ValueError as e:
             messagebox.showwarning("警告", str(e))
-            return
+            return False
 
         # 检查是否已存在相同（规范化后）的岗位
         existing_key_to_delete = None
@@ -10544,10 +11176,10 @@ class BossFilterGUI:
             if messagebox.askyesno("岗位已存在", f"检测到重复岗位：'{existing_key_to_delete}'\n是否覆盖更新？"):
                 pass
             else:
-                return
+                return False
 
         if not self._confirm_job_config_diagnostics(normalized_job_name, rule):
-            return
+            return False
 
         if existing_key_to_delete and existing_key_to_delete != normalized_job_name:
             del self.job_rules[existing_key_to_delete]
@@ -10557,6 +11189,9 @@ class BossFilterGUI:
         self.save_config()
         self.config_job_combo['values'] = list(self.job_rules.keys())
         self.config_job_combo.set(normalized_job_name)
+        restore_button = getattr(self, 'btn_restore_job', None)
+        if restore_button is not None:
+            restore_button.configure(text=" 恢复已保存")
         # 步骤完成：先显示全绿，800ms 后隐藏引导条
         if self._job_step_active >= 0:
             _step_texts = ["① 填入需求", "② 解析需求", "③ 检查结果", "④ 保存配置"]
@@ -10566,14 +11201,35 @@ class BossFilterGUI:
         else:
             self._hide_job_step_bar()
         self._show_btn_add_hint()
+        self._set_job_form_baseline(normalized_job_name)
         messagebox.showinfo("成功", "岗位配置已保存")
+        return True
+
+    def _restore_or_clear_job_form(self):
+        """Restore an existing job or clear the current new-job draft."""
+        selected_job = self.config_job_combo.get()
+        if selected_job in self.job_rules:
+            if not messagebox.askyesno(
+                "恢复已保存",
+                "放弃当前修改，恢复这个岗位已保存的配置？",
+            ):
+                return
+            self.load_job_to_form(self.job_rules[selected_job])
+            self._set_requirement_section_expanded(False)
+            return
+
+        if not messagebox.askyesno("清空内容", "清空当前新岗位的全部内容？"):
+            return
+        self._initialize_new_job_draft()
 
     def reset_job_form(self):
-        """重置表单"""
+        """Reset the form to a new draft without implicit screening limits."""
+        self._invalidate_requirement_parse()
+        self._job_form_loading = True
         self.job_name_var.set("")
-        self.min_exp_var.set("3")
-        self.max_age_var.set("35")
-        self.edu_var.set("本科")
+        self.min_exp_var.set("0")
+        self.max_age_var.set("")
+        self.edu_var.set("不限")
         self.work_location_var.set("")
         self.salary_min_var.set("")
         self.salary_max_var.set("")
@@ -10588,30 +11244,46 @@ class BossFilterGUI:
         self.requirement_text.tag_remove("placeholder", "1.0", tk.END)
         self.requirement_text.insert("1.0", self._req_placeholder_text, "placeholder")
         self._req_placeholder_active = True
+        self.requirement_text.edit_modified(False)
         self.parse_result_label.config(text="")
         self._hide_requirement_hint()
         self._hide_parse_hint()
         self._hide_save_hint()
+        self._job_form_loading = False
+        self._set_job_form_baseline("")
 
     def load_config_dialog(self):
         """打开配置对话框"""
         filename = filedialog.askopenfilename(title="选择配置文件", filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")])
-        if filename:
-            try:
-                with open(filename, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                # 支持新旧两种格式
-                if "job_requirements" in config:
-                    self.job_rules = config["job_requirements"]
-                elif "jobs" in config:
-                    self.job_rules = config["jobs"]
-                else:
-                    self.job_rules = {}
-                self.save_config()
-                self.config_job_combo['values'] = list(self.job_rules.keys())
-                messagebox.showinfo("成功", "配置已加载")
-            except Exception as e:
-                messagebox.showerror("错误", f"加载配置失败：{e}")
+        if not filename:
+            return False
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            # 支持新旧两种格式
+            if "job_requirements" in config:
+                self.job_rules = config["job_requirements"]
+            elif "jobs" in config:
+                self.job_rules = config["jobs"]
+            else:
+                self.job_rules = {}
+            self.save_config()
+            self.config_job_combo['values'] = list(self.job_rules.keys())
+            if self.job_rules:
+                first_job = next(iter(self.job_rules))
+                self.config_job_combo.set(first_job)
+                self.load_job_to_form(self.job_rules[first_job])
+                self._set_requirement_section_expanded(False)
+                self.requirement_template_btn.state(['disabled'])
+            else:
+                self.config_job_combo.set("")
+                self.reset_job_form()
+                self._set_requirement_section_expanded(True)
+            messagebox.showinfo("成功", "配置已加载")
+            return True
+        except Exception as e:
+            messagebox.showerror("错误", f"加载配置失败：{e}")
+            return False
 
     def save_config_dialog(self):
         """保存配置对话框"""
@@ -10627,6 +11299,9 @@ class BossFilterGUI:
 
     def import_config(self):
         """导入配置"""
+        if not self._confirm_job_form_transition():
+            return
+        self._invalidate_requirement_parse()
         self.load_config_dialog()
 
     def export_config(self):
@@ -11865,6 +12540,12 @@ class BossFilterGUI:
                 "程序会停止当前任务并保留联系清单；发送中的候选人下次启动后需要人工核实。",
             ):
                 return
+
+        if (
+            getattr(self, 'config_page', None) is not None
+            and not self._confirm_job_form_transition()
+        ):
+            return
 
         self.is_running = False
         self.stop_event.set()
@@ -14169,9 +14850,9 @@ class BossFilterGUI:
 
                 _parent.after(0, _on_done)
 
-            except Exception as e:
-                def _on_error():
-                    self.append_log(f"[简历评估] ❌ {name} 异常：{e}")
+            except Exception as exc:
+                def _on_error(error=exc):
+                    self.append_log(f"[简历评估] ❌ {name} 异常：{error}")
                     if _tree_item is not None:
                         try:
                             _tree.set(_tree_item, 'status',
@@ -14179,7 +14860,7 @@ class BossFilterGUI:
                         except Exception:
                             pass
                     messagebox.showerror("评估异常",
-                        f"二次评估出错：\n{e}", parent=_parent)
+                        f"二次评估出错：\n{error}", parent=_parent)
                 _parent.after(0, _on_error)
 
         threading.Thread(target=_eval_worker, daemon=True).start()
