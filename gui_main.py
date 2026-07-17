@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.20"
+__version__ = "2.21"
 
 import json
 import logging
