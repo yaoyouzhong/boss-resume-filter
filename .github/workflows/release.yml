@@ -1,129 +1,204 @@
 name: Build & Release
+run-name: Release v${{ inputs.version }}${{ inputs.dry_run && ' (Dry Run)' || '' }}
 
 on:
   workflow_dispatch:
     inputs:
-      platform:
-        description: 'Target platform: all, macos, or windows'
-        required: false
-        default: 'all'
-        type: choice
-        options:
-          - all
-          - macos
-          - windows
-      tag:
-        description: 'Release tag (e.g. v2.11.2). Required when triggered manually.'
-        required: false
+      version:
+        description: "Version without v prefix, for example 2.21"
+        required: true
         type: string
+      authorization:
+        description: "Exact authorization text: 正式发布 vX.Y"
+        required: true
+        type: string
+      dry_run:
+        description: "Run the strict gate only; do not build, tag, push, or publish"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
+env:
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: "1"
+
+concurrency:
+  group: formal-release-${{ inputs.version }}
+  cancel-in-progress: false
+  queue: max
+
 jobs:
-  check:
-    runs-on: ubuntu-latest
+  prepare:
+    name: Strict release gate
+    runs-on: windows-latest
+    timeout-minutes: 30
     outputs:
-      needs: ${{ steps.check.outputs.needs }}
-    steps:
-      - name: Check existing release assets
-        id: check
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
-          PLATFORM="${{ inputs.platform || 'all' }}"
-          needs='[]'
-
-          assets=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" \
-                   --jq '.assets[].name' 2>/dev/null || true)
-
-          if [[ "$PLATFORM" == "all" || "$PLATFORM" == "windows" ]]; then
-            if ! echo "$assets" | grep -q '^BOSS_ResumeFilter\.exe$'; then
-              needs=$(echo "$needs" | jq -c '. + [{"os":"windows-latest","platform":"windows"}]')
-            fi
-          fi
-
-          if [[ "$PLATFORM" == "all" || "$PLATFORM" == "macos" ]]; then
-            if ! echo "$assets" | grep -q '^BOSS_ResumeFilter_mac\.zip$' || \
-               ! echo "$assets" | grep -q '^BOSS_ResumeFilter\.dmg$'; then
-              needs=$(echo "$needs" | jq -c '. + [{"os":"macos-latest","platform":"macos"}]')
-            fi
-          fi
-
-          echo "needs=$needs" >> "$GITHUB_OUTPUT"
-          echo "Will build: $needs"
-
-  build:
-    needs: check
-    if: needs.check.outputs.needs != '[]'
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.check.outputs.needs) }}
-
-    runs-on: ${{ matrix.os }}
+      version: ${{ steps.prepare.outputs.version }}
+      tag: ${{ steps.prepare.outputs.tag }}
+      release_sha: ${{ steps.prepare.outputs.release_sha }}
+      resume: ${{ steps.prepare.outputs.resume }}
+      needs_windows: ${{ steps.prepare.outputs.needs_windows }}
+      needs_macos: ${{ steps.prepare.outputs.needs_macos }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout master
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Setup Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
 
-      - name: Set UTF-8 encoding
-        shell: bash
-        run: |
-          echo "PYTHONIOENCODING=utf-8" >> $GITHUB_ENV
-          echo "PYTHONUTF8=1" >> $GITHUB_ENV
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
 
-      - name: Cache virtual environment
-        uses: actions/cache@v4
-        id: venv-cache
-        with:
-          path: .venv-ci
-          key: venv-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
-
-      - name: Install dependencies (only on cache miss)
-        if: steps.venv-cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          python -m venv .venv-ci
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            .venv-ci/Scripts/pip install -r requirements.txt pyinstaller
-          else
-            .venv-ci/bin/pip install -r requirements.txt pyinstaller dmgbuild
-          fi
-
-      - name: Verify tkinter
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            .venv-ci/Scripts/python -c "import tkinter; print('tkinter OK:', tkinter.TkVersion)"
-          else
-            .venv-ci/bin/python -c "import tkinter; print('tkinter OK:', tkinter.TkVersion)"
-          fi
-
-      - name: Build
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            .venv-ci/Scripts/python build.py --ci --release
-          else
-            .venv-ci/bin/python build.py --ci --release
-          fi
+      - name: Validate authorization and run strict gate
+        id: prepare
         env:
-          PYTHONIOENCODING: utf-8
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_DRY_RUN: ${{ inputs.dry_run }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_AUTHORIZATION: ${{ inputs.authorization }}
+        run: >-
+          python scripts/release_ci.py prepare
+          --version "$env:RELEASE_VERSION"
+          --authorization "$env:RELEASE_AUTHORIZATION"
+          --github-output "$env:GITHUB_OUTPUT"
 
-      - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+  build_windows:
+    name: Build Windows artifact
+    needs: prepare
+    if: ${{ inputs.dry_run == false && needs.prepare.outputs.needs_windows == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout immutable release commit
+        uses: actions/checkout@v6
         with:
-          tag_name: ${{ inputs.tag || github.ref_name }}
-          files: |
-            dist/BOSS_ResumeFilter.exe
-            dist/BOSS_ResumeFilter.dmg
+          ref: ${{ needs.prepare.outputs.release_sha }}
+          fetch-depth: 0
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install build dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build and verify Windows package
+        run: python build.py --ci --release --strict-changelog
+
+      - name: Upload Windows workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: dist/BOSS_ResumeFilter.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  build_macos:
+    name: Build macOS artifacts
+    needs: prepare
+    if: ${{ inputs.dry_run == false && needs.prepare.outputs.needs_macos == 'true' }}
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout immutable release commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+          fetch-depth: 0
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install build dependencies
+        run: python -m pip install -r requirements.txt pyinstaller dmgbuild
+
+      - name: Build and verify macOS packages
+        run: python build.py --ci --release --strict-changelog
+
+      - name: Upload macOS workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: |
             dist/BOSS_ResumeFilter_mac.zip
+            dist/BOSS_ResumeFilter.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish, mirror, and verify
+    needs: [prepare, build_windows, build_macos]
+    if: >-
+      ${{
+        inputs.dry_run == false &&
+        always() &&
+        needs.prepare.result == 'success' &&
+        (needs.build_windows.result == 'success' || needs.build_windows.result == 'skipped') &&
+        (needs.build_macos.result == 'success' || needs.build_macos.result == 'skipped')
+      }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout immutable release commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+          fetch-depth: 0
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install publishing dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Download Windows workflow artifact
+        if: ${{ needs.prepare.outputs.needs_windows == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: dist
+
+      - name: Download macOS workflow artifacts
+        if: ${{ needs.prepare.outputs.needs_macos == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-release
+          path: dist
+
+      - name: Publish both remotes and run online acceptance
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_AUTHORIZATION: ${{ inputs.authorization }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+        run: >-
+          python scripts/release_ci.py publish
+          --version "$env:RELEASE_VERSION"
+          --authorization "$env:RELEASE_AUTHORIZATION"
+          --release-sha "$env:RELEASE_SHA"

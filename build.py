@@ -5,9 +5,8 @@ BOSS 简历筛选器 - 打包脚本
   python build.py --user-audit           用户视角发布审计，不打包、不提交、不推送
   python build.py --check --strict-changelog  启用严格 CHANGELOG/README/latest.json 文案门禁
   python build.py                      仅打包 + 版本核对
-  python build.py --release            打包 → 提交 → 打 tag → 推送 → GitHub Release
-  python build.py --release --version 2.5  自动更新 __version__ + 一键发布
-  python build.py --ci --release       CI 模式：跳过 venv/git，由 GitHub Actions 调用
+  python build.py --ci --release       GitHub Actions 单平台构建（内部使用）
+  gh workflow run release.yml ...      手动授权后触发正式发布
   python build.py --github-upload X.Y.Z 手动补传产物到 GitHub Release
   python build.py --gitee-upload X.Y.Z 手动补传产物到 Gitee Release
   python build.py --verify-gitee-integrity X.Y.Z 严格回下载校验 Gitee SHA256
@@ -3980,14 +3979,15 @@ def _gitee_get_release_cache(version, release_title, release_notes):
         return None
 
 
-def _gitee_upload_local(version, release_title, release_notes, release_cache=None):
-    """上传本地平台的产物到 Gitee Release。
+def _gitee_upload_artifacts(version, release_title, release_notes, artifact_paths,
+                             release_cache=None, large_workers=1,
+                             fail_fast=False):
+    """Upload an explicit artifact set to Gitee with idempotent checks.
 
-    Windows: EXE
-    macOS:   DMG + ZIP
-
-    返回 downloads_cn 字典。需要环境变量 GITEE_TOKEN，未设置时返回 None。
-    release_cache: 可选的缓存信息（来自 _gitee_get_release_cache），避免重复 API 调用。
+    This platform-neutral entrypoint is used by the hosted release workflow,
+    which downloads the Windows and macOS build artifacts into one workspace
+    before publishing.  It returns canonical ``downloads_cn`` entries for all
+    successfully verified files, or ``None`` when any upload fails.
     """
     # 如果没有传入缓存，则获取缓存
     if release_cache is None:
@@ -4003,22 +4003,8 @@ def _gitee_upload_local(version, release_title, release_notes, release_cache=Non
     release_id = release_cache['release_id']
     existing = release_cache['existing']
 
-    if IS_MAC:
-        # ZIP/DMG 均已在当前 runner 构建完成，最多两路并发上传。
-        batch1 = [
-            DIST_DIR / "BOSS_ResumeFilter_mac.zip",
-            DIST_DIR / "BOSS_ResumeFilter.dmg",
-        ]
-        batch2 = []
-    else:
-        batch1 = [
-            DIST_DIR / "BOSS_ResumeFilter.exe",
-        ]
-        batch2 = []
-
-    # 过滤存在的文件
-    batch1 = [f for f in batch1 if f.exists()]
-    batch2 = [f for f in batch2 if f.exists()]
+    files = [Path(path) for path in artifact_paths]
+    files = [path for path in files if path.exists() and path.is_file()]
 
     try:
         downloads_cn = {}
@@ -4054,24 +4040,37 @@ def _gitee_upload_local(version, release_title, release_notes, release_cache=Non
             def _upload_failure(f, error):
                 print(f"  [失败] Gitee 上传失败: {f.name} ({error})")
                 failed.append(f.name)
+                if fail_fast:
+                    raise error
 
-            _run_transfer_batch(
-                to_upload,
-                label,
-                lambda f: _gitee_upload_single(f, api_base, token, release_id),
-                _upload_success,
-                _upload_failure,
-                large_workers=2 if IS_MAC else 1,
-            )
+            if fail_fast:
+                for f in to_upload:
+                    print(f"  {label} 串行: {f.name}")
+                    try:
+                        result = _gitee_upload_single(
+                            f, api_base, token, release_id
+                        )
+                        _upload_success(f, result)
+                    except Exception as error:
+                        _upload_failure(f, error)
+            else:
+                _run_transfer_batch(
+                    to_upload,
+                    label,
+                    lambda f: _gitee_upload_single(f, api_base, token, release_id),
+                    _upload_success,
+                    _upload_failure,
+                    large_workers=max(1, int(large_workers)),
+                )
 
-        _process_and_upload(batch1, "上传本地产物到 Gitee")
-        _process_and_upload(batch2, "上传补充产物到 Gitee")
+        _process_and_upload(files, "上传发布产物到 Gitee")
 
         if failed:
             print(f"\n{'!'*60}")
             print(f"  [!!]  Gitee 上传部分失败: {', '.join(failed)}")
             print(f"  手动补传: python build.py --gitee-upload {version}")
             print(f"{'!'*60}\n")
+            return None
 
         return downloads_cn if downloads_cn else None
 
@@ -4081,6 +4080,27 @@ def _gitee_upload_local(version, release_title, release_notes, release_cache=Non
         print(f"  手动补传: python build.py --gitee-upload {version}")
         print(f"{'!'*60}\n")
         return None
+
+
+def _gitee_upload_local(version, release_title, release_notes, release_cache=None):
+    """Upload the artifacts built on the current local platform to Gitee."""
+    if IS_MAC:
+        artifacts = [
+            DIST_DIR / "BOSS_ResumeFilter_mac.zip",
+            DIST_DIR / "BOSS_ResumeFilter.dmg",
+        ]
+        workers = 2
+    else:
+        artifacts = [DIST_DIR / "BOSS_ResumeFilter.exe"]
+        workers = 1
+    return _gitee_upload_artifacts(
+        version,
+        release_title,
+        release_notes,
+        artifacts,
+        release_cache=release_cache,
+        large_workers=workers,
+    )
 
 
 def _downloads_cn_key(filename):
@@ -4364,7 +4384,7 @@ def main():
     parser.add_argument("--user-audit", action="store_true",
                         help="用户视角发布审计，不打包、不提交、不推送")
     parser.add_argument("--release", action="store_true",
-                        help="打包后自动提交→打tag→推送→GitHub Release上传")
+                        help="仅与 --ci 配合供 GitHub Actions 构建使用")
     parser.add_argument("--version", type=str, default=None, metavar="X.Y",
                         help="自动更新 gui_main.py 中的 __version__")
     parser.add_argument("--ci", action="store_true",
@@ -4394,6 +4414,19 @@ def main():
     parser.add_argument("--strict-changelog", action="store_true",
                         help="将 CHANGELOG 启发式覆盖、README 逐条镜像和 latest.json 同步检查作为硬门禁")
     args = parser.parse_args()
+
+    if args.release and not args.ci:
+        requested_version = (args.version or _read_version()).removeprefix("v")
+        _validate_version_format(requested_version)
+        authorization = f"正式发布 v{requested_version}"
+        print("本地 build.py --release 已停用，避免与双平台发布流水线并发修改标签。")
+        print("请在 PR 合并后单独授权，并手动触发 Build & Release：")
+        print(
+            "  gh workflow run release.yml --ref master "
+            f"-f version={requested_version} "
+            f"-f authorization=\"{authorization}\" -f dry_run=false"
+        )
+        sys.exit(2)
 
     version_changed = False
 
@@ -4519,7 +4552,7 @@ def main():
         # 检查 Release 是否存在
         r = subprocess.run(["gh", "release", "view", tag], capture_output=True, cwd=BASE_DIR)
         if r.returncode != 0:
-            print(f"[错误] GitHub Release {tag} 不存在，请先运行 python build.py --release --version {version}")
+            print(f"[错误] GitHub Release {tag} 不存在，请先触发 Build & Release 工作流")
             sys.exit(1)
 
         # 从 GitHub Release 读取 release notes
@@ -4968,8 +5001,8 @@ def main():
         print(f"  GitHub Actions 将自动上传到 Release")
         print(f"{'='*60}\n")
     else:
-        print(f"\n  下一步：python build.py --release  一键完成提交/打tag/推送/Release")
-        print(f"  或手动：git push origin master && git push origin v{version}\n")
+        print("\n  正式发布：先合并发布准备 PR，再单独触发 Build & Release")
+        print(f"  授权文本：正式发布 v{version}\n")
 
 
 if __name__ == "__main__":

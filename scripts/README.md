@@ -1,6 +1,6 @@
 # scripts 目录说明
 
-本目录放辅助脚本，不属于主程序运行路径，也不进入稳定回归。
+本目录放辅助脚本，不属于主程序运行路径。正式交付脚本应有对应单元测试；仅浏览器/人工工具不进入稳定回归。
 
 默认验收命令仍然是：
 
@@ -11,7 +11,8 @@ python tests/test_import.py
 
 ## 活跃脚本
 
-- `watch_progress.py`：发布进度监控脚本，轮询 `.build_progress.json` 并输出状态变化。被 `build.py --release` 的外部监控流程调用。
+- `release_ci.py`：`Build & Release` 的确定性发布编排，负责一次授权、严格门禁、双远端发布、断点续跑和线上验收；行为测试在 `tests/unit/test_release_ci.py`。
+- `watch_progress.py`：轮询 `.build_progress.json` 并输出本地打包状态，保留作为手工构建辅助工具。
 
 ## archive/ — 历史脚本归档
 

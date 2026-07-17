@@ -206,11 +206,14 @@ def test_release_asset_metadata_from_remote_assets_uses_github_digest():
 
 
 def test_release_workflow_only_runs_when_explicitly_dispatched():
-    """Local release owns tag publication; CI should not race it on tag push."""
+    """A master merge must never publish without the separate release authorization."""
     workflow = (build.BASE_DIR / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow
     assert "tags:" not in workflow
+    assert "pull_request:" not in workflow
+    assert "authorization:" in workflow
+    assert "scripts/release_ci.py publish" in workflow
 
 
 def test_gitee_sync_never_force_pushes_master():
