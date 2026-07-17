@@ -65,6 +65,14 @@ def test_prepare_reuses_complete_remote_artifacts_on_same_commit_resume():
             "BOSS_ResumeFilter.dmg": _asset(),
         }
         with (
+            patch.dict(
+                release_ci.os.environ,
+                {
+                    "GITHUB_ACTIONS": "true",
+                    "GITHUB_EVENT_NAME": "workflow_dispatch",
+                    "GITHUB_REF_NAME": "master",
+                },
+            ),
             patch.object(release_ci, "resolve_release_sha", return_value=("a" * 40, True)),
             patch.object(
                 release_ci.build,
@@ -93,6 +101,23 @@ def test_prepare_reuses_complete_remote_artifacts_on_same_commit_resume():
         assert "release_sha=" + "a" * 40 in written
         assert "needs_windows=false" in written
         assert "needs_macos=false" in written
+
+
+def test_prepare_rejects_non_manual_github_actions_event():
+    with patch.dict(
+        release_ci.os.environ,
+        {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_EVENT_NAME": "pull_request",
+            "GITHUB_REF_NAME": "master",
+        },
+    ):
+        with _raises(release_ci.ReleaseAutomationError, "只能由 workflow_dispatch 手动触发"):
+            release_ci.prepare_release(
+                "2.21",
+                "正式发布 v2.21",
+                dry_run=True,
+            )
 
 
 def test_publish_exposes_release_only_after_both_stores_are_complete():
