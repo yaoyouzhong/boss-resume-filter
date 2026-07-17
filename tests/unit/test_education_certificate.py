@@ -13,10 +13,12 @@ from education_certificate import (
     extract_pdf_text,
     fill_chsi_query_page,
     is_pdf_path,
+    likely_supports_vision,
     normalize_recognition,
     prepare_image_data_url,
     prepare_orientation_sheet_data_url,
     recognize_certificate_pdf,
+    recognize_certificate_image,
     resolve_vision_api_config,
     validate_chsi_fields,
     validate_document_path,
@@ -76,6 +78,123 @@ def test_non_xiaomi_model_is_not_rewritten():
     }
 
     assert resolve_vision_api_config(original) == original
+
+
+def test_k3_is_recognized_as_vision_capable():
+    assert likely_supports_vision({
+        "api_provider": "kimi",
+        "base_url": "https://api.kimi.com/coding/v1",
+        "model": "k3",
+    }) is True
+
+
+def test_kimi_code_image_recognition_uses_larger_output_budget():
+    from unittest.mock import patch
+
+    captured = {}
+
+    def fake_invoke(config, api_key, messages, *, timeout=60, max_tokens=500):
+        captured["max_tokens"] = max_tokens
+        return {
+            "name": "张三",
+            "certificate_number": "123456789012345678",
+            "school": "某大学",
+            "major": "计算机",
+            "confidence": 90,
+            "warnings": [],
+        }
+
+    with patch("education_certificate.prepare_image_data_url", return_value="data:image/jpeg;base64,YQ=="), \
+            patch("education_certificate.prepare_orientation_sheet_data_url", return_value="data:image/jpeg;base64,Yg=="), \
+            patch("education_certificate._invoke_model", side_effect=fake_invoke):
+        result = recognize_certificate_image(
+            "fake.jpg",
+            {
+                "api_provider": "kimi",
+                "base_url": "https://api.kimi.com/coding/v1",
+                "model": "k3",
+            },
+            "key",
+        )
+
+    assert captured["max_tokens"] == 1024
+    assert result.name == "张三"
+
+
+def test_kimi_code_captcha_recognition_uses_larger_output_budget():
+    from unittest.mock import patch
+    from education_certificate import recognize_captcha
+
+    captured = {}
+
+    def fake_invoke(config, api_key, messages, *, timeout=60, max_tokens=500):
+        captured["max_tokens"] = max_tokens
+        return {"type": "letter", "answer": "aB3x", "confidence": 90}
+
+    with patch("education_certificate._invoke_model", side_effect=fake_invoke):
+        result = recognize_captcha(
+            "data:image/jpeg;base64,YQ==",
+            {
+                "api_provider": "kimi",
+                "base_url": "https://api.kimi.com/coding/v1",
+                "model": "k3",
+            },
+            "key",
+        )
+
+    assert captured["max_tokens"] == 1024
+    assert result == ("letter", "aB3x", 90)
+
+
+def test_captcha_image_preprocessing_upscales_and_uses_lossless_png():
+    from education_certificate import _image_bytes_to_data_url
+
+    source = io.BytesIO()
+    Image.new("RGB", (100, 40), "white").save(source, format="PNG")
+
+    data_url = _image_bytes_to_data_url(source.getvalue())
+    payload = base64.b64decode(data_url.split(",", 1)[1])
+    with Image.open(io.BytesIO(payload)) as processed:
+        assert data_url.startswith("data:image/png;base64,")
+        assert processed.width >= 400
+        assert processed.height >= 160
+
+
+def test_invoke_model_reports_reasoning_only_length_exhaustion():
+    from unittest.mock import patch
+    from education_certificate import _invoke_model
+
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "choices": [{
+                    "finish_reason": "length",
+                    "message": {
+                        "content": "",
+                        "reasoning_content": "still reasoning without final json",
+                    },
+                }],
+            }
+
+    with patch("education_certificate.requests.post", return_value=FakeResponse()):
+        try:
+            _invoke_model(
+                {
+                    "api_provider": "kimi",
+                    "base_url": "https://api.kimi.com/coding/v1",
+                    "model": "k3",
+                },
+                "key",
+                [{"role": "user", "content": "test"}],
+                max_tokens=500,
+            )
+        except RuntimeError as exc:
+            assert "输出长度达到上限" in str(exc)
+        else:
+            raise AssertionError("reasoning-only length response should fail clearly")
 
 
 def test_normalize_recognition_cleans_fields_and_warns_non_18_digit_number():

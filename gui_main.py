@@ -41,7 +41,13 @@ from candidate_state_diagnostics import (
     diagnose_candidate_states,
     summarize_candidate_state_diagnostics,
 )
-from ai_adapter import classify_api_endpoint
+from ai_adapter import (
+    classify_api_endpoint,
+    discover_api_endpoint,
+    has_endpoint_discovery,
+    model_catalog_cache_key,
+    normalize_api_base_url,
+)
 from greeting_failure import diagnose_greeting_failure, format_greeting_failure_message
 from contact_queue import (
     build_contact_queue_item,
@@ -1073,10 +1079,11 @@ class BossFilterGUI:
         self.font_stat_label = (FONT_FAMILY, int(15 * page_fs))
         self.font_log = (FONT_FAMILY, int(11 * page_fs))
         self.font_table = (FONT_FAMILY, int(12 * page_fs))  # 表格字体
+        modal_font_size = max(9, self.font_log[1] - 1)
         messagebox.set_ui_fonts(
-            headline=(FONT_FAMILY, self.font_label[1], 'bold'),
-            message=self.font_label,
-            button=self.font_label,
+            headline=(FONT_FAMILY, max(10, self.font_log[1]), 'bold'),
+            message=(FONT_FAMILY, modal_font_size),
+            button=(FONT_FAMILY, modal_font_size),
         )
 
         # 设置 Combobox 下拉列表字体（与 font_label 保持一致）
@@ -2807,7 +2814,13 @@ class BossFilterGUI:
 
         # 获取模型列表按钮
         icon_download_models = self.icons.button('download', self.colors['text_primary'])
-        btn_fetch = ttk.Button(row2, image=icon_download_models, text=" 获取模型列表", compound=tk.LEFT, command=self.fetch_model_list)
+        btn_fetch = ttk.Button(
+            row2,
+            image=icon_download_models,
+            text=" 自动识别并获取模型",
+            compound=tk.LEFT,
+            command=self.fetch_model_list,
+        )
         btn_fetch._icon_ref = icon_download_models
         btn_fetch.pack(side="left")
 
@@ -3194,6 +3207,18 @@ class BossFilterGUI:
         )
         model_name = model_ref.get("model", "") or "未配置"
         return f"{role_label}（{provider_display} / {model_name}）"
+
+    def _assigned_model_test_roles(self, role, model_ref=None):
+        """返回一次测试应同步的用途；实际连接身份相同时双向同步。"""
+        if role not in ("default", "education"):
+            return (role,)
+        model_ref = model_ref or self._get_assigned_model_ref(role)
+        if all(
+            self._model_ref_matches(model_ref, self._get_assigned_model_ref(target_role))
+            for target_role in ("default", "education")
+        ):
+            return ("default", "education")
+        return (role,)
 
     def _set_assigned_model_test_state(self, role, state):
         """更新用途模型的红绿灯和行内状态。"""
@@ -5039,58 +5064,35 @@ class BossFilterGUI:
                             self._update_education_queue_row(iid)
                     self.run_on_ui(_update)
 
-                max_retries = 2
-                for attempt in range(max_retries + 1):
-                    try:
-                        on_progress("正在加载学信网页面...", "")
-                        success, status = self._fill_and_solve_captcha(
-                            page, n, cn, on_progress=on_progress,
-                        )
-                        # 如果成功或不是验证码错误，跳出重试循环
-                        if success or status != "识别失败":
-                            break
-                        # 验证码错误，准备重试
-                        if attempt < max_retries:
-                            with self._education_browser_lock:
-                                # 点击验证码图片刷新
-                                try:
-                                    page.run_js("""
-                                    const input = document.querySelector('input[name="yzm"]');
-                                    if (input) {
-                                      const selectors = [
-                                        '.yzm-box', '.captcha-box', '.verify-img', '.imgCode'
-                                      ];
-                                      for (const sel of selectors) {
-                                        const c = input.closest(sel);
-                                        if (c) {
-                                          const img = c.querySelector('img');
-                                          if (img) { img.click(); break; }
-                                        }
-                                      }
-                                    }
-                                    """)
-                                except Exception:
-                                    pass
-                            time.sleep(2)
-                    except Exception as error:
-                        error_text = str(error)
-                        self._log_education_error("打开学信网", error, iid)
-                        def show_error(iid=iid, err=error_text):
-                            queue_item = self.education_items.get(iid)
-                            if not queue_item:
-                                return
-                            queue_item["status"] = "打开失败"
-                            error_line = err.splitlines()[0] if err else "未知错误"
-                            queue_item["detail"] = f"打开学信网失败：{error_line}"
-                            queue_item["warnings"] = err
-                            self._update_education_queue_row(iid)
-                            if self.education_current_id == iid:
-                                self.education_status_var.set(queue_item["detail"])
-                                self.education_warning_var.set(err)
-                            self._set_captcha_btn_state("normal")
-                            self._restore_education_fill_button_if_done()
-                        self.run_on_ui(show_error)
-                        return  # 异常退出重试循环
+                max_attempts = 3
+                try:
+                    on_progress("正在加载学信网页面...", "")
+                    success, status = self._fill_and_solve_captcha(
+                        page,
+                        n,
+                        cn,
+                        on_progress=on_progress,
+                        max_attempts=max_attempts,
+                    )
+                except Exception as error:
+                    error_text = str(error)
+                    self._log_education_error("打开学信网", error, iid)
+                    def show_error(iid=iid, err=error_text):
+                        queue_item = self.education_items.get(iid)
+                        if not queue_item:
+                            return
+                        queue_item["status"] = "打开失败"
+                        error_line = err.splitlines()[0] if err else "未知错误"
+                        queue_item["detail"] = f"打开学信网失败：{error_line}"
+                        queue_item["warnings"] = err
+                        self._update_education_queue_row(iid)
+                        if self.education_current_id == iid:
+                            self.education_status_var.set(queue_item["detail"])
+                            self.education_warning_var.set(err)
+                        self._set_captcha_btn_state("normal")
+                        self._restore_education_fill_button_if_done()
+                    self.run_on_ui(show_error)
+                    return
                 # 显示最终结果
                 def show_success(iid=iid, ok=success, st=status):
                     queue_item = self.education_items.get(iid)
@@ -5102,7 +5104,7 @@ class BossFilterGUI:
                         queue_item["warnings"] = "验证码通过后按页面提示使用手机扫码。"
                     elif st == "识别失败":
                         queue_item["status"] = "识别失败"
-                        queue_item["detail"] = f"验证码识别错误（已重试 {max_retries} 次），请点击「重新识别验证码」重试。"
+                        queue_item["detail"] = f"验证码识别错误（已尝试 {max_attempts} 次），请点击「重新识别验证码」重试。"
                         queue_item["warnings"] = ""
                     else:
                         queue_item["status"] = "待人工验证"
@@ -5161,8 +5163,9 @@ class BossFilterGUI:
     def _fill_and_solve_captcha(
         self, page, name: str, certificate_number: str,
         on_progress: "Callable[[str, str], None] | None" = None,
+        max_attempts: int = 3,
     ) -> tuple[bool, str]:
-        """填写表单 + 截取验证码 + AI 识别 + 填入 + 查询。
+        """填写表单并最多三次识别、提交新的验证码。
 
         on_progress(detail, status): 每个阶段完成时回调，用于实时更新 GUI 状态。
 
@@ -5172,18 +5175,40 @@ class BossFilterGUI:
         - (False, "待人工验证"): 识别过程失败，需人工输入
         """
         from education_certificate import fill_chsi_query_page, navigate_to_chsi
+        import time
+
         _emit = on_progress or (lambda *_: None)
-        try:
-            # 页面导航在锁外执行，各 tab 并行加载（3-8 秒网络 I/O）
-            navigate_to_chsi(page)
-            _emit("正在填写表单...", "正在填写姓名和证书编号")
-            with self._education_browser_lock:
-                # 仅 JS 注入在锁内（<100ms）
-                fill_chsi_query_page(page, name, certificate_number, skip_navigation=True)
-            return self._attempt_captcha_solve(page, on_progress=on_progress)
-        except Exception as e:
-            print(f"[验证码识别] 失败：{e}")
-            return False, "待人工验证"
+        attempts = max(1, int(max_attempts))
+        last_status = "待人工验证"
+        for attempt in range(1, attempts + 1):
+            try:
+                if attempt > 1:
+                    _emit(
+                        f"正在重试验证码（{attempt}/{attempts}）...",
+                        "正在获取新的验证码",
+                    )
+                # 每次重新进入查询页，确保验证码已刷新且表单状态可预测。
+                navigate_to_chsi(page)
+                _emit("正在填写表单...", "正在填写姓名和证书编号")
+                with self._education_browser_lock:
+                    fill_chsi_query_page(
+                        page,
+                        name,
+                        certificate_number,
+                        skip_navigation=True,
+                    )
+                success, last_status = self._attempt_captcha_solve(
+                    page,
+                    on_progress=on_progress,
+                )
+                if success:
+                    return True, last_status
+            except Exception as error:
+                print(f"[验证码识别] 第 {attempt}/{attempts} 次失败：{error}")
+                last_status = "待人工验证"
+            if attempt < attempts:
+                time.sleep(1)
+        return False, last_status
 
     def _attempt_captcha_solve(
         self, page, *, on_progress: "Callable[[str, str], None] | None" = None,
@@ -5198,6 +5223,7 @@ class BossFilterGUI:
         - (False, "待人工验证"): 识别过程失败
         """
         from education_certificate import (
+            CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE,
             capture_captcha_image, click_chsi_query_button,
             fill_captcha_answer, recognize_captcha,
             resolve_vision_api_config,
@@ -5229,6 +5255,12 @@ class BossFilterGUI:
             return False, "待人工验证"
 
         if captcha_type == "unknown" or not answer:
+            return False, "待人工验证"
+        if confidence < CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE:
+            print(
+                f"[验证码识别] 置信度 {confidence} 低于自动提交门槛 "
+                f"{CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE}，本次不提交并继续重试"
+            )
             return False, "待人工验证"
 
         # 阶段 3：填入答案 + 点击查询（重新获取浏览器锁）
@@ -5289,28 +5321,7 @@ class BossFilterGUI:
             def worker(iid=item_id):
                 try:
                     page = self._get_education_tab(iid)
-                    # 点击验证码图片刷新（避免识别旧验证码）— 需要浏览器锁
-                    try:
-                        with self._education_browser_lock:
-                            page.run_js("""
-                            const input = document.querySelector('input[name="yzm"]');
-                            if (input) {
-                              const selectors = [
-                                '.yzm-box', '.captcha-box', '.verify-img', '.imgCode'
-                              ];
-                              for (const sel of selectors) {
-                                const c = input.closest(sel);
-                                if (c) {
-                                  const img = c.querySelector('img');
-                                  if (img) { img.click(); break; }
-                                }
-                              }
-                            }
-                            """)
-                        import time
-                        time.sleep(1)
-                    except Exception:
-                        pass
+                    item = self.education_items.get(iid) or {}
                     def _retry_progress(status_text: str, detail: str, iid=iid):
                         def _update(iid=iid, s=status_text, d=detail):
                             item = self.education_items.get(iid)
@@ -5319,8 +5330,12 @@ class BossFilterGUI:
                                 item["detail"] = d
                                 self._update_education_queue_row(iid)
                         self.run_on_ui(_update)
-                    success, status = self._attempt_captcha_solve(
-                        page, on_progress=_retry_progress,
+                    success, status = self._fill_and_solve_captcha(
+                        page,
+                        str(item.get("name") or ""),
+                        str(item.get("certificate_number") or ""),
+                        on_progress=_retry_progress,
+                        max_attempts=3,
                     )
                     def show_result(iid=iid, ok=success, st=status):
                         item = self.education_items.get(iid)
@@ -5331,11 +5346,11 @@ class BossFilterGUI:
                                 item["warnings"] = "验证码通过后按页面提示使用手机扫码。"
                             elif st == "识别失败":
                                 item["status"] = "识别失败"
-                                item["detail"] = "验证码识别错误，请再次点击「重新识别验证码」重试。"
+                                item["detail"] = "验证码连续 3 次识别错误，请再次点击「重新识别验证码」重试。"
                                 item["warnings"] = ""
                             else:
                                 item["status"] = "待人工验证"
-                                item["detail"] = "验证码自动识别失败，请人工输入。"
+                                item["detail"] = "验证码连续 3 次自动识别失败，请人工输入。"
                                 item["warnings"] = ""
                             self._update_education_queue_row(iid)
                             if self.education_current_id == iid:
@@ -7441,10 +7456,12 @@ class BossFilterGUI:
     def _test_assigned_model(self, role):
         """复用模型库连通性测试，测试指定用途当前实际使用的模型。"""
         model_ref = self._get_assigned_model_ref(role)
-        self._assigned_model_test_tokens[role] += 1
+        synced_roles = self._assigned_model_test_roles(role, model_ref)
+        for target_role in synced_roles:
+            self._assigned_model_test_tokens[target_role] += 1
+            self._assigned_model_test_refs[target_role] = dict(model_ref)
+            self._set_assigned_model_test_state(target_role, "testing")
         test_token = self._assigned_model_test_tokens[role]
-        self._assigned_model_test_refs[role] = dict(model_ref)
-        self._set_assigned_model_test_state(role, "testing")
         self._update_api_status(
             text=f"正在测试{self._assigned_model_test_target_label(role, model_ref)}...",
             foreground=self.colors['warning'],
@@ -7466,7 +7483,8 @@ class BossFilterGUI:
                     assigned_test_token=test_token,
                 )
                 return
-        self._set_assigned_model_test_state(role, "error")
+        for target_role in synced_roles:
+            self._set_assigned_model_test_state(target_role, "error")
         messagebox.showwarning("模型未保存", "当前模型不在已保存模型列表中，请先保存模型配置。")
 
     def _set_education_model(self):
@@ -7912,7 +7930,11 @@ class BossFilterGUI:
         if not hasattr(self, "_assigned_model_test_results"):
             self._assigned_model_test_results = {}
         self._assigned_model_test_results[self._model_ref_key(expected_ref)] = state
-        self._set_assigned_model_test_state(role, state)
+        for target_role in self._assigned_model_test_roles(role, expected_ref):
+            if self._model_ref_matches(
+                expected_ref, self._get_assigned_model_ref(target_role)
+            ):
+                self._set_assigned_model_test_state(target_role, state)
 
     def _save_capability_to_model(
         self, model_name, capability, provider_key=None, base_url=None, refresh=True
@@ -7977,6 +7999,13 @@ class BossFilterGUI:
                 messagebox.showwarning("警告", "请输入 Base URL")
                 return
 
+            normalized_base_url = normalize_api_base_url({
+                "api_provider": provider,
+                "base_url": base_url,
+            })
+            if normalized_base_url != base_url.rstrip("/"):
+                base_url = normalized_base_url
+                self.api_base_url_var.set(base_url)
             # 按服务商 + Base URL 组合存储 API Key（区分同一服务商的不同接入方式）
             save_api_key(provider, api_key, base_url)
 
@@ -8186,40 +8215,78 @@ class BossFilterGUI:
 
         api_key = self.api_key_var.get().strip()
         base_url = self.api_base_url_var.get().strip()
-        provider = self.api_provider_var.get()
+        provider_display = self.api_provider_var.get().strip()
+        provider = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
 
         if not api_key:
             messagebox.showwarning("警告", "请先输入 API Key")
             return
 
-        if not base_url:
+        if not base_url and not has_endpoint_discovery(provider):
             messagebox.showwarning("警告", "请先输入 Base URL")
             return
 
+        normalized_base_url = normalize_api_base_url({
+            "api_provider": provider,
+            "base_url": base_url,
+        })
+        if normalized_base_url != base_url.rstrip("/"):
+            base_url = normalized_base_url
+            self.api_base_url_var.set(base_url)
+
         # 显示加载中状态（不使用 update()，避免重入）
-        self._update_api_status(text="⏳ 正在获取模型列表...", foreground=self.colors['warning'])
+        status_text = (
+            "⏳ 正在识别接入渠道并获取模型..."
+            if has_endpoint_discovery(provider)
+            else "⏳ 正在获取模型列表..."
+        )
+        self._update_api_status(text=status_text, foreground=self.colors['warning'])
 
         def fetch_thread():
+            nonlocal base_url
             try:
-                # 构建模型列表 API 端点
-                # 大部分服务商兼容 OpenAI 格式：GET /v1/models
-                models_url = f"{base_url.rstrip('/')}/models"
+                detected_service_name = ""
+                resolution_status = ""
+                if has_endpoint_discovery(provider):
+                    resolution = discover_api_endpoint(
+                        provider,
+                        api_key,
+                        preferred_base_url=base_url,
+                    )
+                    resolution_status = resolution.status
+                    response_status = resolution.http_status or 0
+                    response_text = resolution.message
+                    if resolution.status in ("confirmed", "catalog") and resolution.models:
+                        base_url = resolution.base_url
+                        detected_service_name = resolution.service_name
+                        data = {"data": [{"id": model} for model in resolution.models]}
+                        response_status = 200
 
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "User-Agent": USER_AGENT
-                }
+                        def _apply_resolution():
+                            self.api_base_url_var.set(base_url)
+                            if resolution.status == "confirmed":
+                                self._verified_api_endpoint = (provider, api_key, base_url)
 
-                # 发送请求，超时 15 秒
-                response = requests.get(
-                    models_url,
-                    headers=headers,
-                    timeout=15,
-                    verify=certifi.where()
-                )
+                        self.root.after(0, _apply_resolution)
+                    else:
+                        data = {}
+                else:
+                    # 自定义/中转地址只验证用户明确输入的 URL，不自动枚举其他域名。
+                    models_url = f"{base_url.rstrip('/')}/models"
+                    response = requests.get(
+                        models_url,
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "User-Agent": USER_AGENT,
+                        },
+                        timeout=15,
+                        verify=certifi.where(),
+                    )
+                    response_status = response.status_code
+                    response_text = response.text
+                    data = response.json() if response_status == 200 else {}
 
-                if response.status_code == 200:
-                    data = response.json()
+                if response_status == 200:
 
                     # 解析模型列表（兼容 OpenAI 格式）
                     raw_models = []
@@ -8255,7 +8322,21 @@ class BossFilterGUI:
 
                         # 对比上次获取的模型列表，找出新增和下线模型
                         fetched_models_map = self.api_config.get("fetched_models", {})
-                        previous_models = set(fetched_models_map.get(provider, []))
+                        catalog_key = model_catalog_cache_key(provider, base_url)
+                        # 兼容旧版仅按服务商保存的模型列表；新记录按端点隔离，
+                        # 避免 Kimi 开放平台与 Kimi Code 等渠道互报上下线。
+                        previous_catalog = fetched_models_map.get(catalog_key)
+                        if previous_catalog is None:
+                            configured_catalog_key = model_catalog_cache_key(
+                                provider,
+                                (self.api_config or {}).get("base_url", ""),
+                            )
+                            previous_catalog = (
+                                fetched_models_map.get(provider, [])
+                                if configured_catalog_key == catalog_key
+                                else []
+                            )
+                        previous_models = set(previous_catalog)
                         current_models = set(models)
                         new_models = current_models - previous_models
                         removed_models = previous_models - current_models
@@ -8263,7 +8344,7 @@ class BossFilterGUI:
                         # 更新已获取模型列表并持久化
                         if "fetched_models" not in self.api_config:
                             self.api_config["fetched_models"] = {}
-                        self.api_config["fetched_models"][provider] = models
+                        self.api_config["fetched_models"][catalog_key] = models
                         try:
                             with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as _f:
                                 json.dump(self._sanitize_config_for_save(self.api_config), _f, ensure_ascii=False, indent=4)
@@ -8678,7 +8759,9 @@ class BossFilterGUI:
                             self._status_clickable_labels.clear()
 
                             # 基础信息
-                            base_text = f"✓ 找到 {_total_count} 个模型"
+                            channel_text = f"已识别 {detected_service_name}，" if detected_service_name else ""
+                            verification_text = "；API Key 待测试连接" if resolution_status == "catalog" else ""
+                            base_text = f"✓ {channel_text}找到 {_total_count} 个模型{verification_text}"
                             if _new_count == 0 and _removed_count == 0:
                                 # 无变更，只显示基础信息
                                 self._update_api_status(
@@ -8760,7 +8843,7 @@ class BossFilterGUI:
                             "未找到模型",
                             f"API 返回的数据中没有模型列表\n\n响应内容：{json.dumps(data, ensure_ascii=False)[:500]}"
                         ))
-                elif response.status_code == 401:
+                elif not resolution_status and response_status == 401:
                     self.root.after(0, lambda: self._update_api_status(
                         text="✗ 认证失败",
                         foreground=self.colors['danger']
@@ -8769,7 +8852,7 @@ class BossFilterGUI:
                         "认证失败",
                         "API Key 无效或已过期\n\n请检查 API Key 是否正确"
                     ))
-                elif response.status_code == 404:
+                elif not resolution_status and response_status == 404:
                     self.root.after(0, lambda: self._update_api_status(
                         text="✗ 接口不存在",
                         foreground=self.colors['danger']
@@ -8783,14 +8866,19 @@ class BossFilterGUI:
                         f"• 参考服务商文档获取可用模型"
                     ))
                 else:
+                    is_temporary = resolution_status in ("probable", "unavailable")
+                    status_color = self.colors['warning'] if is_temporary else self.colors['danger']
+                    status_prefix = "!" if is_temporary else "✗"
                     self.root.after(0, lambda: self._update_api_status(
-                        text=f"✗ 请求失败 ({response.status_code})",
-                        foreground=self.colors['danger']
+                        text=f"{status_prefix} 请求失败 ({response_status or '未确认'})",
+                        foreground=status_color,
                     ))
-                    self.root.after(0, lambda: messagebox.showerror(
-                        "请求失败",
-                        f"HTTP 状态码：{response.status_code}\n\n"
-                        f"响应：{response.text[:300]}"
+                    dialog = messagebox.showwarning if is_temporary else messagebox.showerror
+                    self.root.after(0, lambda s=response_status, m=response_text, d=dialog: d(
+                        "自动识别暂未完成" if is_temporary else (
+                            "自动识别失败" if has_endpoint_discovery(provider) else "请求失败"
+                        ),
+                        (f"HTTP 状态码：{s}\n\n" if s else "") + str(m)[:300],
                     ))
 
             except requests.exceptions.Timeout:
@@ -8846,6 +8934,8 @@ class BossFilterGUI:
         api_key = self.api_key_var.get().strip()
         base_url = self.api_base_url_var.get().strip()
         model = self.api_model_var.get().strip()
+        provider_display = self.api_provider_var.get().strip()
+        provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
 
         if not api_key:
             messagebox.showwarning("警告", "请先输入 API Key")
@@ -8859,6 +8949,14 @@ class BossFilterGUI:
             messagebox.showwarning("警告", "请先输入模型名称")
             return
 
+
+        normalized_base_url = normalize_api_base_url({
+            "api_provider": provider_key,
+            "base_url": base_url,
+        })
+        if normalized_base_url != base_url.rstrip("/"):
+            base_url = normalized_base_url
+            self.api_base_url_var.set(base_url)
         # 显示测试中状态
         self._update_api_status(text="⏳ 正在验证...", foreground=self.colors['warning'])
 
@@ -8896,8 +8994,6 @@ class BossFilterGUI:
             # 连通不等于可用：真实验证该模型能否生成程序可解析的评估结果。
             try:
                 from llm_eval import probe_model_compatibility
-                provider_display = self.api_provider_var.get().strip()
-                provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
                 capability = probe_model_compatibility({
                     "api_provider": provider_key,
                     "base_url": base_url,
@@ -8923,12 +9019,12 @@ class BossFilterGUI:
                 else:
                     error_message = capability.get("message", "模型无法生成程序所需评估格式")
                     self.root.after(0, lambda: self._update_api_status(
-                        text="✗ 模型不兼容",
+                        text="✗ 验证未通过",
                         foreground=self.colors['danger'],
                     ))
                     self.root.after(0, lambda: messagebox.showerror(
                         "连接测试失败",
-                        f"API 可访问，但模型不能用于 AI 评估\n\n原因：{error_message}",
+                        f"模型连接或兼容性验证未通过\n\n原因：{error_message}",
                     ))
                 return
             except Exception as e:

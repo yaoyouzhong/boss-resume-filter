@@ -1000,6 +1000,11 @@ def test_assigned_model_test_result_updates_matching_traffic_light_only():
         "api_provider": "qwen",
         "base_url": "https://example.test/v1",
         "model": "qwen-plus",
+        "education_model_ref": {
+            "api_provider": "kimi",
+            "base_url": "https://example.test/kimi/v1",
+            "model": "k3",
+        },
     }
     gui._assigned_model_test_buttons = {"default": default_button}
     gui._assigned_model_test_icons = {
@@ -1022,6 +1027,85 @@ def test_assigned_model_test_result_updates_matching_traffic_light_only():
 
     assert gui._assigned_model_test_states["default"] == "success"
     assert default_button.configs[-1] == {"image": "green-light"}
+
+
+def test_assigned_model_test_result_syncs_both_roles_when_explicit_model_is_same():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    model_ref = {
+        "api_provider": "kimi",
+        "base_url": "https://api.kimi.com/coding/v1",
+        "model": "k3",
+    }
+    gui.api_config = {
+        **model_ref,
+        "education_model_ref": dict(model_ref),
+    }
+    gui.colors = {
+        "text_secondary": "gray", "warning": "yellow",
+        "success": "green", "danger": "red",
+    }
+    gui._assigned_model_test_buttons = {
+        "default": _FakeWidget(), "education": _FakeWidget(),
+    }
+    gui._assigned_model_test_status_labels = {
+        "default": _FakeWidget(), "education": _FakeWidget(),
+    }
+    gui._assigned_model_test_icons = {
+        "pending": "yellow-light", "success": "green-light", "error": "red-light",
+    }
+    gui._assigned_model_test_states = {"default": "testing", "education": "testing"}
+    gui._assigned_model_test_tokens = {"default": 2, "education": 2}
+
+    gui._apply_assigned_model_test_result({
+        "assigned_role": "default",
+        "assigned_test_token": 2,
+        "assigned_model_ref": model_ref,
+    }, {"status": "success"})
+
+    assert gui._assigned_model_test_states == {
+        "default": "success", "education": "success",
+    }
+    assert gui._assigned_model_test_status_labels["default"].configs[-1] == {
+        "text": "已通过", "foreground": "green",
+    }
+    assert gui._assigned_model_test_status_labels["education"].configs[-1] == {
+        "text": "已通过", "foreground": "green",
+    }
+
+
+def test_education_test_result_syncs_failure_back_to_default_when_following():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    model_ref = {
+        "api_provider": "qwen",
+        "base_url": "https://example.test/v1",
+        "model": "qwen-plus",
+    }
+    gui.api_config = dict(model_ref)
+    gui.colors = {
+        "text_secondary": "gray", "warning": "yellow",
+        "success": "green", "danger": "red",
+    }
+    gui._assigned_model_test_buttons = {
+        "default": _FakeWidget(), "education": _FakeWidget(),
+    }
+    gui._assigned_model_test_status_labels = {
+        "default": _FakeWidget(), "education": _FakeWidget(),
+    }
+    gui._assigned_model_test_icons = {
+        "pending": "yellow-light", "success": "green-light", "error": "red-light",
+    }
+    gui._assigned_model_test_states = {"default": "testing", "education": "testing"}
+    gui._assigned_model_test_tokens = {"default": 7, "education": 7}
+
+    gui._apply_assigned_model_test_result({
+        "assigned_role": "education",
+        "assigned_test_token": 7,
+        "assigned_model_ref": model_ref,
+    }, {"status": "error"})
+
+    assert gui._assigned_model_test_states == {
+        "default": "error", "education": "error",
+    }
 
 
 def test_assigned_model_test_feedback_identifies_role_and_keeps_rows_independent():
@@ -1262,6 +1346,58 @@ def test_save_api_config_sets_default_when_current_model_is_not_saved():
     assert "has_saved_current = any(" in save_block
     assert "should_set_default = not has_saved_current" in save_block
     assert 'default_summary = "本次保存的模型已设为默认 AI 模型" if should_set_default else "默认 AI 模型保持不变"' in save_block
+
+
+def test_model_discovery_keeps_custom_base_url_explicit_and_scopes_catalog_cache():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    fetch_block = source[source.index("def fetch_model_list"):]
+    fetch_block = fetch_block[:fetch_block.index("\n    def _show_api_key_while_pressed")]
+
+    assert 'self.api_base_url_var = tk.StringVar()' in source
+    assert 'text=" 自动识别并获取模型"' in source
+    assert 'if not base_url and not has_endpoint_discovery(provider):' in fetch_block
+    assert '自定义/中转地址只验证用户明确输入的 URL' in fetch_block
+    assert 'resolution = discover_api_endpoint(' in fetch_block
+    assert 'catalog_key = model_catalog_cache_key(provider, base_url)' in fetch_block
+
+
+def test_education_captcha_low_confidence_is_not_auto_submitted():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    solve_block = source[source.index("def _attempt_captcha_solve"):]
+    solve_block = solve_block[:solve_block.index("\n    def _solve_captcha")]
+
+    assert "CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE" in solve_block
+    assert "confidence < CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE" in solve_block
+    assert 'return False, "待人工验证"' in solve_block
+
+
+def test_education_captcha_retries_three_times_before_manual_fallback():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._education_browser_lock = threading.Lock()
+    gui._attempt_captcha_solve = Mock(side_effect=[
+        (False, "待人工验证"),
+        (False, "识别失败"),
+        (False, "待人工验证"),
+    ])
+    progress = []
+
+    with patch("education_certificate.navigate_to_chsi") as navigate, \
+            patch("education_certificate.fill_chsi_query_page") as fill, \
+            patch("gui_main.time.sleep"):
+        result = gui._fill_and_solve_captcha(
+            object(),
+            "张三",
+            "123456789012345678",
+            on_progress=lambda status, detail: progress.append((status, detail)),
+            max_attempts=3,
+        )
+
+    assert result == (False, "待人工验证")
+    assert gui._attempt_captcha_solve.call_count == 3
+    assert navigate.call_count == 3
+    assert fill.call_count == 3
+    assert any("2/3" in status for status, _detail in progress)
+    assert any("3/3" in status for status, _detail in progress)
 
 
 def test_use_selected_model_matches_provider_and_base_url_not_model_name_only():

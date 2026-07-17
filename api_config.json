@@ -1,11 +1,11 @@
 {
     "api_provider": "qwen",
-    "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/v1",
+    "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
     "model": "kimi-k2.6",
     "saved_models": [
         {
             "api_provider": "qwen",
-            "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/v1",
+            "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
             "model": "kimi-k2.6"
         }
     ],
@@ -14,7 +14,7 @@
     "llm_read_timeout": 60,
     "education_model_ref": {
         "api_provider": "qwen",
-        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/v1",
+        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
         "model": "kimi-k2.6"
     }
 }
