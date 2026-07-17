@@ -75,14 +75,14 @@ CI 用 `.venv-ci`，本地打包用 `pack_venv`。`build.py` 中 babel locale-da
 - **babel locale-data**：自定义 hook（`pyinstaller-hooks/hook-babel.py`）排除全部 1086 个 locale .dat，按需添加 9 个（zh/en 系列）
 - **排除模块**：保留 `scipy`、`lxml.objectify` 等无运行期入口模块；`pandas` 不再是直接打包依赖，Excel 导出保持 `openpyxl` 直写；`numpy`/`numpy.libs` 仅为 openpyxl 可选支持和环境残留，打包时应排除；**不要排除** `sqlite3`（DataRecorder/DrissionPage 顶层依赖）、`lxml.html`（DrissionPage 顶层依赖）
 - **体积判断**：Windows `--onefile` 单文件 EXE 通常比 macOS `--onedir` 后的 ZIP/DMG 大；不要用 macOS 32MB 反推 Windows。当前 Windows EXE 约 36.4MB、macOS ZIP/DMG 约 31-33MB 属正常范围
-- **CI 跨平台重建**：`build.py`、`pyinstaller-hooks/` 和核心源码/配置变更会触发对端平台 CI 重建；macOS 对端产物必须同时有 ZIP 和 DMG
+- **CI 双平台构建**：首次发布并行构建 Windows 和 macOS；断点续跑仅在附件完整时复用，macOS 必须同时有 ZIP 和 DMG
 
 ## Gitee Release 上传与校验
 
-- GitHub CI 只上传 GitHub Release；本地发布机将 CI 对端产物下载后同步 Gitee
-- macOS ZIP/DMG 使用最多 2 路并发流水传输，小文件最多 3 路并发；上传/下载超时 600s，4xx 不重试
+- GitHub Actions 的 Windows 发布任务集中下载 Windows/macOS 产物，按 EXE→ZIP→DMG 串行镜像到 Gitee；任一失败立即停止
+- 上传前比较远端附件和产物，同一提交断点续跑时复用已验证附件；上传/下载超时 600s，4xx 不重试
 - 发布主流程只校验附件齐全和 size 与 GitHub 一致，不回下载大文件；需要逐文件 SHA256 时手动运行 `python build.py --verify-gitee-integrity X.Y.Z`
-- **Gitee Token**：本地使用环境变量 `GITEE_TOKEN`；GitHub Repository Secret 不参与当前发布流程
+- **Gitee Token**：正式发布使用 Actions Repository Secret `GITEE_TOKEN`；本地手工核验/补传使用同名环境变量
 
 ## API / BOSS Page
 

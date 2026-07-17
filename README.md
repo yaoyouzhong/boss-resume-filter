@@ -273,7 +273,7 @@ boss-resume-filter/
 ├── migrate_keys.py       # API Key 迁移工具（明文→加密）
 ├── build.py              # PyInstaller 打包脚本（支持 --release 一键发布）
 ├── build_education_tool.py # 独立学历证书核验助手打包脚本
-├── latest.json           # 版本清单（Gitee 更新源，build.py --release 自动维护）
+├── latest.json           # 双源版本清单（正式发布工作流自动维护）
 ├── gui.bat               # GUI 启动脚本
 ├── job_config.json       # 岗位筛选规则配置
 ├── api_config.json       # 发布默认 AI 模型配置模板（不含明文 Key）
@@ -294,7 +294,8 @@ boss-resume-filter/
 ├── install.bat           # 安装脚本
 ├── tests/                # 测试脚本目录
 ├── scripts/              # 辅助脚本目录
-│   └── watch_progress.py # 发布进度监控脚本
+│   ├── release_ci.py   # GitHub Actions 正式发布编排与线上验收
+│   └── watch_progress.py # 本地打包进度监控脚本
 ├── pyinstaller-hooks/    # PyInstaller 自定义 hook（控制模块收集范围，减小产物体积）
 └── .build_progress.json  # 发布进度文件（build.py 实时更新，供外部监控）
 ```

@@ -33,13 +33,14 @@ boss-resume-filter/
 ├── paths.py              # 路径工具（get_base_dir、ensure_config_files、路径常量）
 ├── build.py              # PyInstaller 打包脚本（支持 --release 一键发布）
 ├── build_education_tool.py # 独立学历证书核验助手打包脚本
-├── latest.json           # 版本清单（Gitee 更新源，build.py --release 自动维护）
+├── latest.json           # 双源版本清单（正式发布工作流自动维护）
 ├── job_config.json       # 岗位筛选规则配置
 ├── api_config.json       # 发布默认 AI 模型配置模板（不含明文 Key）
 ├── selectors.json        # 页面选择器配置（CSS/XPath/关键词，DOM 变化时修改）
 ├── ui_config.json        # UI 尺寸与缩放配置
 ├── tests/                # 测试脚本目录
 ├── scripts/              # 辅助脚本（发布监控、PPT 生成、截图等）
+│   ├── release_ci.py   # GitHub Actions 正式发布编排与线上验收
 │   └── watch_progress.py # 发布进度监控脚本（轮询 .build_progress.json）
 ├── pyinstaller-hooks/    # PyInstaller 自定义 hook（控制模块收集范围，减小产物体积）
 ├── GUI 使用说明.md       # 图形界面操作说明
@@ -76,9 +77,9 @@ boss-resume-filter/
 ### 开发与交付流程
 
 - 低风险文档、测试和局部文案可在当前工作区修改；普通代码任务使用 `codex/<task>` 短期分支，并行、脏工作区、长周期或高风险任务才创建独立 worktree
-- PR 不作统一要求；核心筛选、自动打招呼、存储、更新器、发布脚本、CI/CD 或大范围修改应使用 PR；面向 `master` 的 PR 由 `PR Checks` 自动执行源码编译、稳定回归和导入烟测，合并 `master` 不等于正式发布
-- 推送、公开发布、删除分支/worktree/临时文件须分别获得用户授权
-- 发布前执行 `/neat-freak`、严格发布门禁和风险相关实测；发布后核验公开下载、自动更新及本次核心链路
+- PR 不作统一要求；核心筛选、自动打招呼、存储、更新器、发布脚本、CI/CD 或大范围修改应使用 PR；面向 `master` 的 PR 由 `PR Checks` 验证，PR 合并始终是独立授权，合并不会触发发布
+- 普通分支推送、PR 合并、删除分支/worktree/临时文件须分别获得用户授权；用户明确说“正式发布 vX.Y”后，该一次授权覆盖 `Build & Release` 内部的严格门禁、tag/清单推送、GitHub/Gitee Release 和线上验收，不再逐步确认
+- 发布准备 PR 合并前执行 `/neat-freak`、文案润色和风险相关实测；授权后由工作流重跑严格门禁并核验公开下载、自动更新和双远端状态
 - 已公开 tag 不得移动或覆盖，修复必须发布更高补丁版本；同一提交允许断点续跑
 - `candidates_all.json`、本地 API 配置、Chrome profile 和登录状态不属于任务临时文件，禁止收尾时自动清理
 
@@ -106,12 +107,12 @@ boss-resume-filter/
 - `python build.py --check [--strict-changelog]`：仅发布前检查；严格模式将 CHANGELOG 启发式覆盖、README 逐条镜像和 latest.json 同步提示升级为硬失败
 - `python build.py --sync-release-notes`：修正 CHANGELOG 后同步 GitHub + Gitee Release 说明，不重新打包
 - `python build.py`：自动打包（Windows EXE / macOS .app+ZIP+DMG），`IS_MAC`/`IS_WIN` 自动检测
-- `python build.py --release [--auto] [--version X.Y]`：打包→提交→tag→推送确认→GitHub Release 上传→Gitee 同步
+- `gh workflow run release.yml --ref master -f version=X.Y -f authorization="正式发布 vX.Y" -f dry_run=false`：唯一正式发布入口；严格门禁→双平台构建→双 Release→latest.json→线上验收
 - `python build.py --verify-release X.Y.Z`：只读核验双远端分支/tag、GitHub/Gitee Release、附件完整性和 latest.json，不打包不推送
 - 发布前必须执行 `/neat-freak` 并润色 CHANGELOG 当前版本段落；`gui_main.py` 的 `__version__` 是唯一版本号来源
 - `.build_state.json` 指纹未变时复用产物，`--force-build` 强制重建；Windows 使用 `--onefile --noconsole`，macOS 使用 `--onedir --windowed`
 - `_preflight_checks()` 验证依赖、敏感文件、源码编译、文档同步和回归测试；依赖变更须同步 `build.py:REQUIRED_IMPORTS`
-- Release 模式只自动提交 `--version` 引起的版本号变化，其他变更须先手工提交；推送前 `input()` 确认 [y/N]，同名 tag 仅在指向当前提交时允许续跑，任何冲突都中止且不得自动 `--force`
+- 本地 `build.py --release` 已停用，`--ci --release` 仅供 Actions 构建任务使用；同名 tag 只能在指向同一发布提交时断点续跑，不得移动或 `--force`
 - CHANGELOG 硬门禁包括当前版本、分类顺序、README 入口、历史完整性、源码编译和回归测试；正反向覆盖等启发式检查默认提示、严格模式阻断
 
 #### 打包体积优化（当前 Windows 约 36.4MB，macOS ZIP/DMG 约 31-33MB）
@@ -121,7 +122,7 @@ boss-resume-filter/
 - **排除模块**：保留 `scipy`、`lxml.objectify` 等无运行期入口模块；`pandas` 不再是直接打包依赖，Excel 导出保持 `openpyxl` 直写；`numpy`/`numpy.libs` 仅为 openpyxl 可选支持和环境残留，打包时应排除；**不要排除** `sqlite3`（DataRecorder/DrissionPage 顶层依赖）、`lxml.html`（DrissionPage 顶层依赖）
 - **体积判断**：Windows 使用 `--onefile` 单文件 EXE，通常比 macOS `--onedir` 后的 ZIP/DMG 大；不要用 macOS 32MB 反推 Windows 也必须接近 32MB。当前 Windows EXE 约 36.4MB、macOS ZIP/DMG 约 31-33MB 属正常范围。
 - 修改 build.py 时注意保持上述优化，避免体积回退
-- **CI 跨平台重建**：`build.py`、`pyinstaller-hooks/` 和核心源码/配置变更会触发对端平台 CI 重建；macOS 对端产物必须同时有 ZIP 和 DMG，否则 CI 需重建
+- **CI 双平台构建**：首次发布并行构建 Windows 和 macOS；断点续跑仅在附件完整性可验证时复用，macOS 必须同时有 ZIP 和 DMG
 
 ## 代码规范
 
@@ -311,9 +312,9 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 - **Windows**：下载 EXE → 校验 SHA256 → `update.bat` 替换重启；脚本须清理 `_PYI_*` 环境变量 + `PYINSTALLER_RESET_ENVIRONMENT=1` 防 DLL 缺失
 - **macOS**：.app 运行→下载 ZIP 替换重启；源码→`git pull`
 - `latest.json` 的 `assets` 记录产物 `size`/`sha256` 供校验
-- **Gitee Release 上传**：GitHub CI 只上传 GitHub Release；本地发布机将 CI 对端产物下载后同步 Gitee。macOS ZIP/DMG 使用最多 2 路并发流水传输，小文件最多 3 路并发；上传/下载超时 600s，4xx 不重试
+- **Gitee Release 上传**：`Build & Release` 的 Windows 发布任务集中下载双平台产物，按 EXE→ZIP→DMG 串行镜像到 Gitee；任一附件失败立即中止，重跑时复用已验证附件
 - **Gitee 完整性校验**：发布主流程只校验附件齐全和 size 与 GitHub 一致，不回下载大文件；需要逐文件 SHA256 时手动运行 `python build.py --verify-gitee-integrity X.Y.Z`
-- **Gitee Token**：本地使用环境变量 `GITEE_TOKEN`；GitHub Repository Secret 不参与当前发布流程
+- **Gitee Token**：Actions 使用 Repository Secret `GITEE_TOKEN`（需 projects 权限）；本地手工核验/补传仍使用同名环境变量
 ## 低频专项说明
 
 低频踩坑、平台差异和专项背景放在 `.agent/notes.md`。这是项目级稳定说明，可以进 git；不要把会话记忆、临时调试日志或自动生成的 agent 记忆放进去。

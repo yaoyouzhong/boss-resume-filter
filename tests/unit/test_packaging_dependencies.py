@@ -36,16 +36,45 @@ def test_release_workflow_rebuilds_macos_when_dmg_is_missing():
     """macOS release completeness requires both the auto-update ZIP and installer DMG."""
     workflow = (BASE_DIR / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
-    assert "BOSS_ResumeFilter_mac\\.zip" in workflow
-    assert "BOSS_ResumeFilter\\.dmg" in workflow
+    assert "BOSS_ResumeFilter_mac.zip" in workflow
+    assert "BOSS_ResumeFilter.dmg" in workflow
 
 
-def test_release_workflow_does_not_upload_to_gitee_from_github_runner():
-    """GitHub-hosted macOS runners are too slow for reliable Gitee large-file uploads."""
+def test_release_workflow_publishes_gitee_only_after_both_platform_builds():
+    """The publish job owns serial Gitee mirroring after both build jobs finish."""
     workflow = (BASE_DIR / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
-    assert "GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}" not in workflow
-    assert '--gitee-upload-local "$VERSION"' not in workflow
+    assert "needs: [prepare, build_windows, build_macos]" in workflow
+    assert "runs-on: windows-latest" in workflow
+    assert "GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}" in workflow
+    assert "scripts/release_ci.py publish" in workflow
+
+
+def test_release_workflow_requires_one_explicit_authorization_and_never_auto_triggers():
+    """Merging master must not publish; one manual authorization starts the full workflow."""
+    workflow = (BASE_DIR / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    assert "workflow_dispatch:" in workflow
+    assert "authorization:" in workflow
+    assert "Exact authorization text: 正式发布 vX.Y" in workflow
+    assert "dry_run:" in workflow
+    assert "push:" not in workflow
+    assert "pull_request:" not in workflow
+    assert "cancel-in-progress: false" in workflow
+    assert "queue: max" in workflow
+    assert "python scripts/release_ci.py prepare" in workflow
+    assert "python build.py --ci --release --strict-changelog" in workflow
+    assert '--authorization "${{ inputs.authorization }}"' not in workflow
+    assert '--authorization "$env:RELEASE_AUTHORIZATION"' in workflow
+
+
+def test_local_release_entrypoint_cannot_race_the_hosted_release_workflow():
+    """Formal releases have one mutation owner: the hosted workflow."""
+    build_source = (BASE_DIR / "build.py").read_text(encoding="utf-8")
+
+    assert "if args.release and not args.ci:" in build_source
+    assert "本地 build.py --release 已停用" in build_source
+    assert "gh workflow run release.yml --ref master" in build_source
 
 
 def test_pr_checks_run_stable_validation_for_master_pull_requests():

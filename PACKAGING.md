@@ -13,68 +13,41 @@
 
 **体积基线（v2.11）**：Windows 使用 `--onefile` 单文件 EXE，macOS 使用 `--onedir` 生成 `.app` 后再压缩为 ZIP/DMG。两者压缩结构和平台运行库不同，Windows EXE 约 36.4MB、macOS ZIP/DMG 约 31-33MB 属正常范围；不要把 macOS 安装包较小误判为缺依赖或未重建。
 
-### 自动补齐（GitHub Actions）
+### 正式发布（GitHub Actions）
 
-在任一平台本地发布后，`build.py` 会自动删除对端旧产物并触发 CI 重建：
+正式发布的唯一入口是 `.github/workflows/release.yml` 的 `workflow_dispatch`。PR 合并和正式发布是两个独立授权点：合并 `master` 不会自动发布；只有准确提供“正式发布 vX.Y”才会进入发布流程。
 
 ```bash
-# Mac 本地发布
-python build.py --release --version 2.9
-# 打包 macOS → 打 tag → 推送 → 自动删除旧 EXE → CI 构建新 EXE
-
-# Windows 本地发布
-python build.py --release --version 2.9
-# 打包 Windows → 打 tag → 推送 → 自动删除旧 DMG/ZIP → CI 构建新 DMG+ZIP
+gh workflow run release.yml --ref master \
+  -f version=2.21 \
+  -f authorization="正式发布 v2.21" \
+  -f dry_run=false
 ```
 
-**自动触发流程：**
-1. `build.py --release` 在本地平台打包并上传产物
-2. 自动删除 Release 中对端的旧产物（Windows 发布删 DMG/ZIP，macOS 发布删 EXE）
-3. 自动触发 `gh workflow run release.yml`，CI 检测缺失产物并构建
+**自动流程：**
 
-CI 检测 Release 已有产物，只构建缺失的部分：
-- 已有 EXE → CI 只构建 macOS（DMG+ZIP）
-- 已有 DMG+ZIP → CI 只构建 Windows（EXE）
-- 都没有 → CI 两边并行构建
+1. 确认事件来源为手动触发、分支为 `master`、授权文本与版本完全一致。
+2. 锁定不可变的发布提交，执行 `build.py --check --strict-changelog` 等价的完整严格门禁。
+3. Windows 和 macOS 独立并行构建，任一构建失败都不进入发布任务。
+4. 两端产物齐全后创建不可移动的 tag，建立 GitHub Draft Release，上传并校验 EXE、ZIP 和 DMG。
+5. Windows 发布任务将三个产物按 EXE→ZIP→DMG 串行镜像到 Gitee，避免 macOS runner 直连 Gitee 的大文件链路阻塞。
+6. 双 Release 附件完整且 size 一致后，将 GitHub Draft Release 转为正式版本。
+7. 最后生成 `latest.json` 的双源下载地址和 SHA256，提交并推送到 GitHub/Gitee `master`。
+8. 只读核验双远端分支/tag/Release/附件/清单，并实际请求六个公开下载地址和两份在线清单。
+
+**断点续跑：**工作流按“版本 + 发布提交”恢复。已验证的 GitHub 附件直接复用，已存在的同提交 tag 不重建，已一致的 Gitee 附件不重传。同名 tag 指向其他提交、或发布期间 `master` 出现非 `latest.json` 业务变更时立即中止，绝不移动 tag 或强制推送。
+
+**Dry Run：**将 `dry_run` 设为 `true` 时只执行授权校验和严格门禁，不构建、不创建 tag、不推送、不发布。
+
+**Actions 配置：**Repository Secret `GITEE_TOKEN` 需具有 Gitee projects 权限；工作流的 `contents: write` 用于 GitHub tag、Release 和 `latest.json` 提交。本地 `build.py --release` 已停用，防止本地脚本与 Actions 同时修改同一标签和 Release。
 
 Release 页面最终包含：
+
 - `BOSS_ResumeFilter.exe` — Windows 用户
 - `BOSS_ResumeFilter.dmg` — macOS 用户（手动安装）
 - `BOSS_ResumeFilter_mac.zip` — macOS 自动更新用
 
-配置文件：`.github/workflows/release.yml`
-
-**CI 说明：**
-- **CI 构建完成后上传当前平台产物到 GitHub Release；Gitee 由本地发布机同步**
-- macOS 使用 `macos-latest`（Apple Silicon M1）runner，生成的 .app 兼容 Apple Silicon Mac；Intel Mac 用户建议从源码运行
-- 虚拟环境（`.venv-ci`）按 `requirements.txt` hash 缓存，依赖不变时跳过安装
-- 支持 `workflow_dispatch` 手动触发
-- 新版本发布时自动触发对端重建，无需手动删除产物
-
-### Gitee Release 上传（本地并行中转）
-
-本地发布需要 `GITEE_TOKEN` 环境变量（在 https://gitee.com/profile/personal_access_tokens 生成，勾选 projects 权限）。GitHub 托管的 macOS runner 到 Gitee 的大文件上传链路实测会长时间阻塞，因此不在 CI 上传 Gitee。
-
-**上传流程（`build.py --release` 自动执行）：**
-
-1. 上传当前平台产物到 GitHub Release
-2. 触发 CI 构建对端产物
-3. 从本地 `dist/` 上传当前平台产物到 Gitee Release
-4. CI 将对端产物上传 GitHub Release
-5. 本地以最多两路并发下载对端产物并上传 Gitee
-6. 更新 `latest.json` 的 `downloads_cn` 字段并自动提交推送
-
-**传输策略**：macOS ZIP/DMG 最多 2 路并发上传；小文件最多 3 路并发。所有 GitHub/Gitee 上传超时为 600 秒，失败按现有重试策略处理。
-
-**平台顺序**：
-- Windows 本地发布：本地上传 EXE；macOS CI 上传 GitHub 后，本地并行同步 ZIP/DMG 到 Gitee。
-- macOS 本地发布：本地上传 ZIP/DMG；Windows CI 上传 GitHub 后，本地同步 EXE 到 Gitee。
-
-**增量上传**：上传前先比较远端附件和本地产物。能证明内容一致时直接跳过，否则删除旧附件并重传。
-
-**完整性校验**：发布主流程只校验 Gitee 附件齐全且 size 与 GitHub 一致，避免发布后再次回下载三个大文件。需要逐文件 SHA256 审计时运行 `python build.py --verify-gitee-integrity X.Y.Z`。
-
-**tag 不可变**：同名 tag 仅在已经指向当前提交时允许断点续跑；本地或远端 tag 指向其他提交时发布立即中止，不自动覆盖。公开版本出错必须发布更高补丁版本。
+**完整性校验：**发布主流程校验 Gitee 附件齐全且 size 与 GitHub 一致，避免重复回下载三个大文件。需要逐文件 SHA256 审计时运行 `python build.py --verify-gitee-integrity X.Y.Z`。
 
 `latest.json` 字段说明：
 - `downloads`：GitHub 下载链接（国际）
@@ -124,11 +97,11 @@ python build.py --check --strict-changelog
 # 使用自动打包脚本（推荐）
 python build.py
 
-# 一键发布：打包 → 提交 → 打 tag → 推送 → GitHub Release
-python build.py --release
+# 本地只读预检：允许工作区有本轮实现变更，不推送不发布
+python scripts/release_ci.py prepare --version 2.20 --authorization "正式发布 v2.20" --dry-run
 
-# 自动更新版本号 + 一键发布
-python build.py --release --version 2.5
+# PR 合并后正式发布（单独授权）
+gh workflow run release.yml --ref master -f version=2.21 -f authorization="正式发布 v2.21" -f dry_run=false
 
 # 发布完成后只读核验 GitHub/Gitee、附件和 latest.json
 python build.py --verify-release 2.5
@@ -157,9 +130,9 @@ pyinstaller --onefile --noconsole \
 - `python tests/test_import.py` 通过
 - 工作区干净
 
-Release 模式不会再执行 `git add -A`。除 `--version` 自动修改 `gui_main.py` 外，其他变更必须先手工提交，否则发布脚本会中断。
+正式发布工作流不会提交业务代码或自动改版本号；版本号、更新说明和用户文档必须随发布准备 PR 一起合并。
 
-Release 标题和说明必须先写在 `CHANGELOG.md` 对应版本段落中。`python build.py --release` 会自动提取该段落作为 GitHub Release 内容；如果缺少对应版本，或未按以下顺序分类，发布会直接中断：
+Release 标题和说明必须先写在 `CHANGELOG.md` 对应版本段落中。`scripts/release_ci.py` 会自动提取该段落作为 GitHub/Gitee Release 内容；如果缺少对应版本，或未按以下顺序分类，发布会直接中断：
 
 - 新增功能
 - 体验优化
@@ -379,8 +352,8 @@ pip install -r requirements.txt pyinstaller
 # 执行打包（自动检测 macOS 平台）
 python3 build.py
 
-# 或一键发布
-python3 build.py --release
+# 正式发布由 GitHub Actions 双平台构建，不在 Mac 本地执行
+gh workflow run release.yml --ref master -f version=2.21 -f authorization="正式发布 v2.21" -f dry_run=false
 ```
 
 ### 3. 输出文件
