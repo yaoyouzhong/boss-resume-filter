@@ -319,3 +319,44 @@ def test_execute_resumes_merged_pr_at_sync_and_cleanup():
     preflight.assert_not_called()
     finalize.assert_called_once_with(branch, merge_sha)
     assert result["merge_sha"] == merge_sha
+
+
+def test_pr_creation_retries_transient_new_branch_propagation_failure():
+    branch = "codex/test"
+    head_sha = "a" * 40
+    pr = {"number": 10, "state": "OPEN", "headRefOid": head_sha}
+    run_results = [
+        _completed(),
+        subprocess.CompletedProcess([], 1, "", "head sha can't be blank"),
+        _completed("https://github.example/pr/10\n"),
+    ]
+    with (
+        patch.object(pr_delivery, "_run", side_effect=run_results),
+        patch.object(pr_delivery, "_find_delivery_pr", side_effect=[None, None, pr]),
+        patch.object(pr_delivery, "_default_pr_title", return_value="Title"),
+        patch.object(pr_delivery, "_default_pr_body", return_value="Body"),
+        patch.object(pr_delivery.time, "sleep") as sleep,
+    ):
+        result = pr_delivery._push_and_create_pr(branch, head_sha)
+
+    assert result == pr
+    sleep.assert_called_once_with(2)
+
+
+def test_pr_creation_reports_final_github_error_after_three_attempts():
+    branch = "codex/test"
+    failures = [
+        _completed(),
+        subprocess.CompletedProcess([], 1, "", "temporary error 1"),
+        subprocess.CompletedProcess([], 1, "", "temporary error 2"),
+        subprocess.CompletedProcess([], 1, "", "final GitHub error"),
+    ]
+    with (
+        patch.object(pr_delivery, "_run", side_effect=failures),
+        patch.object(pr_delivery, "_find_delivery_pr", return_value=None),
+        patch.object(pr_delivery, "_default_pr_title", return_value="Title"),
+        patch.object(pr_delivery, "_default_pr_body", return_value="Body"),
+        patch.object(pr_delivery.time, "sleep"),
+    ):
+        with _raises(pr_delivery.PRDeliveryError, "final GitHub error"):
+            pr_delivery._push_and_create_pr(branch, "a" * 40)

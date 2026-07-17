@@ -257,16 +257,31 @@ def _push_and_create_pr(
         print(f"  [复用] PR #{pr['number']}: {pr['url']}")
         return pr
 
-    create_result = _run(
-        [
-            "gh", "pr", "create",
-            "--base", "master",
-            "--head", branch,
-            "--title", title or _default_pr_title(),
-            "--body", _default_pr_body(),
-        ],
-        capture_output=True,
-    )
+    create_args = [
+        "gh", "pr", "create",
+        "--base", "master",
+        "--head", branch,
+        "--title", title or _default_pr_title(),
+        "--body", _default_pr_body(),
+    ]
+    create_result: subprocess.CompletedProcess[str] | None = None
+    for attempt in range(1, 4):
+        create_result = _run(
+            create_args,
+            check=False,
+            capture_output=True,
+        )
+        if create_result.returncode == 0:
+            break
+        existing = _find_delivery_pr(branch, head_sha)
+        if existing is not None:
+            return existing
+        if attempt < 3:
+            print(f"  [重试] GitHub 暂未接受新分支，稍后重试创建 PR（{attempt + 1}/3）")
+            time.sleep(attempt * 2)
+    if create_result is None or create_result.returncode != 0:
+        detail = str((create_result.stderr or create_result.stdout or "未知错误")).strip()
+        _fail(f"PR 创建失败：{detail}")
     print(f"  [OK] PR 已创建: {create_result.stdout.strip()}")
     pr = _find_delivery_pr(branch, head_sha)
     if pr is None:
