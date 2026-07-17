@@ -29,6 +29,23 @@ def test_centered_messagebox_accepts_application_scaled_fonts():
     assert box._button_font == ("App Font", 15)
 
 
+def test_gui_uses_smaller_dedicated_modal_fonts():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    setup = source[source.index("messagebox.set_ui_fonts("):]
+    setup = setup[:setup.index("# 设置 Combobox")]
+
+    assert "self.font_log[1] + 1" in setup
+    assert setup.count("self.font_log[1]") == 3
+    assert "message=self.font_label" not in setup
+
+
+def test_api_probe_failure_copy_does_not_claim_connectivity_succeeded():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+
+    assert "模型连接或兼容性验证未通过" in source
+    assert "API 可访问，但模型不能用于 AI 评估" not in source
+
+
 def test_centered_messagebox_can_reduce_dialog_fonts_by_one_level():
     box = CenteredMessageBox()
 
@@ -100,7 +117,7 @@ def test_all_gui_messagebox_calls_use_centered_proxy():
     assert "from tkinter import filedialog, font, messagebox, ttk" not in gui_source
     assert "from tkinter import ttk, messagebox" not in dialogs_source
     assert "from tkinter import messagebox" not in updater_source
-    assert "headline=(FONT_FAMILY, self.font_label[1], 'bold')" in gui_source
+    assert "headline=(FONT_FAMILY, max(10, self.font_log[1] + 1), 'bold')" in gui_source
     assert "headline=(FONT_FAMILY_SEMIBOLD, self.font_label[1])" not in gui_source
     assert "headline=self.font_section" not in gui_source
 

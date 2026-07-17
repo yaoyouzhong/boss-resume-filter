@@ -36,7 +36,7 @@ OFFICIAL_API_ENDPOINT_RULES = {
         "docs_url": "https://api-docs.deepseek.com/",
     },
     "kimi": {
-        "exact_hosts": ("api.moonshot.ai", "api.moonshot.cn"),
+        "exact_hosts": ("api.moonshot.ai", "api.moonshot.cn", "api.kimi.com"),
         "service_name": "Kimi",
         "docs_url": "https://platform.kimi.ai/docs/api/overview",
     },
@@ -98,7 +98,9 @@ def classify_api_endpoint(api_config: dict) -> dict[str, Any]:
 
     service_name = str(rule.get("service_name") or provider or "未配置服务")
     if is_official:
-        if hostname == "token-plan.cn-beijing.maas.aliyuncs.com":
+        if provider == "kimi" and hostname == "api.kimi.com":
+            service_name = "Kimi Code"
+        elif hostname == "token-plan.cn-beijing.maas.aliyuncs.com":
             service_name = "阿里云百炼 Token Plan"
         elif hostname in {"coding.dashscope.aliyuncs.com", "coding-intl.dashscope.aliyuncs.com"}:
             service_name = "阿里云百炼 Coding Plan"
@@ -120,6 +122,20 @@ def classify_api_endpoint(api_config: dict) -> dict[str, Any]:
     }
 
 
+def normalize_api_base_url(api_config: dict) -> str:
+    """Normalize documented provider Base URLs without changing unknown relays."""
+    raw_url = str(api_config.get("base_url") or "").strip().rstrip("/")
+    provider = str(api_config.get("api_provider") or "").strip().lower()
+    parts = urlsplit(raw_url)
+    if (
+        provider == "kimi"
+        and (parts.hostname or "").lower() == "api.kimi.com"
+        and parts.path.rstrip("/") == "/coding"
+    ):
+        return urlunsplit((parts.scheme, parts.netloc, "/coding/v1", parts.query, parts.fragment))
+    return raw_url
+
+
 def detect_protocol(api_config: dict) -> str:
     """Return the wire protocol required by the configured endpoint."""
     provider = str(api_config.get("api_provider") or "").lower()
@@ -135,7 +151,7 @@ def capability_cache_key(api_config: dict) -> str:
     """Build a non-secret cache key scoped to endpoint and model."""
     return "|".join((
         detect_protocol(api_config),
-        str(api_config.get("base_url") or "").rstrip("/").lower(),
+        normalize_api_base_url(api_config).lower(),
         str(api_config.get("model") or "").strip().lower(),
     ))
 
@@ -183,7 +199,7 @@ def _append_query(url: str, key: str, value: str) -> str:
 
 
 def _azure_url(api_config: dict) -> str:
-    base_url = str(api_config.get("base_url") or "").rstrip("/")
+    base_url = normalize_api_base_url(api_config)
     if base_url.endswith("/chat/completions"):
         return _append_query(
             base_url,
@@ -213,7 +229,7 @@ def build_request(
 ) -> tuple[str, dict, dict, str]:
     """Build a provider-specific request with one normalized input shape."""
     protocol = detect_protocol(api_config)
-    base_url = str(api_config.get("base_url") or "").rstrip("/")
+    base_url = normalize_api_base_url(api_config)
     model = str(api_config.get("model") or "")
     if protocol == "anthropic":
         url = f"{base_url}/messages" if base_url.endswith("/v1") else f"{base_url}/v1/messages"
@@ -269,6 +285,9 @@ def build_request(
             }
     base_lower = base_url.lower()
     model_lower = model.lower()
+    if "api.kimi.com/coding" in base_lower:
+        # Kimi Code's OpenAI-compatible models currently only accept 1.
+        body["temperature"] = 1
     if "dashscope.aliyuncs.com" in base_lower and model_lower.startswith("qwen3.7"):
         body["enable_thinking"] = False
     if api_config.get("_disable_thinking") and "xiaomimimo.com" in base_lower:

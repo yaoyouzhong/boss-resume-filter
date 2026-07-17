@@ -41,7 +41,7 @@ from candidate_state_diagnostics import (
     diagnose_candidate_states,
     summarize_candidate_state_diagnostics,
 )
-from ai_adapter import classify_api_endpoint
+from ai_adapter import classify_api_endpoint, normalize_api_base_url
 from greeting_failure import diagnose_greeting_failure, format_greeting_failure_message
 from contact_queue import (
     build_contact_queue_item,
@@ -119,6 +119,7 @@ PROVIDER_DISPLAY = {
     "custom": "自定义 (Custom)"
 }
 DISPLAY_TO_KEY = {v: k for k, v in PROVIDER_DISPLAY.items()}
+KIMI_CODE_MODEL_IDS = {"kimi-for-coding", "kimi-for-coding-highspeed"}
 
 
 def _api_service_display_name(api_config: dict) -> str:
@@ -1074,9 +1075,9 @@ class BossFilterGUI:
         self.font_log = (FONT_FAMILY, int(11 * page_fs))
         self.font_table = (FONT_FAMILY, int(12 * page_fs))  # 表格字体
         messagebox.set_ui_fonts(
-            headline=(FONT_FAMILY, self.font_label[1], 'bold'),
-            message=self.font_label,
-            button=self.font_label,
+            headline=(FONT_FAMILY, max(10, self.font_log[1] + 1), 'bold'),
+            message=(FONT_FAMILY, max(10, self.font_log[1])),
+            button=(FONT_FAMILY, max(10, self.font_log[1])),
         )
 
         # 设置 Combobox 下拉列表字体（与 font_label 保持一致）
@@ -7977,6 +7978,28 @@ class BossFilterGUI:
                 messagebox.showwarning("警告", "请输入 Base URL")
                 return
 
+            normalized_base_url = normalize_api_base_url({
+                "api_provider": provider,
+                "base_url": base_url,
+            })
+            if normalized_base_url != base_url.rstrip("/"):
+                base_url = normalized_base_url
+                self.api_base_url_var.set(base_url)
+            if (
+                provider == "kimi"
+                and urlparse(base_url).hostname == "api.kimi.com"
+                and model_name not in KIMI_CODE_MODEL_IDS
+                and not pending
+            ):
+                messagebox.showwarning(
+                    "模型名称不正确",
+                    "Kimi Code 只接受以下模型 ID：\n\n"
+                    "• kimi-for-coding\n"
+                    "• kimi-for-coding-highspeed\n\n"
+                    "请修改模型名称，或先获取模型列表后选择。",
+                )
+                return
+
             # 按服务商 + Base URL 组合存储 API Key（区分同一服务商的不同接入方式）
             save_api_key(provider, api_key, base_url)
 
@@ -8186,7 +8209,8 @@ class BossFilterGUI:
 
         api_key = self.api_key_var.get().strip()
         base_url = self.api_base_url_var.get().strip()
-        provider = self.api_provider_var.get()
+        provider_display = self.api_provider_var.get().strip()
+        provider = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
 
         if not api_key:
             messagebox.showwarning("警告", "请先输入 API Key")
@@ -8195,6 +8219,14 @@ class BossFilterGUI:
         if not base_url:
             messagebox.showwarning("警告", "请先输入 Base URL")
             return
+
+        normalized_base_url = normalize_api_base_url({
+            "api_provider": provider,
+            "base_url": base_url,
+        })
+        if normalized_base_url != base_url.rstrip("/"):
+            base_url = normalized_base_url
+            self.api_base_url_var.set(base_url)
 
         # 显示加载中状态（不使用 update()，避免重入）
         self._update_api_status(text="⏳ 正在获取模型列表...", foreground=self.colors['warning'])
@@ -8846,6 +8878,8 @@ class BossFilterGUI:
         api_key = self.api_key_var.get().strip()
         base_url = self.api_base_url_var.get().strip()
         model = self.api_model_var.get().strip()
+        provider_display = self.api_provider_var.get().strip()
+        provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
 
         if not api_key:
             messagebox.showwarning("警告", "请先输入 API Key")
@@ -8857,6 +8891,26 @@ class BossFilterGUI:
 
         if not model:
             messagebox.showwarning("警告", "请先输入模型名称")
+            return
+
+
+        normalized_base_url = normalize_api_base_url({
+            "api_provider": provider_key,
+            "base_url": base_url,
+        })
+        if normalized_base_url != base_url.rstrip("/"):
+            base_url = normalized_base_url
+            self.api_base_url_var.set(base_url)
+        if (
+            provider_key == "kimi"
+            and urlparse(base_url).hostname == "api.kimi.com"
+            and model not in KIMI_CODE_MODEL_IDS
+        ):
+            messagebox.showwarning(
+                "模型名称不正确",
+                "当前是 Kimi Code 接口，模型名称应填写：\n\n"
+                "kimi-for-coding\n或 kimi-for-coding-highspeed",
+            )
             return
 
         # 显示测试中状态
@@ -8896,8 +8950,6 @@ class BossFilterGUI:
             # 连通不等于可用：真实验证该模型能否生成程序可解析的评估结果。
             try:
                 from llm_eval import probe_model_compatibility
-                provider_display = self.api_provider_var.get().strip()
-                provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
                 capability = probe_model_compatibility({
                     "api_provider": provider_key,
                     "base_url": base_url,
@@ -8923,12 +8975,12 @@ class BossFilterGUI:
                 else:
                     error_message = capability.get("message", "模型无法生成程序所需评估格式")
                     self.root.after(0, lambda: self._update_api_status(
-                        text="✗ 模型不兼容",
+                        text="✗ 验证未通过",
                         foreground=self.colors['danger'],
                     ))
                     self.root.after(0, lambda: messagebox.showerror(
                         "连接测试失败",
-                        f"API 可访问，但模型不能用于 AI 评估\n\n原因：{error_message}",
+                        f"模型连接或兼容性验证未通过\n\n原因：{error_message}",
                     ))
                 return
             except Exception as e:

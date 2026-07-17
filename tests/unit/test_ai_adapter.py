@@ -6,6 +6,7 @@ from ai_adapter import (
     build_request,
     classify_api_endpoint,
     detect_protocol,
+    normalize_api_base_url,
     normalize_response,
 )
 
@@ -46,6 +47,7 @@ def test_official_endpoint_classification_uses_provider_and_documented_host():
         ("qwen", "https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"),
         ("deepseek", "https://api.deepseek.com"),
         ("kimi", "https://api.moonshot.ai/v1"),
+        ("kimi", "https://api.kimi.com/coding/v1"),
         ("zhipu", "https://open.bigmodel.cn/api/paas/v4"),
         ("minimax", "https://api.minimax.io/v1"),
         ("minimax", "https://api.minimaxi.com/v1"),
@@ -93,6 +95,27 @@ def test_endpoint_classification_identifies_official_plan_channels():
     assert token_plan["service_name"] == "阿里云百炼 Token Plan"
     assert glm_coding["service_name"] == "智谱 GLM Coding Plan"
     assert step_plan["service_name"] == "阶跃星辰 Step Plan"
+
+
+def test_kimi_code_base_url_is_normalized_for_openai_compatible_requests():
+    config = {
+        "api_provider": "kimi",
+        "base_url": "https://api.kimi.com/coding/",
+        "model": "kimi-for-coding",
+    }
+
+    assert normalize_api_base_url(config) == "https://api.kimi.com/coding/v1"
+    url, _headers, body, protocol = build_request(
+        config,
+        "secret",
+        MESSAGES,
+        max_tokens=100,
+        temperature=0,
+    )
+
+    assert protocol == "openai_compatible"
+    assert url == "https://api.kimi.com/coding/v1/chat/completions"
+    assert body["temperature"] == 1
 
 
 def test_build_openai_compatible_request():
