@@ -12,7 +12,27 @@ python tests/test_import.py
 ## 活跃脚本
 
 - `release_ci.py`：`Build & Release` 的确定性发布编排，负责一次授权、严格门禁、双远端发布、断点续跑和线上验收；行为测试在 `tests/unit/test_release_ci.py`。
+- `pr_delivery.py`：普通开发分支的一次授权交付编排，负责本地门禁、push、PR、CI 等待、Squash 合并、双远端同步和安全分支清理；默认只预览，行为测试在 `tests/unit/test_pr_delivery.py`。
 - `watch_progress.py`：轮询 `.build_progress.json` 并输出本地打包状态，保留作为手工构建辅助工具。
+
+### 普通 PR 一键交付
+
+先执行只读预览和本地门禁：
+
+```powershell
+python scripts/pr_delivery.py --branch codex/<task>
+```
+
+用户准确授权“`一键交付分支 codex/<task>`”后执行完整交付：
+
+```powershell
+python scripts/pr_delivery.py `
+  --branch codex/<task> `
+  --execute `
+  --authorization "一键交付分支 codex/<task>"
+```
+
+流程遇到分叉、冲突、脏工作区、测试/CI 失败或双远端不一致时停止并保留分支；不会 rebase、force push、删除 worktree 或正式发布。
 
 ## archive/ — 历史脚本归档
 

@@ -41,6 +41,7 @@ boss-resume-filter/
 ├── tests/                # 测试脚本目录
 ├── scripts/              # 辅助脚本（发布监控、PPT 生成、截图等）
 │   ├── release_ci.py   # GitHub Actions 正式发布编排与线上验收
+│   ├── pr_delivery.py # 普通 PR 一次授权交付（门禁、PR、合并、双远端同步、分支清理）
 │   └── watch_progress.py # 发布进度监控脚本（轮询 .build_progress.json）
 ├── pyinstaller-hooks/    # PyInstaller 自定义 hook（控制模块收集范围，减小产物体积）
 ├── GUI 使用说明.md       # 图形界面操作说明
@@ -78,7 +79,8 @@ boss-resume-filter/
 
 - 低风险文档、测试和局部文案可在当前工作区修改；普通代码任务使用 `codex/<task>` 短期分支，并行、脏工作区、长周期或高风险任务才创建独立 worktree
 - PR 不作统一要求；核心筛选、自动打招呼、存储、更新器、发布脚本、CI/CD 或大范围修改应使用 PR；面向 `master` 的 PR 由 `PR Checks` 验证，PR 合并始终是独立授权，合并不会触发发布
-- 普通分支推送、PR 合并、删除分支/worktree/临时文件须分别获得用户授权；用户明确说“正式发布 vX.Y”后，该一次授权覆盖 `Build & Release` 内部的严格门禁、tag/清单推送、GitHub/Gitee Release 和线上验收，不再逐步确认
+- 普通分支推送、PR 合并、删除分支/worktree/临时文件默认须分别获得用户授权。用户准确授权“`一键交付分支 <branch>`”后，该一次授权仅覆盖指定分支的本地门禁、普通 push、创建/复用 PR、等待 `PR Checks`、Squash 合并、同步 GitHub/Gitee `master`、删除本地和远端分支、快进本地 `master`；不覆盖 rebase、force push、worktree 删除、冲突处理或正式发布。任一门禁/CI/一致性检查失败必须停止且不得清理分支
+- 用户明确说“正式发布 vX.Y”后，该一次授权覆盖 `Build & Release` 内部的严格门禁、tag/清单推送、GitHub/Gitee Release 和线上验收，不再逐步确认
 - 发布准备 PR 合并前执行 `/neat-freak`、文案润色和风险相关实测；授权后由工作流重跑严格门禁并核验公开下载、自动更新和双远端状态
 - 已公开 tag 不得移动或覆盖，修复必须发布更高补丁版本；同一提交允许断点续跑
 - `candidates_all.json`、本地 API 配置、Chrome profile 和登录状态不属于任务临时文件，禁止收尾时自动清理
