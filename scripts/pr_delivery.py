@@ -257,16 +257,31 @@ def _push_and_create_pr(
         print(f"  [复用] PR #{pr['number']}: {pr['url']}")
         return pr
 
-    create_result = _run(
-        [
-            "gh", "pr", "create",
-            "--base", "master",
-            "--head", branch,
-            "--title", title or _default_pr_title(),
-            "--body", _default_pr_body(),
-        ],
-        capture_output=True,
-    )
+    create_args = [
+        "gh", "pr", "create",
+        "--base", "master",
+        "--head", branch,
+        "--title", title or _default_pr_title(),
+        "--body", _default_pr_body(),
+    ]
+    create_result: subprocess.CompletedProcess[str] | None = None
+    for attempt in range(1, 4):
+        create_result = _run(
+            create_args,
+            check=False,
+            capture_output=True,
+        )
+        if create_result.returncode == 0:
+            break
+        existing = _find_delivery_pr(branch, head_sha)
+        if existing is not None:
+            return existing
+        if attempt < 3:
+            print(f"  [重试] GitHub 暂未接受新分支，稍后重试创建 PR（{attempt + 1}/3）")
+            time.sleep(attempt * 2)
+    if create_result is None or create_result.returncode != 0:
+        detail = str((create_result.stderr or create_result.stdout or "未知错误")).strip()
+        _fail(f"PR 创建失败：{detail}")
     print(f"  [OK] PR 已创建: {create_result.stdout.strip()}")
     pr = _find_delivery_pr(branch, head_sha)
     if pr is None:
@@ -369,7 +384,8 @@ def _merge_pr(pr: dict[str, Any]) -> dict[str, Any]:
     return current
 
 
-def _update_local_master(expected_sha: str) -> None:
+def _update_local_master(expected_sha: str) -> bool:
+    """Update local master and report whether it is checked out elsewhere."""
     master_worktree = _worktree_for_branch("master")
     if master_worktree is not None:
         _assert_clean_worktree(master_worktree, "本地 master 工作区")
@@ -381,6 +397,7 @@ def _update_local_master(expected_sha: str) -> None:
         _run(["git", "branch", "-f", "master", "origin/master"])
     if _git_text("rev-parse", "master") != expected_sha:
         _fail("本地 master 未能快进到合并提交")
+    return master_worktree is not None
 
 
 def finalize_delivery(branch: str, merge_sha: str) -> dict[str, str]:
@@ -395,12 +412,15 @@ def finalize_delivery(branch: str, merge_sha: str) -> dict[str, str]:
     if gitee_master != merge_sha:
         _fail("Gitee master 与 GitHub master 不一致，拒绝清理分支")
 
-    _update_local_master(merge_sha)
+    master_checked_out_elsewhere = _update_local_master(merge_sha)
 
     if _remote_branch_exists("origin", branch):
         _run(["git", "push", "origin", "--delete", branch])
     if _current_branch() == branch:
-        _run(["git", "switch", "--detach", "origin/master"])
+        if master_checked_out_elsewhere:
+            _run(["git", "switch", "--detach", "origin/master"])
+        else:
+            _run(["git", "switch", "master"])
     if _local_branch_exists(branch):
         _run(["git", "branch", "-D", branch])
 

@@ -157,7 +157,9 @@ def test_finalize_preserves_branches_when_gitee_is_not_synchronized():
             "_remote_ref",
             side_effect=[merge_sha, "b" * 40],
         ),
-        patch.object(pr_delivery, "_update_local_master") as update_master,
+        patch.object(
+            pr_delivery, "_update_local_master", return_value=True
+        ) as update_master,
         patch.object(pr_delivery, "_remote_branch_exists") as remote_exists,
         patch.object(pr_delivery, "_local_branch_exists") as local_exists,
     ):
@@ -191,6 +193,24 @@ def test_finalize_cleans_branch_only_after_both_masters_match():
     update_master.assert_called_once_with(merge_sha)
     assert call(["git", "push", "origin", "--delete", branch]) in run.call_args_list
     assert call(["git", "switch", "--detach", "origin/master"]) in run.call_args_list
+    assert call(["git", "branch", "-D", branch]) in run.call_args_list
+
+
+def test_finalize_returns_primary_worktree_to_master_before_deleting_branch():
+    merge_sha = "a" * 40
+    branch = "codex/test"
+    with (
+        patch.object(pr_delivery, "_run", return_value=_completed()) as run,
+        patch.object(pr_delivery, "_remote_ref", side_effect=[merge_sha, merge_sha]),
+        patch.object(pr_delivery, "_update_local_master", return_value=False),
+        patch.object(pr_delivery, "_remote_branch_exists", side_effect=[False, False]),
+        patch.object(pr_delivery, "_current_branch", return_value=branch),
+        patch.object(pr_delivery, "_local_branch_exists", side_effect=[True, False]),
+    ):
+        pr_delivery.finalize_delivery(branch, merge_sha)
+
+    assert call(["git", "switch", "master"]) in run.call_args_list
+    assert call(["git", "switch", "--detach", "origin/master"]) not in run.call_args_list
     assert call(["git", "branch", "-D", branch]) in run.call_args_list
 
 
@@ -299,3 +319,44 @@ def test_execute_resumes_merged_pr_at_sync_and_cleanup():
     preflight.assert_not_called()
     finalize.assert_called_once_with(branch, merge_sha)
     assert result["merge_sha"] == merge_sha
+
+
+def test_pr_creation_retries_transient_new_branch_propagation_failure():
+    branch = "codex/test"
+    head_sha = "a" * 40
+    pr = {"number": 10, "state": "OPEN", "headRefOid": head_sha}
+    run_results = [
+        _completed(),
+        subprocess.CompletedProcess([], 1, "", "head sha can't be blank"),
+        _completed("https://github.example/pr/10\n"),
+    ]
+    with (
+        patch.object(pr_delivery, "_run", side_effect=run_results),
+        patch.object(pr_delivery, "_find_delivery_pr", side_effect=[None, None, pr]),
+        patch.object(pr_delivery, "_default_pr_title", return_value="Title"),
+        patch.object(pr_delivery, "_default_pr_body", return_value="Body"),
+        patch.object(pr_delivery.time, "sleep") as sleep,
+    ):
+        result = pr_delivery._push_and_create_pr(branch, head_sha)
+
+    assert result == pr
+    sleep.assert_called_once_with(2)
+
+
+def test_pr_creation_reports_final_github_error_after_three_attempts():
+    branch = "codex/test"
+    failures = [
+        _completed(),
+        subprocess.CompletedProcess([], 1, "", "temporary error 1"),
+        subprocess.CompletedProcess([], 1, "", "temporary error 2"),
+        subprocess.CompletedProcess([], 1, "", "final GitHub error"),
+    ]
+    with (
+        patch.object(pr_delivery, "_run", side_effect=failures),
+        patch.object(pr_delivery, "_find_delivery_pr", return_value=None),
+        patch.object(pr_delivery, "_default_pr_title", return_value="Title"),
+        patch.object(pr_delivery, "_default_pr_body", return_value="Body"),
+        patch.object(pr_delivery.time, "sleep"),
+    ):
+        with _raises(pr_delivery.PRDeliveryError, "final GitHub error"):
+            pr_delivery._push_and_create_pr(branch, "a" * 40)
