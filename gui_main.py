@@ -5052,58 +5052,35 @@ class BossFilterGUI:
                             self._update_education_queue_row(iid)
                     self.run_on_ui(_update)
 
-                max_retries = 2
-                for attempt in range(max_retries + 1):
-                    try:
-                        on_progress("正在加载学信网页面...", "")
-                        success, status = self._fill_and_solve_captcha(
-                            page, n, cn, on_progress=on_progress,
-                        )
-                        # 如果成功或不是验证码错误，跳出重试循环
-                        if success or status != "识别失败":
-                            break
-                        # 验证码错误，准备重试
-                        if attempt < max_retries:
-                            with self._education_browser_lock:
-                                # 点击验证码图片刷新
-                                try:
-                                    page.run_js("""
-                                    const input = document.querySelector('input[name="yzm"]');
-                                    if (input) {
-                                      const selectors = [
-                                        '.yzm-box', '.captcha-box', '.verify-img', '.imgCode'
-                                      ];
-                                      for (const sel of selectors) {
-                                        const c = input.closest(sel);
-                                        if (c) {
-                                          const img = c.querySelector('img');
-                                          if (img) { img.click(); break; }
-                                        }
-                                      }
-                                    }
-                                    """)
-                                except Exception:
-                                    pass
-                            time.sleep(2)
-                    except Exception as error:
-                        error_text = str(error)
-                        self._log_education_error("打开学信网", error, iid)
-                        def show_error(iid=iid, err=error_text):
-                            queue_item = self.education_items.get(iid)
-                            if not queue_item:
-                                return
-                            queue_item["status"] = "打开失败"
-                            error_line = err.splitlines()[0] if err else "未知错误"
-                            queue_item["detail"] = f"打开学信网失败：{error_line}"
-                            queue_item["warnings"] = err
-                            self._update_education_queue_row(iid)
-                            if self.education_current_id == iid:
-                                self.education_status_var.set(queue_item["detail"])
-                                self.education_warning_var.set(err)
-                            self._set_captcha_btn_state("normal")
-                            self._restore_education_fill_button_if_done()
-                        self.run_on_ui(show_error)
-                        return  # 异常退出重试循环
+                max_attempts = 3
+                try:
+                    on_progress("正在加载学信网页面...", "")
+                    success, status = self._fill_and_solve_captcha(
+                        page,
+                        n,
+                        cn,
+                        on_progress=on_progress,
+                        max_attempts=max_attempts,
+                    )
+                except Exception as error:
+                    error_text = str(error)
+                    self._log_education_error("打开学信网", error, iid)
+                    def show_error(iid=iid, err=error_text):
+                        queue_item = self.education_items.get(iid)
+                        if not queue_item:
+                            return
+                        queue_item["status"] = "打开失败"
+                        error_line = err.splitlines()[0] if err else "未知错误"
+                        queue_item["detail"] = f"打开学信网失败：{error_line}"
+                        queue_item["warnings"] = err
+                        self._update_education_queue_row(iid)
+                        if self.education_current_id == iid:
+                            self.education_status_var.set(queue_item["detail"])
+                            self.education_warning_var.set(err)
+                        self._set_captcha_btn_state("normal")
+                        self._restore_education_fill_button_if_done()
+                    self.run_on_ui(show_error)
+                    return
                 # 显示最终结果
                 def show_success(iid=iid, ok=success, st=status):
                     queue_item = self.education_items.get(iid)
@@ -5115,7 +5092,7 @@ class BossFilterGUI:
                         queue_item["warnings"] = "验证码通过后按页面提示使用手机扫码。"
                     elif st == "识别失败":
                         queue_item["status"] = "识别失败"
-                        queue_item["detail"] = f"验证码识别错误（已重试 {max_retries} 次），请点击「重新识别验证码」重试。"
+                        queue_item["detail"] = f"验证码识别错误（已尝试 {max_attempts} 次），请点击「重新识别验证码」重试。"
                         queue_item["warnings"] = ""
                     else:
                         queue_item["status"] = "待人工验证"
@@ -5174,8 +5151,9 @@ class BossFilterGUI:
     def _fill_and_solve_captcha(
         self, page, name: str, certificate_number: str,
         on_progress: "Callable[[str, str], None] | None" = None,
+        max_attempts: int = 3,
     ) -> tuple[bool, str]:
-        """填写表单 + 截取验证码 + AI 识别 + 填入 + 查询。
+        """填写表单并最多三次识别、提交新的验证码。
 
         on_progress(detail, status): 每个阶段完成时回调，用于实时更新 GUI 状态。
 
@@ -5185,18 +5163,40 @@ class BossFilterGUI:
         - (False, "待人工验证"): 识别过程失败，需人工输入
         """
         from education_certificate import fill_chsi_query_page, navigate_to_chsi
+        import time
+
         _emit = on_progress or (lambda *_: None)
-        try:
-            # 页面导航在锁外执行，各 tab 并行加载（3-8 秒网络 I/O）
-            navigate_to_chsi(page)
-            _emit("正在填写表单...", "正在填写姓名和证书编号")
-            with self._education_browser_lock:
-                # 仅 JS 注入在锁内（<100ms）
-                fill_chsi_query_page(page, name, certificate_number, skip_navigation=True)
-            return self._attempt_captcha_solve(page, on_progress=on_progress)
-        except Exception as e:
-            print(f"[验证码识别] 失败：{e}")
-            return False, "待人工验证"
+        attempts = max(1, int(max_attempts))
+        last_status = "待人工验证"
+        for attempt in range(1, attempts + 1):
+            try:
+                if attempt > 1:
+                    _emit(
+                        f"正在重试验证码（{attempt}/{attempts}）...",
+                        "正在获取新的验证码",
+                    )
+                # 每次重新进入查询页，确保验证码已刷新且表单状态可预测。
+                navigate_to_chsi(page)
+                _emit("正在填写表单...", "正在填写姓名和证书编号")
+                with self._education_browser_lock:
+                    fill_chsi_query_page(
+                        page,
+                        name,
+                        certificate_number,
+                        skip_navigation=True,
+                    )
+                success, last_status = self._attempt_captcha_solve(
+                    page,
+                    on_progress=on_progress,
+                )
+                if success:
+                    return True, last_status
+            except Exception as error:
+                print(f"[验证码识别] 第 {attempt}/{attempts} 次失败：{error}")
+                last_status = "待人工验证"
+            if attempt < attempts:
+                time.sleep(1)
+        return False, last_status
 
     def _attempt_captcha_solve(
         self, page, *, on_progress: "Callable[[str, str], None] | None" = None,
@@ -5211,6 +5211,7 @@ class BossFilterGUI:
         - (False, "待人工验证"): 识别过程失败
         """
         from education_certificate import (
+            CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE,
             capture_captcha_image, click_chsi_query_button,
             fill_captcha_answer, recognize_captcha,
             resolve_vision_api_config,
@@ -5242,6 +5243,12 @@ class BossFilterGUI:
             return False, "待人工验证"
 
         if captcha_type == "unknown" or not answer:
+            return False, "待人工验证"
+        if confidence < CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE:
+            print(
+                f"[验证码识别] 置信度 {confidence} 低于自动提交门槛 "
+                f"{CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE}，本次不提交并继续重试"
+            )
             return False, "待人工验证"
 
         # 阶段 3：填入答案 + 点击查询（重新获取浏览器锁）
@@ -5302,28 +5309,7 @@ class BossFilterGUI:
             def worker(iid=item_id):
                 try:
                     page = self._get_education_tab(iid)
-                    # 点击验证码图片刷新（避免识别旧验证码）— 需要浏览器锁
-                    try:
-                        with self._education_browser_lock:
-                            page.run_js("""
-                            const input = document.querySelector('input[name="yzm"]');
-                            if (input) {
-                              const selectors = [
-                                '.yzm-box', '.captcha-box', '.verify-img', '.imgCode'
-                              ];
-                              for (const sel of selectors) {
-                                const c = input.closest(sel);
-                                if (c) {
-                                  const img = c.querySelector('img');
-                                  if (img) { img.click(); break; }
-                                }
-                              }
-                            }
-                            """)
-                        import time
-                        time.sleep(1)
-                    except Exception:
-                        pass
+                    item = self.education_items.get(iid) or {}
                     def _retry_progress(status_text: str, detail: str, iid=iid):
                         def _update(iid=iid, s=status_text, d=detail):
                             item = self.education_items.get(iid)
@@ -5332,8 +5318,12 @@ class BossFilterGUI:
                                 item["detail"] = d
                                 self._update_education_queue_row(iid)
                         self.run_on_ui(_update)
-                    success, status = self._attempt_captcha_solve(
-                        page, on_progress=_retry_progress,
+                    success, status = self._fill_and_solve_captcha(
+                        page,
+                        str(item.get("name") or ""),
+                        str(item.get("certificate_number") or ""),
+                        on_progress=_retry_progress,
+                        max_attempts=3,
                     )
                     def show_result(iid=iid, ok=success, st=status):
                         item = self.education_items.get(iid)
@@ -5344,11 +5334,11 @@ class BossFilterGUI:
                                 item["warnings"] = "验证码通过后按页面提示使用手机扫码。"
                             elif st == "识别失败":
                                 item["status"] = "识别失败"
-                                item["detail"] = "验证码识别错误，请再次点击「重新识别验证码」重试。"
+                                item["detail"] = "验证码连续 3 次识别错误，请再次点击「重新识别验证码」重试。"
                                 item["warnings"] = ""
                             else:
                                 item["status"] = "待人工验证"
-                                item["detail"] = "验证码自动识别失败，请人工输入。"
+                                item["detail"] = "验证码连续 3 次自动识别失败，请人工输入。"
                                 item["warnings"] = ""
                             self._update_education_queue_row(iid)
                             if self.education_current_id == iid:

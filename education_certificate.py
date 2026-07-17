@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from PIL import Image, ImageOps
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 from ai_adapter import build_request, detect_protocol, friendly_http_error, normalize_response
 
@@ -19,6 +19,7 @@ SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 SUPPORTED_PDF_SUFFIXES = {".pdf"}
 MAX_IMAGE_SIDE = 1800
 JPEG_QUALITY = 88
+CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE = 80
 CHSI_QUERY_URL = "https://www.chsi.com.cn/xlcx/lscx/query.do"
 XIAOMI_VISION_MODEL = "mimo-v2.5"
 
@@ -347,9 +348,14 @@ def _invoke_model(
         raise RuntimeError(friendly_http_error(response.status_code, response_payload))
     if not isinstance(response_payload, dict):
         raise RuntimeError("AI 服务返回了无效响应")
+    raw_final_content = True
+    if protocol != "anthropic":
+        raw_choice = (response_payload.get("choices") or [{}])[0]
+        raw_message = raw_choice.get("message") or {}
+        raw_final_content = bool(raw_message.get("content"))
     message, finish_reason = normalize_response(protocol, response_payload)
     content = str(message.get("content") or message.get("reasoning_content") or "")
-    if finish_reason == "length" and not message.get("content"):
+    if finish_reason == "length" and not raw_final_content:
         raise RuntimeError("AI 输出长度达到上限，未返回最终识别结果")
     return _extract_json_object(content)
 
@@ -595,13 +601,31 @@ return {
 
 
 def _image_bytes_to_data_url(raw_bytes: bytes) -> str:
-    """将原始图片字节转为适合视觉模型的 JPEG data URL。"""
+    """将小尺寸验证码放大增强后转为无损 PNG data URL。"""
     image = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        raise ValueError("验证码图片尺寸无效")
+    scale = 1
+    if width < 480 or height < 160:
+        scale = min(6, max(
+            4,
+            (480 + width - 1) // width,
+            (160 + height - 1) // height,
+        ))
+    if scale > 1:
+        image = image.resize(
+            (width * scale, height * scale),
+            Image.Resampling.LANCZOS,
+        )
     image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.LANCZOS)
+    image = ImageOps.autocontrast(image, cutoff=1)
+    image = ImageEnhance.Contrast(image).enhance(1.35)
+    image = image.filter(ImageFilter.SHARPEN)
     buffer = io.BytesIO()
-    image.save(buffer, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+    image.save(buffer, format="PNG", optimize=True)
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return f"data:image/jpeg;base64,{encoded}"
+    return f"data:image/png;base64,{encoded}"
 
 
 def capture_captcha_image(page: Any) -> str:
@@ -687,12 +711,9 @@ def capture_captcha_image(page: Any) -> str:
                     if x2 > x1 and y2 > y1:
                         cropped = full_img.crop((x1, y1, x2, y2))
                         buf = io.BytesIO()
-                        cropped.convert("RGB").save(
-                            buf, format="JPEG", quality=JPEG_QUALITY, optimize=True
-                        )
-                        encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+                        cropped.convert("RGB").save(buf, format="PNG", optimize=True)
                         full_path.unlink(missing_ok=True)
-                        return f"data:image/jpeg;base64,{encoded}"
+                        return _image_bytes_to_data_url(buf.getvalue())
         finally:
             full_path.unlink(missing_ok=True)
 
@@ -709,7 +730,15 @@ def recognize_captcha(
     """调用视觉模型识别验证码图片。返回 (captcha_type, answer, confidence)。"""
     vision_config = resolve_vision_api_config(api_config)
     messages = build_captcha_messages(vision_config, data_url)
-    parsed = _invoke_model(vision_config, api_key, messages, timeout=timeout)
+    base_url = str(vision_config.get("base_url") or "").lower()
+    max_tokens = 1024 if "api.kimi.com/coding" in base_url else 500
+    parsed = _invoke_model(
+        vision_config,
+        api_key,
+        messages,
+        timeout=timeout,
+        max_tokens=max_tokens,
+    )
     return parse_captcha_result(parsed)
 
 

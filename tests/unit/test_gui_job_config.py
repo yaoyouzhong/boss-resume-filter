@@ -1277,6 +1277,45 @@ def test_model_discovery_keeps_custom_base_url_explicit_and_scopes_catalog_cache
     assert 'catalog_key = model_catalog_cache_key(provider, base_url)' in fetch_block
 
 
+def test_education_captcha_low_confidence_is_not_auto_submitted():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    solve_block = source[source.index("def _attempt_captcha_solve"):]
+    solve_block = solve_block[:solve_block.index("\n    def _solve_captcha")]
+
+    assert "CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE" in solve_block
+    assert "confidence < CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE" in solve_block
+    assert 'return False, "待人工验证"' in solve_block
+
+
+def test_education_captcha_retries_three_times_before_manual_fallback():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._education_browser_lock = threading.Lock()
+    gui._attempt_captcha_solve = Mock(side_effect=[
+        (False, "待人工验证"),
+        (False, "识别失败"),
+        (False, "待人工验证"),
+    ])
+    progress = []
+
+    with patch("education_certificate.navigate_to_chsi") as navigate, \
+            patch("education_certificate.fill_chsi_query_page") as fill, \
+            patch("gui_main.time.sleep"):
+        result = gui._fill_and_solve_captcha(
+            object(),
+            "张三",
+            "123456789012345678",
+            on_progress=lambda status, detail: progress.append((status, detail)),
+            max_attempts=3,
+        )
+
+    assert result == (False, "待人工验证")
+    assert gui._attempt_captcha_solve.call_count == 3
+    assert navigate.call_count == 3
+    assert fill.call_count == 3
+    assert any("2/3" in status for status, _detail in progress)
+    assert any("3/3" in status for status, _detail in progress)
+
+
 def test_use_selected_model_matches_provider_and_base_url_not_model_name_only():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     use_block = source[source.index("def use_selected_model"):]
