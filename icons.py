@@ -514,6 +514,34 @@ def _arrow_down(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     return img
 
 
+def _chevron_up(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
+    """Minimal upward disclosure chevron."""
+    img = Image.new('RGBA', (size_px, size_px), bg)
+    d = ImageDraw.Draw(img)
+    S = size_px
+    d.line(
+        [_s(6, S), _s(15, S), _s(12, S), _s(9, S), _s(18, S), _s(15, S)],
+        fill=fill,
+        width=max(sw, int(round(_s(2, S)))),
+        joint='curve',
+    )
+    return img
+
+
+def _chevron_down(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
+    """Minimal downward disclosure chevron."""
+    img = Image.new('RGBA', (size_px, size_px), bg)
+    d = ImageDraw.Draw(img)
+    S = size_px
+    d.line(
+        [_s(6, S), _s(9, S), _s(12, S), _s(15, S), _s(18, S), _s(9, S)],
+        fill=fill,
+        width=max(sw, int(round(_s(2, S)))),
+        joint='curve',
+    )
+    return img
+
+
 def _thumbs_up(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     """👍 Lucide 图标 — 24×24 轮廓 + 拇指分割线"""
     img = Image.new('RGBA', (size_px, size_px), bg)
@@ -904,6 +932,8 @@ ICON_REGISTRY: Dict[str, Callable] = {
     'strong_recommend': _strong_recommend,
     'arrow_up':     _arrow_up,
     'arrow_down':   _arrow_down,
+    'chevron_up':   _chevron_up,
+    'chevron_down': _chevron_down,
     'mail':         _mail,
     'play':         _play,
     'stop':         _stop,

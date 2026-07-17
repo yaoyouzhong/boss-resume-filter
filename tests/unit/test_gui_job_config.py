@@ -20,6 +20,7 @@ from gui_main import (
     _candidate_has_ai_eval,
     _filter_candidates_by_result_view,
 )
+from job_config_diagnostics import summarize_job_config_diagnostics
 from llm_eval import _resolve_rule_score
 
 
@@ -126,7 +127,101 @@ def test_humanize_ai_parse_warning_replaces_internal_field_names():
     assert "技能关键词" in text
     assert "权重" in text
     assert "必要条件" in text
-    assert "满足任一项" in text
+    assert "任选其一" in text
+
+
+def test_humanize_ai_parse_warning_preserves_oracle_and_langchain_names():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+
+    text = gui._humanize_ai_parse_warning(
+        "职位描述第2条mysql、oracle其中一种表明数据库技能满足其一即可，属于OR关系；"
+        "LangChain 不属于 AND 条件"
+    )
+
+    assert "oracle" in text.lower()
+    assert "LangChain" in text
+    assert "满足任一项acle" not in text
+    assert "LangCh全部满足in" not in text
+    assert "职位描述第2条：mysql、oracle任选其一，请确认是否符合预期" in text
+    assert "全部满足" in text
+
+
+def test_ai_parse_warning_uses_aligned_wrapping_numbered_item_rows():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _apply_ai_enhance_result"):]
+    block = block[:block.index("\n    def _start_ai_progress_animation")]
+
+    assert "warning_items = [" in block
+    assert "numbered_items=warning_items" in block
+    assert 'headline="AI 增强解析完成，请确认以下内容"' in block
+    assert "min_width=820" in block
+    assert "max_width=900" in block
+
+
+def test_invalidating_requirement_parse_rejects_pending_callbacks():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._requirement_parse_generation = 7
+    gui._active_requirement_parse_id = 7
+    gui._ai_enhance_pending = True
+    gui._ai_parse_edit_snapshot = {"min_exp": "3"}
+    gui._stop_ai_progress_animation = Mock()
+    gui._stop_requirement_parse_progress = Mock()
+    gui._finish_parse_button = Mock()
+
+    gui._invalidate_requirement_parse()
+
+    assert gui._requirement_parse_generation == 8
+    assert gui._active_requirement_parse_id is None
+    assert gui._ai_enhance_pending is False
+    assert gui._ai_parse_edit_snapshot is None
+    assert gui._is_current_requirement_parse(7) is False
+    gui._stop_ai_progress_animation.assert_called_once_with()
+    gui._stop_requirement_parse_progress.assert_called_once_with()
+    gui._finish_parse_button.assert_called_once_with()
+
+
+def test_stale_requirement_and_ai_results_do_not_touch_current_form():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._active_requirement_parse_id = 2
+    gui._ai_enhance_pending = True
+    gui._stop_ai_progress_animation = Mock()
+    gui._stop_requirement_parse_progress = Mock()
+
+    gui._apply_requirement_parse_result({}, 1)
+    gui._apply_ai_enhance_result({"ai_success": True}, 1)
+
+    assert gui._active_requirement_parse_id == 2
+    assert gui._ai_enhance_pending is True
+    gui._stop_ai_progress_animation.assert_not_called()
+    gui._stop_requirement_parse_progress.assert_not_called()
+
+
+def test_save_current_job_is_blocked_while_requirement_parse_is_active():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui._active_requirement_parse_id = 3
+    gui._hide_save_hint = Mock()
+
+    with patch("gui_main.messagebox.showwarning") as warning:
+        assert gui.save_current_job() is False
+
+    gui._hide_save_hint.assert_not_called()
+    warning.assert_called_once_with(
+        "招聘需求正在解析",
+        "请等待解析完成后再保存岗位配置。",
+        parent=gui.root,
+    )
+
+
+def test_job_config_primary_actions_are_lowered_without_moving_quality_row():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("# 按钮行（居中布局"):]
+    block = block[:block.index("# 存储技能数据的列表")]
+
+    assert "pady=(int(6 * self.dpi_scale * self.zoom_factor), 0)" in block
+    assert "int(4 * self.dpi_scale * self.zoom_factor)" in source[
+        source.index("# 底部按钮固定在页面底部"):source.index("# 在所有控件创建完毕后绑定滚轮事件")
+    ]
 
 
 class _FakeVar:
@@ -173,6 +268,9 @@ class _FakeCombo(dict):
     def set(self, value):
         self.current_value = value
 
+    def get(self):
+        return self.current_value
+
 
 class _FakePackFrame:
     def __init__(self):
@@ -197,6 +295,420 @@ class _FakeCalendarTop:
 
     def withdraw(self):
         self.mapped = False
+
+
+def test_job_config_page_uses_business_sections_and_one_low_frequency_menu():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def create_config_page"):]
+    block = block[:block.index("\n    def create_api_config_page")]
+
+    assert '"招聘需求"' in block
+    assert '"基础筛选条件"' in block
+    assert '"技能评分条件"' in block
+    assert '"必要条件"' in block
+    assert "ttk.Menubutton" in block
+    assert "ConfigActions.TMenubutton" in block
+    assert "tk.Menu(select_frame, tearoff=0, font=self.font_label)" in block
+    assert "requirement_header_status_var" in block
+    assert "requirement_toggle_icon_label" in block
+    assert "'chevron_down'" in block
+    assert "'chevron_up'" in block
+    assert 'text="收起"' not in block
+    assert 'text="查看问题"' not in block
+    assert 'text="查看详情"' in block
+    assert "self.job_config_quality_link.bind" in block
+    assert "_bind_job_config_quality_interaction" not in block
+    assert "self.skill_weight_spinbox = ttk.Spinbox" in block
+    assert "self.add_skill_weight_spinbox = ttk.Spinbox" in block
+    assert "JobWeight.TSpinbox" not in block
+    assert block.count("justify='left'") >= 2
+    assert 'label=" 导入配置"' in block
+    assert 'label=" 导出配置"' in block
+    assert 'label=" 删除当前岗位"' in block
+    assert "_start_breathing" not in block
+
+
+def test_skill_score_table_keeps_name_compact_and_gives_evidence_the_spare_width():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index('self.skills_tree.heading("name"'):]
+    block = block[:block.index("# 设置颜色标记")]
+
+    assert 'column("name", width=160, minwidth=120, stretch=False' in block
+    assert 'column("weight", width=60, minwidth=55, stretch=False' in block
+    assert 'column("source", width=70, minwidth=60, stretch=False' in block
+    assert 'column("evidence", width=320, minwidth=220, stretch=True' in block
+
+
+def test_populate_skills_deduplicates_aliases_and_prefers_preferred_items():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.refresh_skills_tree = Mock()
+    config = {
+        "keywords": [
+            {"name": "SpringBoot", "weight": 3},
+            {"name": "Dubbo", "weight": 2},
+            {"name": "智能体", "weight": 1},
+        ],
+        "preferred_keywords": [
+            {"name": "Spring Boot", "bonus": 2},
+            {"name": "Dubbo", "bonus": 2},
+            {"name": "AI Agent", "bonus": 2},
+        ],
+    }
+
+    gui._populate_skills_from_config(config, {"skills": []})
+
+    assert [item["name"] for item in gui.skills_data] == [
+        "Spring Boot",
+        "Dubbo",
+        "AI Agent",
+    ]
+    assert all(item["source"] == "优先" for item in gui.skills_data)
+
+
+def test_job_config_status_distinguishes_saved_and_unsaved_business_state():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.job_name_var = _FakeVar("Java 工程师")
+    gui.edu_var = _FakeVar("本科")
+    gui.min_exp_var = _FakeVar("3")
+    gui.max_age_var = _FakeVar("35")
+    gui.work_location_var = _FakeVar("南京")
+    gui.salary_min_var = _FakeVar("20")
+    gui.salary_max_var = _FakeVar("30")
+    gui.skills_data = [
+        {"name": "Java", "weight": 3, "source": "配置"},
+        {"name": "Spring", "weight": 2, "source": "配置"},
+        {"name": "MySQL", "weight": 1, "source": "配置"},
+    ]
+    gui.required_conditions_data = ["统招本科"]
+    gui._get_requirement_text = Mock(return_value="招聘 Java 工程师")
+    gui.config_job_combo = _FakeCombo()
+    gui.config_job_combo.set("Java 工程师")
+    gui.job_rules = {"Java 工程师": {}}
+    gui.job_form_status_var = _FakeVar()
+    gui.job_form_status_label = Mock()
+    gui.job_config_quality_var = _FakeVar()
+    gui.job_config_quality_label = Mock()
+    gui.btn_restore_job = Mock()
+    gui.btn_view_job_config_issues = Mock()
+    gui.colors = {
+        "warning": "orange",
+        "danger": "red",
+        "success": "green",
+        "text_secondary": "gray",
+    }
+    gui._job_form_saved_snapshot = gui._job_form_fingerprint()
+
+    gui._refresh_job_form_status()
+
+    assert gui.job_form_status_var.get() == "已保存"
+    assert gui.job_config_quality_var.get() == (
+        "配置质量：100 分｜阻断 0 项｜提醒 0 项｜建议 1 项"
+    )
+    preview_name, preview_rule, issues, validation_error = gui._job_config_preview
+    assert validation_error == ""
+    assert "严重 0 项，提醒 0 项，建议 1 项" in summarize_job_config_diagnostics(
+        preview_name, preview_rule, issues=issues
+    )
+    assert gui.btn_restore_job.configure.call_args.kwargs["state"] == "disabled"
+
+    gui.min_exp_var.set("5")
+    gui._refresh_job_form_status()
+
+    assert gui.job_form_status_var.get() == "有未保存修改"
+    assert gui.btn_restore_job.configure.call_args.kwargs["state"] == "normal"
+
+
+def test_new_job_quality_waits_for_configuration_before_scoring():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.job_name_var = _FakeVar("")
+    gui.edu_var = _FakeVar("不限")
+    gui.min_exp_var = _FakeVar("0")
+    gui.max_age_var = _FakeVar("")
+    gui.work_location_var = _FakeVar("")
+    gui.salary_min_var = _FakeVar("")
+    gui.salary_max_var = _FakeVar("")
+    gui.skills_data = []
+    gui.required_conditions_data = []
+    gui._get_requirement_text = Mock(return_value="")
+    gui.config_job_combo = _FakeCombo()
+    gui.job_rules = {"已有岗位": {}}
+    gui._job_step_active = 0
+    gui.job_form_status_var = _FakeVar()
+    gui.job_form_status_label = Mock()
+    gui.job_config_quality_var = _FakeVar()
+    gui.job_config_quality_label = Mock()
+    gui.btn_restore_job = Mock()
+    gui.btn_view_job_config_issues = Mock()
+    gui.colors = {
+        "warning": "orange",
+        "danger": "red",
+        "success": "green",
+        "text_secondary": "gray",
+    }
+    gui._job_form_saved_snapshot = gui._job_form_fingerprint()
+
+    gui._refresh_job_form_status()
+
+    assert gui.job_form_status_var.get() == "新岗位，尚未保存"
+    assert gui.job_config_quality_var.get() == "配置质量：待配置"
+    assert gui._job_config_quality_clickable is False
+    assert gui.btn_view_job_config_issues.configure.call_args.kwargs["state"] == "disabled"
+
+    gui._get_requirement_text.return_value = "招聘 Java 工程师"
+    gui._job_step_active = 1
+    gui._refresh_job_form_status()
+
+    assert gui.job_config_quality_var.get() == "配置质量：待解析"
+    assert gui._job_config_quality_clickable is False
+
+    gui.job_name_var.set("Java 工程师")
+    gui._job_step_active = 2
+    gui._refresh_job_form_status()
+
+    assert "阻断 1 项" in gui.job_config_quality_var.get()
+    assert gui._job_config_quality_clickable is True
+
+
+def test_initialize_new_job_draft_resets_selector_and_workflow():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.config_job_combo = _FakeCombo()
+    gui.config_job_combo.set("高级 Java/Python 工程师")
+    gui.job_name_var = _FakeVar("高级 Java/Python 工程师")
+    gui.reset_job_form = Mock(side_effect=lambda: gui.job_name_var.set(""))
+    gui.btn_restore_job = Mock()
+    gui._set_requirement_section_expanded = Mock()
+    gui.requirement_template_btn = Mock()
+    gui._show_requirement_hint = Mock()
+    gui._hide_btn_add_hint = Mock()
+    gui._update_job_step = Mock()
+    gui._refresh_job_form_status = Mock()
+    gui.config_canvas = Mock()
+
+    gui._initialize_new_job_draft()
+
+    gui.reset_job_form.assert_called_once_with()
+    assert gui.config_job_combo.get() == ""
+    assert gui.job_name_var.get() == ""
+    gui.btn_restore_job.configure.assert_called_once_with(text=" 清空内容")
+    gui._set_requirement_section_expanded.assert_called_once_with(True)
+    gui.requirement_template_btn.state.assert_called_once_with(['!disabled'])
+    gui._update_job_step.assert_called_once_with(0)
+    gui._refresh_job_form_status.assert_called_once_with()
+    gui.config_canvas.yview_moveto.assert_called_once_with(0)
+
+
+def test_clear_new_job_draft_uses_complete_initializer():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.config_job_combo = _FakeCombo()
+    gui.config_job_combo.set("未保存岗位")
+    gui.job_rules = {"已有岗位": {}}
+    gui._initialize_new_job_draft = Mock()
+
+    with patch("gui_main.messagebox.askyesno", return_value=True):
+        gui._restore_or_clear_job_form()
+
+    gui._initialize_new_job_draft.assert_called_once_with()
+
+
+def test_unsaved_job_transition_can_save_discard_or_cancel():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui._job_form_has_unsaved_changes = Mock(return_value=True)
+    gui.save_current_job = Mock(return_value=True)
+
+    with patch("gui_main.messagebox.askyesnocancel", return_value=True):
+        assert gui._confirm_job_form_transition() is True
+    gui.save_current_job.assert_called_once_with()
+
+    with patch("gui_main.messagebox.askyesnocancel", return_value=False):
+        assert gui._confirm_job_form_transition() is True
+
+    with patch("gui_main.messagebox.askyesnocancel", return_value=None):
+        assert gui._confirm_job_form_transition() is False
+
+
+def test_selecting_current_job_does_not_reload_and_discard_form_state():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.config_job_combo = _FakeCombo()
+    gui.config_job_combo.set("Java 工程师")
+    gui._job_form_loaded_name = "Java 工程师"
+    gui._confirm_job_form_transition = Mock()
+    gui.load_job_to_form = Mock()
+
+    gui.on_job_selected(None)
+
+    gui._confirm_job_form_transition.assert_not_called()
+    gui.load_job_to_form.assert_not_called()
+
+
+def test_import_config_protects_unsaved_form_before_opening_file_dialog():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._confirm_job_form_transition = Mock(return_value=False)
+    gui.load_config_dialog = Mock()
+
+    gui.import_config()
+
+    gui.load_config_dialog.assert_not_called()
+
+    gui._confirm_job_form_transition.return_value = True
+    gui.import_config()
+
+    gui.load_config_dialog.assert_called_once_with()
+
+
+def test_collapsed_requirement_header_summarizes_saved_and_changed_content():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.requirement_section_expanded = False
+    gui.requirement_header_status_var = _FakeVar()
+    gui.requirement_toggle_icon_label = Mock()
+    gui.requirement_expand_icon = "down"
+    gui.requirement_collapse_icon = "up"
+    gui._get_requirement_text = Mock(return_value="高级 Java 工程师招聘需求")
+    gui.config_job_combo = _FakeCombo()
+    gui.config_job_combo.set("Java 工程师")
+    gui.job_rules = {"Java 工程师": {}}
+    gui._job_form_has_unsaved_changes = Mock(return_value=False)
+
+    gui._refresh_requirement_header_state()
+
+    assert gui.requirement_header_status_var.get() == "已保存招聘需求"
+    assert gui.requirement_toggle_icon_label.configure.call_args.kwargs["image"] == "down"
+
+    gui._job_form_has_unsaved_changes.return_value = True
+    gui._refresh_requirement_header_state()
+
+    assert gui.requirement_header_status_var.get() == "招聘需求已修改"
+
+    gui.requirement_section_expanded = True
+    gui._refresh_requirement_header_state()
+
+    assert gui.requirement_header_status_var.get() == ""
+    assert gui.requirement_toggle_icon_label.configure.call_args.kwargs["image"] == "up"
+
+
+def test_bounded_spinbox_mousewheel_adjusts_one_step_and_clamps_range():
+    spinbox = Mock()
+    variable = _FakeVar("2")
+
+    BossFilterGUI._bind_bounded_spinbox_mousewheel(spinbox, variable, 1, 3)
+
+    wheel_handler = spinbox.bind.call_args_list[0].args[1]
+    assert wheel_handler(types.SimpleNamespace(delta=120)) == "break"
+    assert variable.get() == "3"
+    wheel_handler(types.SimpleNamespace(delta=120))
+    assert variable.get() == "3"
+    wheel_handler(types.SimpleNamespace(delta=-120))
+    assert variable.get() == "2"
+
+    variable.set("not-a-number")
+    wheel_handler(types.SimpleNamespace(delta=-120))
+    assert variable.get() == "1"
+
+
+def test_quality_summary_row_opens_details_only_when_configuration_exists():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._show_current_job_config_diagnostics = Mock()
+    gui._job_config_quality_clickable = False
+
+    gui._open_job_config_quality_details()
+
+    gui._show_current_job_config_diagnostics.assert_not_called()
+
+    gui._job_config_quality_clickable = True
+    gui._open_job_config_quality_details()
+
+    gui._show_current_job_config_diagnostics.assert_called_once_with()
+
+
+def test_disclosure_chevrons_are_registered_as_line_icons():
+    for name in ("chevron_up", "chevron_down"):
+        assert name in icons.ICON_REGISTRY
+        for size in (48, 124):
+            image = icons.ICON_REGISTRY[name](
+                size, "#2563EB", (0, 0, 0, 0), 4
+            )
+            assert image.getbbox() is not None
+
+
+def test_reset_job_form_uses_unrestricted_new_job_values():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    for name, value in (
+        ("job_name_var", "Java 工程师"),
+        ("min_exp_var", "3"),
+        ("max_age_var", "35"),
+        ("edu_var", "本科"),
+        ("work_location_var", "南京"),
+        ("salary_min_var", "20"),
+        ("salary_max_var", "30"),
+    ):
+        setattr(gui, name, _FakeVar(value))
+    gui.skills_data = [{"name": "Java", "weight": 3}]
+    gui.required_conditions_data = ["统招本科"]
+    gui.refresh_skills_tree = Mock()
+    gui.refresh_required_listbox = Mock()
+    gui.requirement_text = Mock()
+    gui._req_placeholder_text = "在此粘贴招聘需求内容..."
+    gui.parse_result_label = Mock()
+    gui._hide_requirement_hint = Mock()
+    gui._hide_parse_hint = Mock()
+    gui._hide_save_hint = Mock()
+    gui._set_job_form_baseline = Mock()
+    gui._invalidate_requirement_parse = Mock()
+
+    gui.reset_job_form()
+
+    gui._invalidate_requirement_parse.assert_called_once_with()
+    assert gui.job_name_var.get() == ""
+    assert gui.edu_var.get() == "不限"
+    assert gui.min_exp_var.get() == "0"
+    assert gui.max_age_var.get() == ""
+    assert gui.work_location_var.get() == ""
+    assert gui.salary_min_var.get() == ""
+    assert gui.salary_max_var.get() == ""
+
+
+def test_loading_legacy_job_without_optional_limits_keeps_fields_unrestricted():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.config_job_combo = _FakeCombo()
+    gui.config_job_combo.set("旧岗位")
+    for name in (
+        "job_name_var",
+        "min_exp_var",
+        "max_age_var",
+        "edu_var",
+        "work_location_var",
+        "salary_min_var",
+        "salary_max_var",
+    ):
+        setattr(gui, name, _FakeVar())
+    gui.requirement_text = Mock()
+    gui._req_placeholder_text = "在此粘贴招聘需求内容..."
+    gui._invalidate_requirement_parse = Mock()
+    gui.refresh_skills_tree = Mock()
+    gui.refresh_required_listbox = Mock()
+    gui._set_job_form_baseline = Mock()
+
+    gui.load_job_to_form({})
+
+    assert gui.edu_var.get() == "不限"
+    assert gui.max_age_var.get() == ""
+
+
+def test_requirement_parse_fallbacks_match_unrestricted_new_job_defaults():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    local_block = source[source.index("def _apply_requirement_parse_result"):]
+    local_block = local_block[:local_block.index("\n    def _apply_ai_enhance_result")]
+    ai_block = source[source.index("def _apply_ai_enhance_result"):]
+    ai_block = ai_block[:ai_block.index("\n    def _start_ai_progress_animation")]
+
+    assert 'job_config.get("edu", "不限")' in local_block
+    assert 'job_config.get("max_age")' in local_block
+    assert 'job_config.get("edu", "本科")' not in local_block
+    assert 'job_config.get("max_age", 35)' not in local_block
+    assert 'job_config.get("edu", "不限")' in ai_block
+    assert 'job_config.get("max_age")' in ai_block
+    assert 'job_config.get("edu", "本科")' not in ai_block
+    assert 'job_config.get("max_age", 35)' not in ai_block
 
 
 def test_result_time_range_defaults_to_all_time():
