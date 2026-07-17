@@ -1,5 +1,6 @@
 """Parent-centered modal message boxes with tkinter-compatible results."""
 
+import math
 import tkinter as tk
 from tkinter import messagebox as _native_messagebox, ttk
 
@@ -43,6 +44,22 @@ class CenteredMessageBox:
         except (TypeError, ValueError):
             return font_spec
         return tuple(adjusted)
+
+    @staticmethod
+    def _estimated_visual_lines(message, chars_per_line=34):
+        """Estimate wrapped lines so medium multi-line copy becomes scrollable."""
+        lines = str(message or "").splitlines() or [""]
+        return sum(max(1, math.ceil(len(line) / chars_per_line)) for line in lines)
+
+    @classmethod
+    def _message_needs_scroll(cls, message):
+        message = str(message or "")
+        return len(message) > 360 or cls._estimated_visual_lines(message) > 8
+
+    @staticmethod
+    def _max_dialog_height(screen_height):
+        """Keep the modal inside the screen while allowing useful text height."""
+        return min(680, max(320, round(screen_height * 0.82)))
 
     @staticmethod
     def _resolve_parent(parent):
@@ -109,10 +126,14 @@ class CenteredMessageBox:
         window.withdraw()
         window.configure(bg="#FFFFFF")
 
+        window.grid_columnconfigure(0, weight=1)
+        window.grid_rowconfigure(0, weight=1)
+
         body = tk.Frame(window, bg="#FFFFFF")
-        body.pack(
-            fill="both",
-            expand=True,
+        body.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
             padx=26,
             pady=(24, max(0, int(content_bottom_padding))),
         )
@@ -141,14 +162,14 @@ class CenteredMessageBox:
                 anchor="w",
                 wraplength=content_wraplength,
             ).pack(fill="x", anchor="w", pady=(0, 16))
-        is_long = len(message) > 600 or message.count("\n") > 11
+        is_long = self._message_needs_scroll(message)
         if is_long:
             text_frame = tk.Frame(content, bg="#FFFFFF")
             text_frame.pack(fill="both", expand=True)
             text_widget = tk.Text(
                 text_frame,
                 width=64,
-                height=14,
+                height=12,
                 wrap="word",
                 font=message_font,
                 bg="#FFFFFF",
@@ -175,9 +196,11 @@ class CenteredMessageBox:
                 wraplength=content_wraplength,
             ).pack(fill="both", expand=True, anchor="w")
 
-        tk.Frame(window, bg="#E5E7EB", height=1).pack(fill="x")
+        tk.Frame(window, bg="#E5E7EB", height=1).grid(
+            row=1, column=0, sticky="ew"
+        )
         footer = tk.Frame(window, bg="#F7F8FA")
-        footer.pack(fill="x", padx=0, pady=0)
+        footer.grid(row=2, column=0, sticky="ew")
 
         result = {"value": close_value}
         previous_grab = parent.grab_current()
@@ -228,7 +251,8 @@ class CenteredMessageBox:
         window.bind("<Return>", lambda _event: finish(buttons[0][1]))
         window.update_idletasks()
         width = max(int(min_width), min(700, window.winfo_reqwidth()))
-        height = max(180, min(560, window.winfo_reqheight()))
+        max_height = self._max_dialog_height(window.winfo_screenheight())
+        height = max(180, min(max_height, window.winfo_reqheight()))
         self._place(window, width, height, parent)
         window.deiconify()
         window.lift()

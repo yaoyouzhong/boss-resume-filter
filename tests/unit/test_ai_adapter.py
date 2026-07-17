@@ -116,6 +116,8 @@ def test_kimi_code_base_url_is_normalized_for_openai_compatible_requests():
     assert protocol == "openai_compatible"
     assert url == "https://api.kimi.com/coding/v1/chat/completions"
     assert body["temperature"] == 1
+    assert body["max_completion_tokens"] == 100
+    assert "max_tokens" not in body
 
 
 def test_build_openai_compatible_request():

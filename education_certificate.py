@@ -111,6 +111,8 @@ def likely_supports_vision(api_config: dict[str, Any]) -> bool:
     provider = str(api_config.get("api_provider") or "").lower()
     model = str(api_config.get("model") or "").lower()
     base_url = str(api_config.get("base_url") or "").lower()
+    if provider == "kimi" and model == "k3":
+        return True
     # 小米服务：mimo-v2.5 系列支持视觉
     if (
         provider == "xiaomi"
@@ -345,8 +347,10 @@ def _invoke_model(
         raise RuntimeError(friendly_http_error(response.status_code, response_payload))
     if not isinstance(response_payload, dict):
         raise RuntimeError("AI 服务返回了无效响应")
-    message, _finish_reason = normalize_response(protocol, response_payload)
+    message, finish_reason = normalize_response(protocol, response_payload)
     content = str(message.get("content") or message.get("reasoning_content") or "")
+    if finish_reason == "length" and not message.get("content"):
+        raise RuntimeError("AI 输出长度达到上限，未返回最终识别结果")
     return _extract_json_object(content)
 
 
@@ -362,7 +366,11 @@ def recognize_certificate_image(
     data_url = prepare_image_data_url(path)
     orientation_data_url = prepare_orientation_sheet_data_url(path)
     messages = build_vision_messages(vision_config, data_url, orientation_data_url)
-    parsed = _invoke_model(vision_config, api_key, messages, timeout=timeout)
+    base_url = str(vision_config.get("base_url") or "").lower()
+    max_tokens = 1024 if "api.kimi.com/coding" in base_url else 500
+    parsed = _invoke_model(
+        vision_config, api_key, messages, timeout=timeout, max_tokens=max_tokens,
+    )
     return normalize_recognition(parsed, str(vision_config.get("model") or ""))
 
 

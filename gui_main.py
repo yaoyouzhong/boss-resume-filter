@@ -119,7 +119,6 @@ PROVIDER_DISPLAY = {
     "custom": "自定义 (Custom)"
 }
 DISPLAY_TO_KEY = {v: k for k, v in PROVIDER_DISPLAY.items()}
-KIMI_CODE_MODEL_IDS = {"kimi-for-coding", "kimi-for-coding-highspeed"}
 
 
 def _api_service_display_name(api_config: dict) -> str:
@@ -1074,10 +1073,11 @@ class BossFilterGUI:
         self.font_stat_label = (FONT_FAMILY, int(15 * page_fs))
         self.font_log = (FONT_FAMILY, int(11 * page_fs))
         self.font_table = (FONT_FAMILY, int(12 * page_fs))  # 表格字体
+        modal_font_size = max(9, self.font_log[1] - 1)
         messagebox.set_ui_fonts(
-            headline=(FONT_FAMILY, max(10, self.font_log[1] + 1), 'bold'),
-            message=(FONT_FAMILY, max(10, self.font_log[1])),
-            button=(FONT_FAMILY, max(10, self.font_log[1])),
+            headline=(FONT_FAMILY, max(10, self.font_log[1]), 'bold'),
+            message=(FONT_FAMILY, modal_font_size),
+            button=(FONT_FAMILY, modal_font_size),
         )
 
         # 设置 Combobox 下拉列表字体（与 font_label 保持一致）
@@ -7985,21 +7985,6 @@ class BossFilterGUI:
             if normalized_base_url != base_url.rstrip("/"):
                 base_url = normalized_base_url
                 self.api_base_url_var.set(base_url)
-            if (
-                provider == "kimi"
-                and urlparse(base_url).hostname == "api.kimi.com"
-                and model_name not in KIMI_CODE_MODEL_IDS
-                and not pending
-            ):
-                messagebox.showwarning(
-                    "模型名称不正确",
-                    "Kimi Code 只接受以下模型 ID：\n\n"
-                    "• kimi-for-coding\n"
-                    "• kimi-for-coding-highspeed\n\n"
-                    "请修改模型名称，或先获取模型列表后选择。",
-                )
-                return
-
             # 按服务商 + Base URL 组合存储 API Key（区分同一服务商的不同接入方式）
             save_api_key(provider, api_key, base_url)
 
@@ -8901,18 +8886,6 @@ class BossFilterGUI:
         if normalized_base_url != base_url.rstrip("/"):
             base_url = normalized_base_url
             self.api_base_url_var.set(base_url)
-        if (
-            provider_key == "kimi"
-            and urlparse(base_url).hostname == "api.kimi.com"
-            and model not in KIMI_CODE_MODEL_IDS
-        ):
-            messagebox.showwarning(
-                "模型名称不正确",
-                "当前是 Kimi Code 接口，模型名称应填写：\n\n"
-                "kimi-for-coding\n或 kimi-for-coding-highspeed",
-            )
-            return
-
         # 显示测试中状态
         self._update_api_status(text="⏳ 正在验证...", foreground=self.colors['warning'])
 

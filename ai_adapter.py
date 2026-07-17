@@ -286,8 +286,9 @@ def build_request(
     base_lower = base_url.lower()
     model_lower = model.lower()
     if "api.kimi.com/coding" in base_lower:
-        # Kimi Code's OpenAI-compatible models currently only accept 1.
+        # Kimi Code accepts temperature=1 and prefers max_completion_tokens.
         body["temperature"] = 1
+        body["max_completion_tokens"] = body.pop("max_tokens")
     if "dashscope.aliyuncs.com" in base_lower and model_lower.startswith("qwen3.7"):
         body["enable_thinking"] = False
     if api_config.get("_disable_thinking") and "xiaomimimo.com" in base_lower:

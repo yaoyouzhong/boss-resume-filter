@@ -34,8 +34,9 @@ def test_gui_uses_smaller_dedicated_modal_fonts():
     setup = source[source.index("messagebox.set_ui_fonts("):]
     setup = setup[:setup.index("# 设置 Combobox")]
 
-    assert "self.font_log[1] + 1" in setup
-    assert setup.count("self.font_log[1]") == 3
+    assert "modal_font_size = max(9, self.font_log[1] - 1)" in source
+    assert "headline=(FONT_FAMILY, max(10, self.font_log[1]), 'bold')" in setup
+    assert setup.count("modal_font_size") == 2
     assert "message=self.font_label" not in setup
 
 
@@ -101,9 +102,28 @@ def test_centered_messagebox_centers_buttons_vertically_in_footer():
     footer_block = source[source.index('footer = tk.Frame(window, bg="#F7F8FA")'):]
     footer_block = footer_block[:footer_block.index('window.protocol("WM_DELETE_WINDOW"')]
 
-    assert 'footer.pack(fill="x", padx=0, pady=0)' in footer_block
+    assert 'footer.grid(row=2, column=0, sticky="ew")' in footer_block
     assert "ipady=14" not in footer_block
     assert footer_block.count("pady=(14, 14)") == 2
+
+
+def test_medium_multiline_message_uses_scrollable_content():
+    message = (
+        "当前学历核验模型可能不支持图片输入。\n\n"
+        "图片识别需要多模态视觉模型，例如：\n"
+        "国外：GPT-4o / GPT-4.1、Claude Sonnet 4、Gemini 2.5 Pro\n"
+        "国内：qwen3.7-plus、mimo-v2.5、GLM-5V、Kimi K2.5、MiniMax-M2.7\n\n"
+        "PDF 文件使用文本提取，不受此限制。\n\n"
+        "可在系统设置的使用中的模型中选择学历核验模型。\n\n"
+        "是否仍要尝试识别？"
+    )
+
+    assert CenteredMessageBox._message_needs_scroll(message) is True
+
+
+def test_dialog_height_is_screen_aware_and_bounded():
+    assert CenteredMessageBox._max_dialog_height(600) == 492
+    assert CenteredMessageBox._max_dialog_height(1080) == 680
 
 
 def test_all_gui_messagebox_calls_use_centered_proxy():
@@ -117,7 +137,7 @@ def test_all_gui_messagebox_calls_use_centered_proxy():
     assert "from tkinter import filedialog, font, messagebox, ttk" not in gui_source
     assert "from tkinter import ttk, messagebox" not in dialogs_source
     assert "from tkinter import messagebox" not in updater_source
-    assert "headline=(FONT_FAMILY, max(10, self.font_log[1] + 1), 'bold')" in gui_source
+    assert "headline=(FONT_FAMILY, max(10, self.font_log[1]), 'bold')" in gui_source
     assert "headline=(FONT_FAMILY_SEMIBOLD, self.font_label[1])" not in gui_source
     assert "headline=self.font_section" not in gui_source
 
