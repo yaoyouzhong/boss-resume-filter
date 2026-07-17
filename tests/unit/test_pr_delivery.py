@@ -157,7 +157,9 @@ def test_finalize_preserves_branches_when_gitee_is_not_synchronized():
             "_remote_ref",
             side_effect=[merge_sha, "b" * 40],
         ),
-        patch.object(pr_delivery, "_update_local_master") as update_master,
+        patch.object(
+            pr_delivery, "_update_local_master", return_value=True
+        ) as update_master,
         patch.object(pr_delivery, "_remote_branch_exists") as remote_exists,
         patch.object(pr_delivery, "_local_branch_exists") as local_exists,
     ):
@@ -191,6 +193,24 @@ def test_finalize_cleans_branch_only_after_both_masters_match():
     update_master.assert_called_once_with(merge_sha)
     assert call(["git", "push", "origin", "--delete", branch]) in run.call_args_list
     assert call(["git", "switch", "--detach", "origin/master"]) in run.call_args_list
+    assert call(["git", "branch", "-D", branch]) in run.call_args_list
+
+
+def test_finalize_returns_primary_worktree_to_master_before_deleting_branch():
+    merge_sha = "a" * 40
+    branch = "codex/test"
+    with (
+        patch.object(pr_delivery, "_run", return_value=_completed()) as run,
+        patch.object(pr_delivery, "_remote_ref", side_effect=[merge_sha, merge_sha]),
+        patch.object(pr_delivery, "_update_local_master", return_value=False),
+        patch.object(pr_delivery, "_remote_branch_exists", side_effect=[False, False]),
+        patch.object(pr_delivery, "_current_branch", return_value=branch),
+        patch.object(pr_delivery, "_local_branch_exists", side_effect=[True, False]),
+    ):
+        pr_delivery.finalize_delivery(branch, merge_sha)
+
+    assert call(["git", "switch", "master"]) in run.call_args_list
+    assert call(["git", "switch", "--detach", "origin/master"]) not in run.call_args_list
     assert call(["git", "branch", "-D", branch]) in run.call_args_list
 
 
