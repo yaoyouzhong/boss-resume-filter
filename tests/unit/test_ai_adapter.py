@@ -241,6 +241,63 @@ def test_kimi_code_base_url_is_normalized_for_openai_compatible_requests():
     assert "max_tokens" not in body
 
 
+def test_legacy_qwen_token_plan_base_url_is_normalized():
+    assert normalize_api_base_url({
+        "api_provider": "qwen",
+        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/v1/",
+    }) == "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+
+
+def test_qwen_token_plan_public_catalog_does_not_authenticate_standard_key():
+    calls = []
+
+    def fake_get(url, **_kwargs):
+        calls.append(url)
+        if "token-plan.cn-beijing" in url:
+            return FakeResponse(200, {"data": [{"id": "kimi-k2.6"}]})
+        return FakeResponse(401, {"error": {"message": "invalid"}})
+
+    result = discover_api_endpoint(
+        "qwen",
+        "sk-standard-key",
+        preferred_base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/v1",
+        request_get=fake_get,
+    )
+
+    assert result.status == "invalid"
+    assert result.http_status == 401
+    assert "不是其专属 sk-sp- Key" in result.message
+    assert calls[0] == (
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models"
+    )
+    assert any("dashscope.aliyuncs.com/compatible-mode/v1/models" in url for url in calls)
+
+
+def test_qwen_token_plan_key_prefix_identifies_public_catalog_without_claiming_auth():
+    calls = []
+
+    def fake_get(url, **_kwargs):
+        calls.append(url)
+        return FakeResponse(200, {"data": [{"id": "kimi-k2.6"}]})
+
+    result = discover_api_endpoint(
+        "qwen",
+        "sk-sp-secret",
+        preferred_base_url=(
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+        ),
+        request_get=fake_get,
+    )
+
+    assert result.status == "catalog"
+    assert result.channel == "qwen_token_plan"
+    assert result.models == ("kimi-k2.6",)
+    assert "不能据此证明 API Key 有效" in result.message
+    assert calls == [
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models"
+    ]
+
+
 def test_build_openai_compatible_request():
     url, headers, body, protocol = build_request(
         {"base_url": "https://api.example.com/v1", "model": "model-a"},

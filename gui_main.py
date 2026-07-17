@@ -8247,7 +8247,7 @@ class BossFilterGUI:
                     resolution_status = resolution.status
                     response_status = resolution.http_status or 0
                     response_text = resolution.message
-                    if resolution.status == "confirmed":
+                    if resolution.status in ("confirmed", "catalog") and resolution.models:
                         base_url = resolution.base_url
                         detected_service_name = resolution.service_name
                         data = {"data": [{"id": model} for model in resolution.models]}
@@ -8255,7 +8255,8 @@ class BossFilterGUI:
 
                         def _apply_resolution():
                             self.api_base_url_var.set(base_url)
-                            self._verified_api_endpoint = (provider, api_key, base_url)
+                            if resolution.status == "confirmed":
+                                self._verified_api_endpoint = (provider, api_key, base_url)
 
                         self.root.after(0, _apply_resolution)
                     else:
@@ -8750,7 +8751,8 @@ class BossFilterGUI:
 
                             # 基础信息
                             channel_text = f"已识别 {detected_service_name}，" if detected_service_name else ""
-                            base_text = f"✓ {channel_text}找到 {_total_count} 个模型"
+                            verification_text = "；API Key 待测试连接" if resolution_status == "catalog" else ""
+                            base_text = f"✓ {channel_text}找到 {_total_count} 个模型{verification_text}"
                             if _new_count == 0 and _removed_count == 0:
                                 # 无变更，只显示基础信息
                                 self._update_api_status(

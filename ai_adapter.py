@@ -25,6 +25,8 @@ class EndpointCandidate:
     service_name: str
     base_url: str
     auth_style: str = "bearer"
+    key_prefixes: tuple[str, ...] = ()
+    public_catalog: bool = False
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,20 @@ API_ENDPOINT_DISCOVERY_RULES: dict[str, tuple[EndpointCandidate, ...]] = {
         EndpointCandidate("qwen_cn", "阿里云百炼（中国）", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
         EndpointCandidate("qwen_intl", "阿里云百炼（国际）", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
         EndpointCandidate("qwen_us", "阿里云百炼（美国）", "https://dashscope-us.aliyuncs.com/compatible-mode/v1"),
+        EndpointCandidate(
+            "qwen_token_plan",
+            "阿里云百炼 Token Plan",
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            key_prefixes=("sk-sp-",),
+            public_catalog=True,
+        ),
+        EndpointCandidate(
+            "qwen_coding_plan",
+            "阿里云百炼 Coding Plan",
+            "https://coding.dashscope.aliyuncs.com/v1",
+            key_prefixes=("sk-sp-",),
+            public_catalog=True,
+        ),
     ),
     "deepseek": (
         EndpointCandidate("deepseek", "DeepSeek", "https://api.deepseek.com"),
@@ -196,6 +212,18 @@ def normalize_api_base_url(api_config: dict) -> str:
         and parts.path.rstrip("/") == "/coding"
     ):
         return urlunsplit((parts.scheme, parts.netloc, "/coding/v1", parts.query, parts.fragment))
+    if (
+        provider == "qwen"
+        and (parts.hostname or "").lower() == "token-plan.cn-beijing.maas.aliyuncs.com"
+        and parts.path.rstrip("/") == "/v1"
+    ):
+        return urlunsplit((
+            parts.scheme,
+            parts.netloc,
+            "/compatible-mode/v1",
+            parts.query,
+            parts.fragment,
+        ))
     return raw_url
 
 
@@ -274,6 +302,14 @@ def _ordered_endpoint_candidates(
                 str(endpoint.get("service_name") or "当前配置"),
                 preferred,
                 auth_style="anthropic" if provider == "anthropic" else "bearer",
+                public_catalog=(
+                    provider == "qwen"
+                    and (urlsplit(preferred).hostname or "").lower() in {
+                        "token-plan.cn-beijing.maas.aliyuncs.com",
+                        "coding.dashscope.aliyuncs.com",
+                        "coding-intl.dashscope.aliyuncs.com",
+                    }
+                ),
             ))
 
     deduped: list[EndpointCandidate] = []
@@ -303,6 +339,10 @@ def discover_api_endpoint(
     if not api_key:
         return EndpointResolution("invalid", provider, message="API Key 为空")
     candidates = _ordered_endpoint_candidates(provider, api_key, preferred_base_url)
+    preferred = normalize_api_base_url({
+        "api_provider": provider,
+        "base_url": preferred_base_url,
+    })
     if not candidates:
         return EndpointResolution(
             "unsupported", provider, message="该服务商没有可自动识别的官方端点"
@@ -317,7 +357,9 @@ def discover_api_endpoint(
             return requests.get(url, **kwargs)
 
     transient: EndpointResolution | None = None
+    public_catalog_seen: EndpointResolution | None = None
     last_status: int | None = None
+    last_auth_status: int | None = None
     for candidate in candidates:
         models_url = f"{candidate.base_url.rstrip('/')}/models"
         try:
@@ -340,18 +382,38 @@ def discover_api_endpoint(
 
         status_code = int(getattr(response, "status_code", 0) or 0)
         last_status = status_code
+        if not candidate.public_catalog:
+            last_auth_status = status_code
         if status_code == 200:
             try:
                 payload = response.json()
             except (TypeError, ValueError):
                 payload = None
+            models = _extract_model_ids(payload)
+            if candidate.public_catalog:
+                public_catalog_seen = EndpointResolution(
+                    "catalog",
+                    provider,
+                    candidate.channel,
+                    candidate.service_name,
+                    candidate.base_url,
+                    models,
+                    status_code,
+                    "该渠道的模型目录无需认证，不能据此证明 API Key 有效",
+                )
+                prefix_matches = candidate.key_prefixes and any(
+                    str(api_key).startswith(prefix) for prefix in candidate.key_prefixes
+                )
+                if prefix_matches and candidate.base_url.rstrip("/") == preferred:
+                    return public_catalog_seen
+                continue
             return EndpointResolution(
                 "confirmed",
                 provider,
                 candidate.channel,
                 candidate.service_name,
                 candidate.base_url,
-                _extract_model_ids(payload),
+                models,
                 status_code,
                 "接入渠道和 API Key 已确认",
             )
@@ -384,10 +446,30 @@ def discover_api_endpoint(
 
     if transient is not None:
         return transient
+    preferred_host = (urlsplit(preferred).hostname or "").lower()
+    qwen_plan_hosts = {
+        "token-plan.cn-beijing.maas.aliyuncs.com",
+        "coding.dashscope.aliyuncs.com",
+        "coding-intl.dashscope.aliyuncs.com",
+    }
+    if (
+        public_catalog_seen is not None
+        and provider == "qwen"
+        and preferred_host in qwen_plan_hosts
+    ):
+        return EndpointResolution(
+            "invalid",
+            provider,
+            http_status=last_auth_status or last_status,
+            message=(
+                "当前地址是阿里云套餐专属渠道，但 API Key 不是其专属 sk-sp- Key，"
+                "并且也未通过百炼按量付费渠道认证；请检查 Key 类型和计费方案"
+            ),
+        )
     return EndpointResolution(
         "invalid",
         provider,
-        http_status=last_status,
+        http_status=last_auth_status or last_status,
         message="API Key 与已登记的官方接入渠道均不匹配",
     )
 
