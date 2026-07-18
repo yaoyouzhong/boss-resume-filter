@@ -1,9 +1,14 @@
 from candidate_workflow import (
+    ACTION_TIMING_ORDER,
+    apply_followup_state,
     build_daily_candidate_actions,
     candidate_greet_skip_reason,
     candidate_review_category,
+    classify_followup_timing,
+    default_next_followup_at,
     derive_candidate_decision,
     filter_candidates_by_result_view,
+    format_followup_due_at,
     summarize_daily_candidate_actions,
 )
 
@@ -81,6 +86,11 @@ def test_greeting_queue_requires_completed_review():
         "manual_review_required": True,
     }) == "硬性条件需要人工确认"
     assert candidate_greet_skip_reason({"geek_id": "ready", "match_score": 70}) == ""
+    assert candidate_greet_skip_reason({
+        "geek_id": "scheduled",
+        "match_score": 80,
+        "followup_status": "待约面",
+    }) == "跟进状态为待约面"
 
 
 def test_daily_actions_prioritize_pending_manual_and_greet_targets():
@@ -233,3 +243,160 @@ def test_summarize_daily_actions_reports_empty_state():
 
     assert text.startswith("今日待办\n")
     assert "暂无需要优先处理" in text
+
+
+def test_daily_actions_classify_followup_by_due_date_without_hiding_future_work():
+    candidates = [
+        {
+            "geek_id": "overdue",
+            "match_score": 80,
+            "greet_sent": True,
+            "followup_status": "已打招呼",
+            "next_followup_at": "20260717_090000",
+        },
+        {
+            "geek_id": "today",
+            "match_score": 80,
+            "greet_sent": True,
+            "followup_status": "待约面",
+            "next_followup_at": "20260718_090000",
+        },
+        {
+            "geek_id": "future",
+            "match_score": 80,
+            "greet_sent": True,
+            "followup_status": "已约面",
+            "next_followup_at": "20260721_090000",
+        },
+        {
+            "geek_id": "legacy",
+            "match_score": 80,
+            "greet_sent": True,
+            "followup_status": "已打招呼",
+        },
+    ]
+
+    items = build_daily_candidate_actions(candidates, today="2026-07-18")
+    by_id = {item.candidate["geek_id"]: item for item in items}
+
+    assert by_id["overdue"].timing_group == "已逾期"
+    assert by_id["today"].timing_group == "今天"
+    assert by_id["today"].group == "待约面待推进"
+    assert by_id["future"].timing_group == "以后"
+    assert by_id["future"].group == "面试后待反馈"
+    assert by_id["legacy"].timing_group == "待安排"
+    assert ACTION_TIMING_ORDER == ("立即处理", "已逾期", "今天", "待安排", "以后")
+
+
+def test_existing_followup_status_is_not_requeued_when_legacy_greet_flag_is_missing():
+    items = build_daily_candidate_actions([
+        {
+            "geek_id": "legacy-followup",
+            "match_score": 80,
+            "followup_status": "待约面",
+            "next_followup_at": "20260718_090000",
+        },
+        {
+            "geek_id": "legacy-greeted",
+            "match_score": 80,
+            "followup_status": "已打招呼",
+        },
+    ], today="2026-07-18")
+
+    by_id = {item.candidate["geek_id"]: item for item in items}
+    assert by_id["legacy-followup"].group == "待约面待推进"
+    assert by_id["legacy-followup"].timing_group == "今天"
+    assert by_id["legacy-greeted"].group == "已打招呼待跟进"
+    assert by_id["legacy-greeted"].timing_group == "待安排"
+
+
+def test_completed_interview_only_returns_to_actions_when_followup_is_scheduled():
+    unscheduled = {
+        "geek_id": "interviewed",
+        "match_score": 80,
+        "greet_sent": True,
+        "followup_status": "已约面",
+    }
+
+    assert build_daily_candidate_actions([unscheduled], today="2026-07-18") == []
+
+    scheduled = dict(unscheduled, next_followup_at="20260720_090000")
+    items = build_daily_candidate_actions([scheduled], today="2026-07-18")
+    assert len(items) == 1
+    assert items[0].group == "面试后待反馈"
+    assert items[0].timing_group == "以后"
+
+
+def test_immediate_candidate_actions_override_followup_schedule():
+    items = build_daily_candidate_actions([
+        {
+            "geek_id": "reply",
+            "match_score": 80,
+            "greet_sent": True,
+            "followup_status": "已回复",
+            "next_followup_at": "20260801_090000",
+        },
+        {
+            "geek_id": "pending",
+            "match_score": 80,
+            "greet_confirmation_pending": True,
+        },
+    ], today="2026-07-18")
+
+    assert [item.timing_group for item in items] == ["立即处理", "立即处理"]
+
+
+def test_followup_state_defaults_and_terminal_states_manage_due_date():
+    candidate = {}
+
+    updated_at = apply_followup_state(
+        candidate,
+        "已打招呼",
+        "已联系",
+        timestamp="20260718_100000",
+    )
+
+    assert updated_at == "20260718_100000"
+    assert candidate["next_followup_at"] == "20260719_100000"
+    assert classify_followup_timing(candidate, "2026-07-19") == (
+        "今天", "20260719_100000"
+    )
+
+    apply_followup_state(
+        candidate,
+        "待约面",
+        timestamp="20260719_110000",
+        next_followup_at="2026-07-23",
+    )
+    assert candidate["next_followup_at"] == "20260723_000000"
+    assert format_followup_due_at(candidate["next_followup_at"]) == "2026-07-23"
+
+    apply_followup_state(candidate, "已归档", timestamp="20260720_120000")
+    assert "next_followup_at" not in candidate
+
+
+def test_default_next_followup_at_uses_status_specific_offsets():
+    assert default_next_followup_at("已打招呼", "20260718_100000") == "20260719_100000"
+    assert default_next_followup_at("已回复", "20260718_100000") == "20260718_100000"
+    assert default_next_followup_at("待约面", "20260718_100000") == "20260719_100000"
+    assert default_next_followup_at("已归档", "20260718_100000") == ""
+
+
+def test_daily_action_summary_separates_timing_and_business_groups():
+    items = build_daily_candidate_actions([
+        {
+            "geek_id": "due",
+            "name": "到期候选人",
+            "job_name": "Java",
+            "match_score": 80,
+            "greet_sent": True,
+            "followup_status": "已打招呼",
+            "next_followup_at": "20260718_090000",
+        }
+    ], today="2026-07-18")
+
+    text = summarize_daily_candidate_actions(items)
+
+    assert "# 今天" in text
+    assert "## 已打招呼待跟进" in text
+    assert "到期：2026-07-18" in text

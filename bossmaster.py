@@ -659,6 +659,7 @@ def export_to_excel(
                 '跟进状态': c.get('followup_status') or ('已打招呼' if c.get('greet_sent', False) else '未沟通'),
                 '跟进备注': c.get('followup_note', ''),
                 '跟进时间': c.get('followup_updated_at', ''),
+                '下次跟进': c.get('next_followup_at', ''),
                 '人工反馈': c.get('feedback_status', ''),
                 '反馈原因': _format_feedback_reasons(c),
                 '反馈备注': c.get('feedback_note', ''),
@@ -679,7 +680,7 @@ def export_to_excel(
             '年龄', '工作年限', '学历', '学历明细', '薪资', '求职状态', '城市', '最近公司', '技能',
             '匹配分', '推荐指数', '技能匹配', '评分拆解', '评分解释', '命中证据',
             '简历评估', '简历评估理由', '技能深度', '经验质量', '行业匹配', '发展潜力',
-            '是否屏蔽', '是否打招呼', '跟进状态', '跟进备注', '跟进时间',
+            '是否屏蔽', '是否打招呼', '跟进状态', '跟进备注', '跟进时间', '下次跟进',
             '人工反馈', '反馈原因', '反馈备注', '反馈时间',
             '是否需人工确认', '风险提示', '自动打招呼阻断原因',
             '首次发现', '最近评估', '详细信息',
@@ -834,6 +835,8 @@ def export_to_excel(
                     recommend_col = cell.column
                 elif cell.value == '是否打招呼':
                     greet_col = cell.column
+                elif cell.value == '下次跟进':
+                    ws.column_dimensions[cell.column_letter].width = 16
 
             if OPENPYXL_AVAILABLE:
                 if recommend_col:

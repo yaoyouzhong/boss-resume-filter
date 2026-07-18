@@ -2387,6 +2387,44 @@ def test_clear_manual_review_rejects_missing_candidate_id():
         assert json.loads(candidates_path.read_text(encoding="utf-8")) == original
 
 
+def test_update_candidate_followup_persists_due_date_for_only_matching_job():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        candidates_path = Path(tmp_dir) / "candidates.json"
+        candidates_path.write_text(json.dumps([
+            {
+                "geek_id": "same-geek",
+                "job_name": "Java 工程师",
+                "match_score": 80,
+                "followup_status": "已打招呼",
+            },
+            {
+                "geek_id": "same-geek",
+                "job_name": "Python 工程师",
+                "match_score": 80,
+                "followup_status": "已打招呼",
+            },
+        ], ensure_ascii=False), encoding="utf-8")
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+
+        with patch("gui_main.CANDIDATES_PATH", candidates_path):
+            updated = gui._update_candidate_followup(
+                "same-geek",
+                "Java 工程师",
+                "待约面",
+                "周三确认",
+                "20260723_090000",
+                "20260718_100000",
+            )
+
+        saved = json.loads(candidates_path.read_text(encoding="utf-8"))
+        assert updated is True
+        assert saved[0]["followup_status"] == "待约面"
+        assert saved[0]["next_followup_at"] == "20260723_090000"
+        assert saved[0]["followup_updated_at"] == "20260718_100000"
+        assert saved[1]["followup_status"] == "已打招呼"
+        assert "next_followup_at" not in saved[1]
+
+
 def test_candidate_review_workbench_exposes_navigation_tabs_and_direct_actions():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     block = source[source.index("def _open_candidate_review_workbench"):]
@@ -3345,6 +3383,12 @@ def test_candidate_state_diagnostics_detail_does_not_repeat_severity_column():
     assert 'if column_id == "#3":' in dialog_block
     assert 'full = f"{issue.title}\\n\\n{issue.detail}"' in dialog_block
     assert 'full = issue.suggestion' in dialog_block
+    assert 'def on_issue_group_motion(event):' in dialog_block
+    assert 'column_id != "#0"' in dialog_block
+    assert '("state_check_group", item_id, column_id)' in dialog_block
+    assert 'lambda: self._show_tooltip(title, x, y, tooltip_key, parent=win)' in dialog_block
+    assert 'group_tree.bind("<Motion>", on_issue_group_motion)' in dialog_block
+    assert 'group_tree.bind("<Leave>", self._hide_tooltip)' in dialog_block
 
 
 def test_candidate_workflow_dialog_subtitles_use_neutral_text_color():
@@ -3389,17 +3433,21 @@ def test_information_and_workbench_windows_do_not_lock_main_window():
     assert ".grab_set()" in modal_block
 
 
-def test_daily_actions_dialog_uses_consistent_title_and_review_subgroups_only():
+def test_daily_actions_dialog_uses_time_groups_then_business_and_review_subgroups():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     daily_block = source[source.index("def _show_daily_candidate_actions_dialog"):]
     daily_block = daily_block[:daily_block.index("\n    def _show_candidate_state_diagnostics_dialog")]
 
     assert 'win.title("今日待办")' in daily_block
     assert 'win.title("今日候选人待办")' not in daily_block
+    assert "for timing_index, timing_group in enumerate(ACTION_TIMING_ORDER):" in daily_block
+    assert 'text=timing_group' in daily_block
     assert 'if group != "待复核":' in daily_block
     assert "candidate_review_category(item.candidate)" in daily_block
-    assert 'parent_iid, "end", iid=child_iid, text=category' in daily_block
+    assert 'child_iid, "end", iid=review_iid, text=category' in daily_block
     assert 'open=(group == "待复核")' in daily_block
+    assert 'f"检查范围：{scope}    今日需处理：{due_now} 人' in daily_block
+    assert '("due", "到期", 95, "center")' in daily_block
 
 
 def test_daily_resume_action_promotes_resume_context_menu_entry():
@@ -3449,9 +3497,36 @@ def test_daily_followup_action_promotes_followup_context_menu_entry():
     menu_block = source[source.index("def _show_candidate_workflow_context_menu"):]
     menu_block = menu_block[:menu_block.index("\n    def _bind_treeview_sorting")]
 
-    assert '"followup" if item.group in ("已打招呼待跟进", "已回复待推进") else None' in action_block
+    assert '"待约面待推进", "面试后待反馈",' in action_block
     assert 'label=" 更新跟进"' in menu_block
     assert 'elif primary_action == "followup":' in menu_block
+    assert 'label=" 标记已回复"' in menu_block
+    assert 'label=" 推进到待约面"' in menu_block
+    assert 'label=" 明天再跟进"' in menu_block
+
+
+def test_followup_dialog_supports_due_date_quick_choices_and_persistence():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _mark_candidate_followup"):]
+    block = block[:block.index("\n    def _update_candidate_feedback")]
+
+    assert 'text="下次跟进日期"' in block
+    for label in ("今天", "明天", "3 天后", "7 天后", "不设置"):
+        assert f'("{label}",' in block
+    assert "quick_date_frame.pack(" in block
+    assert "fill='x'" in block
+    assert "grid_columnconfigure(column, weight=1, uniform='followup_quick_date')" in block
+    assert "sticky='ew'" in block
+    assert 'status_combo.bind("<<ComboboxSelected>>", reset_due_for_status)' in block
+    assert "next_due = normalize_followup_at(due_input)" in block
+    assert 're.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", due_input)' in block
+    assert "下次跟进日期无效，请检查年月日是否正确" in block
+    assert "下次跟进日期格式不正确，请使用 YYYY-MM-DD" in block
+    assert 'messagebox.showerror("日期错误", error_text, parent=win)' in block
+    assert 'status == "待约面" and not next_due' in block
+    assert "apply_followup_state(" in block
+    assert 'needs_feedback = status == "不合适"' in block
+    assert 'default_status="误推"' in block
 
 
 def test_greet_queue_start_requires_confirmation():
@@ -4251,6 +4326,7 @@ def test_feedback_dialog_status_control_stays_inside_form_content():
     assert "status_combo.pack(anchor='w', fill='x'" in feedback_block
     assert "note_text.pack(anchor='w', fill='x'" in feedback_block
     assert 'text="结构化原因（可多选）",\n            font=(FONT_FAMILY, int(12 * self.font_scale))' in feedback_block
+    assert 'status in {"误推", "误杀"} and not reasons' in feedback_block
 
 
 def test_job_review_text_aggregates_structured_feedback_reasons():
@@ -4266,7 +4342,8 @@ def test_job_review_text_aggregates_structured_feedback_reasons():
         },
         {
             "job_name": "Java",
-            "match_score": 76,
+            "match_score": 40,
+            "qualification_status": "rejected",
             "feedback_status": "误杀",
             "feedback_reasons": ["规则过窄", "AI 低估"],
         },
@@ -4285,8 +4362,86 @@ def test_job_review_text_aggregates_structured_feedback_reasons():
     assert "- 技能不匹配: 1" in text
     assert "- 规则过宽: 1" in text
     assert "- 规则过窄: 1" in text
+    assert "- 误杀: 1" in text
+    assert "- 反馈覆盖：3/3 人" in text
     assert "误推占比较高" not in text
     assert "规则过宽" in text
+    assert "样本不足 5 条" in text
+    assert "多人反馈" not in text
+
+
+def test_job_review_dialog_exposes_feedback_samples_and_job_config_actions():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidates = [{
+        "name": "候选人甲",
+        "match_score": 40,
+        "feedback_status": "误杀",
+        "feedback_reasons": ["规则过窄"],
+    }]
+    gui._selected_stats_job_name = Mock(return_value="Java")
+    gui._load_stats_candidates = Mock(return_value=candidates)
+    gui._build_job_review_text = Mock(return_value="复盘内容")
+    gui._show_text_dialog = Mock()
+
+    gui._show_selected_job_review()
+
+    action_labels = [
+        label for label, _command
+        in gui._show_text_dialog.call_args.kwargs["extra_actions"]
+    ]
+    assert action_labels == ["查看反馈候选人", "前往岗位配置"]
+
+
+def test_job_review_feedback_drilldown_keeps_low_score_feedback_evidence():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._show_text_dialog = Mock()
+
+    gui._show_job_review_feedback_candidates("Java", [{
+        "name": "候选人甲",
+        "match_score": 40,
+        "feedback_status": "误杀",
+        "feedback_reasons": ["规则过窄", "AI 低估"],
+        "feedback_note": "完整简历符合要求",
+    }])
+
+    text = gui._show_text_dialog.call_args.args[1]
+    assert "候选人甲｜40 分｜误杀" in text
+    assert "规则过窄、AI 低估" in text
+    assert "完整简历符合要求" in text
+
+
+def test_job_review_can_navigate_to_matching_saved_job_config():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.show_page_config = Mock()
+    gui.job_rules = {"Java 工程师": {}}
+    gui.config_job_combo = _FakeCombo()
+    gui.config_job_combo.set("其他岗位")
+    gui.on_job_selected = Mock()
+
+    gui._open_job_config_from_review("  Java   工程师 ")
+
+    gui.show_page_config.assert_called_once_with()
+    assert gui.config_job_combo.get() == "Java 工程师"
+    gui.on_job_selected.assert_called_once_with(None)
+
+
+def test_job_review_only_reports_trends_after_minimum_feedback_sample():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidates = [
+        {
+            "job_name": "Java",
+            "match_score": 80 - index,
+            "feedback_status": "误推" if index < 3 else "合适",
+            "feedback_reasons": ["规则过宽"] if index < 3 else ["其他"],
+        }
+        for index in range(5)
+    ]
+
+    text = gui._build_job_review_text("Java", candidates)
+
+    assert "误推占比较高" in text
+    assert "规则过宽：3/5 条" in text
+    assert "样本不足" not in text
 
 
 def test_education_browser_reuses_live_page():

@@ -164,6 +164,7 @@ def test_mark_candidate_greeted_writes_status_time_and_method():
     assert candidate["greet_method"] == "auto_list"
     assert candidate["followup_status"] == "已打招呼"
     assert candidate["followup_updated_at"] == "20260619_120000"
+    assert candidate["next_followup_at"] == "20260620_120000"
 
 
 def test_update_candidate_greeted_persists_immediately():
@@ -306,6 +307,7 @@ def test_dedupe_preserves_followup_from_old_to_new():
             "followup_status": "已回复",
             "followup_note": "等候选人确认时间",
             "followup_updated_at": "20260608_120000",
+            "next_followup_at": "20260609_090000",
         },
         {"geek_id": "g1", "job_name": "Java", "match_score": 80},
     ])
@@ -313,6 +315,7 @@ def test_dedupe_preserves_followup_from_old_to_new():
     assert result[0]["match_score"] == 80
     assert result[0]["followup_status"] == "已回复"
     assert result[0]["followup_note"] == "等候选人确认时间"
+    assert result[0]["next_followup_at"] == "20260609_090000"
 
 
 def test_dedupe_preserves_followup_from_new_to_old():
@@ -326,12 +329,38 @@ def test_dedupe_preserves_followup_from_new_to_old():
             "followup_status": "待约面",
             "followup_note": "周三沟通",
             "followup_updated_at": "20260608_130000",
+            "next_followup_at": "20260610_090000",
         },
     ])
     assert len(result) == 1
     assert result[0]["match_score"] == 80
     assert result[0]["followup_status"] == "待约面"
     assert result[0]["followup_note"] == "周三沟通"
+    assert result[0]["next_followup_at"] == "20260610_090000"
+
+
+def test_dedupe_newer_terminal_followup_clears_old_due_date():
+    result = _dedupe_candidates([
+        {
+            "geek_id": "g1",
+            "job_name": "Java",
+            "match_score": 80,
+            "followup_status": "待约面",
+            "followup_updated_at": "20260608_130000",
+            "next_followup_at": "20260610_090000",
+        },
+        {
+            "geek_id": "g1",
+            "job_name": "Java",
+            "match_score": 70,
+            "followup_status": "已归档",
+            "followup_note": "",
+            "followup_updated_at": "20260609_130000",
+        },
+    ])
+
+    assert result[0]["followup_status"] == "已归档"
+    assert "next_followup_at" not in result[0]
 
 
 def test_dedupe_preserves_greeting_pending_and_success_clears_it():

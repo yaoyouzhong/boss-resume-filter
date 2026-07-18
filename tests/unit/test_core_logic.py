@@ -1483,6 +1483,7 @@ def test_export_to_excel_keeps_full_candidate_summary_in_detail_column():
                     "match_score": 80,
                     "recommend_level": "强烈推荐",
                     "greet_sent": False,
+                    "next_followup_at": "20260720_090000",
                     "manual_review_required": True,
                     "risk_flags": ["学历形式待确认：疑似非统招本科"],
                     "auto_greet_blocked_reason": "学历形式待确认",
@@ -1501,10 +1502,13 @@ def test_export_to_excel_keeps_full_candidate_summary_in_detail_column():
         detail_col = headers.index("详细信息") + 1
         manual_review_col = headers.index("是否需人工确认") + 1
         risk_col = headers.index("风险提示") + 1
+        next_followup_col = headers.index("下次跟进") + 1
 
         assert sheet.cell(row=2, column=detail_col).value == long_summary
         assert sheet.cell(row=2, column=manual_review_col).value == "是"
         assert sheet.cell(row=2, column=risk_col).value == "学历形式待确认：疑似非统招本科"
+        assert sheet.cell(row=2, column=next_followup_col).value == "20260720_090000"
+        assert sheet.column_dimensions[sheet.cell(row=1, column=next_followup_col).column_letter].width == 16
 
         job_sheet = workbook["数据分析师"]
         assert job_sheet.cell(row=2, column=1).value == 1
