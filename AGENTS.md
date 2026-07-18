@@ -40,7 +40,7 @@ boss-resume-filter/
 ├── ui_config.json        # UI 尺寸与缩放配置
 ├── tests/                # 测试脚本目录
 ├── scripts/              # 辅助脚本（发布监控、PPT 生成、截图等）
-│   ├── release_ci.py   # GitHub Actions 正式发布编排与线上验收
+│   ├── release_ci.py   # GitHub 暂存、本机镜像与正式发布规则
 │   ├── pr_delivery.py # 普通 PR 一次授权交付（门禁、PR、合并、双远端同步、分支清理）
 │   ├── release_delivery.py / release_prepare.py / release_dispatch.py # 版本准备、PR 交付与正式发布驱动
 │   └── watch_progress.py # 发布进度监控脚本（轮询 .build_progress.json）
@@ -82,7 +82,7 @@ boss-resume-filter/
 - PR 不作统一要求；核心筛选、自动打招呼、存储、更新器、发布脚本、CI/CD 或大范围修改应使用 PR；面向 `master` 的 PR 由 `PR Checks` 验证，PR 合并始终是独立授权，合并不会触发发布
 - 普通分支推送、PR 合并、删除分支/worktree/临时文件默认须分别获得用户授权。用户准确授权“`一键交付分支 <branch>`”后，该一次授权仅覆盖指定分支的本地门禁、普通 push、创建/复用 PR、等待 `PR Checks`、Squash 合并、同步 GitHub/Gitee `master`、删除本地和远端分支、快进本地 `master`；不覆盖 rebase、force push、worktree 删除、冲突处理或正式发布。任一门禁/CI/一致性检查失败必须停止且不得清理分支
 - 用户准确授权“`一键准备版本 vX.Y`”后，仅允许从干净且双远端一致的 `master` 创建本地 `codex/release-vX.Y`、同步版本材料、运行严格门禁并提交；该分支仍用“`一键交付分支 codex/release-vX.Y`”单独交付。准确授权“`一键准备并交付版本 vX.Y`”后，允许先根据上一公开 tag 到 `master` 的实际变更生成项目外临时发布说明，再顺序组合上述两段权限；任一阶段失败立即停止，已合并时允许幂等收口；两种授权都不覆盖 tag、安装包、GitHub/Gitee Release、rebase、force push、冲突处理或正式发布
-- 用户明确说“正式发布 vX.Y”后，该一次授权覆盖 `Build & Release` 内部的严格门禁、tag/清单推送、GitHub/Gitee Release 和线上验收，不再逐步确认
+- 用户明确说“正式发布 vX.Y”后，该一次授权覆盖本机驱动器与 Actions 暂存阶段的严格门禁、tag/清单推送、GitHub/Gitee Release 和线上验收，不再逐步确认
 - 发布准备 PR 合并前执行 `/neat-freak`、文案润色和风险相关实测；授权后由工作流重跑严格门禁并核验公开下载、自动更新和双远端状态
 - 已公开 tag 不得移动或覆盖，修复必须发布更高补丁版本；同一提交允许断点续跑
 - `candidates_all.json`、本地 API 配置、Chrome profile 和登录状态不属于任务临时文件，禁止收尾时自动清理
@@ -98,11 +98,14 @@ boss-resume-filter/
   3. `README.md` 顶部版本标识 + 版本历史段落（只保留最近 2-3 个版本，更早版本由 CHANGELOG.md 承载）+ gui_main.py 注释
   4. `CLAUDE.md` 和 `AGENTS.md` 项目结构中的 gui_main.py 注释
 - **版本内容写作规范**（必须遵守，详见 memory/readme-style.md）：
-  - 目标：简洁专业、对普通用户友好（不是大白话，避免过度通俗化）
+  - 目标：简洁专业、对普通用户友好（不是大白话，避免过度通俗化）；只描述用户得到的功能和体验变化，不展开实现过程
+  - 范围基准：必须以“上一公开 tag → 目标发布提交”的最终净变化为准，逐项核对提交和变更文件；每项用户可感知变化要么写入版本内容，要么明确判定为合并表述或不面向用户，避免遗漏
+  - 功能无关内容禁止进入版本内容：版本号同步、测试、内部重构、打包、CI/CD、发布编排、双远端同步、门禁和开发过程说明一律不写
+  - 本版本开发过程中引入并在发布前修正的布局、校验、提示或回归问题属于开发收尾，不得包装为“体验优化”或“问题修复”；只有相对上一公开版本新增的独立用户能力可以保留
   - **保留**：用户日常接触（AI、API、API Key、浏览器、Chrome、Excel、配置文件、JSON、智能体、大模型）+ 行业通用词（参数、持久化、覆盖率、解析、过滤、字段、格式）
   - **禁止**：变量名 / 函数名 / 字段名（反引号标识）、纯内部机制（正则 / keyring / DPI / sha256 / locale-data / listener / srcdoc）、开发者黑话（OR/AND 条件、provider+base_url、阶段 1.6、闸门解耦、风控面）
   - 避免自造怪词（如把「参数」翻成「联系凭证」反而更不专业）
-  - 分类基准：问题修复仅指上一版本已存在、用户可感知、非本次开发引入的缺陷
+  - 分类基准：问题修复仅指上一公开版本已经存在、用户能够感知、且有代码差异或复现证据支持的缺陷；证据不足时不写成修复
   - `build.py --check` 自动扫描规则 4（STYLE_KEYWORDS + 反引号）；`--strict-changelog` 升级为硬门禁
 - 发布前 `build.py --check` 验证一致性
 
@@ -315,9 +318,9 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 - **Windows**：下载 EXE → 校验 SHA256 → `update.bat` 替换重启；脚本须清理 `_PYI_*` 环境变量 + `PYINSTALLER_RESET_ENVIRONMENT=1` 防 DLL 缺失
 - **macOS**：.app 运行→下载 ZIP 替换重启；源码→`git pull`
 - `latest.json` 的 `assets` 记录产物 `size`/`sha256` 供校验
-- **Gitee Release 上传**：`Build & Release` 的 Windows 发布任务集中下载双平台产物，按 EXE→ZIP→DMG 串行镜像到 Gitee；任一附件失败立即中止，重跑时复用已验证附件
+- **Gitee Release 上传**：Actions 只暂存 GitHub Draft 和双平台产物；本机 `release_dispatch.py` 下载并校验后，按 EXE→ZIP→DMG 串行镜像到 Gitee。任一附件失败立即中止，重跑时复用已验证附件并跳过 Actions
 - **Gitee 完整性校验**：发布主流程只校验附件齐全和 size 与 GitHub 一致，不回下载大文件；需要逐文件 SHA256 时手动运行 `python build.py --verify-gitee-integrity X.Y.Z`
-- **Gitee Token**：Actions 使用 Repository Secret `GITEE_TOKEN`（需 projects 权限）；本地手工核验/补传仍使用同名环境变量
+- **Gitee Token**：只从本机环境变量读取 `GITEE_TOKEN`（需 projects 权限）；Actions 不保存、不读取该 Token，也禁止上传 Gitee 大文件
 ## 低频专项说明
 
 低频踩坑、平台差异和专项背景放在 `.agent/notes.md`。这是项目级稳定说明，可以进 git；不要把会话记忆、临时调试日志或自动生成的 agent 记忆放进去。

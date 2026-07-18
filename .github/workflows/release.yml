@@ -1,4 +1,4 @@
-name: Build & Release
+name: Build & Stage GitHub Release
 run-name: Release v${{ inputs.version }}${{ inputs.dry_run && ' (Dry Run)' || '' }}
 
 on:
@@ -144,8 +144,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  publish:
-    name: Publish, mirror, and verify
+  stage_github:
+    name: Stage GitHub draft artifacts
     needs: [prepare, build_windows, build_macos]
     if: >-
       ${{
@@ -156,7 +156,7 @@ jobs:
         (needs.build_macos.result == 'success' || needs.build_macos.result == 'skipped')
       }}
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
 
     steps:
       - name: Checkout immutable release commit
@@ -189,16 +189,15 @@ jobs:
           name: macos-release
           path: dist
 
-      - name: Publish both remotes and run online acceptance
+      - name: Stage immutable tag and GitHub Draft Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           RELEASE_AUTHORIZATION: ${{ inputs.authorization }}
           RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
         run: >-
-          python scripts/release_ci.py publish
+          python scripts/release_ci.py stage-github
           --version "$env:RELEASE_VERSION"
           --authorization "$env:RELEASE_AUTHORIZATION"
           --release-sha "$env:RELEASE_SHA"

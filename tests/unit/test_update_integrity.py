@@ -259,7 +259,8 @@ def test_release_workflow_only_runs_when_explicitly_dispatched():
     assert "tags:" not in workflow
     assert "pull_request:" not in workflow
     assert "authorization:" in workflow
-    assert "scripts/release_ci.py publish" in workflow
+    assert "scripts/release_ci.py stage-github" in workflow
+    assert "GITEE_TOKEN" not in workflow
 
 
 def test_gitee_sync_never_force_pushes_master():

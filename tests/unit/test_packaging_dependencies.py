@@ -40,14 +40,15 @@ def test_release_workflow_rebuilds_macos_when_dmg_is_missing():
     assert "BOSS_ResumeFilter.dmg" in workflow
 
 
-def test_release_workflow_publishes_gitee_only_after_both_platform_builds():
-    """The publish job owns serial Gitee mirroring after both build jobs finish."""
+def test_release_workflow_stages_only_github_after_both_platform_builds():
+    """Hosted Actions must stop after the complete GitHub Draft is staged."""
     workflow = (BASE_DIR / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
     assert "needs: [prepare, build_windows, build_macos]" in workflow
     assert "runs-on: windows-latest" in workflow
-    assert "GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}" in workflow
-    assert "scripts/release_ci.py publish" in workflow
+    assert "scripts/release_ci.py stage-github" in workflow
+    assert "GITEE_TOKEN" not in workflow
+    assert "finalize-local" not in workflow
 
 
 def test_release_workflow_requires_one_explicit_authorization_and_never_auto_triggers():
@@ -69,12 +70,12 @@ def test_release_workflow_requires_one_explicit_authorization_and_never_auto_tri
 
 
 def test_local_release_entrypoint_cannot_race_the_hosted_release_workflow():
-    """Formal releases have one mutation owner: the hosted workflow."""
+    """Formal releases keep build.py disabled outside the orchestrated phases."""
     build_source = (BASE_DIR / "build.py").read_text(encoding="utf-8")
 
     assert "if args.release and not args.ci:" in build_source
     assert "本地 build.py --release 已停用" in build_source
-    assert "gh workflow run release.yml --ref master" in build_source
+    assert "python scripts/release_dispatch.py" in build_source
 
 
 def test_pr_checks_run_stable_validation_for_master_pull_requests():

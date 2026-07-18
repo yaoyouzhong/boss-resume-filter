@@ -165,7 +165,7 @@ def test_prepare_rejects_non_manual_github_actions_event():
             )
 
 
-def test_publish_exposes_release_only_after_both_stores_are_complete():
+def test_stage_github_stops_after_draft_and_artifacts_are_complete():
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         notes_path = temp_path / "notes.md"
@@ -177,7 +177,15 @@ def test_publish_exposes_release_only_after_both_stores_are_complete():
         events: list[str] = []
 
         with (
-            patch.object(release_ci, "_require_publish_secrets", return_value="token"),
+            patch.dict(
+                release_ci.os.environ,
+                {
+                    "GITHUB_ACTIONS": "true",
+                    "GITHUB_EVENT_NAME": "workflow_dispatch",
+                    "GITHUB_REF_NAME": "master",
+                    "GH_TOKEN": "token",
+                },
+            ),
             patch.object(release_ci, "_git_text", return_value="a" * 40),
             patch.object(release_ci, "_version_at_ref", return_value="2.21"),
             patch.object(
@@ -185,7 +193,6 @@ def test_publish_exposes_release_only_after_both_stores_are_complete():
                 "_fetch_and_assert_current_master_compatible",
                 side_effect=lambda *_: events.append("master_safe") or "a" * 40,
             ),
-            patch.object(release_ci, "_ensure_gitee_remote"),
             patch.object(
                 release_ci.build,
                 "_extract_changelog_release",
@@ -205,6 +212,61 @@ def test_publish_exposes_release_only_after_both_stores_are_complete():
                 "_upload_github_artifacts",
                 side_effect=lambda *_: events.append("github_assets") or github_assets,
             ),
+            patch.object(release_ci, "_publish_gitee_artifacts") as gitee_publish,
+            patch.object(release_ci, "_publish_github_release") as github_publish,
+        ):
+            release_ci.stage_github_release("2.21", "正式发布 v2.21", "a" * 40)
+
+        assert events == ["master_safe", "tag", "github_draft", "github_assets"]
+        gitee_publish.assert_not_called()
+        github_publish.assert_not_called()
+
+
+def test_finalize_local_exposes_release_only_after_gitee_is_complete():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        artifacts = [temp_path / name for name in release_ci.RELEASE_ARTIFACTS]
+        for artifact in artifacts:
+            artifact.write_bytes(b"artifact")
+        github_assets = {path.name: _asset(path.stat().st_size) for path in artifacts}
+        events: list[str] = []
+
+        def fake_git_text(*args):
+            if args == ("branch", "--show-current"):
+                return "master"
+            if args == ("rev-parse", "HEAD"):
+                return "a" * 40
+            raise AssertionError(args)
+
+        with (
+            patch.object(release_ci, "require_local_gitee_access", return_value="token"),
+            patch.object(release_ci, "_ensure_gitee_remote"),
+            patch.object(release_ci, "_working_tree_paths", return_value=set()),
+            patch.object(release_ci, "_git_text", side_effect=fake_git_text),
+            patch.object(release_ci, "_version_at_ref", return_value="2.21"),
+            patch.object(
+                release_ci,
+                "_fetch_and_assert_current_master_compatible",
+                side_effect=lambda *_: events.append("master_safe") or "a" * 40,
+            ),
+            patch.object(release_ci.build, "_remote_tag_commit", return_value="a" * 40),
+            patch.object(
+                release_ci.build,
+                "_extract_changelog_release",
+                return_value=("v2.21 — Test", "### 新增功能\n\n- Test"),
+            ),
+            patch.object(release_ci.build, "_get_github_release_info", return_value={"isDraft": True}),
+            patch.object(
+                release_ci.build,
+                "_verify_github_release_assets_complete",
+                return_value=github_assets,
+            ),
+            patch.object(
+                release_ci,
+                "_download_verified_github_artifacts",
+                side_effect=lambda *_: events.append("download_verify") or artifacts,
+            ),
+            patch.object(release_ci, "_ensure_gitee_tag", side_effect=lambda *_: events.append("gitee_tag")),
             patch.object(
                 release_ci,
                 "_publish_gitee_artifacts",
@@ -232,18 +294,62 @@ def test_publish_exposes_release_only_after_both_stores_are_complete():
                 side_effect=lambda *_: events.append("public_verify"),
             ),
         ):
-            release_ci.publish_release("2.21", "正式发布 v2.21", "a" * 40)
+            release_ci.finalize_release_local("2.21", "正式发布 v2.21", "a" * 40)
 
-        assert events.index("github_assets") < events.index("github_public")
-        assert events.index("gitee_assets") < events.index("github_public")
         assert events.count("master_safe") == 2
-        assert events.index("gitee_assets") < events.index("master_safe", 1)
-        assert events.index("master_safe", 1) < events.index("github_public")
+        assert events.index("download_verify") < events.index("gitee_assets")
+        assert events.index("gitee_assets") < events.index("github_public")
         assert events.index("github_public") < events.index("manifest")
         assert events[-2:] == ["remote_verify", "public_verify"]
 
 
-def test_gitee_ci_upload_accepts_windows_and_macos_artifacts_together():
+def test_gitee_large_upload_is_rejected_on_github_actions():
+    with patch.dict(release_ci.os.environ, {"GITHUB_ACTIONS": "true", "GITEE_TOKEN": "token"}):
+        with _raises(release_ci.ReleaseAutomationError, "禁止在 GitHub Actions 中上传"):
+            release_ci.require_local_gitee_access()
+
+
+def test_local_gitee_resume_reuses_existing_same_size_staged_assets():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        artifacts = [temp_path / name for name in release_ci.RELEASE_ARTIFACTS]
+        for artifact in artifacts:
+            artifact.write_bytes(b"artifact")
+        github_assets = {path.name: _asset(path.stat().st_size) for path in artifacts}
+        cache = {
+            "existing": {
+                path.name: {"size": path.stat().st_size}
+                for path in artifacts
+            }
+        }
+
+        with (
+            patch.object(release_ci.build, "_gitee_get_release_cache", return_value=cache),
+            patch.object(
+                release_ci.build,
+                "_github_asset_matches_local",
+                return_value=(True, "SHA256 一致"),
+            ),
+            patch.object(release_ci.build, "_gitee_upload_artifacts") as upload,
+            patch.object(
+                release_ci.build,
+                "_verify_gitee_release_assets_complete",
+                return_value=True,
+            ),
+        ):
+            downloads = release_ci._publish_gitee_artifacts(
+                "2.21",
+                "v2.21 — Test",
+                "notes",
+                artifacts,
+                github_assets,
+            )
+
+    upload.assert_not_called()
+    assert downloads == release_ci._canonical_downloads_cn("2.21")
+
+
+def test_gitee_local_upload_accepts_windows_and_macos_artifacts_together():
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         artifacts = [temp_path / name for name in release_ci.RELEASE_ARTIFACTS]
@@ -281,7 +387,7 @@ def test_gitee_ci_upload_accepts_windows_and_macos_artifacts_together():
         assert set(downloads) == {"windows", "macos", "macos_dmg"}
 
 
-def test_gitee_ci_upload_stops_after_the_first_failed_artifact():
+def test_gitee_local_upload_stops_after_the_first_failed_artifact():
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         artifacts = [temp_path / name for name in release_ci.RELEASE_ARTIFACTS]

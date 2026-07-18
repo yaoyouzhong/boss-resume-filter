@@ -55,9 +55,17 @@ macOS aqua 的 ttk 控件默认背景是 `systemWindowBackgroundColor`（灰色�
 
 ### CHANGELOG 分类原则
 
-三类：新增功能 / 体验优化 / 问题修复。问题修复仅指旧版本已存在且影响用户的 bug，不含当前版本新功能引入的问题。
+三类：新增功能 / 体验优化 / 问题修复。问题修复仅指上一公开版本已存在、用户可感知且有差异或复现证据支持的 bug，不含当前版本开发过程中引入并在发布前修正的问题。
 
-CHANGELOG 只包含用户可感知的变更，以下内容不应出现：新功能开发过程中的中间 UI 调整（属于新功能本身）、打包脚本/CI/发布流程优化（用户无感知）、当前版本新功能引入的 bug 修复（不算“问题修复”）。`build.py --check` 会自动审查条目质量。
+版本内容必须以“上一公开 tag → 目标发布提交”的最终净变化为准，逐项核对提交和变更文件。每项用户可感知变化都要写入、合并到更高层表述，或明确判定为不面向用户，不能只按提交标题摘抄，避免遗漏。
+
+CHANGELOG 只包含产品功能、用户可感知的独立体验改进和上一公开版本的缺陷修复。以下内容不应出现：
+
+- 新功能开发过程中的中间 UI 调整、校验提示补漏和发布前回归修正；它们属于把新功能做完整，不能拆成“体验优化”或“问题修复”重复计算
+- 版本号同步、测试、内部重构、打包脚本、CI/CD、发布编排、双远端同步、门禁和开发过程说明
+- 无法证明上一公开版本已经存在的“修复”项
+
+文案只写用户得到的变化，保持简洁专业，不写变量名、实现机制或工程过程。`release_prepare.py` 的预览负责展示完整发布范围，`build.py --check` 负责审查条目质量和启发式覆盖，语义取舍仍需人工逐条复核。
 
 ### Gitee Release API 限制
 
@@ -79,10 +87,11 @@ CI 用 `.venv-ci`，本地打包用 `pack_venv`。`build.py` 中 babel locale-da
 
 ## Gitee Release 上传与校验
 
-- GitHub Actions 的 Windows 发布任务集中下载 Windows/macOS 产物，按 EXE→ZIP→DMG 串行镜像到 Gitee；任一失败立即停止
-- 上传前比较远端附件和产物，同一提交断点续跑时复用已验证附件；上传/下载超时 600s，4xx 不重试
+- GitHub Actions 只完成严格门禁、双平台构建、GitHub tag、Draft Release 和附件校验，禁止连接 Gitee 大文件上传接口
+- 本机 `release_dispatch.py` 从 GitHub Draft 下载并校验 Windows/macOS 产物，再按 EXE→ZIP→DMG 串行镜像到 Gitee；任一失败立即停止
+- 上传前比较远端附件和产物，同一提交断点续跑时复用已验证附件；GitHub 暂存完整时直接跳过 Actions；上传/下载超时 600s，4xx 不重试
 - 发布主流程只校验附件齐全和 size 与 GitHub 一致，不回下载大文件；需要逐文件 SHA256 时手动运行 `python build.py --verify-gitee-integrity X.Y.Z`
-- **Gitee Token**：正式发布使用 Actions Repository Secret `GITEE_TOKEN`；本地手工核验/补传使用同名环境变量
+- **Gitee Token**：正式发布和手工核验/补传都只使用本机同名环境变量；Actions 不保存也不读取 `GITEE_TOKEN`
 
 ## API / BOSS Page
 

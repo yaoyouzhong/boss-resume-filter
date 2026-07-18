@@ -121,6 +121,25 @@ def test_release_notes_require_ordered_project_categories_and_entry_format():
         )
 
 
+def test_release_notes_reject_function_unrelated_release_process_entries():
+    notes = VALID_NOTES.replace(
+        "- **待办展示优化**：按处理时限归组展示候选人",
+        "- **版本交付保障**：完善构建发布和双远端验收流程",
+    )
+    with _raises(release_prepare.ReleasePreparationError, "功能无关的工程过程"):
+        release_prepare.parse_release_notes(notes, "2.22")
+
+
+def test_release_preview_prints_scope_and_completeness_checklist():
+    with patch("builtins.print") as output:
+        release_prepare._print_plan(_plan())
+
+    text = "\n".join(str(item.args[0]) for item in output.call_args_list if item.args)
+    assert "上一公开版本" in text
+    assert "开发中引入" in text
+    assert "确认用户变化已写入、合并表述或明确排除" in text
+
+
 def test_changelog_replacement_is_idempotent_and_keeps_history():
     original = """# 更新日志
 

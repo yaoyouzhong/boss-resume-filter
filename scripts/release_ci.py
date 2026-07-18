@@ -1,16 +1,20 @@
-"""Hosted, single-authorization release orchestration.
+"""Deterministic release staging and finalization contracts.
 
-The GitHub Actions workflow calls this module in two phases:
+The GitHub Actions workflow calls this module in two hosted phases:
 
 ``prepare``
     Validate the explicit release authorization, resolve the immutable release
     commit, run the strict project gate, and decide which platform artifacts
     still need building.
 
-``publish``
-    Create or reuse the immutable tag, stage and publish GitHub/Gitee releases,
-    update ``latest.json`` on ``master``, mirror the final commit to Gitee, and
-    perform the public post-release checks.
+``stage-github``
+    Create or reuse the immutable GitHub tag, keep the GitHub Release as a
+    Draft, upload and verify all three cross-platform artifacts, then stop.
+
+The local release driver calls ``finalize-local`` after hosted staging.  That
+phase downloads and verifies the staged GitHub artifacts, mirrors them to
+Gitee from the user's machine, publishes the GitHub Release, updates
+``latest.json`` on both remotes, and performs public acceptance checks.
 
 The implementation deliberately reuses ``build.py`` for version, changelog,
 artifact, upload, and integrity contracts.  YAML remains orchestration only.
@@ -298,12 +302,20 @@ def _ensure_origin_tag(tag: str, release_sha: str, notes_path: Path) -> None:
         print(f"  [跳过] GitHub tag 已存在且提交一致: {tag}")
 
 
-def _require_publish_secrets() -> str:
+def _require_github_publish_secret() -> None:
     if not (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")):
         _fail("缺少 GH_TOKEN/GITHUB_TOKEN，无法发布 GitHub Release")
+
+
+def require_local_gitee_access() -> str:
+    """Require a usable local Gitee token and reject hosted-runner uploads."""
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        _fail("Gitee Release 大文件只能从本机镜像，禁止在 GitHub Actions 中上传")
     token = os.environ.get("GITEE_TOKEN", "")
     if not token:
-        _fail("缺少 GITEE_TOKEN，无法完成双远端发布")
+        _fail("本机缺少 GITEE_TOKEN，无法完成 Gitee 镜像")
+    if not build._gitee_ping(token):
+        _fail("本机无法访问 Gitee API，未触发云端构建")
     return token
 
 
@@ -392,17 +404,50 @@ def _ensure_github_release(tag: str, title: str, body: str) -> dict | None:
         body_path.unlink(missing_ok=True)
 
 
-def _ensure_local_artifacts(tag: str) -> list[Path]:
-    build.DIST_DIR.mkdir(parents=True, exist_ok=True)
+def _ensure_local_artifacts(
+    tag: str,
+    artifact_dir: Path | None = None,
+) -> list[Path]:
+    artifact_dir = artifact_dir or build.DIST_DIR
+    artifact_dir.mkdir(parents=True, exist_ok=True)
     remote_assets = build._get_github_release_assets(tag)
     paths: list[Path] = []
     for name in RELEASE_ARTIFACTS:
-        path = build.DIST_DIR / name
+        path = artifact_dir / name
         if not path.exists() and name in remote_assets:
             print(f"  [复用] 从现有 GitHub Release 下载: {name}")
-            build._download_from_github_release(tag, name, build.DIST_DIR)
+            build._download_from_github_release(tag, name, artifact_dir)
         if not path.exists() or path.stat().st_size <= 0:
             _fail(f"发布产物缺失或为空：{name}")
+        paths.append(path)
+    return paths
+
+
+def _download_verified_github_artifacts(
+    tag: str,
+    github_assets: dict,
+    artifact_dir: Path,
+) -> list[Path]:
+    """Download staged assets into the ignored local cache and verify SHA256."""
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for name in RELEASE_ARTIFACTS:
+        remote = github_assets.get(name)
+        if not _asset_has_integrity(remote):
+            _fail(f"GitHub Draft 缺少可校验附件：{name}")
+        path = artifact_dir / name
+        if path.exists():
+            same, reason = build._github_asset_matches_local(tag, path, remote)
+            if same:
+                print(f"  [复用] 本机镜像缓存已校验: {name} ({reason})")
+                paths.append(path)
+                continue
+            print(f"  [刷新] 本机镜像缓存不一致: {name} ({reason})")
+        build._download_from_github_release(tag, name, artifact_dir)
+        same, reason = build._github_asset_matches_local(tag, path, remote)
+        if not same:
+            _fail(f"GitHub 附件下载后校验失败：{name}（{reason}）")
+        print(f"  [OK] GitHub 附件已下载并校验: {name} ({reason})")
         paths.append(path)
     return paths
 
@@ -445,17 +490,48 @@ def _publish_gitee_artifacts(
     cache = build._gitee_get_release_cache(version, title, body)
     if cache is None:
         _fail("无法创建或读取 Gitee Release")
-    uploaded = build._gitee_upload_artifacts(
-        version,
-        title,
-        body,
-        artifacts,
-        release_cache=cache,
-        large_workers=1,
-        fail_fast=True,
-    )
-    if not uploaded:
-        _fail("Gitee Release 附件上传失败")
+
+    # Gitee does not expose a SHA256 digest.  For an interrupted same-version
+    # resume, a size match against the already SHA-verified GitHub/local asset
+    # is the maintained release contract and avoids downloading all large
+    # Gitee files merely to decide that no upload is needed.
+    pending: list[Path] = []
+    existing = cache.get("existing", {})
+    for path in artifacts:
+        github_asset = github_assets.get(path.name)
+        if not _asset_has_integrity(github_asset):
+            _fail(f"GitHub 附件缺少完整性元数据：{path.name}")
+        gitee_asset = existing.get(path.name)
+        same_github, _reason = build._github_asset_matches_local(
+            f"v{version}", path, github_asset
+        )
+        try:
+            same_size = (
+                int(gitee_asset.get("size") or 0)
+                == int(github_asset.get("size") or 0)
+                > 0
+            )
+        except (AttributeError, TypeError, ValueError):
+            same_size = False
+        if same_github and same_size:
+            print(f"  [复用] Gitee 已有同尺寸已验证产物: {path.name}")
+            continue
+        pending.append(path)
+
+    if pending:
+        uploaded = build._gitee_upload_artifacts(
+            version,
+            title,
+            body,
+            pending,
+            release_cache=cache,
+            large_workers=1,
+            fail_fast=True,
+        )
+        if not uploaded:
+            _fail("Gitee Release 附件上传失败")
+    else:
+        print("  [跳过] Gitee 三个平台产物均已完整")
     if not build._verify_gitee_release_assets_complete(
         f"v{version}", github_assets, cache
     ):
@@ -515,7 +591,6 @@ def _commit_and_sync_manifest(
                 "更新自动更新清单时出现非预期文件："
                 + ", ".join(sorted(changed_paths))
             )
-        _configure_git_identity()
         _run(["git", "add", "latest.json"])
         _run(["git", "commit", "-m", "chore: 更新自动更新清单"])
         _run(["git", "push", "origin", "master"])
@@ -592,27 +667,31 @@ def verify_public_endpoints(version: str, attempts: int = 6, delay: int = 10) ->
     _fail("公开资源验收失败：" + "; ".join(last_errors))
 
 
-def publish_release(
+def stage_github_release(
     version: str,
     authorization: str,
     release_sha: str,
 ) -> None:
-    """Publish or resume one release from its immutable source commit."""
+    """Stage the immutable tag and complete GitHub Draft on hosted Actions."""
     version = _normalize_version(version)
     validate_authorization(version, authorization)
-    gitee_token = _require_publish_secrets()
-    _ensure_gitee_remote()
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        _fail("GitHub 暂存阶段只能在 GitHub Actions 中运行")
+    if os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
+        _fail("GitHub 暂存阶段只能由 workflow_dispatch 手动触发")
+    if os.environ.get("GITHUB_REF_NAME") != "master":
+        _fail("GitHub 暂存阶段只能从 master 触发")
+    _require_github_publish_secret()
     release_sha = release_sha.strip()
     head_sha = _git_text("rev-parse", "HEAD")
     if head_sha != release_sha:
-        _fail("publish job 未检出 prepare 阶段确定的发布提交")
+        _fail("stage-github job 未检出 prepare 阶段确定的发布提交")
     if _version_at_ref(release_sha) != version:
         _fail("发布提交版本与请求版本不一致")
 
-    # Build jobs can run for tens of minutes.  Recheck master before the first
-    # remote mutation, then once more immediately before making GitHub public.
+    # Build jobs can run for tens of minutes. Recheck master immediately before
+    # the first remote mutation, but leave all Gitee/public mutations to local.
     _fetch_and_assert_current_master_compatible(release_sha)
-
     tag = f"v{version}"
     title, body = build._extract_changelog_release(version)
     tag_notes = _notes_file(title, body)
@@ -620,11 +699,48 @@ def publish_release(
         _ensure_origin_tag(tag, release_sha, tag_notes)
     finally:
         tag_notes.unlink(missing_ok=True)
-    _ensure_gitee_tag(tag, release_sha, gitee_token)
-
     _ensure_github_release(tag, title, body)
     artifacts = _ensure_local_artifacts(tag)
-    github_assets = _upload_github_artifacts(tag, artifacts)
+    _upload_github_artifacts(tag, artifacts)
+    print(f"\n[OK] {tag} GitHub Draft 和三个附件已暂存，等待本机完成 Gitee 镜像")
+
+
+def finalize_release_local(
+    version: str,
+    authorization: str,
+    release_sha: str,
+) -> None:
+    """Mirror staged artifacts from local machine, publish, and verify."""
+    version = _normalize_version(version)
+    validate_authorization(version, authorization)
+    gitee_token = require_local_gitee_access()
+    _ensure_gitee_remote()
+    release_sha = release_sha.strip()
+
+    if _git_text("branch", "--show-current") != "master":
+        _fail("本机最终发布只能从 master 执行")
+    if _working_tree_paths():
+        _fail("本机最终发布前工作区必须干净")
+    head_sha = _git_text("rev-parse", "HEAD")
+    _assert_resume_head_compatible(release_sha, head_sha)
+    if _version_at_ref(release_sha) != version:
+        _fail("发布提交版本与请求版本不一致")
+    _fetch_and_assert_current_master_compatible(release_sha)
+
+    tag = f"v{version}"
+    if build._remote_tag_commit("origin", tag) != release_sha:
+        _fail("GitHub 暂存未完成：远端 tag 缺失或指向不一致")
+    title, body = build._extract_changelog_release(version)
+    info = build._get_github_release_info(tag)
+    if info is None:
+        _fail("GitHub 暂存未完成：Draft Release 不存在")
+    github_assets = build._verify_github_release_assets_complete(tag)
+    if github_assets is None:
+        _fail("GitHub 暂存未完成：三个附件不完整")
+
+    mirror_dir = build.DIST_DIR / "release-mirror" / tag
+    artifacts = _download_verified_github_artifacts(tag, github_assets, mirror_dir)
+    _ensure_gitee_tag(tag, release_sha, gitee_token)
     downloads_cn = _publish_gitee_artifacts(
         version, title, body, artifacts, github_assets
     )
@@ -648,7 +764,7 @@ def publish_release(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="GitHub Actions 正式发布编排")
+    parser = argparse.ArgumentParser(description="正式发布暂存与本机最终发布编排")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     prepare = subparsers.add_parser("prepare", help="运行无副作用严格门禁")
@@ -657,10 +773,15 @@ def _build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--github-output")
     prepare.add_argument("--dry-run", action="store_true")
 
-    publish = subparsers.add_parser("publish", help="发布或断点续跑")
-    publish.add_argument("--version", required=True)
-    publish.add_argument("--authorization", required=True)
-    publish.add_argument("--release-sha", required=True)
+    stage = subparsers.add_parser("stage-github", help="在 Actions 暂存 GitHub Draft")
+    stage.add_argument("--version", required=True)
+    stage.add_argument("--authorization", required=True)
+    stage.add_argument("--release-sha", required=True)
+
+    finalize = subparsers.add_parser("finalize-local", help="从本机镜像 Gitee 并公开发布")
+    finalize.add_argument("--version", required=True)
+    finalize.add_argument("--authorization", required=True)
+    finalize.add_argument("--release-sha", required=True)
 
     verify = subparsers.add_parser("verify-public", help="核验公开下载和在线清单")
     verify.add_argument("--version", required=True)
@@ -679,8 +800,10 @@ def main() -> int:
                 dry_run=args.dry_run or env_dry_run,
                 github_output=args.github_output,
             )
-        elif args.command == "publish":
-            publish_release(args.version, args.authorization, args.release_sha)
+        elif args.command == "stage-github":
+            stage_github_release(args.version, args.authorization, args.release_sha)
+        elif args.command == "finalize-local":
+            finalize_release_local(args.version, args.authorization, args.release_sha)
         else:
             verify_public_endpoints(args.version)
     except ReleaseAutomationError as exc:
