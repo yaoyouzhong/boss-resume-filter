@@ -27,6 +27,31 @@ from urllib.parse import urlparse
 import icons
 
 logger = logging.getLogger(__name__)
+
+
+class _EscCloseToplevel(tk.Toplevel):
+    """统一支持 Esc 关闭的 Toplevel（等同点击窗口 X 按钮）。
+
+    通过 WM_DELETE_WINDOW 协议关闭，走各弹窗自己的关闭清理逻辑；
+    弹窗内已显式绑定 <Escape> 的会覆盖本补丁，行为不受影响。
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.bind('<Escape>', self._on_escape_close, add='+')
+
+    def _on_escape_close(self, _event=None):
+        try:
+            cmd = self.tk.call('wm', 'protocol', self._w, 'WM_DELETE_WINDOW')
+            if cmd:
+                self.tk.call(cmd)
+            elif self.winfo_exists():
+                self.destroy()
+        except Exception:
+            pass
+
+
+tk.Toplevel = _EscCloseToplevel
 from collections import Counter
 from candidate_workflow import (
     ACTION_TIMING_ORDER,
@@ -993,6 +1018,10 @@ class BossFilterGUI:
         if _NEED_COCOA_SCROLL_HOOK:
             self.root.after(500, self._setup_cocoa_scroll_hook)
 
+        # 全局快捷键（Ctrl+S / F5 / Ctrl+F / Delete / Ctrl+1~7）
+        if not standalone_education:
+            self._setup_global_shortcuts()
+
         # 更新模块含 requests 等重型依赖，延迟并在后台导入，避免阻塞 GUI 冷启动。
         if not standalone_education:
             self.root.after(12000, self._load_startup_updater)
@@ -1015,6 +1044,131 @@ class BossFilterGUI:
             self.run_on_ui(_start)
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _setup_global_shortcuts(self):
+        """注册全局快捷键：Ctrl+S 保存、F5 刷新、Ctrl+F 搜索、Delete 移除选中、Ctrl+1~7 切换页面。"""
+        self.root.bind('<Control-s>', lambda _e: self._save_all_data())
+        self.root.bind('<F5>', lambda _e: self._shortcut_refresh())
+        self.root.bind('<Control-f>', lambda _e: self._shortcut_focus_search())
+        self.root.bind('<Delete>', lambda _e: self._shortcut_delete_selected())
+        page_methods = (
+            self.show_page_home, self.show_page_config, self.show_page_run,
+            self.show_page_result, self.show_page_education,
+            self.show_page_stats, self.show_page_api,
+        )
+        for idx, method in enumerate(page_methods, start=1):
+            self.root.bind(f'<Control-Key-{idx}>', lambda _e, m=method: m())
+
+    def _shortcut_refresh(self):
+        """F5：当前页面为筛选结果时强制刷新，其他页面刷新首页统计。"""
+        try:
+            self.refresh_results(force=True)
+            self.refresh_home_stats()
+            self._status_flash("已刷新")
+        except Exception as exc:
+            logger.warning("F5 刷新失败：%s", exc)
+
+    def _shortcut_focus_search(self):
+        """Ctrl+F：跳到筛选结果页并聚焦搜索框。"""
+        try:
+            self.show_page_result()
+            if hasattr(self, 'result_search_entry'):
+                self.result_search_entry.focus_set()
+                self.result_search_entry.select_range(0, 'end')
+        except Exception as exc:
+            logger.warning("Ctrl+F 聚焦搜索失败：%s", exc)
+
+    def _shortcut_delete_selected(self):
+        """Delete：焦点在结果表且有选中行时移除选中候选人。"""
+        try:
+            focus = self.root.focus_get()
+            if focus is None or not str(focus).startswith(str(self.result_tree)):
+                return
+            if not self.result_tree.selection():
+                return
+            self._remove_selected_candidates()
+        except Exception as exc:
+            logger.warning("Delete 移除失败：%s", exc)
+
+    def _save_all_data(self):
+        """Ctrl+S：将当前候选人数据完整落盘。"""
+        try:
+            if not hasattr(self, 'all_candidates'):
+                if CANDIDATES_PATH.exists():
+                    with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
+                        self.all_candidates = json.load(f)
+                else:
+                    self.all_candidates = []
+            save_candidates_all(self.all_candidates, CANDIDATES_PATH)
+            self._status_flash(f"已保存 {len(self.all_candidates)} 条候选人数据")
+        except Exception as exc:
+            logger.warning("Ctrl+S 保存失败：%s", exc)
+            messagebox.showerror("错误", f"保存失败：{exc}")
+
+    def _status_flash(self, text, duration_ms=2200):
+        """右下角轻量提示，自动消失（非模态）。"""
+        try:
+            if getattr(self, '_status_flash_win', None) and self._status_flash_win.winfo_exists():
+                self._status_flash_win.destroy()
+            win = tk.Toplevel(self.root)
+            win.overrideredirect(True)
+            win.attributes('-topmost', True)
+            label = tk.Label(
+                win, text=text, font=self.font_label,
+                background='#323232', foreground='#FFFFFF',
+                padx=14, pady=8,
+            )
+            label.pack()
+            self.root.update_idletasks()
+            x = self.root.winfo_x() + self.root.winfo_width() - win.winfo_reqwidth() - 24
+            y = self.root.winfo_y() + self.root.winfo_height() - win.winfo_reqheight() - 24
+            win.geometry(f"+{x}+{y}")
+            self._status_flash_win = win
+            win.after(duration_ms, lambda: win.winfo_exists() and win.destroy())
+        except Exception:
+            pass
+
+    def _remove_selected_candidates(self):
+        """移除结果表当前选中的候选人（多选批量，单选走单人确认）。"""
+        selection = self.result_tree.selection()
+        if not selection:
+            return
+        if len(selection) == 1:
+            self._remove_candidate(selection[0])
+            return
+        if not messagebox.askyesno("确认删除", f"确定要移除选中的 {len(selection)} 名候选人吗？"):
+            return
+        remove_keys = set()
+        for sel_item in selection:
+            candidate = self._find_candidate_by_tree_item(sel_item)
+            if candidate and candidate.get('geek_id'):
+                remove_keys.add((
+                    str(candidate.get('geek_id')),
+                    candidate.get('job_name', '').replace(' ', ''),
+                ))
+        self.result_tree_data = [
+            candidate for candidate in self.result_tree_data
+            if (
+                str(candidate.get('geek_id', '')),
+                candidate.get('job_name', '').replace(' ', ''),
+            ) not in remove_keys
+        ]
+        if remove_keys and CANDIDATES_PATH.exists():
+            with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
+                candidates = json.load(f)
+            candidates = [
+                candidate for candidate in candidates
+                if (
+                    str(candidate.get('geek_id', '')),
+                    candidate.get('job_name', '').replace(' ', ''),
+                ) not in remove_keys
+            ]
+            save_candidates_all(candidates, CANDIDATES_PATH)
+        for sel_item in selection:
+            if self.result_tree.exists(sel_item):
+                self.result_tree.delete(sel_item)
+        self.refresh_home_stats()
+        self._status_flash(f"已移除 {len(remove_keys)} 名候选人")
 
     def _setup_macos_reopen_handler(self):
         """点击 macOS Dock 图标时恢复主窗口。"""
@@ -4217,9 +4371,9 @@ class BossFilterGUI:
         self.result_search_var = tk.StringVar()
         self.result_search_var.trace_add('write', lambda *_: self._filter_result_tree())
         self.result_search_entry = ttk.Entry(
-            search_frame, textvariable=self.result_search_var, width=16, font=self.font_label)
+            search_frame, textvariable=self.result_search_var, width=22, font=self.font_label)
         self.result_search_entry.pack(side="left", padx=int(6 * self.dpi_scale * self.zoom_factor))
-        ttk.Label(search_frame, text="（姓名/匹配分/推荐指数/状态，Esc 清空）",
+        ttk.Label(search_frame, text="（姓名/技能/学校/公司/状态，60=≥60分，支持 >= > =，Esc 清空）",
                  font=(FONT_FAMILY, int(10 * self.font_scale)),
                  foreground=self.colors.get('text_secondary', '#666'),
                  background=self.colors['bg_main']).pack(side="left", padx=int(4 * self.dpi_scale * self.zoom_factor))
@@ -13869,15 +14023,33 @@ class BossFilterGUI:
             "school": "毕业学校",
             "company": "最近公司",
         }
+        self._column_headers = column_headers
+        self._sort_col = None
+        self._sort_reverse = False
         columns = self.result_tree['columns']
         for col in columns:
             # 为每个表头添加点击事件，使用中文显示
             header_text = column_headers.get(col, col)
             self.result_tree.heading(col, text=header_text, command=lambda c=col: self._sort_treeview(c))
 
+    def _update_sort_indicators(self):
+        """根据当前排序状态刷新表头 ▲▼ 指示"""
+        for col in self.result_tree['columns']:
+            base = self._column_headers.get(col, col)
+            if col == self._sort_col:
+                base += ' ▼' if self._sort_reverse else ' ▲'
+            self.result_tree.heading(col, text=base, command=lambda c=col: self._sort_treeview(c))
+
     def _sort_treeview(self, col):
-        """按指定列排序 Treeview"""
+        """按指定列排序 Treeview（重复点击同一列切换升降序）"""
         try:
+            # 同一列再次点击 → 反转方向；新列 → 升序（匹配分列默认降序）
+            if self._sort_col == col:
+                self._sort_reverse = not self._sort_reverse
+            else:
+                self._sort_col = col
+                self._sort_reverse = (col == 'score')
+
             # 获取当前数据
             items = [(self.result_tree.set(item, col), item) for item in self.result_tree.get_children()]
 
@@ -13894,26 +14066,24 @@ class BossFilterGUI:
                 except (ValueError, TypeError):
                     return 0 if val == '' else 999999
 
-            items.sort(key=sort_key)
+            items.sort(key=sort_key, reverse=self._sort_reverse)
 
             # 移动项
             for index, (val, item) in enumerate(items):
                 self.result_tree.move(item, '', index)
 
-            # 切换排序方向（可选优化：下次点击反向排序）
-            if not hasattr(self, '_sort_reverse'):
-                self._sort_reverse = False
-            self._sort_reverse = not self._sort_reverse
+            self._update_sort_indicators()
 
         except Exception as e:
             pass
 
     def _filter_result_tree(self):
-        """根据搜索框内容实时过滤 Treeview 行。
+        """根据搜索框内容实时过滤 Treeview 行（不匹配的行隐藏）。
 
-        搜索范围：姓名、匹配分、推荐指数、状态。
-        匹配项红色文字高亮并按优先级排序（完全匹配姓名 > 部分匹配 > 分数 ≥ 搜索值 > 等级 > 状态），
-        清空搜索时恢复原始排序。
+        搜索范围：姓名、匹配分、推荐指数、状态、技能匹配、学历、毕业学校、最近公司。
+        数字语义：``60`` 表示匹配分 ≥ 60；支持 ``>=60``、``>60``、``=60`` 显式比较。
+        匹配项高亮并按优先级排序（完全匹配姓名 > 部分匹配 > 分数 > 等级 > 状态 > 其他字段），
+        清空搜索时恢复全部行和原始排序。
         """
         query = self.result_search_var.get().strip().lower()
         all_items = self.result_tree.get_children()
@@ -13926,7 +14096,7 @@ class BossFilterGUI:
         item_map = getattr(self, '_item_to_candidate', {}) or {}
 
         if not query:
-            # 清空搜索：恢复原始排序，清除高亮
+            # 清空搜索：恢复全部行、原始排序，清除高亮
             for item_id in all_items:
                 tags = list(self.result_tree.item(item_id, 'tags') or ())
                 if 'search_match' in tags:
@@ -13934,9 +14104,21 @@ class BossFilterGUI:
                     self.result_tree.item(item_id, tags=tuple(tags))
             for i, item_id in enumerate(self._tree_original_order):
                 if self.result_tree.exists(item_id):
-                    self.result_tree.move(item_id, '', i)
+                    self.result_tree.reattach(item_id, '', i)
             self._tree_original_order = None
+            # 恢复默认计数文案
+            if hasattr(self, 'result_count_var'):
+                total = len(getattr(self, 'result_tree_data', []) or [])
+                self.result_count_var.set(f"显示 {len(all_items)} / 共 {total} 人")
             return
+
+        # 解析数字比较查询（>=60 / >60 / =60 / 60）
+        num_op, num_val = None, None
+        import re as _re
+        m = _re.fullmatch(r'(>=|>|=)?\s*(\d{1,3})', query)
+        if m:
+            num_op = m.group(1) or '>='
+            num_val = int(m.group(2))
 
         # 匹配判断：返回匹配类型用于优先级排序
         def _match_type(cand: dict) -> str | None:
@@ -13957,27 +14139,37 @@ class BossFilterGUI:
                 return 'level'
             if query in status:
                 return 'status'
-            # 数字查询：匹配分数 ≥ 搜索值
-            try:
-                q_num = int(query)
-                s_num = int(score_str) if score_str else 0
-                if s_num >= q_num:
+            # 数字查询：匹配分比较（默认 ≥）
+            if num_val is not None:
+                try:
+                    s_num = int(score_str) if score_str else 0
+                except (ValueError, TypeError):
+                    s_num = 0
+                if num_op == '>=' and s_num >= num_val:
                     return 'score'
-            except (ValueError, TypeError):
-                pass
+                if num_op == '>' and s_num > num_val:
+                    return 'score'
+                if num_op == '=' and s_num == num_val:
+                    return 'score'
+                return None
+            # 扩展字段：技能、学历、学校、公司
+            extra = cand.get('_extra_fields') or ()
+            skills = str(cand.get('skill_match_ratio', '')).lower()
+            education = str(extra[0]).lower() if len(extra) > 0 else ''
+            school = str(extra[3]).lower() if len(extra) > 3 else ''
+            company = str(extra[4]).lower() if len(extra) > 4 else ''
+            if query in skills or query in education or query in school or query in company:
+                return 'other'
             return None
 
-        _priority = {'exact_name': 0, 'partial_name': 1, 'score': 2, 'level': 3, 'status': 4}
+        _priority = {'exact_name': 0, 'partial_name': 1, 'score': 2, 'level': 3, 'status': 4, 'other': 5}
         matched_with_type: list[tuple[str, str]] = []
-        unmatched: list[str] = []
         for item_id in all_items:
             mt = _match_type(item_map.get(item_id, {}))
             if mt:
                 matched_with_type.append((item_id, mt))
-            else:
-                unmatched.append(item_id)
 
-        # 匹配项按优先级排序：完全匹配姓名 > 部分匹配姓名 > 分数 > 等级 > 状态
+        # 匹配项按优先级排序：完全匹配姓名 > 部分匹配姓名 > 分数 > 等级 > 状态 > 其他
         matched_with_type.sort(key=lambda x: _priority.get(x[1], 99))
 
         # 清除旧高亮 tag
@@ -13995,15 +14187,17 @@ class BossFilterGUI:
                 tags.append('search_match')
             self.result_tree.item(item_id, tags=tuple(tags))
 
-        # detach 全部 → 按优先级 reattach
+        # detach 全部 → 仅 reattach 匹配项（真筛选：不匹配的行隐藏）
         for item_id in all_items:
             self.result_tree.detach(item_id)
         for item_id, _ in matched_with_type:
             self.result_tree.reattach(item_id, '', 'end')
-        for item_id in unmatched:
-            self.result_tree.reattach(item_id, '', 'end')
 
-        # 滚动到第一个匹配项
+        # 更新计数提示并滚动到第一个匹配项
+        total = len(all_items)
+        shown = len(matched_with_type)
+        if hasattr(self, 'result_count_var'):
+            self.result_count_var.set(f"搜索命中 {shown} / {total} 人")
         if matched_with_type:
             self.result_tree.see(matched_with_type[0][0])
             self.result_tree.selection_set(matched_with_type[0][0])
@@ -14281,40 +14475,7 @@ class BossFilterGUI:
             menu._icon_refs = [icon_export_menu, icon_trash_menu, icon_greet]
 
             def remove_selected():
-                if not messagebox.askyesno("确认删除", f"确定要移除选中的 {len(selection)} 名候选人吗？"):
-                    return
-                remove_keys = set()
-                for sel_item in selection:
-                    candidate = self._find_candidate_by_tree_item(sel_item)
-                    if candidate:
-                        geek_id = candidate.get('geek_id')
-                        if geek_id:
-                            remove_keys.add((
-                                str(geek_id),
-                                candidate.get('job_name', '').replace(' ', ''),
-                            ))
-                self.result_tree_data = [
-                    candidate for candidate in self.result_tree_data
-                    if (
-                        str(candidate.get('geek_id', '')),
-                        candidate.get('job_name', '').replace(' ', ''),
-                    ) not in remove_keys
-                ]
-                if remove_keys and CANDIDATES_PATH.exists():
-                    with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                        candidates = json.load(f)
-                    candidates = [
-                        candidate for candidate in candidates
-                        if (
-                            str(candidate.get('geek_id', '')),
-                            candidate.get('job_name', '').replace(' ', ''),
-                        ) not in remove_keys
-                    ]
-                    save_candidates_all(candidates, CANDIDATES_PATH)
-                # 删除 Treeview 中的项
-                for sel_item in selection:
-                    self.result_tree.delete(sel_item)
-                self.refresh_home_stats()
+                self._remove_selected_candidates()
 
             menu.add_command(
                 label=" 加入联系清单",
