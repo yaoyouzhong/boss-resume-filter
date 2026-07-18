@@ -85,6 +85,24 @@ def test_target_tag_must_not_exist_locally_or_on_either_remote():
             release_prepare.assert_target_tag_available("2.22")
 
 
+def test_status_paths_preserves_the_first_porcelain_status_prefix():
+    status = " M AGENTS.md\nM  scripts/release_prepare.py\n?? new-file.md\n"
+    completed = subprocess.CompletedProcess(
+        ["git", "status", "--porcelain"],
+        0,
+        status,
+        "",
+    )
+    with patch.object(release_prepare, "_run", return_value=completed):
+        paths = release_prepare._status_paths()
+
+    assert paths == {
+        "AGENTS.md",
+        "scripts/release_prepare.py",
+        "new-file.md",
+    }
+
+
 def test_release_notes_require_ordered_project_categories_and_entry_format():
     title, body = release_prepare.parse_release_notes(VALID_NOTES, "2.22")
     assert title == "v2.22 — 候选人跟进闭环"
@@ -118,6 +136,24 @@ def test_changelog_replacement_is_idempotent_and_keeps_history():
     assert first == second
     assert first.count("## v2.22") == 1
     assert first.index("## v2.22") < first.index("## v2.21")
+
+
+def test_same_version_resume_does_not_call_non_idempotent_version_writer():
+    with (
+        patch.object(release_prepare.build, "_read_version", return_value="2.22"),
+        patch.object(release_prepare.build, "_write_version") as write_version,
+    ):
+        release_prepare._write_version_if_needed("2.22")
+
+    write_version.assert_not_called()
+
+    with (
+        patch.object(release_prepare.build, "_read_version", return_value="2.21"),
+        patch.object(release_prepare.build, "_write_version") as write_version,
+    ):
+        release_prepare._write_version_if_needed("2.22")
+
+    write_version.assert_called_once_with("2.22")
 
 
 def test_readme_replacement_keeps_three_detailed_versions_and_collapses_history():
