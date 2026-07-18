@@ -13,9 +13,9 @@
 
 **体积基线（v2.11）**：Windows 使用 `--onefile` 单文件 EXE，macOS 使用 `--onedir` 生成 `.app` 后再压缩为 ZIP/DMG。两者压缩结构和平台运行库不同，Windows EXE 约 36.4MB、macOS ZIP/DMG 约 31-33MB 属正常范围；不要把 macOS 安装包较小误判为缺依赖或未重建。
 
-### 正式发布（GitHub Actions）
+### 正式发布（Actions 构建 + 本机镜像）
 
-正式发布的唯一控制面是 `.github/workflows/release.yml` 的 `workflow_dispatch`。PR 合并和正式发布是两个独立授权点：合并 `master` 不会自动发布；只有准确提供“正式发布 vX.Y”才会进入发布流程。推荐通过本地驱动器完成预检、触发、等待和最终验收：
+正式发布的唯一用户入口是本机 `scripts/release_dispatch.py`。PR 合并和正式发布是两个独立授权点：合并 `master` 不会自动发布；只有准确提供“正式发布 vX.Y”才会进入发布流程。本机驱动器负责预检、触发 Actions 暂存、Gitee 镜像、公开发布和最终验收：
 
 ```bash
 # 默认只读预览，不触发 Actions
@@ -27,24 +27,24 @@ python scripts/release_dispatch.py --version 2.22 \
   --authorization="正式发布 v2.22"
 ```
 
-本地驱动器不会实现第二套发布逻辑；tag、双平台构建、GitHub/Gitee Release 和 `latest.json` 仍全部由现有 workflow 与 `scripts/release_ci.py` 执行。需要排障时仍可直接使用 `gh workflow run release.yml ...` 手工触发。
+确定性发布规则仍统一放在 `scripts/release_ci.py`，不是两套实现；`.github/workflows/release.yml` 只运行其中的 GitHub 暂存阶段，本机驱动器运行 Gitee 镜像和最终发布阶段。不要把 Actions 暂存任务成功误判为正式版本已经公开。
 
 **自动流程：**
 
 1. 确认事件来源为手动触发、分支为 `master`、授权文本与版本完全一致。
 2. 锁定不可变的发布提交，执行 `build.py --check --strict-changelog` 等价的完整严格门禁。
 3. Windows 和 macOS 独立并行构建，任一构建失败都不进入发布任务。
-4. 两端产物齐全后创建不可移动的 tag，建立 GitHub Draft Release，上传并校验 EXE、ZIP 和 DMG。
-5. Windows 发布任务将三个产物按 EXE→ZIP→DMG 串行镜像到 Gitee，避免 macOS runner 直连 Gitee 的大文件链路阻塞。
-6. 双 Release 附件完整且 size 一致后，将 GitHub Draft Release 转为正式版本。
-7. 最后生成 `latest.json` 的双源下载地址和 SHA256，提交并推送到 GitHub/Gitee `master`。
+4. 两端产物齐全后创建不可移动的 GitHub tag，建立 GitHub Draft Release，上传并校验 EXE、ZIP 和 DMG；Actions 到此结束。
+5. 本机下载三个 GitHub 附件并逐个核对 size 和 SHA256，再按 EXE→ZIP→DMG 串行镜像到 Gitee。GitHub Actions 禁止上传 Gitee 大文件。
+6. Gitee Release 附件齐全且 size 与 GitHub 一致后，将 GitHub Draft Release 转为正式版本。
+7. 本机生成 `latest.json` 的双源下载地址和 SHA256，提交并推送到 GitHub/Gitee `master`。
 8. 只读核验双远端分支/tag/Release/附件/清单，并实际请求六个公开下载地址和两份在线清单。
 
-**断点续跑：**工作流按“版本 + 发布提交”恢复。已验证的 GitHub 附件直接复用，已存在的同提交 tag 不重建，已一致的 Gitee 附件不重传。同名 tag 指向其他提交、或发布期间 `master` 出现非 `latest.json` 业务变更时立即中止，绝不移动 tag 或强制推送。
+**断点续跑：**流程按“版本 + 发布提交”恢复。GitHub Draft 的三个附件已经完整时，再次执行同一正式发布命令会跳过 Actions，直接从本机 Gitee 镜像阶段继续；已存在的同提交 tag 不重建，已一致的 Gitee 附件不重传。同名 tag 指向其他提交、或发布期间 `master` 出现非 `latest.json` 业务变更时立即中止，绝不移动 tag 或强制推送。
 
 **Dry Run：**将 `dry_run` 设为 `true` 时只执行授权校验和严格门禁，不构建、不创建 tag、不推送、不发布。
 
-**Actions 配置：**Repository Secret `GITEE_TOKEN` 需具有 Gitee projects 权限；工作流的 `contents: write` 用于 GitHub tag、Release 和 `latest.json` 提交。本地 `build.py --release` 已停用，防止本地脚本与 Actions 同时修改同一标签和 Release。
+**凭据配置：**Actions 只使用 `GITHUB_TOKEN` 创建 tag、Draft Release 和上传附件，不保存也不使用 `GITEE_TOKEN`。正式发布前，本机必须提供具有 Gitee projects 权限的 `GITEE_TOKEN`；缺失或 Gitee API 不可达时会在触发 Actions 前停止。本地 `build.py --release` 仍停用，正式发布统一从 `release_dispatch.py` 进入。
 
 Release 页面最终包含：
 
@@ -148,6 +148,8 @@ Release 标题和说明必须先写在 `CHANGELOG.md` 对应版本段落中。`s
 - 新增功能
 - 体验优化
 - 问题修复
+
+版本内容以“上一公开 tag → 目标发布提交”的最终净变化为准。编制时必须逐项核对预览输出中的提交和变更文件，确认所有用户可感知变化已经写入或合并表述，没有遗漏。版本号、测试、内部重构、打包、CI/CD、发布编排、双远端同步和门禁等功能无关内容不得列入；本版本开发过程中引入并在发布前修正的问题也不得拆成独立优化或修复项。文案只说明用户得到的变化，保持简洁专业，不展开技术实现。
 
 默认 `python build.py --check` 只把确定性发布契约作为硬门禁；CHANGELOG 条目质量、正反向关键词覆盖、README 与 CHANGELOG 逐条一致、latest.json release_notes 同步属于提示项。需要把这些提示也升级为硬门禁时，显式增加 `--strict-changelog`。
 

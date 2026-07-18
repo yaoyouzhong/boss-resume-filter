@@ -6,7 +6,7 @@ BOSS 简历筛选器 - 打包脚本
   python build.py --check --strict-changelog  启用严格 CHANGELOG/README/latest.json 文案门禁
   python build.py                      仅打包 + 版本核对
   python build.py --ci --release       GitHub Actions 单平台构建（内部使用）
-  gh workflow run release.yml ...      手动授权后触发正式发布
+  python scripts/release_dispatch.py ... 本机授权后启动正式发布
   python build.py --github-upload X.Y.Z 手动补传产物到 GitHub Release
   python build.py --gitee-upload X.Y.Z 手动补传产物到 Gitee Release
   python build.py --verify-gitee-integrity X.Y.Z 严格回下载校验 Gitee SHA256
@@ -957,6 +957,10 @@ def _check_changelog_entry_quality(strict=False):
         "正则", "子串匹配", "单词边界", "OR 条件", "AND 条件",
         "provider", "keyring", "DPI 缩放", "sha256", "SHA256",
         "locale-data", "openpyxl", "srcdoc", "iframe",
+        # 与产品功能无关的版本工程过程
+        "版本准备", "版本交付", "发布流程", "发布编排", "构建发布",
+        "双远端", "发布门禁", "CI/CD", "自动更新清单", "版本标签",
+        "打包脚本", "测试覆盖", "内部重构",
         # 内部文件名（用户不应接触）
         "job_config.json", "api_config.json", "selectors.json",
         "ui_config.json", "latest.json",
@@ -997,6 +1001,7 @@ def _check_changelog_entry_quality(strict=False):
         print("  - 新功能开发过程中的中间 UI 调整（属于新功能本身）")
         print("  - 打包脚本、CI、发布流程优化（用户无感知）")
         print("  - 当前版本新功能引入的 bug（不算「问题修复」）")
+        print("同时应逐项核对上一公开 tag 到发布提交的用户变化，避免遗漏。")
         if strict:
             sys.exit(1)
         print("  [继续] 默认模式下仅提示；使用 --strict-changelog 可将此项作为硬门禁")
@@ -2544,7 +2549,7 @@ def _sync_release_notes():
             capture_output=True, cwd=BASE_DIR,
         )
         if r.returncode != 0:
-            print(f"[错误] GitHub Release {tag} 不存在，请先运行 --release")
+            print(f"[错误] GitHub Release {tag} 不存在，请先完成正式发布")
             sys.exit(1)
 
         subprocess.run(
@@ -3987,9 +3992,9 @@ def _gitee_upload_artifacts(version, release_title, release_notes, artifact_path
                              fail_fast=False):
     """Upload an explicit artifact set to Gitee with idempotent checks.
 
-    This platform-neutral entrypoint is used by the hosted release workflow,
-    which downloads the Windows and macOS build artifacts into one workspace
-    before publishing.  It returns canonical ``downloads_cn`` entries for all
+    This platform-neutral entrypoint is used by the local finalization phase,
+    after it downloads the Windows and macOS GitHub Draft artifacts into one
+    workspace. It returns canonical ``downloads_cn`` entries for all
     successfully verified files, or ``None`` when any upload fails.
     """
     # 如果没有传入缓存，则获取缓存
@@ -4422,12 +4427,12 @@ def main():
         requested_version = (args.version or _read_version()).removeprefix("v")
         _validate_version_format(requested_version)
         authorization = f"正式发布 v{requested_version}"
-        print("本地 build.py --release 已停用，避免与双平台发布流水线并发修改标签。")
-        print("请在 PR 合并后单独授权，并手动触发 Build & Release：")
+        print("本地 build.py --release 已停用，避免绕过正式发布编排。")
+        print("请在 PR 合并后单独授权，并从本机启动正式发布：")
         print(
-            "  gh workflow run release.yml --ref master "
-            f"-f version={requested_version} "
-            f"-f authorization=\"{authorization}\" -f dry_run=false"
+            "  python scripts/release_dispatch.py "
+            f"--version {requested_version} --execute "
+            f"--authorization \"{authorization}\""
         )
         sys.exit(2)
 
@@ -4555,7 +4560,7 @@ def main():
         # 检查 Release 是否存在
         r = subprocess.run(["gh", "release", "view", tag], capture_output=True, cwd=BASE_DIR)
         if r.returncode != 0:
-            print(f"[错误] GitHub Release {tag} 不存在，请先触发 Build & Release 工作流")
+            print(f"[错误] GitHub Release {tag} 不存在，请先运行正式发布本机驱动器")
             sys.exit(1)
 
         # 从 GitHub Release 读取 release notes
@@ -5004,7 +5009,7 @@ def main():
         print(f"  GitHub Actions 将自动上传到 Release")
         print(f"{'='*60}\n")
     else:
-        print("\n  正式发布：先合并发布准备 PR，再单独触发 Build & Release")
+        print("\n  正式发布：先合并发布准备 PR，再从本机启动正式发布驱动器")
         print(f"  授权文本：正式发布 v{version}\n")
 
 

@@ -2,12 +2,15 @@
 
 The default mode runs a local, mutation-free release preview.  Execution
 requires ``--execute`` plus the exact authorization text ``正式发布 vX.Y``.
-The driver dispatches the existing GitHub Actions workflow, binds to the exact
-run it created (or safely reuses an active matching run), waits for completion,
-fast-forwards local ``master``, and runs the public release verifier.
+The driver dispatches the GitHub staging workflow, binds to the exact run it
+created (or safely reuses an active matching run), waits for completion, then
+downloads the staged artifacts and mirrors them to Gitee from this machine.
+Only after both stores are complete does it publish GitHub, synchronize
+``latest.json`` and run the public release verifier.
 
-All tag, artifact, Release, Gitee, and ``latest.json`` mutations remain owned
-by ``.github/workflows/release.yml`` and ``scripts/release_ci.py``.
+``scripts/release_ci.py`` remains the single deterministic mutation contract;
+this driver decides whether its hosted staging or local finalization phase is
+needed for an idempotent resume.
 """
 from __future__ import annotations
 
@@ -98,7 +101,7 @@ def _list_release_runs() -> list[dict[str, Any]]:
     )
     data = _load_json(result)
     if not isinstance(data, list):
-        _fail("无法读取 Build & Release 运行列表")
+        _fail("无法读取 GitHub 暂存工作流运行列表")
     return data
 
 
@@ -158,12 +161,13 @@ def preflight(version: str) -> dict[str, Any]:
         _fail(f"正式发布严格门禁未通过：{exc}")
 
     runs = _matching_runs(_list_release_runs(), version, gate["release_sha"])
-    published = False
-    if (
+    staged = (
         gate["resume"] == "true"
         and gate["needs_windows"] == "false"
         and gate["needs_macos"] == "false"
-    ):
+    )
+    published = False
+    if staged:
         published = bool(build._verify_release_remote_state(version))
     return {
         "version": version,
@@ -172,6 +176,7 @@ def preflight(version: str) -> dict[str, Any]:
         "resume": gate["resume"],
         "needs_windows": gate["needs_windows"],
         "needs_macos": gate["needs_macos"],
+        "staged": staged,
         "published": published,
         "runs": runs,
     }
@@ -183,8 +188,11 @@ def _print_plan(plan: dict[str, Any]) -> None:
     print(f"  模式: {'断点续跑' if plan['resume'] == 'true' else '首次发布'}")
     print(f"  Windows 构建: {'需要' if plan['needs_windows'] == 'true' else '复用'}")
     print(f"  macOS 构建: {'需要' if plan['needs_macos'] == 'true' else '复用'}")
+    print(f"  GitHub 暂存: {'已完成' if plan['staged'] else '待执行'}")
     if plan["published"]:
         print("  公开状态: 已完整发布")
+    else:
+        print("  Gitee 镜像: 将由本机串行完成")
     active = _active_run(plan["runs"])
     if active:
         print(f"  Actions: 已有运行中的任务 {active.get('url', '')}")
@@ -218,7 +226,7 @@ def _discover_new_run(
         if new_runs:
             return new_runs[0]
         if time.monotonic() >= deadline:
-            _fail("GitHub 已接受触发请求，但未能定位对应的 Build & Release run")
+            _fail("GitHub 已接受触发请求，但未能定位对应的暂存工作流 run")
         time.sleep(poll_interval)
 
 
@@ -281,12 +289,12 @@ def wait_for_run(
         if status == "completed":
             if str(run.get("conclusion") or "").lower() != "success":
                 _fail(
-                    f"正式发布工作流失败：{run.get('conclusion') or 'unknown'}；"
+                    f"GitHub 暂存工作流失败：{run.get('conclusion') or 'unknown'}；"
                     f"可修复后用同一版本安全续跑：{run.get('url', '')}"
                 )
             return run
         if time.monotonic() >= deadline:
-            _fail(f"等待正式发布超时，工作流仍在运行：{run.get('url', '')}")
+            _fail(f"等待 GitHub 暂存超时，工作流仍在运行：{run.get('url', '')}")
         time.sleep(poll_interval)
 
 
@@ -317,7 +325,12 @@ def _verify_public_release(version: str) -> None:
     _run([_project_python(), "build.py", "--verify-release", version])
 
 
-def _finish_success(version: str, run: dict[str, Any] | None) -> dict[str, Any]:
+def _finish_success(
+    version: str,
+    run: dict[str, Any] | None,
+    *,
+    already_published: bool = False,
+) -> dict[str, Any]:
     master_sha = _synchronize_local_master()
     _verify_public_release(version)
     print(f"\n[OK] v{version} 正式发布已完成并通过公开验收")
@@ -325,7 +338,7 @@ def _finish_success(version: str, run: dict[str, Any] | None) -> dict[str, Any]:
     if run:
         print(f"  Actions: {run.get('url', '')}")
     return {
-        "mode": "published" if run else "already_published",
+        "mode": "already_published" if already_published else "published",
         "version": version,
         "master_sha": master_sha,
         "run": run,
@@ -352,26 +365,37 @@ def dispatch_release(
         return {"mode": "preview", "plan": plan}
 
     if plan["published"]:
-        return _finish_success(version, None)
+        return _finish_success(version, None, already_published=True)
+
+    # Fail before spending hosted build minutes when the local mirror cannot
+    # possibly complete. This check is read-only and never prints the token.
+    release_ci.require_local_gitee_access()
 
     run = _active_run(plan["runs"])
     if run:
-        print(f"\n[续跑] 复用已在运行的 Build & Release：{run.get('url', '')}")
-    else:
+        print(f"\n[续跑] 复用已在运行的 GitHub 暂存任务：{run.get('url', '')}")
+    elif not plan["staged"]:
         previous_ids = {
             int(item.get("databaseId") or 0)
             for item in _list_release_runs()
         }
-        print("\n>>> 触发 Build & Release")
+        print("\n>>> 触发 Build & Stage GitHub Release")
         _dispatch_workflow(version, authorization)
         run = _discover_new_run(version, plan["release_sha"], previous_ids)
         print(f"  [OK] 已定位 Actions run：{run.get('url', '')}")
+    else:
+        print("\n[续跑] GitHub Draft 与三个附件已完整，跳过 Actions")
 
-    completed = wait_for_run(
-        int(run["databaseId"]),
-        timeout=timeout,
-        poll_interval=poll_interval,
-    )
+    completed = None
+    if run:
+        completed = wait_for_run(
+            int(run["databaseId"]),
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
+
+    print("\n>>> 本机镜像 Gitee 并完成正式发布")
+    release_ci.finalize_release_local(version, authorization, plan["release_sha"])
     return _finish_success(version, completed)
 
 

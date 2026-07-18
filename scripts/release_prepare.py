@@ -34,6 +34,27 @@ RELEASE_FILES = frozenset({
     "gui_main.py",
 })
 RELEASE_CATEGORIES = ("新增功能", "体验优化", "问题修复")
+FORBIDDEN_RELEASE_PROCESS_TERMS = (
+    "版本准备",
+    "版本交付",
+    "发布流程",
+    "发布编排",
+    "构建发布",
+    "双远端",
+    "发布门禁",
+    "CI/CD",
+    "自动更新清单",
+    "版本标签",
+    "打包脚本",
+    "测试覆盖",
+    "内部重构",
+)
+RELEASE_SCOPE_CHECKLIST = (
+    "只写相对上一公开版本的最终用户可感知净变化",
+    "排除版本号、测试、重构、打包、CI/CD、发布和双远端等工程过程",
+    "排除本版本开发中引入并在发布前修正的布局、校验、提示和回归问题",
+    "逐项核对下列提交和文件，确认用户变化已写入、合并表述或明确排除",
+)
 VERSION_PATTERN = re.compile(r"^\d+\.\d+(?:\.\d+)?$")
 VERSION_ASSIGNMENT_PATTERN = re.compile(
     r'^__version__\s*=\s*["\']([^"\']+)["\']',
@@ -269,6 +290,12 @@ def parse_release_notes(text: str, version: str) -> tuple[str, str]:
         _fail(f"发布说明文件缺少 '## v{version} — 标题' 段落")
     title = match.group(1).strip()
     body = match.group("body").strip()
+    forbidden = [
+        term for term in FORBIDDEN_RELEASE_PROCESS_TERMS
+        if term.lower() in f"{title}\n{body}".lower()
+    ]
+    if forbidden:
+        _fail("发布说明包含功能无关的工程过程：" + "、".join(forbidden))
     headings = re.findall(r"^###\s+(.+?)\s*$", body, re.MULTILINE)
     unknown = [heading for heading in headings if heading not in RELEASE_CATEGORIES]
     if unknown:
@@ -440,6 +467,9 @@ def _print_plan(plan: dict[str, Any]) -> None:
     print(f"  变更文件: {len(plan['changed_files'])}")
     for path in plan["changed_files"]:
         print(f"    - {path}")
+    print("  版本内容复核:")
+    for item in RELEASE_SCOPE_CHECKLIST:
+        print(f"    - {item}")
 
 
 def prepare_release(
