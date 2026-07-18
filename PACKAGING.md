@@ -15,14 +15,19 @@
 
 ### 正式发布（GitHub Actions）
 
-正式发布的唯一入口是 `.github/workflows/release.yml` 的 `workflow_dispatch`。PR 合并和正式发布是两个独立授权点：合并 `master` 不会自动发布；只有准确提供“正式发布 vX.Y”才会进入发布流程。
+正式发布的唯一控制面是 `.github/workflows/release.yml` 的 `workflow_dispatch`。PR 合并和正式发布是两个独立授权点：合并 `master` 不会自动发布；只有准确提供“正式发布 vX.Y”才会进入发布流程。推荐通过本地驱动器完成预检、触发、等待和最终验收：
 
 ```bash
-gh workflow run release.yml --ref master \
-  -f version=2.21 \
-  -f authorization="正式发布 v2.21" \
-  -f dry_run=false
+# 默认只读预览，不触发 Actions
+python scripts/release_dispatch.py --version 2.22
+
+# 精确授权后触发、等待并核验公开版本
+python scripts/release_dispatch.py --version 2.22 \
+  --execute \
+  --authorization="正式发布 v2.22"
 ```
+
+本地驱动器不会实现第二套发布逻辑；tag、双平台构建、GitHub/Gitee Release 和 `latest.json` 仍全部由现有 workflow 与 `scripts/release_ci.py` 执行。需要排障时仍可直接使用 `gh workflow run release.yml ...` 手工触发。
 
 **自动流程：**
 
@@ -97,11 +102,17 @@ python build.py --check --strict-changelog
 # 使用自动打包脚本（推荐）
 python build.py
 
-# 本地只读预检：允许工作区有本轮实现变更，不推送不发布
-python scripts/release_ci.py prepare --version 2.20 --authorization "正式发布 v2.20" --dry-run
+# 版本准备预览：检查双远端、版本范围、提交和变更文件，不改文件
+python scripts/release_prepare.py --version 2.22
 
-# PR 合并后正式发布（单独授权）
-gh workflow run release.yml --ref master -f version=2.21 -f authorization="正式发布 v2.21" -f dry_run=false
+# 已复核发布说明后：临时说明文件放在项目目录外，再创建本地发布准备分支、同步文档、严格门禁并提交
+python scripts/release_prepare.py --version 2.22 --notes-file "<项目目录外的发布说明文件>" --execute --authorization "一键准备版本 v2.22"
+
+# 发布准备分支交付后：只读预览正式发布
+python scripts/release_dispatch.py --version 2.22
+
+# PR 合并后正式发布（单独授权、自动等待和验收）
+python scripts/release_dispatch.py --version 2.22 --execute --authorization "正式发布 v2.22"
 
 # 发布完成后只读核验 GitHub/Gitee、附件和 latest.json
 python build.py --verify-release 2.5
@@ -130,7 +141,7 @@ pyinstaller --onefile --noconsole \
 - `python tests/test_import.py` 通过
 - 工作区干净
 
-正式发布工作流不会提交业务代码或自动改版本号；版本号、更新说明和用户文档必须随发布准备 PR 一起合并。
+正式发布工作流不会提交业务代码或自动改版本号；版本号、更新说明和用户文档必须随发布准备 PR 一起合并。`scripts/release_prepare.py` 默认只读；执行必须提供经过复核的发布说明文件和精确授权“`一键准备版本 vX.Y`”，只创建本地 `codex/release-vX.Y` 分支及提交，不 push、不合并、不创建 tag。随后仍通过“`一键交付分支 codex/release-vX.Y`”单独交付。
 
 Release 标题和说明必须先写在 `CHANGELOG.md` 对应版本段落中。`scripts/release_ci.py` 会自动提取该段落作为 GitHub/Gitee Release 内容；如果缺少对应版本，或未按以下顺序分类，发布会直接中断：
 
@@ -353,7 +364,7 @@ pip install -r requirements.txt pyinstaller
 python3 build.py
 
 # 正式发布由 GitHub Actions 双平台构建，不在 Mac 本地执行
-gh workflow run release.yml --ref master -f version=2.21 -f authorization="正式发布 v2.21" -f dry_run=false
+python3 scripts/release_dispatch.py --version 2.22 --execute --authorization="正式发布 v2.22"
 ```
 
 ### 3. 输出文件
