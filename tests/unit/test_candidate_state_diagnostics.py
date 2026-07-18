@@ -105,9 +105,43 @@ def test_summarize_candidate_state_diagnostics_reports_clean_data():
             followup_status="已打招呼",
             greet_sent_at="20260709_100000",
             greet_method="manual_context",
+            next_followup_at="20260710_100000",
         )
     ]
     text = summarize_candidate_state_diagnostics(candidates)
 
     assert "候选人：1 人" in text
     assert "未发现明显状态冲突" in text
+
+
+def test_diagnose_followup_schedule_conflicts_and_missing_dates():
+    issues = diagnose_candidate_states([
+        _candidate(
+            geek_id="terminal",
+            followup_status="已归档",
+            next_followup_at="20260720_090000",
+        ),
+        _candidate(
+            geek_id="interview",
+            followup_status="待约面",
+        ),
+        _candidate(
+            geek_id="invalid",
+            followup_status="已打招呼",
+            next_followup_at="下周一",
+        ),
+    ])
+
+    titles = {issue.title for issue in issues}
+    assert "结束状态仍有跟进提醒" in titles
+    assert "待约面未安排时间" in titles
+    assert "下次跟进日期无效" in titles
+
+
+def test_diagnose_legacy_active_followup_is_non_blocking_schedule_info():
+    issues = diagnose_candidate_states([
+        _candidate(followup_status="已打招呼")
+    ])
+
+    issue = next(item for item in issues if item.title == "跟进时间待安排")
+    assert issue.severity == "info"

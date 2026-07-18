@@ -29,12 +29,17 @@ import icons
 logger = logging.getLogger(__name__)
 from collections import Counter
 from candidate_workflow import (
+    ACTION_TIMING_ORDER,
     REVIEW_CATEGORY_ORDER,
+    apply_followup_state,
     build_daily_candidate_actions,
     candidate_greet_skip_reason,
     candidate_review_category,
+    default_next_followup_at,
     derive_candidate_decision,
     filter_candidates_by_result_view,
+    format_followup_due_at,
+    normalize_followup_at,
     summarize_daily_candidate_actions,
 )
 from candidate_state_diagnostics import (
@@ -6055,7 +6060,74 @@ class BossFilterGUI:
             messagebox.showinfo("岗位复盘", f"{job_name} 在当前时间范围内没有可复盘候选人。")
             return
         text = self._build_job_review_text(job_name, candidates)
-        self._show_text_dialog(f"岗位复盘 - {job_name}", text, width=760, height=560)
+        extra_actions = []
+        if any(c.get('feedback_status') in FEEDBACK_STATUS_OPTIONS for c in candidates):
+            extra_actions.append((
+                "查看反馈候选人",
+                lambda: self._show_job_review_feedback_candidates(job_name, candidates),
+            ))
+        extra_actions.append((
+            "前往岗位配置",
+            lambda: self._open_job_config_from_review(job_name),
+        ))
+        self._show_text_dialog(
+            f"岗位复盘 - {job_name}",
+            text,
+            width=760,
+            height=560,
+            extra_actions=extra_actions,
+        )
+
+    def _show_job_review_feedback_candidates(self, job_name, candidates):
+        """Show the feedback samples behind a job review without changing them."""
+        feedback_candidates = [
+            candidate for candidate in candidates
+            if candidate.get('feedback_status') in FEEDBACK_STATUS_OPTIONS
+        ]
+        lines = [f"{job_name} 反馈候选人（{len(feedback_candidates)} 人）", ""]
+        for index, candidate in enumerate(feedback_candidates, start=1):
+            name = str(candidate.get('name') or '姓名缺失').strip()
+            score = candidate.get('match_score')
+            score_text = f"{score} 分" if score is not None else "评分缺失"
+            status = candidate.get('feedback_status') or "未反馈"
+            reasons = "、".join(self._feedback_reasons(candidate)) or "未填写"
+            note = str(candidate.get('feedback_note') or '').strip()
+            lines.extend([
+                f"{index}. {name}｜{score_text}｜{status}",
+                f"   原因：{reasons}",
+            ])
+            if note:
+                lines.append(f"   备注：{note}")
+            lines.append("")
+        self._show_text_dialog(
+            f"反馈候选人 - {job_name}",
+            "\n".join(lines).rstrip(),
+            width=720,
+            height=520,
+        )
+
+    def _open_job_config_from_review(self, job_name):
+        """Navigate from a job review to the matching saved job configuration."""
+        self.show_page_config()
+        normalized_target = " ".join(str(job_name or '').strip().split()).casefold()
+        matched_job = next(
+            (
+                saved_name for saved_name in self.job_rules
+                if " ".join(str(saved_name).strip().split()).casefold() == normalized_target
+            ),
+            "",
+        )
+        if not matched_job:
+            messagebox.showwarning(
+                "岗位配置不存在",
+                f"未找到“{job_name}”的已保存岗位配置。",
+                parent=self.root,
+            )
+            return
+        if self.config_job_combo.get() == matched_job:
+            return
+        self.config_job_combo.set(matched_job)
+        self.on_job_selected(None)
 
     @staticmethod
     def _feedback_reasons(candidate):
@@ -6069,7 +6141,10 @@ class BossFilterGUI:
     def _build_job_review_text(self, job_name, candidates):
         """Build a text review for one job from structured feedback and outcomes."""
         qualified = [c for c in candidates if c.get('match_score', 0) >= SCORE_THRESHOLD_PASS]
-        feedback_candidates = [c for c in qualified if c.get('feedback_status') in FEEDBACK_STATUS_OPTIONS]
+        feedback_candidates = [
+            c for c in candidates
+            if c.get('feedback_status') in FEEDBACK_STATUS_OPTIONS
+        ]
         status_counts = Counter(c.get('feedback_status') for c in feedback_candidates)
         reason_counts = Counter()
         false_positive_reasons = Counter()
@@ -6087,10 +6162,10 @@ class BossFilterGUI:
                 if reason in {"AI 高估", "AI 低估"}:
                     ai_bias_counts[reason] += 1
 
-        greeted = sum(1 for c in qualified if c.get('greet_sent'))
+        greeted = sum(1 for c in candidates if c.get('greet_sent'))
         replied_statuses = {"已回复", "待约面", "已约面"}
-        replied = sum(1 for c in qualified if c.get('followup_status') in replied_statuses)
-        interviewed = sum(1 for c in qualified if c.get('followup_status') == "已约面")
+        replied = sum(1 for c in candidates if c.get('followup_status') in replied_statuses)
+        interviewed = sum(1 for c in candidates if c.get('followup_status') == "已约面")
         avg_score = sum(c.get('match_score', 0) for c in qualified) / len(qualified) if qualified else 0
 
         def fmt_counter(counter, empty="暂无"):
@@ -6114,6 +6189,7 @@ class BossFilterGUI:
             f"- 已约面：{interviewed} 人",
             f"- 平均分：{avg_score:.1f}" if qualified else "- 平均分：暂无",
             f"- 已反馈：{len(feedback_candidates)} 人",
+            f"- 反馈覆盖：{len(feedback_candidates)}/{len(candidates)} 人",
             "",
             "【反馈分布】",
             *fmt_counter(status_counts, "暂无反馈状态"),
@@ -6136,18 +6212,28 @@ class BossFilterGUI:
         return "\n".join(lines)
 
     _REASON_SUGGESTIONS = {
-        "规则过宽": "- 多人反馈规则过宽：补充硬性约束或提高核心技能关键词质量。",
-        "规则过窄": "- 多人反馈规则过窄：放宽必要条件，长句条件拆成短关键词。",
-        "技能不匹配": "- 技能不匹配出现较多：复核关键词是否过泛、权重是否偏高。",
-        "行业经验不符": "- 行业经验不符出现较多：把行业经验放入优先项或必要条件，取决于是否硬性要求。",
-        "AI 高估": "- 存在 AI 高估：复核 AI 评估提示词和硬条件复核证据。",
-        "AI 低估": "- 存在 AI 低估：检查简历摘要是否信息不足，必要时使用完整简历二次评估。",
+        "规则过宽": "补充硬性约束或提高核心技能关键词质量。",
+        "规则过窄": "放宽必要条件，长句条件拆成短关键词。",
+        "技能不匹配": "复核关键词是否过泛、权重是否偏高。",
+        "行业经验不符": "把行业经验放入优先项或必要条件，取决于是否硬性要求。",
+        "AI 高估": "复核 AI 评估提示词和硬条件复核证据。",
+        "AI 低估": "检查简历摘要是否信息不足，必要时使用完整简历二次评估。",
     }
 
     @staticmethod
     def _build_job_review_suggestions(status_counts, reason_counts, feedback_count):
         if feedback_count == 0:
             return ["- 先积累反馈样本；没有结构化反馈时不建议调整岗位规则。"]
+
+        if feedback_count < 5:
+            observed = "、".join(
+                f"{reason} {count} 条"
+                for reason, count in reason_counts.most_common(5)
+            ) or "暂无结构化原因"
+            return [
+                f"- 当前只有 {feedback_count} 条反馈，样本不足 5 条，不建议据此修改岗位规则。",
+                f"- 已记录原因：{observed}。",
+            ]
 
         suggestions = []
         false_positive = status_counts.get("误推", 0)
@@ -6158,8 +6244,11 @@ class BossFilterGUI:
             suggestions.append("- 误杀占比较高：优先检查必要条件是否过严、简单关键词是否写成长句。")
 
         for reason, suggestion in BossFilterGUI._REASON_SUGGESTIONS.items():
-            if reason_counts.get(reason, 0) > 0:
-                suggestions.append(suggestion)
+            count = reason_counts.get(reason, 0)
+            if count > 0:
+                suggestions.append(
+                    f"- {reason}：{count}/{feedback_count} 条；{suggestion}"
+                )
 
         return suggestions or ["- 暂无明确规则调整方向；继续积累结构化反馈后再复盘。"]
 
@@ -6171,6 +6260,7 @@ class BossFilterGUI:
         height=520,
         button_text="关闭",
         button_align="right",
+        extra_actions=None,
     ):
         win = tk.Toplevel(self.root)
         win.title(title)
@@ -6217,6 +6307,18 @@ class BossFilterGUI:
         def close():
             win.grab_release()
             win.destroy()
+
+        def run_extra_action(command):
+            close()
+            command()
+
+        for action_text, action_command in extra_actions or []:
+            action_button = ttk.Button(
+                btn_row,
+                text=action_text,
+                command=lambda command=action_command: run_extra_action(command),
+            )
+            action_button.pack(side="left", padx=(0, int(8 * scale)))
 
         button = ttk.Button(btn_row, text=button_text, command=close)
         if button_align == "center":
@@ -12851,26 +12953,34 @@ class BossFilterGUI:
         body = ttk.Frame(win, style='Page.TFrame', padding=int(16 * scale))
         body.pack(fill="both", expand=True)
 
-        group_order = [
+        business_group_order = [
             "发送结果待核实",
             "已回复待推进",
             "待复核",
             "待完成简历评估",
             "待打招呼",
             "已打招呼待跟进",
+            "待约面待推进",
+            "面试后待反馈",
         ]
-        grouped_items = {
-            group: [item for item in items if item.group == group]
-            for group in group_order
-        }
-        grouped_items = {group: values for group, values in grouped_items.items() if values}
-        default_group = next(iter(grouped_items), "")
+        all_items = list(items)
+
+        def daily_headline(current_items):
+            due_now = sum(
+                item.timing_group in ("立即处理", "已逾期", "今天")
+                for item in current_items
+            )
+            unscheduled = sum(item.timing_group == "待安排" for item in current_items)
+            future = sum(item.timing_group == "以后" for item in current_items)
+            return (
+                f"检查范围：{scope}    今日需处理：{due_now} 人    "
+                f"待安排：{unscheduled} 人    以后：{future} 人"
+            )
+
+        headline_var = tk.StringVar(value=daily_headline(all_items))
         ttk.Label(
             body,
-            text=(
-                f"检查范围：{scope}    今日建议处理：{len(items)} 人"
-                + (f"    优先处理：{default_group} {len(grouped_items[default_group])} 人" if default_group else "")
-            ),
+            textvariable=headline_var,
             font=self.font_label,
             foreground=self.colors['text_secondary'],
             background=self.colors['bg_main'],
@@ -12923,37 +13033,60 @@ class BossFilterGUI:
             action_items_by_key.clear()
             action_label_by_key.clear()
             action_iid_by_key.clear()
-            for idx, (group, values) in enumerate(grouped_items.items()):
-                parent_iid = f"group_{idx}"
-                action_group_by_iid[parent_iid] = group
-                action_items_by_key[group] = values
-                action_label_by_key[group] = group
-                action_iid_by_key[group] = parent_iid
-                group_tree.insert(
-                    "", "end", iid=parent_iid, text=group,
-                    values=(len(values),), open=(group == "待复核"),
-                )
-                if group != "待复核":
+            for timing_index, timing_group in enumerate(ACTION_TIMING_ORDER):
+                timing_items = [
+                    item for item in all_items
+                    if item.timing_group == timing_group
+                ]
+                if not timing_items:
                     continue
-                review_subgroups = {category: [] for category in REVIEW_CATEGORY_ORDER}
-                for item in values:
-                    review_subgroups[candidate_review_category(item.candidate)].append(item)
-                for sub_index, category in enumerate(REVIEW_CATEGORY_ORDER):
-                    category_items = review_subgroups[category]
-                    if not category_items:
+                parent_iid = f"timing_{timing_index}"
+                action_group_by_iid[parent_iid] = timing_group
+                action_items_by_key[timing_group] = timing_items
+                action_label_by_key[timing_group] = timing_group
+                action_iid_by_key[timing_group] = parent_iid
+                group_tree.insert(
+                    "", "end", iid=parent_iid, text=timing_group,
+                    values=(len(timing_items),), open=(timing_group != "以后"),
+                )
+                for group_index, group in enumerate(business_group_order):
+                    group_items = [
+                        item for item in timing_items if item.group == group
+                    ]
+                    if not group_items:
                         continue
-                    child_iid = f"{parent_iid}_review_{sub_index}"
-                    selection_key = f"{group}::{category}"
+                    child_iid = f"{parent_iid}_group_{group_index}"
+                    selection_key = f"{timing_group}::{group}"
                     action_group_by_iid[child_iid] = selection_key
-                    action_items_by_key[selection_key] = category_items
-                    action_label_by_key[selection_key] = category
+                    action_items_by_key[selection_key] = group_items
+                    action_label_by_key[selection_key] = group
                     action_iid_by_key[selection_key] = child_iid
                     group_tree.insert(
-                        parent_iid, "end", iid=child_iid, text=category,
-                        values=(len(category_items),),
+                        parent_iid, "end", iid=child_iid, text=group,
+                        values=(len(group_items),), open=(group == "待复核"),
                     )
+                    if group != "待复核":
+                        continue
+                    review_subgroups = {category: [] for category in REVIEW_CATEGORY_ORDER}
+                    for item in group_items:
+                        review_subgroups[candidate_review_category(item.candidate)].append(item)
+                    for sub_index, category in enumerate(REVIEW_CATEGORY_ORDER):
+                        category_items = review_subgroups[category]
+                        if not category_items:
+                            continue
+                        review_iid = f"{child_iid}_review_{sub_index}"
+                        review_key = f"{selection_key}::{category}"
+                        action_group_by_iid[review_iid] = review_key
+                        action_items_by_key[review_key] = category_items
+                        action_label_by_key[review_key] = category
+                        action_iid_by_key[review_key] = review_iid
+                        group_tree.insert(
+                            child_iid, "end", iid=review_iid, text=category,
+                            values=(len(category_items),),
+                        )
 
         rebuild_action_group_tree()
+        default_group = next(iter(action_items_by_key), "")
 
         detail_frame = ttk.Frame(content, style='Card.TFrame')
         detail_frame.pack(side="left", fill="both", expand=True)
@@ -12967,14 +13100,15 @@ class BossFilterGUI:
         )
         selected_group_label.grid(row=0, column=0, columnspan=3, sticky="w", padx=int(10 * scale), pady=(int(10 * scale), 0))
 
-        columns = ("name", "job", "score", "reason", "action")
+        columns = ("name", "job", "score", "reason", "action", "due")
         tree = ttk.Treeview(detail_frame, columns=columns, show="headings", height=13, style="ActionQueue.Treeview")
         for col, text, width, anchor in (
             ("name", "候选人", 100, "center"),
             ("job", "岗位", 145, "w"),
             ("score", "分数", 65, "center"),
             ("reason", "为什么处理", 290, "w"),
-            ("action", "下一步", 360, "w"),
+            ("action", "下一步", 315, "w"),
+            ("due", "到期", 95, "center"),
         ):
             tree.heading(col, text=text)
             tree.column(col, width=int(width * scale), minwidth=int(max(60, width * 0.65) * scale), anchor=anchor)
@@ -13004,6 +13138,7 @@ class BossFilterGUI:
                     item.score,
                     self._clip_table_text(item.reason, 42),
                     self._clip_table_text(item.action, 48),
+                    format_followup_due_at(item.due_at) if item.due_at else "—",
                 ))
 
         def on_group_selected(_event=None):
@@ -13012,19 +13147,16 @@ class BossFilterGUI:
                 populate_group(action_group_by_iid.get(selection[0], ""))
 
         def refresh_current_daily_actions():
-            nonlocal grouped_items
+            nonlocal all_items
             try:
                 refreshed_candidates, _scope = self._load_candidates_for_daily_actions()
                 refreshed_items = build_daily_candidate_actions(refreshed_candidates)
             except Exception:
                 refreshed_items = []
-            grouped_items = {
-                group: [item for item in refreshed_items if item.group == group]
-                for group in group_order
-            }
-            grouped_items = {group: values for group, values in grouped_items.items() if values}
+            all_items = list(refreshed_items)
+            headline_var.set(daily_headline(all_items))
             rebuild_action_group_tree()
-            preferred = current_group_name["value"] if current_group_name["value"] in action_items_by_key else next(iter(grouped_items), "")
+            preferred = current_group_name["value"] if current_group_name["value"] in action_items_by_key else next(iter(action_items_by_key), "")
             if preferred:
                 preferred_iid = action_iid_by_key[preferred]
                 group_tree.selection_set(preferred_iid)
@@ -13045,6 +13177,8 @@ class BossFilterGUI:
                 f"候选人：{item.name or '未命名'}",
                 f"岗位：{item.job_name or '未知岗位'}",
                 f"分数：{item.score}",
+                f"时间分组：{item.timing_group}",
+                f"到期日期：{format_followup_due_at(item.due_at) if item.due_at else '未安排'}",
                 "",
                 f"为什么处理：{item.reason}",
                 f"下一步：{item.action}",
@@ -13065,7 +13199,10 @@ class BossFilterGUI:
             primary = "queue" if item.group == "待打招呼" else (
                 "confirm" if item.group == "待复核" else (
                     "resume" if item.group == "待完成简历评估" else (
-                        "followup" if item.group in ("已打招呼待跟进", "已回复待推进") else None
+                        "followup" if item.group in (
+                            "已打招呼待跟进", "已回复待推进",
+                            "待约面待推进", "面试后待反馈",
+                        ) else None
                     )
                 )
             )
@@ -13329,6 +13466,31 @@ class BossFilterGUI:
             if selection:
                 populate_issue_group(issue_group_by_iid.get(selection[0], ""))
 
+        def on_issue_group_motion(event):
+            item_id = group_tree.identify_row(event.y)
+            column_id = group_tree.identify_column(event.x)
+            title = issue_group_by_iid.get(item_id, "")
+            if not item_id or column_id != "#0" or not title:
+                self._hide_tooltip()
+                return
+            tooltip_key = ("state_check_group", item_id, column_id)
+            if (
+                tooltip_key == getattr(self, "_tooltip_item", None)
+                and getattr(self, "_tooltip", None)
+                and self._tooltip.winfo_exists()
+            ):
+                return
+            after_id = getattr(self, "_tooltip_after_id", None)
+            if after_id:
+                self.root.after_cancel(after_id)
+            x = event.x_root + int(12 * scale)
+            y = event.y_root + int(12 * scale)
+            self._tooltip_item = tooltip_key
+            self._tooltip_after_id = self.root.after(
+                250,
+                lambda: self._show_tooltip(title, x, y, tooltip_key, parent=win),
+            )
+
         def rebuild_issue_groups(refreshed_issues):
             grouped = {}
             if refreshed_issues:
@@ -13440,6 +13602,8 @@ class BossFilterGUI:
         tree.bind("<Leave>", self._hide_tooltip)
         tree.bind("<Button-3>", show_state_context_menu)
         group_tree.bind("<<TreeviewSelect>>", on_issue_group_selected)
+        group_tree.bind("<Motion>", on_issue_group_motion)
+        group_tree.bind("<Leave>", self._hide_tooltip)
         default_group = next(iter(grouped_issues), "")
         if default_group:
             default_iid = next((iid for iid, title in issue_group_by_iid.items() if title == default_group), "")
@@ -13575,6 +13739,43 @@ class BossFilterGUI:
                 ),
             )
 
+        def add_quick_followup_actions():
+            current_status = str(
+                candidate.get('followup_status')
+                or ("已打招呼" if candidate.get('greet_sent') else "未沟通")
+            )
+            if current_status not in ("已回复", "待约面", "已约面", "不合适", "已归档"):
+                menu.add_command(
+                    label=" 标记已回复",
+                    image=icon_followup,
+                    compound=tk.LEFT,
+                    command=lambda: self._quick_update_candidate_followup(
+                        candidate, "已回复", parent, refresh_later
+                    ),
+                )
+            if current_status not in ("待约面", "已约面", "不合适", "已归档"):
+                menu.add_command(
+                    label=" 推进到待约面",
+                    image=icon_confirm,
+                    compound=tk.LEFT,
+                    command=lambda: self._quick_update_candidate_followup(
+                        candidate, "待约面", parent, refresh_later
+                    ),
+                )
+            if current_status in ("已打招呼", "待约面", "已约面"):
+                menu.add_command(
+                    label=" 明天再跟进",
+                    image=icon_followup,
+                    compound=tk.LEFT,
+                    command=lambda: self._quick_update_candidate_followup(
+                        candidate,
+                        current_status,
+                        parent,
+                        refresh_later,
+                        days=1,
+                    ),
+                )
+
         needs_review = (
             candidate.get('manual_review_required')
             or candidate.get('qualification_status') == 'manual_review'
@@ -13613,6 +13814,11 @@ class BossFilterGUI:
 
         if primary_action != "followup":
             add_followup()
+        if candidate.get('greet_sent') or candidate.get('followup_status') in (
+            "已回复", "待约面", "已约面"
+        ):
+            menu.add_separator()
+            add_quick_followup_actions()
         menu.add_command(
             label=" 标记反馈",
             image=icon_feedback,
@@ -15478,7 +15684,15 @@ class BossFilterGUI:
         except Exception as exc:
             messagebox.showerror("错误", f"移出黑名单失败：{exc}")
 
-    def _update_candidate_followup(self, geek_id, job_name, status, note):
+    def _update_candidate_followup(
+        self,
+        geek_id,
+        job_name,
+        status,
+        note,
+        next_followup_at=None,
+        timestamp=None,
+    ):
         """更新候选人的跟进状态。"""
         if not CANDIDATES_PATH.exists():
             return False
@@ -15486,21 +15700,70 @@ class BossFilterGUI:
             candidates = json.load(f)
 
         updated = False
-        followup_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        followup_time = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
         for c in candidates:
             if c.get('geek_id') == geek_id and c.get('job_name', '').replace(" ", "") == job_name.replace(" ", ""):
-                c['followup_status'] = status
-                c['followup_note'] = note.strip()
-                c['followup_updated_at'] = followup_time
                 if status == "已打招呼":
                     mark_candidate_greeted(c, "manual_status", followup_time)
-                    c['followup_note'] = note.strip()
+                apply_followup_state(
+                    c,
+                    status,
+                    note,
+                    timestamp=followup_time,
+                    next_followup_at=next_followup_at,
+                )
                 updated = True
                 break
 
         if updated:
             save_candidates_all(candidates, CANDIDATES_PATH)
         return updated
+
+    def _quick_update_candidate_followup(
+        self,
+        candidate,
+        status,
+        parent,
+        on_saved=None,
+        *,
+        days=None,
+    ):
+        """Persist a common follow-up transition without opening the full form."""
+        followup_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        next_due = None
+        if days is not None:
+            next_due = (datetime.now() + timedelta(days=days)).strftime("%Y%m%d_%H%M%S")
+        try:
+            updated = self._update_candidate_followup(
+                candidate.get('geek_id'),
+                candidate.get('job_name', ''),
+                status,
+                candidate.get('followup_note', ''),
+                next_due,
+                followup_time,
+            )
+            if not updated:
+                messagebox.showerror(
+                    "更新跟进", "保存失败：未找到候选人", parent=parent or self.root
+                )
+                return
+            apply_followup_state(
+                candidate,
+                status,
+                candidate.get('followup_note', ''),
+                timestamp=followup_time,
+                next_followup_at=next_due,
+            )
+            self._regenerate_excel()
+            self.refresh_home_stats()
+            self.refresh_stats()
+            self.refresh_results()
+            if on_saved:
+                on_saved()
+        except Exception as exc:
+            messagebox.showerror(
+                "更新跟进", f"保存跟进状态失败：{exc}", parent=parent or self.root
+            )
 
     def _clear_manual_review(self, geek_id, job_name):
         """按候选人和岗位清除人工确认标记。"""
@@ -15661,6 +15924,72 @@ class BossFilterGUI:
 
         ttk.Label(
             frame,
+            text="下次跟进日期",
+            font=(FONT_FAMILY, int(12 * self.font_scale)),
+            style='Page.TLabel'
+        ).pack(anchor='w')
+
+        existing_due = format_followup_due_at(candidate.get('next_followup_at'))
+        if existing_due == "未安排":
+            default_due = default_next_followup_at(default_status)
+            existing_due = format_followup_due_at(default_due)
+            if existing_due == "未安排":
+                existing_due = ""
+        next_followup_var = tk.StringVar(value=existing_due)
+        next_followup_entry = ttk.Entry(
+            frame,
+            textvariable=next_followup_var,
+            font=(FONT_FAMILY, int(12 * self.font_scale)),
+        )
+        next_followup_entry.pack(
+            anchor='w', fill='x',
+            pady=(int(5 * self.dpi_scale * self.zoom_factor), int(6 * self.dpi_scale * self.zoom_factor)),
+        )
+
+        quick_date_frame = ttk.Frame(frame, style='Page.TFrame')
+        quick_date_frame.pack(
+            anchor='w',
+            fill='x',
+            pady=(0, int(12 * self.dpi_scale * self.zoom_factor)),
+        )
+        for column in range(5):
+            quick_date_frame.grid_columnconfigure(column, weight=1, uniform='followup_quick_date')
+
+        def set_quick_date(days):
+            if days is None:
+                next_followup_var.set("")
+                return
+            next_followup_var.set(
+                (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+            )
+
+        for column, (label, days) in enumerate((
+            ("今天", 0),
+            ("明天", 1),
+            ("3 天后", 3),
+            ("7 天后", 7),
+            ("不设置", None),
+        )):
+            ttk.Button(
+                quick_date_frame,
+                text=label,
+                command=lambda value=days: set_quick_date(value),
+            ).grid(
+                row=0,
+                column=column,
+                sticky='ew',
+                padx=(0, int(5 * self.dpi_scale * self.zoom_factor)) if column < 4 else 0,
+            )
+
+        def reset_due_for_status(_event=None):
+            default_value = default_next_followup_at(status_var.get().strip())
+            formatted = format_followup_due_at(default_value)
+            next_followup_var.set("" if formatted == "未安排" else formatted)
+
+        status_combo.bind("<<ComboboxSelected>>", reset_due_for_status)
+
+        ttk.Label(
+            frame,
             text="备注",
             font=(FONT_FAMILY, int(12 * self.font_scale)),
             style='Page.TLabel'
@@ -15691,41 +16020,77 @@ class BossFilterGUI:
             status = status_var.get().strip()
             note = note_text.get('1.0', 'end').strip()
             if status not in FOLLOWUP_STATUS_OPTIONS:
-                messagebox.showerror("错误", "请选择有效的跟进状态")
+                messagebox.showerror("错误", "请选择有效的跟进状态", parent=win)
                 return
+            due_input = next_followup_var.get().strip()
+            next_due = normalize_followup_at(due_input)
+            if due_input and not next_due:
+                if re.fullmatch(r"\d{4}-\d{2}-\d{2}", due_input):
+                    error_text = "下次跟进日期无效，请检查年月日是否正确"
+                else:
+                    error_text = "下次跟进日期格式不正确，请使用 YYYY-MM-DD"
+                messagebox.showerror("日期错误", error_text, parent=win)
+                return
+            if status == "待约面" and not next_due:
+                messagebox.showerror(
+                    "错误", "待约面状态必须安排下次跟进日期", parent=win
+                )
+                return
+            followup_time = datetime.now().strftime("%Y%m%d_%H%M%S")
             try:
                 updated = self._update_candidate_followup(
                     candidate.get('geek_id'),
                     candidate.get('job_name', ''),
                     status,
-                    note
+                    note,
+                    next_due,
+                    followup_time,
                 )
                 if not updated:
-                    messagebox.showerror("错误", "保存跟进状态失败：未找到候选人")
+                    messagebox.showerror(
+                        "错误", "保存跟进状态失败：未找到候选人", parent=win
+                    )
                     return
-                candidate['followup_status'] = status
-                candidate['followup_note'] = note
-                candidate['followup_updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
                 if status == "已打招呼":
                     mark_candidate_greeted(
                         candidate,
                         "manual_status",
-                        candidate['followup_updated_at'],
+                        followup_time,
                     )
-                    candidate['followup_note'] = note
+                apply_followup_state(
+                    candidate,
+                    status,
+                    note,
+                    timestamp=followup_time,
+                    next_followup_at=next_due,
+                )
                 self._regenerate_excel()
                 self.refresh_results()
                 if on_saved:
                     on_saved()
+                needs_feedback = status == "不合适" and not candidate.get('feedback_status')
                 close()
+                if needs_feedback:
+                    _parent.after(
+                        80,
+                        lambda: self._mark_candidate_feedback(
+                            None,
+                            candidate=candidate,
+                            parent=_parent,
+                            on_saved=on_saved,
+                            default_status="误推",
+                        ),
+                    )
             except Exception as exc:
-                messagebox.showerror("错误", f"保存跟进状态失败：{exc}")
+                messagebox.showerror(
+                    "错误", f"保存跟进状态失败：{exc}", parent=win
+                )
 
         ttk.Button(btn_frame, text="保存", command=save_followup).pack(side='left', padx=(0, int(8 * self.dpi_scale * self.zoom_factor)))
         ttk.Button(btn_frame, text="取消", command=close).pack(side='left')
 
         win.protocol("WM_DELETE_WINDOW", close)
-        _place_window_centered(win, int(460 * self.dpi_scale * self.zoom_factor), int(360 * self.dpi_scale * self.zoom_factor), parent=_parent)
+        _place_window_centered(win, int(500 * self.dpi_scale * self.zoom_factor), int(500 * self.dpi_scale * self.zoom_factor), parent=_parent)
         win.deiconify()
 
     def _update_candidate_feedback(self, geek_id, job_name, status, reasons, note):
@@ -15750,7 +16115,14 @@ class BossFilterGUI:
             save_candidates_all(candidates, CANDIDATES_PATH)
         return updated
 
-    def _mark_candidate_feedback(self, item, candidate=None, parent=None, on_saved=None):
+    def _mark_candidate_feedback(
+        self,
+        item,
+        candidate=None,
+        parent=None,
+        on_saved=None,
+        default_status=None,
+    ):
         """标记候选人的人工反馈状态和备注。"""
         candidate = self._resolve_candidate(item, candidate)
         if not candidate:
@@ -15788,7 +16160,13 @@ class BossFilterGUI:
             style='Page.TLabel'
         ).pack(anchor='w')
 
-        status_var = tk.StringVar(value=candidate.get('feedback_status') or FEEDBACK_STATUS_OPTIONS[0])
+        status_var = tk.StringVar(
+            value=(
+                candidate.get('feedback_status')
+                or default_status
+                or FEEDBACK_STATUS_OPTIONS[0]
+            )
+        )
         status_combo = ttk.Combobox(
             content,
             textvariable=status_var,
@@ -15870,6 +16248,9 @@ class BossFilterGUI:
             note = note_text.get('1.0', 'end').strip()
             if status not in FEEDBACK_STATUS_OPTIONS:
                 messagebox.showerror("错误", "请选择有效的反馈状态")
+                return
+            if status in {"误推", "误杀"} and not reasons:
+                messagebox.showerror("错误", "标记误推或误杀时，请至少选择一个原因")
                 return
             try:
                 updated = self._update_candidate_feedback(
@@ -16047,6 +16428,10 @@ class BossFilterGUI:
             lines.append(f"  状态：{followup_status}")
             if c.get('followup_updated_at'):
                 lines.append(f"  时间：{c.get('followup_updated_at')}")
+            if c.get('next_followup_at'):
+                lines.append(
+                    f"  下次跟进：{format_followup_due_at(c.get('next_followup_at'))}"
+                )
             if c.get('followup_note'):
                 lines.append("  备注：")
                 for note_line in str(c.get('followup_note', '')).split('\n'):
@@ -17825,6 +18210,7 @@ class BossFilterGUI:
             "",
             "当前状态",
             f"  沟通：{decision.communication_status}",
+            f"  下次跟进：{format_followup_due_at(candidate.get('next_followup_at'))}",
             f"  人工反馈：{candidate.get('feedback_status') or '未标记'}",
         ])
         return '\n'.join(lines)

@@ -5,6 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from candidate_workflow import normalize_followup_at
 from constants import SCORE_THRESHOLD_PASS
 
 
@@ -76,6 +77,8 @@ def _diagnose_individual_candidates(candidates: Iterable[dict[str, Any]]) -> lis
         feedback_status = _clean_text(candidate.get("feedback_status"))
         qualification_status = _clean_text(candidate.get("qualification_status")) or "qualified"
         match_score = _as_int(candidate.get("match_score")) or 0
+        next_followup_raw = _clean_text(candidate.get("next_followup_at"))
+        next_followup_at = normalize_followup_at(next_followup_raw)
 
         if followup_status and followup_status not in FOLLOWUP_STATUS_OPTIONS:
             issues.append(_issue(
@@ -94,6 +97,31 @@ def _diagnose_individual_candidates(candidates: Iterable[dict[str, Any]]) -> lis
                 candidate, "warning", "未知资格审查状态",
                 f"当前资格审查状态为“{qualification_status}”。",
                 "重新做 AI 评估，或人工确认这个人到底是通过、淘汰还是待确认。",
+            ))
+
+        if next_followup_raw and not next_followup_at:
+            issues.append(_issue(
+                candidate, "warning", "下次跟进日期无效",
+                f"当前值为“{next_followup_raw}”，系统无法识别。",
+                "打开“更新跟进”，重新选择今天、明天或填写 YYYY-MM-DD。",
+            ))
+        if next_followup_at and followup_status in {"未沟通", "不合适", "已归档"}:
+            issues.append(_issue(
+                candidate, "warning", "结束状态仍有跟进提醒",
+                f"跟进状态为“{followup_status}”，但仍安排了下次跟进。",
+                "确认状态；如果已经结束，将下次跟进日期设为不设置。",
+            ))
+        if followup_status == "待约面" and not next_followup_at:
+            issues.append(_issue(
+                candidate, "warning", "待约面未安排时间",
+                "候选人已进入待约面，但没有下次跟进日期。",
+                "打开“更新跟进”，安排下一次确认面试时间的日期。",
+            ))
+        elif followup_status == "已打招呼" and not next_followup_at:
+            issues.append(_issue(
+                candidate, "info", "跟进时间待安排",
+                f"候选人状态为“{followup_status}”，尚未安排下次处理日期。",
+                "可在“今日待办”的待安排分组中设置日期；旧记录无需立即处理。",
             ))
 
         if candidate.get("greet_sent") is True:

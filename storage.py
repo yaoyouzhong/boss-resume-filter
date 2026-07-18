@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from candidate_workflow import default_next_followup_at
 from constants import SCORE_THRESHOLD_PASS, SCORE_THRESHOLD_RECOMMEND
 
 
@@ -25,6 +26,7 @@ _FEEDBACK_FIELDS = (
     'followup_status',
     'followup_note',
     'followup_updated_at',
+    'next_followup_at',
     'blacklisted',
     'blacklist_reason',
     'blacklisted_at',
@@ -53,7 +55,7 @@ _FEEDBACK_FIELDS = (
 # 合并时比较时间戳，取更新的一组值
 _TIMESTAMP_FIELD_GROUPS = (
     ('feedback_updated_at', ('feedback_status', 'feedback_reasons', 'feedback_note')),
-    ('followup_updated_at', ('followup_status', 'followup_note')),
+    ('followup_updated_at', ('followup_status', 'followup_note', 'next_followup_at')),
     ('blacklisted_at', ('blacklisted', 'blacklist_reason')),
     ('greet_context_updated_at', ('greet_context',)),
     ('greet_sent_at', ('greet_sent', 'greet_method')),
@@ -258,6 +260,7 @@ def mark_candidate_greeted(
     candidate['greet_method'] = method
     candidate['followup_status'] = "已打招呼"
     candidate['followup_updated_at'] = greeted_at
+    candidate['next_followup_at'] = default_next_followup_at("已打招呼", greeted_at)
     candidate.pop('greet_confirmation_pending', None)
     candidate.pop('greet_confirmation_reason', None)
     candidate.pop('greet_confirmation_updated_at', None)
@@ -285,6 +288,7 @@ def clear_candidate_greeting_pending(candidate: dict[str, Any]) -> None:
     if candidate.get('followup_status') == "已打招呼":
         candidate['followup_status'] = "未沟通"
         candidate['followup_updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
+        candidate.pop('next_followup_at', None)
 
 
 def merge_candidates_all(
@@ -436,6 +440,8 @@ def _merge_manual_fields(target: dict[str, Any], source: dict[str, Any]) -> None
             for f in related:
                 if source.get(f):
                     target[f] = source[f]
+                elif f == 'next_followup_at':
+                    target.pop(f, None)
         elif not t_ts:
             # 两边都没有时间戳，回退到 source 有值 target 没值时复制
             for f in related:
