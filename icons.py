@@ -9,6 +9,8 @@ import math
 from typing import Dict, Tuple, Optional, Callable
 from PIL import Image, ImageDraw, ImageTk
 
+import ui_theme
+
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
@@ -870,12 +872,12 @@ def _traffic_light(size_px: int, fill: str, bg: str, sw: int, active: str) -> Im
     d = ImageDraw.Draw(img)
     S = size_px
     colors = {
-        "red": "#E5484D",
-        "yellow": "#F5A524",
-        "green": "#30A46C",
+        "red": ui_theme.LAMP_ERROR,
+        "yellow": ui_theme.LAMP_WARN,
+        "green": ui_theme.LAMP_OK,
     }
     centers = {"red": 5.5, "yellow": 12, "green": 18.5}
-    inactive = "#C8CDD5"
+    inactive = ui_theme.LAMP_OFF
     radius = _s(3.2, S)
     center_x = _s(12, S)
     for color, center_y in centers.items():

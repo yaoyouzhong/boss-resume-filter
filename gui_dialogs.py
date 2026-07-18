@@ -8,6 +8,7 @@ from tkinter import ttk
 
 from changelog_parser import normalize_version, parse_changelog_versions, resolve_local_changelog_path
 from ui_messagebox import messagebox
+import ui_theme
 
 
 def render_changelog_text(
@@ -33,11 +34,11 @@ def render_changelog_text(
     item_left_margin = pad(18)
     item_wrap_margin = pad(36)
 
-    text_widget.tag_configure("section_new", font=section_font, foreground=colors.get('success', '#48BB78'))
+    text_widget.tag_configure("section_new", font=section_font, foreground=colors.get('success', ui_theme.SUCCESS))
     text_widget.tag_configure("section_opt", font=section_font, foreground=colors['primary'])
-    text_widget.tag_configure("section_ui", font=section_font, foreground=colors.get('purple', '#805AD5'))
-    text_widget.tag_configure("section_fix", font=section_font, foreground=colors.get('danger', '#E53E3E'))
-    text_widget.tag_configure("section_build", font=section_font, foreground=colors.get('warning', '#D69E2E'))
+    text_widget.tag_configure("section_ui", font=section_font, foreground=colors.get('purple', ui_theme.PURPLE))
+    text_widget.tag_configure("section_fix", font=section_font, foreground=colors.get('danger', ui_theme.DANGER))
+    text_widget.tag_configure("section_build", font=section_font, foreground=colors.get('warning', ui_theme.WARNING))
     text_widget.tag_configure("item", font=item_font, foreground=colors['text_secondary'],
                               lmargin1=item_left_margin, lmargin2=item_wrap_margin)
     text_widget.tag_configure("item_bold", font=item_bold_font, foreground=colors['text_primary'])

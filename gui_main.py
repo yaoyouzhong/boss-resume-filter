@@ -25,6 +25,7 @@ from tkinter import filedialog, font, ttk
 from urllib.parse import urlparse
 
 import icons
+import ui_theme
 
 logger = logging.getLogger(__name__)
 
@@ -759,7 +760,7 @@ def _draw_search_icon(S, fill, sw_ratio=0.10):
     img = Image.new('RGBA', (S, S), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     # 镜片
-    rim_color = '#4B5563'      # 金属边框
+    rim_color = ui_theme.PRIMARY      # 品牌蓝边框
     glass_fill = (147, 197, 253, 80)  # 淡蓝玻璃
     rim_w = max(3, int(S * 0.07))
     r = int(S * 0.24)
@@ -780,7 +781,7 @@ def _draw_search_icon(S, fill, sw_ratio=0.10):
     sy2 = int(shine_y + shine_len * math.sin(angle))
     d.line([(sx1, sy1), (sx2, sy2)], fill=shine_color, width=shine_w)
     # 手柄
-    handle_color = '#374151'
+    handle_color = ui_theme.PRIMARY_DARK
     handle_w = max(3, int(S * 0.07))
     angle45 = math.radians(45)
     hx0 = int(cx + (r + rim_w // 2) * math.cos(angle45))
@@ -1115,7 +1116,7 @@ class BossFilterGUI:
             win.attributes('-topmost', True)
             label = tk.Label(
                 win, text=text, font=self.font_label,
-                background='#323232', foreground='#FFFFFF',
+                background=self.colors['tooltip_bg'], foreground=self.colors['tooltip_fg'],
                 padx=14, pady=8,
             )
             label.pack()
@@ -1203,34 +1204,8 @@ class BossFilterGUI:
             except tk.TclError:
                 pass  # 使用默认主题
 
-        # 配色方案 - 现代化渐变色
-        self.colors = {
-            'primary': '#1E88E5',      # 主蓝色
-            'primary_dark': '#1565C0',
-            'primary_light': '#64B5F6',
-            'success': '#43A047',       # 成功绿
-            'success_light': '#81C784',
-            'warning': '#FB8C00',       # 警告橙
-            'danger': '#E53935',        # 危险红
-            'purple': '#8E24AA',        # 紫色
-            'pending': '#546E7A',       # 待定蓝灰色
-            'bg_main': '#F8F9FA',       # 主背景
-            'bg_card': '#FFFFFF',       # 卡片背景
-            'bg_input': '#FAFAFA',      # 输入框背景
-            'bg_sidebar': '#2D3748',    # 侧边栏背景
-            'bg_tree_tag_high': '#E8F5E9',   # 表格高权重行
-            'bg_tree_tag_mid': '#FFF3E0',    # 表格中权重行
-            'bg_tree_tag_low': '#F5F5F5',    # 表格低权重行
-            'text_primary': '#1A202C',  # 主文字
-            'text_secondary': '#718096',# 次要文字
-            'text_muted': '#999999',    # 弱化文字
-            'text_sidebar': '#A0AEC0',  # 侧边栏文字
-            'text_sidebar_active': '#FFFFFF',      # 侧边栏激活文字
-            'text_sidebar_subtitle': '#94A3B8',    # 侧边栏副标题
-            'text_sidebar_version': '#64748B',     # 侧边栏版本号
-            'border': '#E2E8F0',        # 边框
-            'bg_hover': '#EDF2F7',      # 悬停背景
-        }
+        # 配色方案 - 统一来自 ui_theme 设计令牌
+        self.colors = ui_theme.build_palette()
 
         # 设置右侧功能页字体。左侧边栏在 create_sidebar() 中单独计算，避免被这里牵动。
         fs = self.dpi_scale * self.zoom_factor
@@ -1751,7 +1726,7 @@ class BossFilterGUI:
         card.pack(**pack_opts)
 
         # 标题行 - 左侧蓝色竖线 + 浅灰背景，与页面标题风格一致
-        title_bg = '#F7F8FA'
+        title_bg = self.colors['bg_footer']
         title_bar = tk.Frame(card, bg=title_bg)
         title_bar.pack(fill="x")
 
@@ -2021,7 +1996,7 @@ class BossFilterGUI:
 
         # ===== 需求文档解析区域 =====
         def _build_requirement_toggle(title_bar, padding):
-            title_bg = '#F7F8FA'
+            title_bg = self.colors['bg_footer']
             self.requirement_title_bar = title_bar
             self.requirement_header_status_var = tk.StringVar(value="")
             self.requirement_expand_icon = self.icons.button(
@@ -2080,7 +2055,7 @@ class BossFilterGUI:
 
         self.requirement_text = tk.Text(text_container, height=UI_CONFIG['text_height_large'],
                                         font=(FONT_FAMILY, int(10 * self.font_scale)),
-                                        bg='#FFFFFF', fg=self.colors['text_primary'],
+                                        bg=self.colors['bg_card'], fg=self.colors['text_primary'],
                                         borderwidth=0, highlightthickness=2,
                                         highlightbackground=self.colors['border'],
                                         highlightcolor=self.colors['primary'])
@@ -2489,7 +2464,7 @@ class BossFilterGUI:
 
         # 按钮行（居中布局，固定在页面底部，不随 Canvas 滚动）
         self.btn_frame = ttk.Frame(self.config_page, style='Page.TFrame')
-        quality_bg = '#F7F8FA'
+        quality_bg = self.colors['bg_footer']
         quality_frame = tk.Frame(
             self.btn_frame,
             bg=quality_bg,
@@ -3697,7 +3672,7 @@ class BossFilterGUI:
         )
         self.model_list_tree.tag_configure(
             "education_model",
-            background="#E3F2FD",
+            background=self.colors['banner_info_bg'],
             foreground=self.colors['primary'],
         )
         self.model_list_tree.tag_configure(
@@ -4375,7 +4350,7 @@ class BossFilterGUI:
         self.result_search_entry.pack(side="left", padx=int(6 * self.dpi_scale * self.zoom_factor))
         ttk.Label(search_frame, text="（姓名/技能/学校/公司/状态，60=≥60分，支持 >= > =，Esc 清空）",
                  font=(FONT_FAMILY, int(10 * self.font_scale)),
-                 foreground=self.colors.get('text_secondary', '#666'),
+                 foreground=self.colors['text_secondary'],
                  background=self.colors['bg_main']).pack(side="left", padx=int(4 * self.dpi_scale * self.zoom_factor))
         self.result_search_entry.bind('<Escape>', lambda e: self.result_search_var.set(''))
 
@@ -4398,7 +4373,7 @@ class BossFilterGUI:
             search_frame,
             textvariable=self.result_count_var,
             font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors.get('text_secondary', '#666'),
+            foreground=self.colors['text_secondary'],
             background=self.colors['bg_main'],
         ).pack(side="left", padx=int(8 * self.dpi_scale * self.zoom_factor))
 
@@ -6433,7 +6408,7 @@ class BossFilterGUI:
             body,
             wrap="word",
             font=self.font_log,
-            bg="#FFFFFF",
+            bg=self.colors['bg_card'],
             fg=self.colors['text_primary'],
             relief="solid",
             bd=1,
@@ -6942,7 +6917,7 @@ class BossFilterGUI:
         """设置窗口图标，替换 tkinter 默认羽毛图标"""
         try:
             from PIL import Image, ImageTk
-            icon_img = _draw_search_icon(256, '#2563EB', sw_ratio=0.10)
+            icon_img = _draw_search_icon(256, ui_theme.PRIMARY, sw_ratio=0.10)
             # 用 iconphoto 设置高分图标，Windows 10/11 原生缩放比 ICO 清晰
             self._icon_photo = ImageTk.PhotoImage(icon_img)
             self.root.iconphoto(True, self._icon_photo)
@@ -10343,7 +10318,7 @@ class BossFilterGUI:
                 # 空值合法，恢复默认样式
                 entry.configure(foreground=self.colors['text_primary'])
             elif not text.isdigit():
-                entry.configure(foreground='red')
+                entry.configure(foreground=self.colors['danger_text'])
             else:
                 entry.configure(foreground=self.colors['text_primary'])
 
@@ -10497,7 +10472,7 @@ class BossFilterGUI:
         title_bar = getattr(self, 'requirement_title_bar', None)
         if title_bar is None:
             return
-        background = '#EEF4FC' if active else '#F7F8FA'
+        background = self.colors['banner_info_bg'] if active else self.colors['bg_footer']
         title_bar.configure(bg=background)
         for widget in title_bar.winfo_children():
             if isinstance(widget, tk.Label):
@@ -11343,7 +11318,7 @@ class BossFilterGUI:
             body,
             wrap="word",
             font=self.font_log,
-            bg="#FFFFFF",
+            bg=self.colors['bg_card'],
             fg=self.colors['text_primary'],
             borderwidth=1,
             relief="solid",
@@ -12941,8 +12916,8 @@ class BossFilterGUI:
                 self.result_tree.tag_configure('strong_recommend', background=self.colors['bg_tree_tag_high'])
                 self.result_tree.tag_configure('recommend', background=self.colors['bg_tree_tag_mid'])
                 self.result_tree.tag_configure('pending', background=self.colors['bg_tree_tag_low'])
-                self.result_tree.tag_configure('blacklisted', background='#F5F5F5', foreground='#C62828')
-                self.result_tree.tag_configure('rejected', background='#F5F5F5', foreground='#757575')
+                self.result_tree.tag_configure('blacklisted', background=self.colors['bg_tree_tag_low'], foreground=self.colors['danger_text'])
+                self.result_tree.tag_configure('rejected', background=self.colors['bg_tree_tag_low'], foreground=self.colors['text_muted'])
 
                 visible_count = 0
                 for c in sorted_candidates:
@@ -13575,9 +13550,9 @@ class BossFilterGUI:
         tree.column("job", width=int(145 * scale), minwidth=110, anchor="w")
         tree.column("problem", width=int(350 * scale), minwidth=240, anchor="w")
         tree.column("action", width=int(392 * scale), minwidth=260, anchor="w")
-        tree.tag_configure("error", background="#FDECEC")
-        tree.tag_configure("warning", background="#FFF7E6")
-        tree.tag_configure("info", background="#EEF6FF")
+        tree.tag_configure("error", background=self.colors['banner_error_bg'])
+        tree.tag_configure("warning", background=self.colors['banner_warning_bg'])
+        tree.tag_configure("info", background=self.colors['banner_info_bg'])
 
         current_issues = []
         current_issue_group_name = {"value": next(iter(grouped_issues), "")}
@@ -14180,7 +14155,7 @@ class BossFilterGUI:
                 self.result_tree.item(item_id, tags=tuple(tags))
 
         # 匹配项：深青加粗高亮 tag（bold 继承 self.font_table 基础字号，避免行高不一致）
-        self.result_tree.tag_configure('search_match', foreground='#00695C', font=(*self.font_table, 'bold'))
+        self.result_tree.tag_configure('search_match', foreground=self.colors['primary_dark'], font=(*self.font_table, 'bold'))
         for item_id, _ in matched_with_type:
             tags = list(self.result_tree.item(item_id, 'tags') or ())
             if 'search_match' not in tags:
@@ -14270,18 +14245,30 @@ class BossFilterGUI:
             300, lambda: self._show_tooltip(full, x, y, tooltip_key)
         )
 
-    def _show_tooltip(self, text, x, y, tooltip_key=None, parent=None):
-        """显示 tooltip 窗口。"""
-        self._hide_tooltip()
+    def _styled_tooltip(self, text, x, y, wraplength=None, parent=None):
+        """创建统一深色现代 tooltip（圆角观感、白字、无边框），返回 Toplevel。"""
         tip = tk.Toplevel(parent or self.root)
         tip.wm_overrideredirect(True)
         tip.wm_geometry(f'+{x}+{y}')
+        kwargs = {}
+        if wraplength:
+            kwargs['wraplength'] = wraplength
+            kwargs['justify'] = 'left'
         label = tk.Label(
-            tip, text=text, background='#FFFFE0', relief='solid', borderwidth=1,
+            tip, text=text,
+            background=self.colors['tooltip_bg'],
+            foreground=self.colors['tooltip_fg'],
+            relief='flat', borderwidth=0,
             font=(FONT_FAMILY, int(10 * self.dpi_scale * self.zoom_factor)),
-            padx=6, pady=3
+            padx=10, pady=6, **kwargs
         )
         label.pack()
+        return tip
+
+    def _show_tooltip(self, text, x, y, tooltip_key=None, parent=None):
+        """显示 tooltip 窗口。"""
+        self._hide_tooltip()
+        tip = self._styled_tooltip(text, x, y, parent=parent)
         self._tooltip = tip
         self._tooltip_item = tooltip_key
 
@@ -14300,15 +14287,7 @@ class BossFilterGUI:
     def _show_model_tooltip(self, text, x, y, tooltip_key=None):
         """显示模型列表的 Base URL tooltip"""
         self._hide_model_tooltip()
-        tip = tk.Toplevel(self.root)
-        tip.wm_overrideredirect(True)
-        tip.wm_geometry(f'+{x}+{y}')
-        label = tk.Label(
-            tip, text=text, background='#FFFFE0', relief='solid', borderwidth=1,
-            font=(FONT_FAMILY, int(10 * self.dpi_scale * self.zoom_factor)),
-            padx=6, pady=3, wraplength=400
-        )
-        label.pack()
+        tip = self._styled_tooltip(text, x, y, wraplength=400)
         self._model_tooltip = tip
         self._model_tooltip_item = tooltip_key
 
@@ -14324,16 +14303,7 @@ class BossFilterGUI:
 
     def _create_simple_tooltip(self, text, x, y):
         """创建简单的浮动 tooltip，返回 Toplevel 对象。"""
-        tip = tk.Toplevel(self.root)
-        tip.wm_overrideredirect(True)
-        tip.wm_geometry(f'+{x}+{y}')
-        label = tk.Label(
-            tip, text=text, background='#FFFFE0', relief='solid', borderwidth=1,
-            font=(FONT_FAMILY, int(10 * self.dpi_scale * self.zoom_factor)),
-            padx=6, pady=3, wraplength=500
-        )
-        label.pack()
-        return tip
+        return self._styled_tooltip(text, x, y, wraplength=500)
 
     def _hide_skills_tooltip(self, event=None):
         """隐藏技能表 tooltip"""
