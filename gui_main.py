@@ -4497,7 +4497,7 @@ class BossFilterGUI:
         self.result_search_entry = ttk.Entry(
             search_frame, textvariable=self.result_search_var, width=22, font=self.font_label)
         self.result_search_entry.pack(side="left", padx=int(6 * self.dpi_scale * self.zoom_factor))
-        ttk.Label(search_frame, text="（姓名/技能/学校/公司/状态，60=≥60分，支持 >= > =，Esc 清空）",
+        ttk.Label(search_frame, text="（姓名/匹配分/推荐指数/状态，Esc 清空）",
                  font=(FONT_FAMILY, int(10 * self.font_scale)),
                  foreground=self.colors['text_secondary'],
                  background=self.colors['bg_main']).pack(side="left", padx=int(4 * self.dpi_scale * self.zoom_factor))
