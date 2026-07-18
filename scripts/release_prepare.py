@@ -118,7 +118,11 @@ def _is_ancestor(ancestor: str, descendant: str) -> bool:
 
 
 def _status_paths() -> set[str]:
-    output = _git_text("status", "--porcelain")
+    result = _run(
+        ["git", "status", "--porcelain"],
+        capture_output=True,
+    )
+    output = result.stdout.rstrip("\r\n")
     paths: set[str] = set()
     for line in output.splitlines():
         if len(line) < 4:
@@ -386,9 +390,18 @@ def _replace_project_doc_version(content: str, version: str, name: str) -> str:
     return updated
 
 
+def _write_version_if_needed(version: str) -> None:
+    """Keep release preparation idempotent after a partial material write."""
+    current = normalize_version(build._read_version())
+    if current == version:
+        print(f'  [OK] __version__ = "{version}"（无需重复写入）')
+        return
+    build._write_version(version)
+
+
 def apply_release_materials(version: str, title: str, body: str) -> None:
     """Synchronize all tracked version and release-note sources."""
-    build._write_version(version)
+    _write_version_if_needed(version)
     changelog = BASE_DIR / "CHANGELOG.md"
     changelog.write_text(
         _replace_changelog(changelog.read_text(encoding="utf-8"), version, title, body),
