@@ -301,6 +301,7 @@ boss-resume-filter/
 ├── tests/                # 测试脚本目录
 ├── scripts/              # 辅助脚本目录
 │   ├── pr_delivery.py  # 普通 PR 一次授权交付
+│   ├── release_delivery.py # 版本准备与发布准备 PR 一键交付
 │   ├── release_prepare.py # 本地版本准备、门禁与提交
 │   ├── release_dispatch.py # 正式发布触发、监控与验收
 │   ├── release_ci.py   # GitHub Actions 正式发布编排与线上验收

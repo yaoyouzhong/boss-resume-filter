@@ -102,11 +102,11 @@ python build.py --check --strict-changelog
 # 使用自动打包脚本（推荐）
 python build.py
 
-# 版本准备预览：检查双远端、版本范围、提交和变更文件，不改文件
-python scripts/release_prepare.py --version 2.22
+# 版本准备与 PR 交付预览：检查双远端、版本范围、提交和变更文件，不改文件
+python scripts/release_delivery.py --version 2.22
 
-# 已复核发布说明后：临时说明文件放在项目目录外，再创建本地发布准备分支、同步文档、严格门禁并提交
-python scripts/release_prepare.py --version 2.22 --notes-file "<项目目录外的发布说明文件>" --execute --authorization "一键准备版本 v2.22"
+# 已复核发布说明后：一次完成版本材料、严格门禁、提交、PR、CI、合并、双远端同步和分支清理
+python scripts/release_delivery.py --version 2.22 --notes-file "<项目目录外的发布说明文件>" --execute --authorization "一键准备并交付版本 v2.22"
 
 # 发布准备分支交付后：只读预览正式发布
 python scripts/release_dispatch.py --version 2.22
@@ -141,7 +141,7 @@ pyinstaller --onefile --noconsole \
 - `python tests/test_import.py` 通过
 - 工作区干净
 
-正式发布工作流不会提交业务代码或自动改版本号；版本号、更新说明和用户文档必须随发布准备 PR 一起合并。`scripts/release_prepare.py` 默认只读；执行必须提供经过复核的发布说明文件和精确授权“`一键准备版本 vX.Y`”，只创建本地 `codex/release-vX.Y` 分支及提交，不 push、不合并、不创建 tag。随后仍通过“`一键交付分支 codex/release-vX.Y`”单独交付。
+正式发布工作流不会提交业务代码或自动改版本号；版本号、更新说明和用户文档必须随发布准备 PR 一起合并。推荐使用 `scripts/release_delivery.py`：默认只读；执行必须提供经过复核的发布说明文件和精确授权“`一键准备并交付版本 vX.Y`”，自动完成本地 `codex/release-vX.Y` 的准备、交付与清理，但不创建 tag、安装包或公开 Release。`release_prepare.py` 与 `pr_delivery.py` 保留为分阶段执行和故障恢复入口。
 
 Release 标题和说明必须先写在 `CHANGELOG.md` 对应版本段落中。`scripts/release_ci.py` 会自动提取该段落作为 GitHub/Gitee Release 内容；如果缺少对应版本，或未按以下顺序分类，发布会直接中断：
 
