@@ -34,6 +34,8 @@ class CenteredMessageBox:
 
     def __init__(self):
         self._window_placer = None
+        # 哪些弹窗类型强制显示语义图标（调用方 show_icon 仍可按需覆盖）
+        self.icon_kinds = frozenset()
         self._headline_font = ("Microsoft YaHei UI", 13, "bold")
         self._message_font = ("Microsoft YaHei UI", 13)
         self._button_font = ("Microsoft YaHei UI", 13)
@@ -158,7 +160,7 @@ class CenteredMessageBox:
             padx=26,
             pady=(24, max(0, int(content_bottom_padding))),
         )
-        if show_icon:
+        if show_icon or kind in self.icon_kinds:
             self._make_icon(body, kind).pack(side="left", anchor="n", padx=(0, 12))
 
         content = tk.Frame(body, bg="#FFFFFF")
@@ -300,7 +302,7 @@ class CenteredMessageBox:
 
     def showinfo(self, title, message, **options):
         headline = options.pop("headline", None)
-        show_icon = options.pop("show_icon", True)
+        show_icon = options.pop("show_icon", False)
         numbered_items = options.pop("numbered_items", None)
         min_width = options.pop("min_width", 460)
         max_width = options.pop("max_width", 700)
@@ -329,7 +331,7 @@ class CenteredMessageBox:
 
     def showwarning(self, title, message, **options):
         headline = options.pop("headline", None)
-        show_icon = options.pop("show_icon", True)
+        show_icon = options.pop("show_icon", False)
         min_width = options.pop("min_width", 460)
         font_delta = options.pop("font_delta", 0)
         content_bottom_padding = options.pop("content_bottom_padding", 8)
@@ -354,7 +356,7 @@ class CenteredMessageBox:
 
     def showerror(self, title, message, **options):
         headline = options.pop("headline", None)
-        show_icon = options.pop("show_icon", True)
+        show_icon = options.pop("show_icon", False)
         min_width = options.pop("min_width", 460)
         font_delta = options.pop("font_delta", 0)
         content_bottom_padding = options.pop("content_bottom_padding", 8)
@@ -379,7 +381,7 @@ class CenteredMessageBox:
 
     def askyesno(self, title, message, **options):
         headline = options.pop("headline", None)
-        show_icon = options.pop("show_icon", True)
+        show_icon = options.pop("show_icon", False)
         min_width = options.pop("min_width", 460)
         font_delta = options.pop("font_delta", 0)
         parent = self._resolve_parent(options.get("parent"))
@@ -404,7 +406,7 @@ class CenteredMessageBox:
 
     def askokcancel(self, title, message, **options):
         headline = options.pop("headline", None)
-        show_icon = options.pop("show_icon", True)
+        show_icon = options.pop("show_icon", False)
         min_width = options.pop("min_width", 460)
         parent = self._resolve_parent(options.get("parent"))
         if parent is None:
@@ -427,7 +429,7 @@ class CenteredMessageBox:
 
     def askretrycancel(self, title, message, **options):
         headline = options.pop("headline", None)
-        show_icon = options.pop("show_icon", True)
+        show_icon = options.pop("show_icon", False)
         min_width = options.pop("min_width", 460)
         parent = self._resolve_parent(options.get("parent"))
         if parent is None:
@@ -453,7 +455,7 @@ class CenteredMessageBox:
 
     def askyesnocancel(self, title, message, **options):
         headline = options.pop("headline", None)
-        show_icon = options.pop("show_icon", True)
+        show_icon = options.pop("show_icon", False)
         min_width = options.pop("min_width", 460)
         parent = self._resolve_parent(options.get("parent"))
         if parent is None:

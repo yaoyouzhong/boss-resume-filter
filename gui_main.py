@@ -1116,7 +1116,7 @@ class BossFilterGUI:
             win.attributes('-topmost', True)
             label = tk.Label(
                 win, text=text, font=self.font_label,
-                background=self.colors['tooltip_bg'], foreground=self.colors['tooltip_fg'],
+                background=self.colors.get('tooltip_bg', ui_theme.TOOLTIP_BG), foreground=self.colors.get('tooltip_fg', ui_theme.TOOLTIP_FG),
                 padx=14, pady=8,
             )
             label.pack()
@@ -1223,6 +1223,8 @@ class BossFilterGUI:
             message=(FONT_FAMILY, modal_font_size),
             button=(FONT_FAMILY, modal_font_size),
         )
+        # 警告/错误弹窗自动带语义图标，提升可扫读性
+        messagebox.icon_kinds = frozenset({"warning", "error"})
 
         # 设置 Combobox 下拉列表字体（与 font_label 保持一致）
         # 必须用元组格式 + priority 80，确保 Tk option database 正确解析并覆盖默认值
@@ -1726,7 +1728,7 @@ class BossFilterGUI:
         card.pack(**pack_opts)
 
         # 标题行 - 左侧蓝色竖线 + 浅灰背景，与页面标题风格一致
-        title_bg = self.colors['bg_footer']
+        title_bg = self.colors.get('bg_footer', ui_theme.BG_FOOTER)
         title_bar = tk.Frame(card, bg=title_bg)
         title_bar.pack(fill="x")
 
@@ -1984,7 +1986,7 @@ class BossFilterGUI:
         for i, text in enumerate(_step_texts):
             if i > 0:
                 arrow = ttk.Label(_steps_row, text="→", font=_step_font,
-                                  foreground=self.colors['text_muted'],
+                                  foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
                                   background=self.colors['bg_card'])
                 arrow.pack(side="left", padx=int(6 * _fs))
             lbl = ttk.Label(_steps_row, text=text, font=_step_font,
@@ -1996,7 +1998,7 @@ class BossFilterGUI:
 
         # ===== 需求文档解析区域 =====
         def _build_requirement_toggle(title_bar, padding):
-            title_bg = self.colors['bg_footer']
+            title_bg = self.colors.get('bg_footer', ui_theme.BG_FOOTER)
             self.requirement_title_bar = title_bar
             self.requirement_header_status_var = tk.StringVar(value="")
             self.requirement_expand_icon = self.icons.button(
@@ -2067,7 +2069,7 @@ class BossFilterGUI:
 
         # 占位提示文字
         self._req_placeholder_text = "在此粘贴招聘需求内容..."
-        _placeholder_color = self.colors['text_muted']
+        _placeholder_color = self.colors.get('text_muted', ui_theme.TEXT_MUTED)
         self.requirement_text.tag_configure("placeholder", foreground=_placeholder_color)
         self.requirement_text.insert("1.0", self._req_placeholder_text, "placeholder")
         self._req_placeholder_active = True
@@ -2464,7 +2466,7 @@ class BossFilterGUI:
 
         # 按钮行（居中布局，固定在页面底部，不随 Canvas 滚动）
         self.btn_frame = ttk.Frame(self.config_page, style='Page.TFrame')
-        quality_bg = self.colors['bg_footer']
+        quality_bg = self.colors.get('bg_footer', ui_theme.BG_FOOTER)
         quality_frame = tk.Frame(
             self.btn_frame,
             bg=quality_bg,
@@ -3672,7 +3674,7 @@ class BossFilterGUI:
         )
         self.model_list_tree.tag_configure(
             "education_model",
-            background=self.colors['banner_info_bg'],
+            background=self.colors.get('banner_info_bg', ui_theme.BANNER_INFO_BG),
             foreground=self.colors['primary'],
         )
         self.model_list_tree.tag_configure(
@@ -3898,7 +3900,7 @@ class BossFilterGUI:
         self.rounds_spin.bind('<Leave>',
             lambda e: self.rounds_spin.unbind('<MouseWheel>'))
         self.rounds_hint_label = ttk.Label(row1, text="(推荐 50-200 轮次)", font=(FONT_FAMILY, int(11 * self.font_scale)),
-                 foreground=self.colors['text_muted'], background=self.colors['bg_card'])
+                 foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card'])
         self.rounds_hint_label.pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
 
         # 选择岗位（多岗位运行时指定处理哪个岗位）
@@ -3914,7 +3916,7 @@ class BossFilterGUI:
         self.job_combo.bind("<<ComboboxSelected>>", self.on_run_job_selected)
         ttk.Label(row_job, text="建议每次选择一个岗位，\"全部岗位\"将依次处理",
                  font=(FONT_FAMILY, int(11 * self.font_scale)),
-                 foreground=self.colors['text_muted'],
+                 foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
                  background=self.colors['bg_card']).pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
 
         # 筛选完成后的联系策略。GUI 发送统一进入联系清单。
@@ -3938,7 +3940,7 @@ class BossFilterGUI:
         contact_combo.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
         self._contact_after_scan_note_label = ttk.Label(row2, text="",
                  font=(FONT_FAMILY, int(11 * self.font_scale)),
-                 foreground=self.colors['text_muted'], background=self.colors['bg_card'])
+                 foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card'])
         self._contact_after_scan_note_label.pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
 
         def _update_contact_after_scan_note(*_):
@@ -4005,13 +4007,13 @@ class BossFilterGUI:
         _note_font = (FONT_FAMILY, int(11 * self.font_scale))
         _sign_font = (FONT_FAMILY, int(14 * self.font_scale))  # +/- 显式加大
         tk.Label(row_ai, text=_note_prefix, font=_note_font,
-                 foreground=self.colors['text_muted'], background=self.colors['bg_card']).pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
+                 foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card']).pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
         tk.Label(row_ai, text="+", font=_sign_font,
                  foreground=self.colors['success'], background=self.colors['bg_card']).pack(side="left")
         tk.Label(row_ai, text="-", font=_sign_font,
                  foreground=self.colors['danger'], background=self.colors['bg_card']).pack(side="left")
         tk.Label(row_ai, text=_note_suffix, font=_note_font,
-                 foreground=self.colors['text_muted'], background=self.colors['bg_card']).pack(side="left")
+                 foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card']).pack(side="left")
 
         # AI 评估超时设置（紧跟 AI 评估行下方，缩进对齐）
         row_ai_timeout = ttk.Frame(param_frame, style='TFrame')
@@ -4047,7 +4049,7 @@ class BossFilterGUI:
             _hint = f"（{_label}，默认 60 秒）"
         self._timeout_hint_label = ttk.Label(row_ai_timeout, text=_hint, font=_sub_font,
                  background=self.colors['bg_card'],
-                 foreground=self.colors['text_muted'])
+                 foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
         self._timeout_hint_label.pack(side="left")
 
         # === 进度条 ===
@@ -8872,7 +8874,7 @@ class BossFilterGUI:
 
                             # 占位文字
                             _search_placeholder = "输入关键词搜索模型..."
-                            search_entry.config(foreground=self.colors['text_muted'])
+                            search_entry.config(foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
                             search_var.set(_search_placeholder)
                             _search_active = [False]  # 用列表避免闭包问题
 
@@ -8886,7 +8888,7 @@ class BossFilterGUI:
                                 if not search_var.get():
                                     _search_active[0] = False
                                     search_var.set(_search_placeholder)
-                                    search_entry.config(foreground=self.colors['text_muted'])
+                                    search_entry.config(foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
 
                             search_entry.bind("<FocusIn>", _on_search_focus_in)
                             search_entry.bind("<FocusOut>", _on_search_focus_out)
@@ -9022,7 +9024,7 @@ class BossFilterGUI:
                                                 self.root.after(0, lambda i=idx, t=new_text: (
                                                     listbox.delete(i),
                                                     listbox.insert(i, t),
-                                                    listbox.itemconfig(i, foreground=self.colors['text_muted'])
+                                                    listbox.itemconfig(i, foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
                                                 ))
                                             break
 
@@ -10318,7 +10320,7 @@ class BossFilterGUI:
                 # 空值合法，恢复默认样式
                 entry.configure(foreground=self.colors['text_primary'])
             elif not text.isdigit():
-                entry.configure(foreground=self.colors['danger_text'])
+                entry.configure(foreground=self.colors.get('danger_text', ui_theme.DANGER_TEXT))
             else:
                 entry.configure(foreground=self.colors['text_primary'])
 
@@ -10472,7 +10474,7 @@ class BossFilterGUI:
         title_bar = getattr(self, 'requirement_title_bar', None)
         if title_bar is None:
             return
-        background = self.colors['banner_info_bg'] if active else self.colors['bg_footer']
+        background = self.colors.get('banner_info_bg', ui_theme.BANNER_INFO_BG) if active else self.colors.get('bg_footer', ui_theme.BG_FOOTER)
         title_bar.configure(bg=background)
         for widget in title_bar.winfo_children():
             if isinstance(widget, tk.Label):
@@ -11135,7 +11137,7 @@ class BossFilterGUI:
             else:
                 # 未到：灰色
                 original = ["① 填入需求", "② 解析需求", "③ 检查结果", "④ 保存配置"][i]
-                lbl.config(text=original, foreground=self.colors['text_muted'])
+                lbl.config(text=original, foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
 
     def _hide_job_step_bar(self):
         """隐藏新建岗位步骤引导条"""
@@ -12916,8 +12918,8 @@ class BossFilterGUI:
                 self.result_tree.tag_configure('strong_recommend', background=self.colors['bg_tree_tag_high'])
                 self.result_tree.tag_configure('recommend', background=self.colors['bg_tree_tag_mid'])
                 self.result_tree.tag_configure('pending', background=self.colors['bg_tree_tag_low'])
-                self.result_tree.tag_configure('blacklisted', background=self.colors['bg_tree_tag_low'], foreground=self.colors['danger_text'])
-                self.result_tree.tag_configure('rejected', background=self.colors['bg_tree_tag_low'], foreground=self.colors['text_muted'])
+                self.result_tree.tag_configure('blacklisted', background=self.colors['bg_tree_tag_low'], foreground=self.colors.get('danger_text', ui_theme.DANGER_TEXT))
+                self.result_tree.tag_configure('rejected', background=self.colors['bg_tree_tag_low'], foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
 
                 visible_count = 0
                 for c in sorted_candidates:
@@ -13550,9 +13552,9 @@ class BossFilterGUI:
         tree.column("job", width=int(145 * scale), minwidth=110, anchor="w")
         tree.column("problem", width=int(350 * scale), minwidth=240, anchor="w")
         tree.column("action", width=int(392 * scale), minwidth=260, anchor="w")
-        tree.tag_configure("error", background=self.colors['banner_error_bg'])
-        tree.tag_configure("warning", background=self.colors['banner_warning_bg'])
-        tree.tag_configure("info", background=self.colors['banner_info_bg'])
+        tree.tag_configure("error", background=self.colors.get('banner_error_bg', ui_theme.BANNER_ERROR_BG))
+        tree.tag_configure("warning", background=self.colors.get('banner_warning_bg', ui_theme.BANNER_WARNING_BG))
+        tree.tag_configure("info", background=self.colors.get('banner_info_bg', ui_theme.BANNER_INFO_BG))
 
         current_issues = []
         current_issue_group_name = {"value": next(iter(grouped_issues), "")}
@@ -14256,8 +14258,8 @@ class BossFilterGUI:
             kwargs['justify'] = 'left'
         label = tk.Label(
             tip, text=text,
-            background=self.colors['tooltip_bg'],
-            foreground=self.colors['tooltip_fg'],
+            background=self.colors.get('tooltip_bg', ui_theme.TOOLTIP_BG),
+            foreground=self.colors.get('tooltip_fg', ui_theme.TOOLTIP_FG),
             relief='flat', borderwidth=0,
             font=(FONT_FAMILY, int(10 * self.dpi_scale * self.zoom_factor)),
             padx=10, pady=6, **kwargs
@@ -14800,7 +14802,7 @@ class BossFilterGUI:
 
         def show_placeholder():
             placeholder_active['value'] = True
-            reason_text.config(fg=self.colors['text_muted'])
+            reason_text.config(fg=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
             reason_text.delete("1.0", "end")
             reason_text.insert("1.0", reason_placeholder)
 
@@ -19201,7 +19203,7 @@ class BossFilterGUI:
         # 提示
         ttk.Label(dialog, text="操作前会自动备份；已屏蔽候选人会保留为黑名单",
                   font=(FONT_FAMILY, int(13 * dialog_fs)),
-                  foreground=self.colors['text_muted'],
+                  foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
                   style='ClearDialog.TLabel').pack(pady=(int(12 * _s), 0))
 
         # 按钮
