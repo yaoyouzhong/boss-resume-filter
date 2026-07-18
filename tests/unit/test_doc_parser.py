@@ -727,8 +727,8 @@ def test_preprocess_fullwidth_letters():
 
 def test_preprocess_emoji_stripped():
     """emoji 被移除"""
-    result = _preprocess_text('✅ Java ✅ Python ✅ MySQL')
-    assert '✅' not in result
+    result = _preprocess_text('✓ Java ✓ Python ✓ MySQL')
+    assert '✓' not in result
     assert 'Java' in result
 
 
@@ -747,7 +747,7 @@ def test_preprocess_fullwidth_salary_parses():
 
 def test_preprocess_emoji_in_requirement():
     """含 emoji 的招聘需求仍能解析"""
-    text = "## 硬性条件\n工作年限：3 年\n✅ 本科\n最低学历：本科"
+    text = "## 硬性条件\n工作年限：3 年\n✓ 本科\n最低学历：本科"
     result = parse_job_requirements(text)
     assert result["edu"] == "本科"
     assert result["min_exp"] == 3

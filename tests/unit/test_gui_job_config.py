@@ -4125,7 +4125,7 @@ def test_silent_browser_poll_does_not_log_missing_debug_port():
     check_block = source[source.index("def check_browser_connection"):]
     check_block = check_block[:check_block.index("\n    def _start_browser_auto_check")]
 
-    assert 'if not silent and prev_state != "🔴 未连接":' in check_block
+    assert 'if not silent and prev_state != "● 未连接":' in check_block
 
 
 def test_run_worker_preserves_scan_completion_state():
@@ -4953,7 +4953,7 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
             callbacks[0]()
 
     assert gui.append_log.call_args_list[-1].args == (
-        "[简历评估] ❌ 张三 异常：模型故障",
+        "[简历评估] ✗ 张三 异常：模型故障",
     )
     showerror.assert_called_once_with(
         "评估异常",

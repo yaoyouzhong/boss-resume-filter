@@ -264,14 +264,28 @@ class CenteredMessageBox:
             font=button_font,
             padding=(15, 8),
         )
+        # 主按钮（第一个）使用实心品牌蓝，建立主次层级
+        button_style.configure(
+            "CenteredMessageBox.Accent.TButton",
+            font=button_font,
+            padding=(15, 8),
+            background=ui_theme.PRIMARY,
+            foreground="#FFFFFF",
+            bordercolor=ui_theme.PRIMARY_DARK,
+        )
+        button_style.map(
+            "CenteredMessageBox.Accent.TButton",
+            background=[("pressed", ui_theme.PRIMARY_DEEP), ("active", ui_theme.PRIMARY_DARK)],
+        )
         equal_button_width = max(8, max(len(str(label)) for label, _value in buttons) + 2)
         single_button = len(buttons) == 1
         for label, value in reversed(buttons):
+            is_primary = (label, value) == buttons[0]
             button = ttk.Button(
                 footer,
                 text=label,
                 command=lambda selected=value: finish(selected),
-                style="CenteredMessageBox.TButton",
+                style="CenteredMessageBox.Accent.TButton" if is_primary else "CenteredMessageBox.TButton",
                 width=equal_button_width,
             )
             if single_button:

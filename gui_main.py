@@ -1107,8 +1107,11 @@ class BossFilterGUI:
             messagebox.showerror("错误", f"保存失败：{exc}")
 
     def _status_flash(self, text, duration_ms=2200):
-        """右下角轻量提示，自动消失（非模态）。"""
+        """右下角轻量提示 + 状态栏消息，自动消失（非模态）。"""
         try:
+            if hasattr(self, 'status_bar_left_var'):
+                self.status_bar_left_var.set(text)
+                self.root.after(duration_ms, lambda: self.status_bar_left_var.set("就绪"))
             if getattr(self, '_status_flash_win', None) and self._status_flash_win.winfo_exists():
                 self._status_flash_win.destroy()
             win = tk.Toplevel(self.root)
@@ -1195,14 +1198,12 @@ class BossFilterGUI:
         """设置自定义样式"""
         style = ttk.Style()
 
-        # 尝试使用现代主题
+        # 统一使用 clam：唯一允许完整定制背景/边框/hover 的主题，
+        # vista 下按钮等控件无法着色，导致主操作与普通按钮无视觉层级
         try:
-            style.theme_use('vista')
+            style.theme_use('clam')
         except tk.TclError:
-            try:
-                style.theme_use('clam')
-            except tk.TclError:
-                pass  # 使用默认主题
+            pass  # 使用默认主题
 
         # 配色方案 - 统一来自 ui_theme 设计令牌
         self.colors = ui_theme.build_palette()
@@ -1236,13 +1237,46 @@ class BossFilterGUI:
         self.root.bind_class('TCombobox', '<Button-5>', lambda e: 'break')
 
         # 配置样式
-        style.configure('TFrame', background=self.colors['bg_card'])
-        style.configure('Page.TFrame', background=self.colors['bg_main'])
-        style.configure('TLabel', font=self.font_label, foreground=self.colors['text_primary'],
-                        background=self.colors['bg_card'])
-        style.configure('TButton', font=self.font_label, padding=(15, 8))
-        style.configure('Accent.TButton', font=(FONT_FAMILY_SEMIBOLD, int(13 * page_fs)), padding=(20, 8))
-        style.configure('Card.TFrame', background=self.colors['bg_card'], relief='solid', borderwidth=1)
+        c = self.colors
+        style.configure('TFrame', background=c['bg_card'])
+        style.configure('Page.TFrame', background=c['bg_main'])
+        style.configure('TLabel', font=self.font_label, foreground=c['text_primary'],
+                        background=c['bg_card'])
+
+        # ---------------- 三级按钮体系（clam 下可完整着色） ----------------
+        # 次级（默认）：白底灰边，hover 浅灰
+        style.configure('TButton', font=self.font_label, padding=(15, 8),
+                        background=c['bg_card'], foreground=c['text_primary'],
+                        bordercolor=c.get('border_strong', ui_theme.BORDER_STRONG),
+                        focuscolor=c['primary'], lightcolor=c['bg_card'], darkcolor=c['bg_card'])
+        style.map('TButton',
+                  background=[('pressed', c['bg_hover']), ('active', c['bg_hover']),
+                              ('disabled', c['bg_input'])],
+                  foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
+                  bordercolor=[('focus', c['primary'])])
+        # 主级（Accent）：实心品牌蓝白字，hover 深蓝，pressed 更深
+        style.configure('Accent.TButton', font=(FONT_FAMILY_SEMIBOLD, int(13 * page_fs)), padding=(20, 8),
+                        background=c['primary'], foreground='#FFFFFF',
+                        bordercolor=c['primary_dark'], focuscolor=c['primary_dark'],
+                        lightcolor=c['primary'], darkcolor=c['primary'])
+        style.map('Accent.TButton',
+                  background=[('pressed', c.get('primary_deep', ui_theme.PRIMARY_DEEP)),
+                              ('active', c['primary_dark']),
+                              ('disabled', c['bg_input'])],
+                  foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
+                  bordercolor=[('disabled', c['border'])])
+        # 危险级（Danger）：实心红，用于删除/停止等需警示的动作
+        style.configure('Danger.TButton', font=self.font_label, padding=(15, 8),
+                        background=c['danger'], foreground='#FFFFFF',
+                        bordercolor=c.get('danger_text', ui_theme.DANGER_TEXT),
+                        lightcolor=c['danger'], darkcolor=c['danger'])
+        style.map('Danger.TButton',
+                  background=[('pressed', '#B71C1C'), ('active', c.get('danger_text', ui_theme.DANGER_TEXT)),
+                              ('disabled', c['bg_input'])],
+                  foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
+                  bordercolor=[('disabled', c['border'])])
+
+        style.configure('Card.TFrame', background=c['bg_card'], relief='solid', borderwidth=1)
         style.configure('WelcomeCard.TFrame', background=self.colors['bg_card'],
                         relief='flat', borderwidth=0)
         style.configure('WelcomeInner.TFrame', background=self.colors['bg_card'])
@@ -1277,6 +1311,47 @@ class BossFilterGUI:
         style.map('TEntry',
                   fieldbackground=[('!disabled', self.colors['bg_card']),
                                    ('disabled', self.colors['bg_input'])])
+
+        # ---------------- 表格 / 表头 / 滚动条 / 输入控件（clam 扁平化） ----------------
+        style.configure('Treeview',
+                        background=c['bg_card'], fieldbackground=c['bg_card'],
+                        foreground=c['text_primary'],
+                        bordercolor=c['border'], lightcolor=c['border'], darkcolor=c['border'])
+        style.map('Treeview',
+                  background=[('selected', c.get('banner_info_bg', ui_theme.BANNER_INFO_BG))],
+                  foreground=[('selected', c['primary_dark'])])
+        style.configure('Treeview.Heading',
+                        background=c.get('bg_footer', ui_theme.BG_FOOTER),
+                        foreground=c['text_secondary'],
+                        bordercolor=c['border'], padding=(8, 6), relief='flat')
+        style.map('Treeview.Heading',
+                  background=[('active', c['bg_hover'])],
+                  foreground=[('active', c['text_primary'])])
+        for _sb in ('Vertical.TScrollbar', 'Horizontal.TScrollbar'):
+            style.configure(_sb,
+                            background=c['border'], troughcolor=c['bg_main'],
+                            bordercolor=c['bg_main'], arrowcolor=c['text_secondary'],
+                            lightcolor=c['border'], darkcolor=c['border'])
+            style.map(_sb, background=[('active', c.get('border_strong', ui_theme.BORDER_STRONG)),
+                                       ('pressed', c['text_secondary'])])
+        # 输入控件：白底灰边，聚焦时品牌蓝边
+        for _input in ('TEntry', 'TCombobox', 'TSpinbox'):
+            style.configure(_input,
+                            bordercolor=c.get('border_strong', ui_theme.BORDER_STRONG),
+                            lightcolor=c.get('border_strong', ui_theme.BORDER_STRONG),
+                            darkcolor=c.get('border_strong', ui_theme.BORDER_STRONG),
+                            focuscolor=c['primary'])
+            style.map(_input,
+                      bordercolor=[('focus', c['primary'])],
+                      lightcolor=[('focus', c['primary'])],
+                      darkcolor=[('focus', c['primary'])])
+        style.configure('TCheckbutton', background=c['bg_card'], foreground=c['text_primary'])
+        style.configure('TRadiobutton', background=c['bg_card'], foreground=c['text_primary'])
+        style.configure('Horizontal.TProgressbar',
+                        troughcolor=c['bg_main'], background=c['primary'],
+                        bordercolor=c['bg_main'], lightcolor=c['primary'], darkcolor=c['primary'])
+        style.configure('TSeparator', background=c['border'])
+
         style.configure('Custom.TLabelframe', font=self.font_label, background=self.colors['bg_card'])
         style.configure('Custom.TLabelframe.Label', font=self.font_label, background=self.colors['bg_card'])
 
@@ -1327,8 +1402,9 @@ class BossFilterGUI:
         self.nav_components = []  # 保存所有导航组件引用，用于 hover 效果
         sidebar_nav_font_size = int(15 * self.font_scale)
 
-        # 设置导航项样式
+        # 设置导航项样式（含 pill 选中态与 hover 态）
         style = ttk.Style()
+        pill_bg = self.colors.get('bg_sidebar_pill', ui_theme.BG_SIDEBAR_PILL)
         style.configure('SidebarNav.TLabel',
                        font=(FONT_FAMILY, sidebar_nav_font_size),
                        foreground=self.colors['text_sidebar'],
@@ -1337,19 +1413,34 @@ class BossFilterGUI:
                        font=(FONT_FAMILY_SEMIBOLD, sidebar_nav_font_size),
                        foreground=self.colors['text_sidebar_active'],
                        background=self.colors['bg_sidebar'])
+        style.configure('SidebarPill.TFrame', background=pill_bg)
+        style.configure('SidebarNavPill.TLabel',
+                       font=(FONT_FAMILY, sidebar_nav_font_size),
+                       foreground=self.colors['text_sidebar_active'],
+                       background=pill_bg)
+        style.configure('SidebarNavSelectedPill.TLabel',
+                       font=(FONT_FAMILY_SEMIBOLD, sidebar_nav_font_size),
+                       foreground=self.colors['text_sidebar_active'],
+                       background=pill_bg)
 
-        # emoji 容器内边距（固定宽度，确保文字对齐）- 增大左侧距使导航项整体居中
-        emoji_padx = int(40 * self.dpi_scale * self.zoom_factor)
+        # 图标容器内边距（固定宽度，确保文字对齐）
+        emoji_padx = int(14 * self.dpi_scale * self.zoom_factor)
         text_padx = int(10 * self.dpi_scale * self.zoom_factor)
+        nav_outer_padx = int(12 * self.dpi_scale * self.zoom_factor)
+        badge_font = (FONT_FAMILY, int(10 * self.font_scale), 'bold')
 
         for idx, (icon_name, text, command) in enumerate(nav_items):
-            # 生成两个颜色版本的图标
+            # 生成两个颜色版本的图标（默认态 / pill 底高亮态）
             icon_default = self.icons.nav(icon_name, self.colors['text_sidebar'], self.colors['bg_sidebar'])
-            icon_active = self.icons.nav(icon_name, self.colors['text_sidebar_active'], self.colors['bg_sidebar'])
+            icon_active = self.icons.nav(icon_name, self.colors['text_sidebar_active'], pill_bg)
 
             # 使用 Frame 容器
             nav_frame = ttk.Frame(sidebar, style='Sidebar.TFrame')
-            nav_frame.pack(fill="x", padx=0, pady=1)
+            nav_frame.pack(fill="x", padx=nav_outer_padx, pady=1)
+
+            # 左侧选中强调条
+            accent_bar = tk.Frame(nav_frame, width=3, background=self.colors['bg_sidebar'])
+            accent_bar.pack(side="left", fill="y")
 
             # 图标标签
             icon_label = ttk.Label(nav_frame, image=icon_default,
@@ -1364,8 +1455,15 @@ class BossFilterGUI:
                                   padding=(text_padx, int(14 * self.dpi_scale * self.zoom_factor)))
             text_label.pack(side="left", fill="x", expand=True)
 
+            # 角标（默认隐藏，set_nav_badge 按需显示）
+            badge_label = tk.Label(
+                nav_frame, text="", font=badge_font, cursor="hand2",
+                background=self.colors['danger'], foreground='#FFFFFF',
+                padx=int(5 * self.dpi_scale), pady=0,
+            )
+
             # 绑定点击和 hover 事件 - 所有子组件绑定到同一个 command
-            for widget in [nav_frame, icon_label, text_label]:
+            for widget in [nav_frame, accent_bar, icon_label, text_label, badge_label]:
                 widget.bind("<Button-1>", lambda e, c=command: c())
                 widget.bind("<Enter>", lambda e, i=idx: self.on_nav_enter(i))
                 widget.bind("<Leave>", lambda e, i=idx: self.on_nav_leave(i))
@@ -1373,10 +1471,12 @@ class BossFilterGUI:
             # 保存所有组件引用，用于 hover 效果
             self.nav_components.append({
                 'frame': nav_frame,
+                'accent': accent_bar,
                 'icon': icon_label,
                 'icon_default': icon_default,
                 'icon_active': icon_active,
                 'text': text_label,
+                'badge': badge_label,
                 'command': command,
                 'index': idx
             })
@@ -1390,10 +1490,13 @@ class BossFilterGUI:
         # 系统设置（独立导航项）- 使用 Frame 容器保持一致对齐
         settings_idx = len(nav_items)
         settings_frame = ttk.Frame(sidebar, style='Sidebar.TFrame')
-        settings_frame.pack(fill="x", padx=0, pady=1)
+        settings_frame.pack(fill="x", padx=nav_outer_padx, pady=1)
+
+        settings_accent = tk.Frame(settings_frame, width=3, background=self.colors['bg_sidebar'])
+        settings_accent.pack(side="left", fill="y")
 
         settings_icon_default = self.icons.nav('gear', self.colors['text_sidebar'], self.colors['bg_sidebar'])
-        settings_icon_active = self.icons.nav('gear', self.colors['text_sidebar_active'], self.colors['bg_sidebar'])
+        settings_icon_active = self.icons.nav('gear', self.colors['text_sidebar_active'], pill_bg)
         settings_icon_label = ttk.Label(settings_frame, image=settings_icon_default,
                                   style='SidebarNav.TLabel', cursor="hand2")
         settings_icon_label._icon_default = settings_icon_default
@@ -1405,17 +1508,25 @@ class BossFilterGUI:
                                  padding=(text_padx, int(14 * self.dpi_scale * self.zoom_factor)))
         settings_text.pack(side="left", fill="x", expand=True)
 
-        for widget in [settings_frame, settings_icon_label, settings_text]:
+        settings_badge = tk.Label(
+            settings_frame, text="", font=badge_font, cursor="hand2",
+            background=self.colors['danger'], foreground='#FFFFFF',
+            padx=int(5 * self.dpi_scale), pady=0,
+        )
+
+        for widget in [settings_frame, settings_accent, settings_icon_label, settings_text, settings_badge]:
             widget.bind("<Button-1>", lambda e: self.show_page_api())
             widget.bind("<Enter>", lambda e, i=settings_idx: self.on_nav_enter(i))
             widget.bind("<Leave>", lambda e, i=settings_idx: self.on_nav_leave(i))
 
         self.nav_components.append({
             'frame': settings_frame,
+            'accent': settings_accent,
             'icon': settings_icon_label,
             'icon_default': settings_icon_default,
             'icon_active': settings_icon_active,
             'text': settings_text,
+            'badge': settings_badge,
             'command': self.show_page_api,
             'index': settings_idx
         })
@@ -1460,8 +1571,48 @@ class BossFilterGUI:
         # 首屏只创建首页，其他页面首次点击时再构建并缓存。
         self.create_home_page()
 
+        # 全局状态栏：左侧瞬时消息，右侧浏览器/候选人状态
+        footer_bg = self.colors.get('bg_footer', ui_theme.BG_FOOTER)
+        status_bar = tk.Frame(
+            self.main_frame, background=footer_bg,
+            highlightthickness=1, highlightbackground=self.colors['border'],
+        )
+        status_bar.pack(side="bottom", fill="x")
+        status_font = (FONT_FAMILY, int(10 * self.font_scale))
+        self.status_bar_left_var = tk.StringVar(value="就绪")
+        tk.Label(
+            status_bar, textvariable=self.status_bar_left_var, font=status_font,
+            foreground=self.colors['text_secondary'], background=footer_bg,
+            anchor='w', padx=12, pady=3,
+        ).pack(side="left", fill="x", expand=True)
+        self.status_bar_right_var = tk.StringVar(value="")
+        tk.Label(
+            status_bar, textvariable=self.status_bar_right_var, font=status_font,
+            foreground=self.colors['text_secondary'], background=footer_bg,
+            anchor='e', padx=12, pady=3,
+        ).pack(side="right")
+        self._update_status_bar_right()
+        self._refresh_nav_badges()
+
         # 默认显示首页（current_page_index 在 show_page_home 中已设置为 0）
         self.show_page_home()
+
+    def _update_status_bar_right(self):
+        """状态栏右侧：浏览器连接状态 + 候选人数。"""
+        if not hasattr(self, 'status_bar_right_var'):
+            return
+        parts = []
+        browser_state = getattr(self, '_browser_status_text', None) or "● 未连接"
+        parts.append(f"浏览器 {browser_state}")
+        try:
+            if CANDIDATES_PATH.exists():
+                if not hasattr(self, 'all_candidates'):
+                    with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
+                        self.all_candidates = json.load(f)
+                parts.append(f"候选人 {len(self.all_candidates)} 人")
+        except Exception:
+            pass
+        self.status_bar_right_var.set("　".join(parts))
 
     def create_education_main_content(self):
         """创建独立学历核验工具的单页内容。"""
@@ -1858,8 +2009,8 @@ class BossFilterGUI:
         quick_buttons = ttk.Frame(quick_frame, style='TFrame')
         quick_buttons.pack(fill="x")
 
-        icon_play = self.icons.button('play', self.colors['text_primary'])
-        btn1 = ttk.Button(quick_buttons, image=icon_play, text=" 开始筛选", compound=tk.LEFT, command=self.show_page_run, style='TButton')
+        icon_play = self.icons.button('play', '#FFFFFF')
+        btn1 = ttk.Button(quick_buttons, image=icon_play, text=" 开始筛选", compound=tk.LEFT, command=self.show_page_run, style='Accent.TButton')
         btn1._icon_ref = icon_play
         btn1.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
         icon_filter = self.icons.button('filter', self.colors['text_primary'])
@@ -2255,7 +2406,7 @@ class BossFilterGUI:
 
         # 设置 Treeview 默认字体和行高
         _style = ttk.Style()
-        _style.configure('Treeview', font=tree_font, rowheight=int(30 * self.dpi_scale * self.zoom_factor))
+        _style.configure('Treeview', font=tree_font, rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor))
         _style.configure('Treeview.Heading', font=(FONT_FAMILY, int(12 * self.font_scale), 'bold'))
 
         skills_scroll = ttk.Scrollbar(list_container, orient="vertical", command=self.skills_tree.yview)
@@ -2978,7 +3129,7 @@ class BossFilterGUI:
             self.reconfig_card = tk.Frame(api_container, bg=self.colors['bg_card'],
                                           highlightbackground=self.colors['border'], highlightthickness=1)
             self.reconfig_card.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
-            tk.Label(self.reconfig_card, text="  ⚠️  提示  ",
+            tk.Label(self.reconfig_card, text="提示",
                      font=(FONT_FAMILY_SEMIBOLD, int(13 * self.font_scale)),
                      fg=self.colors['text_primary'], bg=self.colors['bg_card']).pack(anchor="w", padx=_pad, pady=(_pad, 0))
             _inner = ttk.Frame(self.reconfig_card, style='TFrame')
@@ -3862,7 +4013,7 @@ class BossFilterGUI:
         browser_status_row.pack(fill="x")
 
         # 状态指示灯
-        self.browser_status_indicator = ttk.Label(browser_status_row, text="🔴 未连接",
+        self.browser_status_indicator = ttk.Label(browser_status_row, text="● 未连接",
                                                   font=(FONT_FAMILY, int(11 * self.font_scale)),
                                                   foreground=self.colors['danger'])
         self.browser_status_indicator.pack(side="left")
@@ -4157,18 +4308,18 @@ class BossFilterGUI:
         btn_container.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(20 * self.dpi_scale * self.zoom_factor))
 
         # 开始/停止按钮
-        icon_play_run = self.icons.button('play', self.colors['text_primary'])
+        icon_play_run = self.icons.button('play', '#FFFFFF')
         self.start_btn = ttk.Button(btn_container, image=icon_play_run, text=" 开始运行", compound=tk.LEFT, command=self.start_run, style='Accent.TButton', state="disabled")
         self.start_btn._icon_ref = icon_play_run
         self.start_btn.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
 
-        icon_stop = self.icons.button('stop', self.colors['text_primary'])
-        self.stop_btn = ttk.Button(btn_container, image=icon_stop, text=" 停止", compound=tk.LEFT, command=self.stop_run, style='Accent.TButton', state="disabled")
+        icon_stop = self.icons.button('stop', '#FFFFFF')
+        self.stop_btn = ttk.Button(btn_container, image=icon_stop, text=" 停止", compound=tk.LEFT, command=self.stop_run, style='Danger.TButton', state="disabled")
         self.stop_btn._icon_ref = icon_stop
         self.stop_btn.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
 
         # 状态指示器
-        self.status_label = ttk.Label(btn_container, text="🟢 就绪",
+        self.status_label = ttk.Label(btn_container, text="● 就绪",
                                       font=(FONT_FAMILY, int(13 * self.font_scale)), foreground=self.colors['success'])
         self.status_label.pack(side="left", padx=int(50 * self.dpi_scale * self.zoom_factor))
 
@@ -4649,7 +4800,7 @@ class BossFilterGUI:
         education_style.configure(
             "Education.Treeview",
             font=(FONT_FAMILY, int(10 * self.font_scale)),
-            rowheight=int(30 * self.dpi_scale * self.zoom_factor),
+            rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor),
         )
         education_style.configure(
             "Education.Treeview.Heading",
@@ -6712,27 +6863,67 @@ class BossFilterGUI:
                 page.pack_forget()
 
     def update_nav_highlight(self):
-        """更新导航高亮 - 当前页面使用选中颜色，其他使用默认颜色"""
+        """更新导航高亮 - 当前页面 pill 选中态，其他恢复默认"""
         for i, comp in enumerate(self.nav_components):
-            if i == self.current_page_index:
-                comp['icon'].configure(image=comp['icon_active'])
-                comp['text'].configure(foreground=self.colors['text_sidebar_active'])
-            else:
-                comp['icon'].configure(image=comp['icon_default'])
-                comp['text'].configure(foreground=self.colors['text_sidebar'])
+            self._apply_nav_state(comp, 'selected' if i == self.current_page_index else 'default')
+
+    def _apply_nav_state(self, comp, state):
+        """应用导航项视觉状态：default / hover / selected（pill 背景 + 左侧强调条）。"""
+        pill_bg = self.colors.get('bg_sidebar_pill', ui_theme.BG_SIDEBAR_PILL)
+        active = state in ('hover', 'selected')
+        selected = state == 'selected'
+        comp['frame'].configure(style='SidebarPill.TFrame' if active else 'Sidebar.TFrame')
+        label_style = (
+            ('SidebarNavSelectedPill.TLabel' if selected else 'SidebarNavPill.TLabel')
+            if active else 'SidebarNav.TLabel'
+        )
+        comp['icon'].configure(
+            image=comp['icon_active'] if active else comp['icon_default'],
+            style=label_style,
+        )
+        comp['text'].configure(style=label_style)
+        if 'accent' in comp:
+            comp['accent'].configure(
+                background=(self.colors['primary_light'] if selected
+                            else (pill_bg if active else self.colors['bg_sidebar']))
+            )
 
     def on_nav_enter(self, index):
-        """鼠标移入导航项时高亮（交换图标和前景色）"""
-        comp = self.nav_components[index]
-        comp['icon'].configure(image=comp['icon_active'])
-        comp['text'].configure(foreground=self.colors['text_sidebar_active'])
+        """鼠标移入导航项时 pill 高亮（当前页面保持选中态）"""
+        if index != self.current_page_index:
+            self._apply_nav_state(self.nav_components[index], 'hover')
 
     def on_nav_leave(self, index):
         """鼠标移出导航项时恢复样式（当前页面除外）"""
         if index != self.current_page_index:
-            comp = self.nav_components[index]
-            comp['icon'].configure(image=comp['icon_default'])
-            comp['text'].configure(foreground=self.colors['text_sidebar'])
+            self._apply_nav_state(self.nav_components[index], 'default')
+
+    def set_nav_badge(self, page_index, count):
+        """设置导航角标数字；0 或负数时隐藏。"""
+        if not (0 <= page_index < len(self.nav_components)):
+            return
+        badge = self.nav_components[page_index].get('badge')
+        if badge is None:
+            return
+        if count and count > 0:
+            badge.configure(text=str(count if count < 100 else '99+'))
+            if not badge.winfo_ismapped():
+                badge.pack(side="right", padx=(0, int(12 * self.dpi_scale * self.zoom_factor)))
+        else:
+            badge.pack_forget()
+
+    def _refresh_nav_badges(self):
+        """刷新导航角标：「筛选结果」显示联系清单待核实数。"""
+        try:
+            pending = 0
+            if CONTACT_QUEUE_PATH.exists():
+                with open(CONTACT_QUEUE_PATH, 'r', encoding='utf-8') as f:
+                    payload = json.load(f)
+                items = payload.get('items', []) if isinstance(payload, dict) else payload
+                pending = sum(1 for it in items if it.get('status') == '待核实')
+            self.set_nav_badge(3, pending)
+        except Exception:
+            pass
 
     # ===== 右键菜单功能 =====
     def bind_entry_context_menu(self, entry_widget):
@@ -9249,7 +9440,7 @@ class BossFilterGUI:
                             self.root.after(100, show_model_dialog)
                     else:
                         self.root.after(0, lambda: self._update_api_status(
-                            text="⚠️ 未找到模型列表",
+                            text="⚠ 未找到模型列表",
                             foreground=self.colors['warning']
                         ))
                         self.root.after(0, lambda: messagebox.showwarning(
@@ -9296,7 +9487,7 @@ class BossFilterGUI:
 
             except requests.exceptions.Timeout:
                 self.root.after(0, lambda: self._update_api_status(
-                    text="⏱️ 请求超时",
+                    text="⏱ 请求超时",
                     foreground=self.colors['warning']
                 ))
                 self.root.after(0, lambda: messagebox.showwarning(
@@ -9530,7 +9721,7 @@ class BossFilterGUI:
                         return
                     elif response.status_code == 429:
                         session.close()
-                        self.root.after(0, lambda: self._update_api_status(text="⚠️ 请求受限", foreground=self.colors['warning']))
+                        self.root.after(0, lambda: self._update_api_status(text="⚠ 请求受限", foreground=self.colors['warning']))
                         self.root.after(0, lambda: messagebox.showwarning(
                             "请求限额",
                             f"API 请求超限额\n\n"
@@ -9616,7 +9807,7 @@ class BossFilterGUI:
                 except requests.exceptions.SSLError as e:
                     # SSL 错误不重试，直接提示警告
                     last_error = "SSL 证书错误"
-                    self.root.after(0, lambda: self._update_api_status(text="⚠️ SSL 错误", foreground=self.colors['warning']))
+                    self.root.after(0, lambda: self._update_api_status(text="⚠ SSL 错误", foreground=self.colors['warning']))
                     self.root.after(0, lambda: messagebox.showwarning(
                         "SSL 证书错误",
                         "SSL 证书验证失败，可忽略此错误，保存配置后尝试实际使用"
@@ -11581,6 +11772,7 @@ class BossFilterGUI:
         def apply_update():
             if indicator_text is not None:
                 self.browser_status_indicator.config(text=indicator_text, foreground=indicator_color)
+                self._update_status_bar_right()
             if help_text is not None:
                 self.browser_status_help.config(text=help_text)
             # 运行中不覆盖按钮状态，防止轮询覆盖 start_run 的 disabled
@@ -11655,10 +11847,10 @@ class BossFilterGUI:
 
                 for r in results:
                     if r['status'] in ('warn', 'fail'):
-                        icon = {'warn': '⚠️', 'fail': '❌'}.get(r['status'], '?')
+                        icon = {'warn': '⚠', 'fail': '✗'}.get(r['status'], '?')
                         self.append_log(f"  {icon} [{r['group']}] {r['name']}: {r['detail']}")
 
-                self.append_log("⚠️ 选择器异常可能导致扫描功能不正常，可编辑 selectors.json 修复")
+                self.append_log("⚠ 选择器异常可能导致扫描功能不正常，可编辑 selectors.json 修复")
                 # 主线程弹窗提醒（线程安全）
                 self.run_on_ui(lambda: messagebox.showwarning(
                     "选择器异常",
@@ -11769,23 +11961,23 @@ class BossFilterGUI:
                         if self._is_boss_recommend_url(current_url):
                             self._browser_non_target_checks = 0
                             self.browser_connected = True
-                            self.set_browser_ui("🟢 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
+                            self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
                             if prev_help != "已连接到 BOSS 直聘推荐牛人页面":
-                                self.append_log("✅ 已连接到 BOSS 直聘推荐牛人页面")
+                                self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                         elif 'zhipin.com' in current_url.lower() or 'boss' in current_url.lower():
                             if self._should_defer_browser_navigation_warning(silent):
                                 return
                             self.browser_connected = False
-                            self.set_browser_ui("🟡 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
+                            self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
                             if prev_help != "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面":
-                                self.append_log("⚠️ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                         else:
                             if self._should_defer_browser_navigation_warning(silent):
                                 return
                             self.browser_connected = False
-                            self.set_browser_ui("🟡 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
+                            self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
                             if prev_help != "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面":
-                                self.append_log("⚠️ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                         return
                     except Exception:
                         # 页面对象已失效，清理后走完整检测流程
@@ -11814,7 +12006,7 @@ class BossFilterGUI:
                 if not port_open:
                     prev_state = self._browser_status_text
                     self.browser_connected = False
-                    self.set_browser_ui("🔴 未连接", self.colors['danger'], start_state="disabled")
+                    self.set_browser_ui("● 未连接", self.colors['danger'], start_state="disabled")
 
                     # 自动启动 Chrome（仅在手动点击时）
                     if not silent:
@@ -11836,7 +12028,7 @@ class BossFilterGUI:
                         chrome_path = next((p for p in candidates if os.path.exists(p)), None)
                         if not chrome_path:
                             self.set_browser_ui(help_text="未找到 Chrome 浏览器，请安装后重试")
-                            self.append_log("❌ 未找到 Chrome 浏览器")
+                            self.append_log("✗ 未找到 Chrome 浏览器")
                             return
 
                         # 自动选一个空闲端口，避免 9222 被占用
@@ -11894,8 +12086,8 @@ class BossFilterGUI:
                                 self.append_log(f"⏳ 等待 Chrome 就绪... ({i+1}/30)")
 
                         if not port_ready:
-                            self.set_browser_ui("🔴 未连接", self.colors['danger'], "Chrome 启动超时，请关闭所有 Chrome 窗口后重试")
-                            self.append_log("❌ Chrome 启动超时，调试端口未开启")
+                            self.set_browser_ui("● 未连接", self.colors['danger'], "Chrome 启动超时，请关闭所有 Chrome 窗口后重试")
+                            self.append_log("✗ Chrome 启动超时，调试端口未开启")
                             return
 
                         # 端口已开，用 DrissionPage 连接
@@ -11934,26 +12126,26 @@ class BossFilterGUI:
                                 self.browser_connected = True
                                 self.browser_page = page
                                 self.browser_address = page.address
-                                self.set_browser_ui("🟢 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
-                                self.append_log("✅ 已连接到 BOSS 直聘推荐牛人页面")
+                                self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
+                                self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                             else:
                                 self.browser_connected = True
                                 self.browser_page = page
                                 self.browser_address = page.address
-                                self.set_browser_ui("🟡 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
-                                self.append_log("⚠️ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                                self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
+                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                         except Exception as e:
                             self.browser_connected = False
                             self.browser_page = None
                             self._selectors_auto_checked = False
-                            self.set_browser_ui("🔴 未连接", self.colors['danger'], "Chrome 已启动，但页面连接失败", "disabled")
+                            self.set_browser_ui("● 未连接", self.colors['danger'], "Chrome 已启动，但页面连接失败", "disabled")
                             error_text = str(e).splitlines()[0] if str(e) else type(e).__name__
-                            self.append_log(f"❌ Chrome 已启动，但页面连接失败：{error_text}")
+                            self.append_log(f"✗ Chrome 已启动，但页面连接失败：{error_text}")
                         return
                     else:
                         self.set_browser_ui(help_text="未检测到 Chrome，请确保浏览器已启动")
-                        if not silent and prev_state != "🔴 未连接":
-                            self.append_log("❌ 未检测到 Chrome 调试端口")
+                        if not silent and prev_state != "● 未连接":
+                            self.append_log("✗ 未检测到 Chrome 调试端口")
                     return
 
                 from DrissionPage import ChromiumPage, ChromiumOptions
@@ -11995,7 +12187,7 @@ class BossFilterGUI:
                     target_url = 'https://www.zhipin.com/web/chat/recommend'
                     if current_url in ('about:blank', ''):
                         if not silent:
-                            self.append_log("⚠️ Chrome 进程存在但无有效页面，正在激活并导航...")
+                            self.append_log("⚠ Chrome 进程存在但无有效页面，正在激活并导航...")
                             nav_page = self._reactivate_and_navigate(page, target_url)
                             if nav_page is not None:
                                 self.browser_connected = True
@@ -12006,24 +12198,24 @@ class BossFilterGUI:
                                 except Exception:
                                     nav_url = ''
                                 if self._is_boss_recommend_url(nav_url):
-                                    self.set_browser_ui("🟢 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
-                                    self.append_log("✅ 已连接到 BOSS 直聘推荐牛人页面")
+                                    self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
+                                    self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                                 else:
-                                    self.set_browser_ui("🟡 需导航", self.colors['warning'], "已激活 Chrome，正在加载页面...", "disabled")
-                                    self.append_log("⚠️ 已激活 Chrome，请等待页面加载完成")
+                                    self.set_browser_ui("● 需导航", self.colors['warning'], "已激活 Chrome，正在加载页面...", "disabled")
+                                    self.append_log("⚠ 已激活 Chrome，请等待页面加载完成")
                             else:
                                 self.browser_connected = False
                                 self.browser_page = None
-                                self.set_browser_ui("🟡 需导航", self.colors['warning'], "请手动打开 Chrome 窗口", "disabled")
-                                self.append_log("⚠️ 无法激活 Chrome 页面，请手动打开 Chrome 窗口后点击重试")
+                                self.set_browser_ui("● 需导航", self.colors['warning'], "请手动打开 Chrome 窗口", "disabled")
+                                self.append_log("⚠ 无法激活 Chrome 页面，请手动打开 Chrome 窗口后点击重试")
                         else:
                             # 自动轮询：不尝试导航，避免 page.get() 挂起
                             self.browser_connected = False
                             self.browser_page = None
                             prev_state = self._browser_status_text
-                            self.set_browser_ui("🟡 需导航", self.colors['warning'], "Chrome 进程存在但无有效页面", "disabled")
-                            if prev_state != "🟡 需导航":
-                                self.append_log("⚠️ Chrome 进程存在但无有效页面，请点击按钮激活")
+                            self.set_browser_ui("● 需导航", self.colors['warning'], "Chrome 进程存在但无有效页面", "disabled")
+                            if prev_state != "● 需导航":
+                                self.append_log("⚠ Chrome 进程存在但无有效页面，请点击按钮激活")
                         # 处理完毕，不再往下走 URL 检查
                         return
 
@@ -12033,9 +12225,9 @@ class BossFilterGUI:
                         self.browser_connected = True
                         self.browser_page = page
                         self.browser_address = page.address
-                        self.set_browser_ui("🟢 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
+                        self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
                         if not silent or not prev_connected:
-                            self.append_log("✅ 已连接到 BOSS 直聘推荐牛人页面")
+                            self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                     elif 'zhipin.com' in current_url.lower() or 'boss' in current_url.lower():
                         if self._should_defer_browser_navigation_warning(silent):
                             return
@@ -12043,9 +12235,9 @@ class BossFilterGUI:
                         self.browser_connected = False
                         self.browser_page = page
                         self.browser_address = page.address
-                        self.set_browser_ui("🟡 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
-                        if not silent or prev_state != "🟡 需导航":
-                            self.append_log("⚠️ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                        self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
+                        if not silent or prev_state != "● 需导航":
+                            self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                     else:
                         if self._should_defer_browser_navigation_warning(silent):
                             return
@@ -12053,9 +12245,9 @@ class BossFilterGUI:
                         self.browser_connected = False
                         self.browser_page = page
                         self.browser_address = page.address
-                        self.set_browser_ui("🟡 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
-                        if not silent or prev_state != "🟡 需导航":
-                            self.append_log("⚠️ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                        self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
+                        if not silent or prev_state != "● 需导航":
+                            self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
 
                 except Exception as e:
                     if self._should_defer_browser_connection_failure(silent):
@@ -12063,7 +12255,7 @@ class BossFilterGUI:
                         self.browser_page = None
                         self._selectors_auto_checked = False
                         self.set_browser_ui(
-                            "🟡 重连中",
+                            "● 重连中",
                             self.colors['warning'],
                             "页面连接短暂中断，正在自动重连...",
                             "disabled",
@@ -12074,14 +12266,14 @@ class BossFilterGUI:
                     self.browser_connected = False
                     self.browser_page = None  # 清理失效的 page 对象
                     self._selectors_auto_checked = False
-                    self.set_browser_ui("🔴 未连接", self.colors['danger'], "浏览器页面连接失败", "disabled")
-                    if not silent or prev_state != "🔴 未连接":
+                    self.set_browser_ui("● 未连接", self.colors['danger'], "浏览器页面连接失败", "disabled")
+                    if not silent or prev_state != "● 未连接":
                         error_text = str(e).splitlines()[0] if str(e) else type(e).__name__
-                        self.append_log(f"❌ 浏览器页面连接失败：{error_text}")
+                        self.append_log(f"✗ 浏览器页面连接失败：{error_text}")
 
                     # 手动点击时，尝试杀掉彻底挂掉的调试 Chrome 进程并重启
                     if not silent:
-                        self.append_log("⚠️ 正在尝试清理残留的调试 Chrome 进程...")
+                        self.append_log("⚠ 正在尝试清理残留的调试 Chrome 进程...")
                         killed = False
                         try:
                             port_num = int(port)
@@ -12118,16 +12310,16 @@ class BossFilterGUI:
 
                         if killed:
                             time.sleep(1)
-                            self.append_log("✅ 已清理残留的调试 Chrome 进程，2秒后自动重新启动...")
+                            self.append_log("✓ 已清理残留的调试 Chrome 进程，2秒后自动重新启动...")
                             self._pending_chrome_restart = True
                         else:
-                            self.append_log("⚠️ Chrome 调试端口被占用但无法清理，请手动关闭所有 Chrome 窗口后重试")
-                            self.set_browser_ui("🔴 未连接", self.colors['danger'],
+                            self.append_log("⚠ Chrome 调试端口被占用但无法清理，请手动关闭所有 Chrome 窗口后重试")
+                            self.set_browser_ui("● 未连接", self.colors['danger'],
                                               "请关闭所有 Chrome 窗口后点击重试", "disabled")
 
             except ImportError:
-                self.set_browser_ui("🔴 错误", self.colors['danger'], "未安装 DrissionPage，请运行：pip install DrissionPage")
-                self.append_log("❌ DrissionPage 未安装")
+                self.set_browser_ui("● 错误", self.colors['danger'], "未安装 DrissionPage，请运行：pip install DrissionPage")
+                self.append_log("✗ DrissionPage 未安装")
             finally:
                 # 连接成功后自动检查选择器（仅首次）
                 if self.browser_connected and self.browser_page and not self._selectors_auto_checked:
@@ -12433,7 +12625,7 @@ class BossFilterGUI:
 
         self.is_running = True
         self.stop_event.clear()
-        self.status_label.config(text="🟡 运行中...", foreground=self.colors['warning'])
+        self.status_label.config(text="● 运行中...", foreground=self.colors['warning'])
         self.stop_btn.config(state="normal")
 
         # 重置进度显示
@@ -12451,7 +12643,7 @@ class BossFilterGUI:
         """停止运行"""
         self.is_running = False
         self.stop_event.set()
-        self.status_label.config(text="🔴 已停止", foreground=self.colors['danger'])
+        self.status_label.config(text="● 已停止", foreground=self.colors['danger'])
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.append_log(f"[{datetime.now().strftime('%H:%M:%S')}] ⏹ 已停止")
@@ -12717,15 +12909,15 @@ class BossFilterGUI:
             self.append_log(f"[{datetime.now().strftime('%H:%M:%S')}] {terminal_log}")
 
             if final_desc.startswith("[完成]"):
-                status_text, status_color = "🟢 已完成", self.colors['success']
+                status_text, status_color = "● 已完成", self.colors['success']
             elif final_desc.startswith(("[达到轮次上限]", "[可能未扫完]")):
-                status_text, status_color = "🟢 本轮处理完成", self.colors['success']
+                status_text, status_color = "● 本轮处理完成", self.colors['success']
             elif final_desc.startswith("[扫描中断]"):
-                status_text, status_color = "🟠 扫描中断", self.colors['warning']
+                status_text, status_color = "● 扫描中断", self.colors['warning']
             elif final_desc.startswith("[已停止]"):
-                status_text, status_color = "🔴 已停止", self.colors['danger']
+                status_text, status_color = "● 已停止", self.colors['danger']
             else:
-                status_text, status_color = "🔴 运行出错", self.colors['danger']
+                status_text, status_color = "● 运行出错", self.colors['danger']
             progress_text = self._format_terminal_progress_text(final_desc)
             should_build_contact_list = bool(
                 contact_policy_text != "仅保存筛选结果"
@@ -12992,6 +13184,7 @@ class BossFilterGUI:
                 self.result_tree_data = sorted_candidates
                 if hasattr(self, 'result_count_var'):
                     self.result_count_var.set(f"显示 {visible_count} / 共 {len(candidates)} 人")
+                self._update_status_bar_right()
                 self._tree_original_order = None  # 搜索排序缓存失效，下次搜索时重建
                 self._update_result_review_button_state()
         except Exception as e:
@@ -13124,7 +13317,7 @@ class BossFilterGUI:
         style.configure(
             "ActionQueue.Treeview",
             font=(FONT_FAMILY, int(11 * self.font_scale)),
-            rowheight=int(30 * scale),
+            rowheight=int(UI_CONFIG['treeview_rowheight'] * scale),
         )
         style.configure(
             "ActionQueue.Treeview.Heading",
@@ -13448,7 +13641,7 @@ class BossFilterGUI:
         state_style.configure(
             "StateCheck.Treeview",
             font=(FONT_FAMILY, int(11 * self.font_scale)),
-            rowheight=int(30 * scale),
+            rowheight=int(UI_CONFIG['treeview_rowheight'] * scale),
         )
         state_style.configure(
             "StateCheck.Treeview.Heading",
@@ -15130,7 +15323,7 @@ class BossFilterGUI:
                     if result.success:
                         sign = "+" if result.adjustment > 0 else ""
                         self.append_log(
-                            f"[简历评估] ✅ {name}: {sign}{result.adjustment} "
+                            f"[简历评估] ✓ {name}: {sign}{result.adjustment} "
                             f"→ 总分 {candidate.get('match_score', '?')}")
                         # 自定义对话框
                         eval_dialog = tk.Toplevel(_parent)
@@ -15182,7 +15375,7 @@ class BossFilterGUI:
                                             style='ResumeEval.TButton')
                         ok_btn.pack(anchor="center")
                     else:
-                        self.append_log(f"[简历评估] ❌ {name}: {result.reason}")
+                        self.append_log(f"[简历评估] ✗ {name}: {result.reason}")
                         messagebox.showwarning("评估失败",
                             f"LLM 返回错误：{result.reason}",
                             parent=_parent)
@@ -15191,7 +15384,7 @@ class BossFilterGUI:
 
             except Exception as exc:
                 def _on_error(error=exc):
-                    self.append_log(f"[简历评估] ❌ {name} 异常：{error}")
+                    self.append_log(f"[简历评估] ✗ {name} 异常：{error}")
                     if _tree_item is not None:
                         try:
                             _tree.set(_tree_item, 'status',
@@ -16825,6 +17018,7 @@ class BossFilterGUI:
             return
         try:
             save_contact_queue(self.greet_queue_items, CONTACT_QUEUE_PATH)
+            self._refresh_nav_badges()
         except Exception as exc:
             self.append_log(f"[联系候选人] 保存联系清单失败：{exc}")
 
@@ -17008,7 +17202,7 @@ class BossFilterGUI:
         style.configure(
             "GreetQueue.Treeview",
             font=(FONT_FAMILY, int(11 * self.font_scale)),
-            rowheight=int(30 * scale),
+            rowheight=int(UI_CONFIG['treeview_rowheight'] * scale),
         )
         style.configure(
             "GreetQueue.Treeview.Heading",
