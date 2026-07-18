@@ -19,6 +19,7 @@ import queue
 import random
 import socket
 import subprocess
+from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import filedialog, font, ttk
@@ -976,8 +977,13 @@ class BossFilterGUI:
         self._ai_eval_batch_summary = None
         self._api_ui_config_mtime = None
         self._api_key_resolve_thread = None
+        self._api_key_resolve_after_id = None
+        self._api_key_cache = {}
+        self._api_key_cache_lock = threading.Lock()
         self._pending_idle_tasks = set()
+        self._pending_page_builds = set()
         self._page_width_policy_after_id = None
+        self._highlighted_page_index = None
 
         # 设置样式
         self.setup_styles()
@@ -1052,13 +1058,11 @@ class BossFilterGUI:
         self.root.bind('<F5>', lambda _e: self._shortcut_refresh())
         self.root.bind('<Control-f>', lambda _e: self._shortcut_focus_search())
         self.root.bind('<Delete>', lambda _e: self._shortcut_delete_selected())
-        page_methods = (
-            self.show_page_home, self.show_page_config, self.show_page_run,
-            self.show_page_result, self.show_page_education,
-            self.show_page_stats, self.show_page_api,
-        )
-        for idx, method in enumerate(page_methods, start=1):
-            self.root.bind(f'<Control-Key-{idx}>', lambda _e, m=method: m())
+        for key_number, page_index in enumerate(range(7), start=1):
+            self.root.bind(
+                f'<Control-Key-{key_number}>',
+                lambda _event, index=page_index: self._request_sidebar_page(index),
+            )
 
     def _shortcut_refresh(self):
         """F5：当前页面为筛选结果时强制刷新，其他页面刷新首页统计。"""
@@ -1390,12 +1394,12 @@ class BossFilterGUI:
 
         # 导航项 - 使用 Frame 容器确保文字对齐（图标固定宽度）
         nav_items = [
-            ("home", "首页", self.show_page_home),
-            ("briefcase", "岗位配置", self.show_page_config),
-            ("play", "运行控制", self.show_page_run),
-            ("filter", "筛选结果", self.show_page_result),
-            ("document", "学历核验", self.show_page_education),
-            ("chart", "数据统计", self.show_page_stats),
+            ("home", "首页", lambda: self._request_sidebar_page(0)),
+            ("briefcase", "岗位配置", lambda: self._request_sidebar_page(1)),
+            ("play", "运行控制", lambda: self._request_sidebar_page(2)),
+            ("filter", "筛选结果", lambda: self._request_sidebar_page(3)),
+            ("document", "学历核验", lambda: self._request_sidebar_page(4)),
+            ("chart", "数据统计", lambda: self._request_sidebar_page(5)),
         ]
 
         self.nav_labels = []
@@ -1515,7 +1519,7 @@ class BossFilterGUI:
         )
 
         for widget in [settings_frame, settings_accent, settings_icon_label, settings_text, settings_badge]:
-            widget.bind("<Button-1>", lambda e: self.show_page_api())
+            widget.bind("<Button-1>", lambda _event: self._request_sidebar_page(6))
             widget.bind("<Enter>", lambda e, i=settings_idx: self.on_nav_enter(i))
             widget.bind("<Leave>", lambda e, i=settings_idx: self.on_nav_leave(i))
 
@@ -1527,7 +1531,7 @@ class BossFilterGUI:
             'icon_active': settings_icon_active,
             'text': settings_text,
             'badge': settings_badge,
-            'command': self.show_page_api,
+            'command': lambda: self._request_sidebar_page(6),
             'index': settings_idx
         })
         self.nav_labels.append(settings_text)
@@ -1568,10 +1572,29 @@ class BossFilterGUI:
         self.stats_page = None
         self.education_page = None
 
+        self._page_loading_var = tk.StringVar(value="正在打开…")
+        self._page_loading_frame = ttk.Frame(self.pages_frame, style='Page.TFrame')
+        loading_inner = ttk.Frame(self._page_loading_frame, style='Page.TFrame')
+        loading_inner.place(relx=0.5, rely=0.42, anchor='center')
+        ttk.Label(
+            loading_inner,
+            textvariable=self._page_loading_var,
+            font=self.font_section,
+            foreground=self.colors['text_primary'],
+            background=self.colors['bg_main'],
+        ).pack(anchor='center')
+        ttk.Label(
+            loading_inner,
+            text="首次打开正在准备页面，后续切换将直接显示",
+            font=self.font_label,
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_main'],
+        ).pack(anchor='center', pady=(int(8 * self.dpi_scale), 0))
+
         # 首屏只创建首页，其他页面首次点击时再构建并缓存。
         self.create_home_page()
 
-        # 全局状态栏：左侧瞬时消息，右侧浏览器/候选人状态
+        # 全局状态栏：瞬时操作反馈（导出完成、已屏蔽等提示的落点）
         footer_bg = self.colors.get('bg_footer', ui_theme.BG_FOOTER)
         status_bar = tk.Frame(
             self.main_frame, background=footer_bg,
@@ -1585,34 +1608,10 @@ class BossFilterGUI:
             foreground=self.colors['text_secondary'], background=footer_bg,
             anchor='w', padx=12, pady=3,
         ).pack(side="left", fill="x", expand=True)
-        self.status_bar_right_var = tk.StringVar(value="")
-        tk.Label(
-            status_bar, textvariable=self.status_bar_right_var, font=status_font,
-            foreground=self.colors['text_secondary'], background=footer_bg,
-            anchor='e', padx=12, pady=3,
-        ).pack(side="right")
-        self._update_status_bar_right()
         self._refresh_nav_badges()
 
         # 默认显示首页（current_page_index 在 show_page_home 中已设置为 0）
         self.show_page_home()
-
-    def _update_status_bar_right(self):
-        """状态栏右侧：浏览器连接状态 + 候选人数。"""
-        if not hasattr(self, 'status_bar_right_var'):
-            return
-        parts = []
-        browser_state = getattr(self, '_browser_status_text', None) or "● 未连接"
-        parts.append(f"浏览器 {browser_state}")
-        try:
-            if CANDIDATES_PATH.exists():
-                if not hasattr(self, 'all_candidates'):
-                    with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                        self.all_candidates = json.load(f)
-                parts.append(f"候选人 {len(self.all_candidates)} 人")
-        except Exception:
-            pass
-        self.status_bar_right_var.set("　".join(parts))
 
     def create_education_main_content(self):
         """创建独立学历核验工具的单页内容。"""
@@ -1636,20 +1635,123 @@ class BossFilterGUI:
         self.create_education_page()
         self.show_page_education()
 
-    def _defer_ui_work(self, key, callback):
-        """Run non-urgent UI work after the current redraw, coalescing duplicates."""
+    def _defer_ui_work(
+        self,
+        key: str,
+        callback: Callable[[], None],
+        page_index: int | None = None,
+    ) -> None:
+        """Run coalesced UI work after redraw and skip it after navigation."""
         if key in self._pending_idle_tasks:
             return
         self._pending_idle_tasks.add(key)
 
         def _run():
             self._pending_idle_tasks.discard(key)
+            if (
+                page_index is not None
+                and getattr(self, 'current_page_index', None) != page_index
+            ):
+                return
             try:
                 callback()
             except tk.TclError:
                 return
 
         self.root.after_idle(_run)
+
+    def _request_sidebar_page(self, page_index: int) -> None:
+        """Navigate from the sidebar, painting feedback before a page's first build."""
+        page_specs = {
+            0: ("home_page", "首页", self.create_home_page, self.show_page_home),
+            1: ("config_page", "岗位配置", self._create_config_page_steps, self.show_page_config),
+            2: ("run_page", "运行控制", self._create_run_page_steps, self.show_page_run),
+            3: ("result_page", "筛选结果", self.create_result_page, self.show_page_result),
+            4: ("education_page", "学历核验", self.create_education_page, self.show_page_education),
+            5: ("stats_page", "数据统计", self.create_stats_page, self.show_page_stats),
+            6: ("api_config_page", "系统设置", self._create_api_config_page_steps, self.show_page_api),
+        }
+        page_spec = page_specs.get(page_index)
+        if page_spec is None:
+            return
+        page_attr, title, creator, show_page = page_spec
+        self._request_page_first_open(page_index, page_attr, title, creator, show_page)
+
+    def _request_page_first_open(
+        self,
+        page_index: int,
+        page_attr: str,
+        title: str,
+        creator: Callable[[], object | None],
+        show_page: Callable[[], None],
+    ) -> None:
+        """Show a lightweight first frame, then build and cache a missing page."""
+        if not hasattr(self, '_pending_page_builds'):
+            self._pending_page_builds = set()
+
+        def _paint_loading_frame() -> None:
+            self.hide_all_pages()
+            self._page_loading_var.set(f"正在打开{title}…")
+            self._page_loading_frame.pack(fill="both", expand=True)
+            self.current_page_index = page_index
+            self._schedule_page_width_policy()
+            self.update_nav_highlight()
+
+        if page_attr in self._pending_page_builds:
+            _paint_loading_frame()
+            return
+        if getattr(self, page_attr, None) is not None:
+            show_page()
+            return
+
+        _paint_loading_frame()
+        self._pending_page_builds.add(page_attr)
+
+        def _discard_partial_page() -> None:
+            partial_page = getattr(self, page_attr, None)
+            if partial_page is not None:
+                try:
+                    partial_page.destroy()
+                except tk.TclError:
+                    pass
+                setattr(self, page_attr, None)
+
+        def _advance(iterator: Iterator[object] | None = None) -> None:
+            if getattr(self, 'current_page_index', None) != page_index:
+                self._pending_page_builds.discard(page_attr)
+                _discard_partial_page()
+                return
+            self._pending_page_builds.discard(page_attr)
+            try:
+                if iterator is None:
+                    build_result = creator()
+                    if isinstance(build_result, Iterator):
+                        iterator = build_result
+                    else:
+                        show_page()
+                        return
+                next(iterator)
+            except StopIteration:
+                if getattr(self, 'current_page_index', None) == page_index:
+                    show_page()
+                return
+            except Exception as exc:
+                logger.exception("首次创建%s页面失败", title)
+                _discard_partial_page()
+                if getattr(self, 'current_page_index', None) == page_index:
+                    self._page_loading_var.set(f"{title}打开失败")
+                    messagebox.showerror(
+                        "页面打开失败",
+                        f"{title}页面打开失败：{exc}",
+                        parent=self.root,
+                    )
+                return
+
+            self._pending_page_builds.add(page_attr)
+            self.root.after(1, lambda: _advance(iterator))
+
+        # Give Tk one frame to paint the selected navigation state and loading shell.
+        self.root.after(30, _advance)
 
     def _create_result_date_entry(self, parent, **kwargs):
         """创建结果页日期控件；只在结果页构建时加载 tkcalendar。"""
@@ -2022,7 +2124,12 @@ class BossFilterGUI:
         btn3._icon_ref = icon_briefcase
         btn3.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
 
-    def create_config_page(self):
+    def create_config_page(self) -> None:
+        """同步创建岗位配置页，供需要立即访问控件的内部流程使用。"""
+        for _step in self._create_config_page_steps():
+            pass
+
+    def _create_config_page_steps(self) -> Iterator[None]:
         """创建岗位配置页面"""
         self.config_page = ttk.Frame(self.pages_frame, style='Page.TFrame')
         self._job_form_tracking_ready = False
@@ -2047,6 +2154,8 @@ class BossFilterGUI:
 
         # 使用 scrollable_frame 作为实际容器
         config_container = self.config_scrollable_frame
+
+        yield
 
         # 岗位选择区域
         select_frame = ttk.Frame(config_container, style='TFrame')
@@ -2078,7 +2187,7 @@ class BossFilterGUI:
         more_style.configure(
             'ConfigActions.TMenubutton',
             font=self.font_label,
-            padding=(20, 13),
+            padding=(15, 8),
         )
         btn_more = ttk.Menubutton(
             select_frame,
@@ -2147,6 +2256,8 @@ class BossFilterGUI:
 
         self._job_step_active = -1  # -1 = 隐藏
 
+        yield
+
         # ===== 需求文档解析区域 =====
         def _build_requirement_toggle(title_bar, padding):
             title_bg = self.colors.get('bg_footer', ui_theme.BG_FOOTER)
@@ -2188,6 +2299,8 @@ class BossFilterGUI:
         self.requirement_parse_frame = parse_frame
         self.requirement_section_expanded = True
         self._bind_requirement_header_interaction()
+
+        yield
 
         # 需求输入框
         self._req_header_frame = ttk.Frame(parse_frame, style='TFrame')
@@ -2266,6 +2379,8 @@ class BossFilterGUI:
                                            foreground=self.colors['success'], background=self.colors['bg_card'],
                                            justify="left")
         self.parse_result_label.pack(fill="x", anchor="w", pady=int(10 * self.dpi_scale * self.zoom_factor))
+
+        yield
 
         # ===== 解析结果详细展示区域 =====
         self.result_detail_frame = ttk.Frame(config_container, style='Card.TFrame')
@@ -2364,6 +2479,8 @@ class BossFilterGUI:
                  font=(FONT_FAMILY, int(10 * self.font_scale)),
                  foreground=self.colors['text_secondary'], background=self.colors['bg_card']).pack(side="left", padx=(int(10 * self.dpi_scale * self.zoom_factor), 0))
 
+        yield
+
         # 技能关键词区域（带权重显示）- 左右分栏布局
         skills_frame = self._create_card(self.result_detail_frame, "技能评分条件",
             fill="both", side="top", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
@@ -2452,6 +2569,8 @@ class BossFilterGUI:
 
         self.skills_tree.bind("<Motion>", _on_skills_motion)
         self.skills_tree.bind("<Leave>", _on_skills_leave)
+
+        yield
 
         # 选中技能编辑区
         edit_card = self._create_card(skills_right, "编辑选中技能",
@@ -2542,6 +2661,8 @@ class BossFilterGUI:
         # 绑定选中事件
         self.skills_tree.bind("<<TreeviewSelect>>", self.on_skill_selected)
 
+        yield
+
         # 必要条件区域
         required_frame = self._create_card(self.result_detail_frame, "必要条件",
             fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
@@ -2614,6 +2735,8 @@ class BossFilterGUI:
         self.bind_entry_context_menu(required_edit)
         ttk.Button(required_edit_frame, text="添加", command=self.add_required_condition).pack(side="left", padx=(int(8 * self.dpi_scale * self.zoom_factor), int(3 * self.dpi_scale * self.zoom_factor)))
         ttk.Button(required_edit_frame, text="删除选中", command=self.delete_required_condition).pack(side="left", padx=(int(3 * self.dpi_scale * self.zoom_factor), 0))
+
+        yield
 
         # 按钮行（居中布局，固定在页面底部，不随 Canvas 滚动）
         self.btn_frame = ttk.Frame(self.config_page, style='Page.TFrame')
@@ -2721,7 +2844,12 @@ class BossFilterGUI:
         # 在所有控件创建完毕后绑定滚轮事件
         self._bind_mousewheel(self.config_canvas, self.config_scrollable_frame)
 
-    def create_api_config_page(self):
+    def create_api_config_page(self) -> None:
+        """同步创建系统设置页，供需要立即访问控件的内部流程使用。"""
+        for _step in self._create_api_config_page_steps():
+            pass
+
+    def _create_api_config_page_steps(self) -> Iterator[None]:
         """创建 API 配置页面"""
         # 创建带滚动条的页面
         self.api_config_page = ttk.Frame(self.pages_frame, style='Page.TFrame')
@@ -2730,8 +2858,8 @@ class BossFilterGUI:
         self.api_canvas, self.api_scrollable_frame = self._create_scroll_container(
             self.api_config_page, self.colors['bg_card'])
 
-        # 在可滚动框架中创建内容
-        self._create_api_config_content()
+        yield
+        yield from self._create_api_config_content_steps()
 
     def _on_api_canvas_configure(self, event):
         """调整可滚动框架宽度以匹配 Canvas"""
@@ -3115,7 +3243,12 @@ class BossFilterGUI:
                       min(UI_CONFIG['spinbox_rounds_max'], new_val))
         self.rounds_var.set(str(new_val))
 
-    def _create_api_config_content(self):
+    def _create_api_config_content(self) -> None:
+        """同步创建系统设置内容。"""
+        for _step in self._create_api_config_content_steps():
+            pass
+
+    def _create_api_config_content_steps(self) -> Iterator[None]:
         """创建 API 配置页面内容（在可滚动框架中）"""
         api_container = self.api_scrollable_frame
 
@@ -3140,6 +3273,8 @@ class BossFilterGUI:
             ttk.Label(_inner, text="请在下方重新输入 API Key 并点击「保存模型」",
                      font=self.font_label, foreground=self.colors['text_secondary'],
                      background=self.colors['bg_card']).pack(anchor="w", pady=(5, 0))
+
+        yield
 
         # 模型用途分配
         assignment_card = self._create_card(api_container, "使用中的模型",
@@ -3207,6 +3342,8 @@ class BossFilterGUI:
         )
         btn_test_default_model.bind("<Leave>", self._hide_tooltip)
 
+        yield
+
         education_row = ttk.Frame(assignment_frame, style='TFrame')
         education_row.pack(fill="x", pady=(int(10 * self.dpi_scale * self.zoom_factor), 0))
         ttk.Label(education_row, text="学历核验模型:", font=self.font_label,
@@ -3244,6 +3381,8 @@ class BossFilterGUI:
             lambda e: self._show_assigned_model_test_tooltip("education", e),
         )
         btn_test_education_model.bind("<Leave>", self._hide_tooltip)
+
+        yield
 
         # 模型接入配置
         config_card = self._create_card(api_container, "模型接入",
@@ -3291,6 +3430,8 @@ class BossFilterGUI:
         btn_fetch._icon_ref = icon_download_models
         btn_fetch.pack(side="left")
 
+        yield
+
         # 第三行：API Key
         row3 = ttk.Frame(input_frame, style='TFrame')
         row3.pack(fill="x", pady=(int(10 * self.dpi_scale * self.zoom_factor), 0))
@@ -3319,6 +3460,8 @@ class BossFilterGUI:
         self.api_key_toggle_btn.bind("<ButtonRelease-1>", self._hide_api_key_after_release)
         self.api_key_toggle_btn.bind("<Leave>", self._hide_api_key_after_release)
         self.api_key_toggle_btn.bind("<FocusOut>", self._hide_api_key_after_release)
+
+        yield
 
         # 第四行：Base URL
         row4 = ttk.Frame(input_frame, style='TFrame')
@@ -3355,6 +3498,8 @@ class BossFilterGUI:
         self.api_status_label.pack(side="left")
         # 用于存放可点击的标签引用
         self._status_clickable_labels = []
+
+        yield
 
         # 已保存模型列表
         model_list_card = self._create_card(api_container, "已保存模型",
@@ -3498,7 +3643,7 @@ class BossFilterGUI:
         # 后台线程会在读取完成后回填。
         if resolve_key:
             _base_url = self.api_config.get("base_url", "")
-            saved_key = get_api_key(provider_key, _base_url)
+            saved_key = self._get_api_key_cached(provider_key, _base_url)
             self.api_key_var.set(saved_key if saved_key else "")
         else:
             self.api_key_var.set(self.api_config.get("api_key", ""))
@@ -3549,10 +3694,58 @@ class BossFilterGUI:
             self.load_api_config(resolve_keys=False)
         self.load_api_config_to_ui(resolve_key=False)
         self._api_ui_config_mtime = mtime
-        self._resolve_api_keys_async()
+
+    def _schedule_api_key_resolution(self, delay_ms: int = 250) -> None:
+        """Resolve keyring after the settings page has painted its first frame."""
+        resolve_thread = getattr(self, '_api_key_resolve_thread', None)
+        if resolve_thread and resolve_thread.is_alive():
+            return
+        if getattr(self, '_api_key_resolve_after_id', None) is not None:
+            return
+
+        def _start():
+            self._api_key_resolve_after_id = None
+            if getattr(self, 'current_page_index', None) != 6:
+                return
+            self._resolve_api_keys_async()
+
+        self._api_key_resolve_after_id = self.root.after(delay_ms, _start)
+
+    @staticmethod
+    def _api_key_cache_identity(provider: str, base_url: str = "") -> tuple[str, str]:
+        """Return the normalized keyring identity used by the per-session cache."""
+        return str(provider or "").strip(), str(base_url or "").strip().rstrip("/")
+
+    def _remember_api_key(self, provider: str, base_url: str, api_key: str) -> None:
+        """Cache a successfully resolved key without persisting any new plaintext copy."""
+        if not api_key:
+            return
+        cache = getattr(self, '_api_key_cache', None)
+        if cache is None:
+            cache = self._api_key_cache = {}
+        cache[self._api_key_cache_identity(provider, base_url)] = api_key
+
+    def _get_api_key_cached(self, provider: str, base_url: str = "") -> str:
+        """Read one keyring entry on demand and reuse successful reads this session."""
+        if not provider:
+            return ""
+        cache = getattr(self, '_api_key_cache', None)
+        if cache is None:
+            cache = self._api_key_cache = {}
+        identity = self._api_key_cache_identity(provider, base_url)
+        lock = getattr(self, '_api_key_cache_lock', None)
+        if lock is None:
+            lock = self._api_key_cache_lock = threading.Lock()
+        with lock:
+            cached = cache.get(identity)
+            if cached:
+                return cached
+            api_key = str(get_api_key(provider, base_url) or "")
+            self._remember_api_key(provider, base_url, api_key)
+            return api_key
 
     def _resolve_api_keys_async(self):
-        """后台读取 keyring，避免首次打开 API 页阻塞主线程。"""
+        """后台只读取当前模型的 keyring 项，其他模型在实际使用时按需读取。"""
         if self._api_key_resolve_thread and self._api_key_resolve_thread.is_alive():
             return
         if not getattr(self, 'api_config', None):
@@ -3560,19 +3753,12 @@ class BossFilterGUI:
 
         provider = self.api_config.get("api_provider", "")
         base_url = self.api_config.get("base_url", "")
-        saved_models = list(self.api_config.get("saved_models", []))
 
         def _worker():
             current_key = ""
-            missing_saved_key = False
             try:
                 if provider:
-                    current_key = get_api_key(provider, base_url) or ""
-                for model_config in saved_models:
-                    model_provider = model_config.get("api_provider", "")
-                    if model_provider and not get_api_key(model_provider, model_config.get("base_url", "")):
-                        missing_saved_key = True
-                        break
+                    current_key = self._get_api_key_cached(provider, base_url)
             except Exception:
                 current_key = ""
 
@@ -3582,8 +3768,15 @@ class BossFilterGUI:
                 if (self.api_config.get("api_provider", ""), self.api_config.get("base_url", "")) != (provider, base_url):
                     return
                 self.api_config["api_key"] = current_key
-                if missing_saved_key:
+                if provider and not current_key:
                     self.api_config["needs_reconfigure"] = True
+                    if hasattr(self, 'api_status_frame'):
+                        self._update_api_status(
+                            text="当前模型的 API Key 未配置，请重新输入并保存模型",
+                            foreground=self.colors['warning'],
+                        )
+                else:
+                    self.api_config.pop("needs_reconfigure", None)
                 if hasattr(self, 'api_key_var'):
                     self.api_key_var.set(current_key)
                 self._update_ai_eval_status()
@@ -3982,7 +4175,12 @@ class BossFilterGUI:
                 stretch=column in ("file", "number", "school", "major"),
             )
 
-    def create_run_page(self):
+    def create_run_page(self) -> None:
+        """同步创建运行控制页，供需要立即访问控件的内部流程使用。"""
+        for _step in self._create_run_page_steps():
+            pass
+
+    def _create_run_page_steps(self) -> Iterator[None]:
         """创建运行控制页面 - 增强版：浏览器状态检测 + 进度条 + 滚动支持"""
         self.run_page = ttk.Frame(self.pages_frame, style='Page.TFrame')
 
@@ -4000,6 +4198,8 @@ class BossFilterGUI:
 
         # 页面标题
         self._create_page_header(content, "运行控制")
+
+        yield
 
         # 控制卡片
         control_container = ttk.Frame(content, style='Card.TFrame')
@@ -4029,6 +4229,8 @@ class BossFilterGUI:
                                              font=(FONT_FAMILY, int(11 * self.font_scale)),
                                              foreground=self.colors['text_secondary'])
         self.browser_status_help.pack(side="left", padx=int(20 * self.dpi_scale * self.zoom_factor))
+
+        yield
 
         # 运行参数
         param_frame = ttk.Frame(control_container, style='TFrame')
@@ -4070,6 +4272,8 @@ class BossFilterGUI:
                  foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
                  background=self.colors['bg_card']).pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
 
+        yield
+
         # 筛选完成后的联系策略。GUI 发送统一进入联系清单。
         row2 = ttk.Frame(param_frame, style='TFrame')
         row2.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
@@ -4107,6 +4311,8 @@ class BossFilterGUI:
         _update_contact_after_scan_note()
         contact_combo.bind("<<ComboboxSelected>>", _update_contact_after_scan_note)
 
+        yield
+
         # AI 辅助评估开关
         row_ai = ttk.Frame(param_frame, style='TFrame')
         row_ai.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
@@ -4125,10 +4331,14 @@ class BossFilterGUI:
         ai_label.bind('<Button-1>', lambda _e: self.ai_eval_var.set(not self.ai_eval_var.get()))
         # API Key 状态标签（先显示检测中，后台查询完毕后由 _update_ai_eval_status 更新）
         _status_font = (FONT_FAMILY, int(11 * self.font_scale))
-        self.ai_status_label = tk.Label(row_ai, text="⏳ 检测中...", font=_status_font,
+        self.ai_status_label = tk.Label(row_ai, text="检测中…", font=_status_font,
                                         foreground=self.colors['text_secondary'],
                                         background=self.colors['bg_card'])
         self.ai_status_label.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
+        target_ai_status_label = self.ai_status_label
+
+        yield
+
         # 页面先完成绘制，再后台查询 keyring，避免导入 keyring 与 Tk 控件创建争抢主线程。
         def _check_run_page_key_bg():
             _provider = self.api_config.get("api_provider", "")
@@ -4136,17 +4346,30 @@ class BossFilterGUI:
                 self.run_on_ui(self._update_ai_eval_status)
                 return
             try:
-                _key = get_api_key(_provider, self.api_config.get("base_url", ""))
+                _key = self._get_api_key_cached(
+                    _provider, self.api_config.get("base_url", "")
+                )
             except Exception:
                 _key = None
             def _apply():
+                if getattr(self, 'ai_status_label', None) is not target_ai_status_label:
+                    return
                 if _key and not self.api_config.get("api_key"):
                     self.api_config["api_key"] = _key
                 self._update_ai_eval_status()
             self.run_on_ui(_apply)
+
+        def _start_run_page_key_check():
+            if (
+                getattr(self, 'current_page_index', None) != 2
+                or getattr(self, 'run_page', None) is None
+            ):
+                return
+            threading.Thread(target=_check_run_page_key_bg, daemon=True).start()
+
         self.root.after(
             150,
-            lambda: threading.Thread(target=_check_run_page_key_bg, daemon=True).start(),
+            _start_run_page_key_check,
         )
         # 备注：+- 分色显示
         _note_prefix = "(对通过筛选的候选人进行 LLM 二次评分，"
@@ -4161,6 +4384,8 @@ class BossFilterGUI:
                  foreground=self.colors['danger'], background=self.colors['bg_card']).pack(side="left")
         tk.Label(row_ai, text=_note_suffix, font=_note_font,
                  foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card']).pack(side="left")
+
+        yield
 
         # AI 评估超时设置（紧跟 AI 评估行下方，缩进对齐）
         row_ai_timeout = ttk.Frame(param_frame, style='TFrame')
@@ -4199,6 +4424,8 @@ class BossFilterGUI:
                  foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
         self._timeout_hint_label.pack(side="left")
 
+        yield
+
         # === 进度条 ===
         progress_frame = ttk.Frame(param_frame, style='TFrame')
         progress_frame.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
@@ -4231,6 +4458,8 @@ class BossFilterGUI:
                                        anchor="w", justify="left",
                                        background=self.colors['bg_card'])
         self.progress_label.pack(fill="x", pady=(int(4 * self.dpi_scale * self.zoom_factor), 0))
+
+        yield
 
         # 本轮结果摘要：终态时固定展示，便于复盘筛选漏斗。
         summary_outer = tk.Frame(
@@ -4299,6 +4528,8 @@ class BossFilterGUI:
             self.colors['text_secondary'],
         )
 
+        yield
+
         # 控制按钮区
         btn_container = ttk.Frame(control_container, style='TFrame')
         btn_container.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(20 * self.dpi_scale * self.zoom_factor))
@@ -4318,6 +4549,8 @@ class BossFilterGUI:
         self.status_label = ttk.Label(btn_container, text="● 就绪",
                                       font=(FONT_FAMILY, int(13 * self.font_scale)), foreground=self.colors['success'])
         self.status_label.pack(side="left", padx=int(50 * self.dpi_scale * self.zoom_factor))
+
+        yield
 
         # 日志区域 — 与浏览器状态卡片一致的卡片式设计
         log_card = self._create_card(content, "运行日志",
@@ -4395,38 +4628,10 @@ class BossFilterGUI:
         )
 
         self.result_custom_date_frame = ttk.Frame(filter_frame, style='Page.TFrame')
-        _cal_font = (FONT_FAMILY, int(11 * self.font_scale))
-        _cal_kw = dict(width=12, font=_cal_font, date_pattern='yyyy-mm-dd',
-                       showweeknumbers=False)
-        self.result_date_start_entry = self._create_result_date_entry(
-            self.result_custom_date_frame, **_cal_kw
-        )
-        self.result_date_start_entry.pack(side="left", padx=int(4 * self.dpi_scale * self.zoom_factor))
-        self.result_date_start_entry.bind("<<DateEntrySelected>>",
-                                          lambda e: self._validate_date_range('start'))
-        self.result_date_start_entry.bind("<Return>", lambda e: self._validate_date_range('start'))
-        self.result_date_start_entry.bind("<FocusOut>", lambda e: self._validate_date_range('start'))
-
-        ttk.Label(self.result_custom_date_frame, text="~", font=self.font_label,
-                 background=self.colors['bg_main']).pack(side="left", padx=int(2 * self.dpi_scale * self.zoom_factor))
-
-        self.result_date_end_entry = self._create_result_date_entry(
-            self.result_custom_date_frame, **_cal_kw
-        )
-        self.result_date_end_entry.pack(side="left", padx=int(4 * self.dpi_scale * self.zoom_factor))
-        self.result_date_end_entry.bind("<<DateEntrySelected>>",
-                                        lambda e: self._validate_date_range('end'))
-        self.result_date_end_entry.bind("<Return>", lambda e: self._validate_date_range('end'))
-        self.result_date_end_entry.bind("<FocusOut>", lambda e: self._validate_date_range('end'))
-
-        # 自定义日期首次展开时使用近 7 个自然日。
-        _today = datetime.now().date()
-        self.result_date_start_entry.set_date(_today - timedelta(days=6))
-        self.result_date_end_entry.set_date(_today)
-
-        # 互斥关闭：展开一个日历前收起另一个，避免两个弹层同时存在。
-        self._wrap_date_dropdown_mutex(self.result_date_start_entry, self.result_date_end_entry)
-        self._wrap_date_dropdown_mutex(self.result_date_end_entry, self.result_date_start_entry)
+        # 默认时间范围不需要日历。保留属性供日期过滤判断，首次选择“自定义”时再创建，
+        # 避免结果页首开同步导入 tkcalendar 并初始化两个隐藏 Calendar。
+        self.result_date_start_entry = None
+        self.result_date_end_entry = None
 
         # 统计卡片区（纵向卡片布局）
         stats_container = ttk.Frame(self.result_page, style='Page.TFrame')
@@ -6049,7 +6254,7 @@ class BossFilterGUI:
         provider = str(config.get("api_provider") or "")
         if not provider:
             return ""
-        return str(get_api_key(provider, config.get("base_url", "")) or "")
+        return self._get_api_key_cached(provider, config.get("base_url", ""))
 
     def _create_fresh_browser_page(self):
         """启动或连接新的 ChromiumPage，并验证连接。"""
@@ -6749,7 +6954,7 @@ class BossFilterGUI:
             self.home_job_combo['values'] = jobs
         except Exception:
             pass
-        self._defer_ui_work("home_stats", self.refresh_home_stats)
+        self._defer_ui_work("home_stats", self.refresh_home_stats, page_index=0)
 
     def show_page_config(self):
         """显示配置页面"""
@@ -6761,7 +6966,9 @@ class BossFilterGUI:
         self._schedule_page_width_policy()
         # 刷新技能树和必要条件列表
         if self.job_rules:
-            self._defer_ui_work("config_lists", self._refresh_config_lists_if_needed)
+            self._defer_ui_work(
+                "config_lists", self._refresh_config_lists_if_needed, page_index=1
+            )
         # 始终显示详细结果区域（基本信息、技能关键词、必要条件、话术模板）
         self.result_detail_frame.pack(fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
         self.update_nav_highlight()
@@ -6805,7 +7012,7 @@ class BossFilterGUI:
             self.result_job_combo['values'] = jobs
         except Exception:
             pass
-        self._defer_ui_work("results_refresh", self.refresh_results)
+        self._defer_ui_work("results_refresh", self.refresh_results, page_index=3)
 
     def show_page_stats(self):
         """显示数据统计页面"""
@@ -6823,7 +7030,7 @@ class BossFilterGUI:
             self.stats_job_combo['values'] = jobs
         except Exception:
             pass
-        self._defer_ui_work("stats_refresh", self.refresh_stats)
+        self._defer_ui_work("stats_refresh", self.refresh_stats, page_index=5)
 
     def show_page_education(self):
         """显示学历核验页面。"""
@@ -6841,7 +7048,7 @@ class BossFilterGUI:
         if self.api_config_page is None:
             self.create_api_config_page()
         # 配置文件已在启动时读取；在页面首次绘制前回填普通字段，避免短暂显示空下拉框。
-        # API Key 仍由 _resolve_api_keys_async() 在后台读取，不阻塞打开系统设置。
+        # 普通字段先回填，API Key 等页面首帧绘制后再到后台读取。
         self._load_api_config_to_ui_if_needed()
         self.hide_all_pages()
         self.api_config_page.pack(fill="both", expand=True)
@@ -6853,11 +7060,13 @@ class BossFilterGUI:
             self.api_canvas.yview_moveto(0.0)
         # 重新绑定滚轮事件（覆盖动态创建的控件）
         self._bind_mousewheel(self.api_canvas, self.api_scrollable_frame)
+        self._schedule_api_key_resolution()
 
     def hide_all_pages(self):
         """隐藏所有页面"""
         self._stop_browser_auto_check()
         for page in [
+            getattr(self, '_page_loading_frame', None),
             self.home_page,
             self.config_page,
             self.api_config_page,
@@ -6870,9 +7079,17 @@ class BossFilterGUI:
                 page.pack_forget()
 
     def update_nav_highlight(self):
-        """更新导航高亮 - 当前页面 pill 选中态，其他恢复默认"""
-        for i, comp in enumerate(self.nav_components):
-            self._apply_nav_state(comp, 'selected' if i == self.current_page_index else 'default')
+        """只更新前后两个导航项，避免每次切页重绘整条侧边栏。"""
+        current_index = self.current_page_index
+        previous_index = getattr(self, '_highlighted_page_index', None)
+        if previous_index == current_index:
+            return
+
+        if previous_index is not None and 0 <= previous_index < len(self.nav_components):
+            self._apply_nav_state(self.nav_components[previous_index], 'default')
+        if 0 <= current_index < len(self.nav_components):
+            self._apply_nav_state(self.nav_components[current_index], 'selected')
+        self._highlighted_page_index = current_index
 
     def _apply_nav_state(self, comp, state):
         """应用导航项视觉状态：default / hover / selected（pill 背景 + 左侧强调条）。"""
@@ -7954,22 +8171,11 @@ class BossFilterGUI:
                     # 从 keyring 读取当前服务商的 API Key
                     current_provider = self.api_config.get("api_provider", "")
                     if current_provider:
-                        encrypted_key = get_api_key(current_provider, self.api_config.get("base_url", ""))
+                        encrypted_key = self._get_api_key_cached(
+                            current_provider, self.api_config.get("base_url", "")
+                        )
                         if encrypted_key:
                             self.api_config["api_key"] = encrypted_key
-
-                    # 检测是否有 saved_models 但 keyring 中无对应 API Key（新电脑场景）
-                    if self.api_config["saved_models"]:
-                        has_missing_key = False
-                        for m in self.api_config["saved_models"]:
-                            provider = m.get("api_provider", "")
-                            if provider and not get_api_key(provider, m.get("base_url", "")):
-                                has_missing_key = True
-                                break
-                        if has_missing_key:
-                            self.api_config["needs_reconfigure"] = True
-                            print("[提示] 检测到已保存的模型配置，但 API Key 未配置（可能是新电脑）")
-                            print("[提示] 请在「岗位配置」->「API 配置」中重新输入 API Key 并保存")
             except Exception as e:
                 print(f"加载 API 配置失败：{e}")
                 self.api_config = self._default_api_config()
@@ -8305,7 +8511,7 @@ class BossFilterGUI:
         base_url = model_config.get("base_url", "")
         model_name = model_config.get("model", "")
         provider_display = self.PROVIDER_DISPLAY.get(provider_key, provider_key)
-        saved_api_key = get_api_key(provider_key, base_url)
+        saved_api_key = self._get_api_key_cached(provider_key, base_url)
 
         if not saved_api_key:
             messagebox.showwarning("警告",
@@ -8372,7 +8578,6 @@ class BossFilterGUI:
                 continue
 
             base_url = model_config.get("base_url", "").strip()
-            api_key = get_api_key(provider_key, base_url)
             models_to_test.append({
                 "item_id": item_id,
                 "model_name": model_name,
@@ -8380,7 +8585,6 @@ class BossFilterGUI:
                 "provider_key": provider_key,
                 "model_config": model_config,
                 "base_url": base_url,
-                "api_key": api_key,
                 "assigned_role": assigned_role,
                 "assigned_model_ref": assigned_model_ref,
                 "assigned_test_token": assigned_test_token,
@@ -8408,7 +8612,10 @@ class BossFilterGUI:
         progress = {"done": 0, "success": 0, "fail": 0}
 
         def _test_one(entry):
-            if not entry["api_key"]:
+            api_key = self._get_api_key_cached(
+                entry["provider_key"], entry["base_url"]
+            )
+            if not api_key:
                 result = {"status": "error", "msg": "API Key 未配置"}
             elif not entry["base_url"]:
                 result = {"status": "error", "msg": "Base URL 未配置"}
@@ -8417,7 +8624,7 @@ class BossFilterGUI:
                     from llm_eval import probe_model_compatibility
                     config = dict(entry["model_config"])
                     config["api_provider"] = entry["provider_key"]
-                    capability = probe_model_compatibility(config, entry["api_key"], force=True)
+                    capability = probe_model_compatibility(config, api_key, force=True)
                     if capability.get("status") in ("compatible", "limited"):
                         result = {
                             "status": "success",
@@ -8611,6 +8818,7 @@ class BossFilterGUI:
                 self.api_base_url_var.set(base_url)
             # 按服务商 + Base URL 组合存储 API Key（区分同一服务商的不同接入方式）
             save_api_key(provider, api_key, base_url)
+            self._remember_api_key(provider, base_url, api_key)
 
             # 顶层当前活动模型：
             # - 首次配置或当前默认模型尚未入库时，使用本次保存的第一个模型。
@@ -8795,7 +9003,7 @@ class BossFilterGUI:
                 self.api_model_var.set(config["model"])
 
         # 切换服务商时，从 keyring 读取该服务商的 API Key，没有则清空
-        saved_key = get_api_key(provider, resolved_base_url)
+        saved_key = self._get_api_key_cached(provider, resolved_base_url)
         self.api_key_var.set(saved_key if saved_key else "")
 
     _model_dialog = None  # 防止重复打开模型列表对话框
@@ -9146,7 +9354,9 @@ class BossFilterGUI:
                                 # 获取 API Key 和 Base URL
                                 provider_key = self.DISPLAY_TO_KEY.get(provider, provider)
                                 test_base_url = self.api_base_url_var.get().strip()
-                                test_api_key = get_api_key(provider_key, test_base_url)
+                                test_api_key = self._get_api_key_cached(
+                                    provider_key, test_base_url
+                                )
 
                                 if not test_api_key:
                                     messagebox.showwarning("警告",
@@ -10516,6 +10726,58 @@ class BossFilterGUI:
 
     # ── 筛选结果页日期过滤（日历控件） ─────────────────────────────────
 
+    def _ensure_result_custom_date_entries(self) -> None:
+        """Create the two calendar widgets only when custom dates are requested."""
+        if (
+            getattr(self, 'result_date_start_entry', None) is not None
+            and getattr(self, 'result_date_end_entry', None) is not None
+        ):
+            return
+
+        calendar_font = (FONT_FAMILY, int(11 * self.font_scale))
+        calendar_options = {
+            'width': 12,
+            'font': calendar_font,
+            'date_pattern': 'yyyy-mm-dd',
+            'showweeknumbers': False,
+        }
+        start_entry = self._create_result_date_entry(
+            self.result_custom_date_frame, **calendar_options
+        )
+        end_entry = self._create_result_date_entry(
+            self.result_custom_date_frame, **calendar_options
+        )
+        self.result_date_start_entry = start_entry
+        self.result_date_end_entry = end_entry
+
+        entry_pad = int(4 * self.dpi_scale * self.zoom_factor)
+        start_entry.pack(side="left", padx=entry_pad)
+        start_entry.bind(
+            "<<DateEntrySelected>>", lambda _event: self._validate_date_range('start')
+        )
+        start_entry.bind("<Return>", lambda _event: self._validate_date_range('start'))
+        start_entry.bind("<FocusOut>", lambda _event: self._validate_date_range('start'))
+
+        ttk.Label(
+            self.result_custom_date_frame,
+            text="~",
+            font=self.font_label,
+            background=self.colors['bg_main'],
+        ).pack(side="left", padx=int(2 * self.dpi_scale * self.zoom_factor))
+
+        end_entry.pack(side="left", padx=entry_pad)
+        end_entry.bind(
+            "<<DateEntrySelected>>", lambda _event: self._validate_date_range('end')
+        )
+        end_entry.bind("<Return>", lambda _event: self._validate_date_range('end'))
+        end_entry.bind("<FocusOut>", lambda _event: self._validate_date_range('end'))
+
+        today = datetime.now().date()
+        start_entry.set_date(today - timedelta(days=6))
+        end_entry.set_date(today)
+        self._wrap_date_dropdown_mutex(start_entry, end_entry)
+        self._wrap_date_dropdown_mutex(end_entry, start_entry)
+
     @staticmethod
     def _close_date_dropdown(entry):
         """收起一个 DateEntry 的独立日历弹层。"""
@@ -10550,6 +10812,7 @@ class BossFilterGUI:
         """切换预设时间范围，并按需显示自定义日期控件。"""
         self._close_result_date_dropdowns()
         if self.result_time_range_var.get() == "自定义":
+            self._ensure_result_custom_date_entries()
             if not self.result_custom_date_frame.winfo_manager():
                 self.result_custom_date_frame.pack(side="left")
         else:
@@ -10829,7 +11092,10 @@ class BossFilterGUI:
         ai_provider = self.api_config.get("api_provider", "") if getattr(self, "api_config", None) else ""
         ai_base_url = self.api_config.get("base_url", "") if getattr(self, "api_config", None) else ""
         ai_model = self.api_config.get("model", "") if getattr(self, "api_config", None) else ""
-        ai_key = get_api_key(ai_provider, ai_base_url) if ai_provider and ai_base_url and ai_model else None
+        ai_key = (
+            self._get_api_key_cached(ai_provider, ai_base_url)
+            if ai_provider and ai_base_url and ai_model else None
+        )
         parse_id = self._begin_requirement_parse()
         if hasattr(self, "btn_parse_requirement"):
             self._parse_requirement_button_text = self.btn_parse_requirement.cget("text")
@@ -11773,7 +12039,6 @@ class BossFilterGUI:
         def apply_update():
             if indicator_text is not None:
                 self.browser_status_indicator.config(text=indicator_text, foreground=indicator_color)
-                self._update_status_bar_right()
             if help_text is not None:
                 self.browser_status_help.config(text=help_text)
             # 运行中不覆盖按钮状态，防止轮询覆盖 start_run 的 disabled
@@ -12719,8 +12984,10 @@ class BossFilterGUI:
                         except Exception:
                             pass
                     ai_api_config = self.api_config
-                    from security import get_api_key
-                    ai_api_key = get_api_key(self.api_config.get('api_provider', ''), self.api_config.get('base_url', ''))
+                    ai_api_key = self._get_api_key_cached(
+                        self.api_config.get('api_provider', ''),
+                        self.api_config.get('base_url', ''),
+                    )
                     if not ai_api_key:
                         self.append_log("AI 评估需要 API Key，但未配置，将跳过")
                         ai_eval_enabled = False
@@ -13185,7 +13452,6 @@ class BossFilterGUI:
                 self.result_tree_data = sorted_candidates
                 if hasattr(self, 'result_count_var'):
                     self.result_count_var.set(f"显示 {visible_count} / 共 {len(candidates)} 人")
-                self._update_status_bar_right()
                 self._toggle_result_empty_state(visible_count == 0)
                 self._tree_original_order = None  # 搜索排序缓存失效，下次搜索时重建
                 self._update_result_review_button_state()
@@ -13207,7 +13473,6 @@ class BossFilterGUI:
                             self.result_stats_greeted[key].set('0 已打招呼')
                     if 'greeted' in self.result_stats_greeted:
                         self.result_stats_greeted['greeted'].set('通过筛选中')
-                self._update_status_bar_right()
                 self._toggle_result_empty_state(True)
         except Exception as e:
             self.append_log(f"加载结果失败：{e}")
@@ -15434,7 +15699,7 @@ class BossFilterGUI:
                 api_config = self.api_config
                 provider_key = api_config.get('api_provider', '')
                 base_url = api_config.get('base_url', '')
-                api_key = get_api_key(provider_key, base_url)
+                api_key = self._get_api_key_cached(provider_key, base_url)
 
                 if not api_key:
                     def _no_key():
@@ -15674,8 +15939,9 @@ class BossFilterGUI:
             messagebox.showwarning("警告", "请先配置AI模型")
             return
 
-        from security import get_api_key
-        api_key = get_api_key(api_config.get('api_provider', ''), api_config.get('base_url', ''))
+        api_key = self._get_api_key_cached(
+            api_config.get('api_provider', ''), api_config.get('base_url', '')
+        )
         if not api_key:
             messagebox.showwarning("警告", "请先配置API Key")
             return
@@ -18886,33 +19152,20 @@ class BossFilterGUI:
 
         try:
             self.root.update_idletasks()
-            root_x = self.root.winfo_x()
-            root_y = self.root.winfo_y()
             root_width = self.root.winfo_width()
             root_height = self.root.winfo_height()
             monitor_area = _get_windows_monitor_area(win, self.root)
-            if monitor_area is not None:
-                area_x, area_y, area_width, area_height = monitor_area
-            else:
-                area_x, area_y = 0, 0
-                area_width = win.winfo_screenwidth()
-                area_height = win.winfo_screenheight()
-            # 停靠在主窗口右缘（侧滑面板式初始位置）：左侧保留结果表格可见，
-            # 复核过程中可继续点选表格候选人，工作台内容随之刷新；
-            # 仍是独立窗口，用户可自由拖动调整。
+            area_width = (
+                monitor_area[2] if monitor_area is not None else win.winfo_screenwidth()
+            )
+            area_height = (
+                monitor_area[3] if monitor_area is not None else win.winfo_screenheight()
+            )
             width = min(880, max(620, int(root_width * 0.55)), int(area_width * 0.9))
-            height = min(root_height, area_height)
-            x = min(
-                max(root_x + root_width - width, area_x),
-                max(area_x, area_x + area_width - width),
-            )
-            y = min(
-                max(root_y, area_y),
-                max(area_y, area_y + area_height - height),
-            )
+            height = min(root_height, int(area_height * 0.9))
         except tk.TclError:
-            width, height, x, y = 860, 960, 60, 40
-        win.geometry(f"{width}x{height}+{x}+{y}")
+            width, height = 860, 900
+        _place_window_centered(win, width, height, parent=self.root)
         self._render_candidate_review_workbench()
         win.deiconify()
 
