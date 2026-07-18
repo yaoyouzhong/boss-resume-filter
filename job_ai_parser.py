@@ -202,8 +202,10 @@ def _call_chat_completion(base_url: str, model: str, api_key: str, messages: lis
     except ImportError:
         verify_path = True
 
-    # 与 ai_adapter.build_request 保持一致：Kimi Coding 端点只接受 temperature=1，
-    # 且要求用 max_completion_tokens 替代 max_tokens，否则直接返回 HTTP 400
+    # Kimi Coding 方言（max_completion_tokens 替代 max_tokens，否则端点直接 HTTP 400）。
+    # k3 是推理模型：thinking 开启时端点强制 temperature=1，且推理耗时长（实测 54-90 秒）、
+    # 推理长度不稳定，经常耗尽输出预算（finish_reason=length）或触发读取超时。
+    # 结构化提取不需要深度推理；关闭 thinking 后端点要求 temperature=0.6，实测约 4 秒返回。
     payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -212,8 +214,9 @@ def _call_chat_completion(base_url: str, model: str, api_key: str, messages: lis
         "stream": False,
     }
     if "api.kimi.com/coding" in base_url.lower():
-        payload["temperature"] = 1
+        payload["temperature"] = 0.6
         payload["max_completion_tokens"] = payload.pop("max_tokens")
+        payload["thinking"] = {"type": "disabled"}
 
     last_error = ""
     for attempt in range(AI_PARSE_MAX_RETRIES):
