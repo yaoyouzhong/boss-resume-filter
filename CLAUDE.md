@@ -42,7 +42,8 @@ boss-resume-filter/
 ├── scripts/              # 辅助脚本（发布监控、PPT 生成、截图等）
 │   ├── release_ci.py   # GitHub Actions 正式发布编排与线上验收
 │   ├── pr_delivery.py # 普通 PR 一次授权交付（门禁、PR、合并、双远端同步、分支清理）
-│   ├── release_prepare.py / release_dispatch.py # 本地版本准备、正式发布触发监控与验收
+│   ├── release_delivery.py # 版本准备与发布准备 PR 一键交付
+│   ├── release_prepare.py / release_dispatch.py # 底层版本准备、正式发布触发监控与验收
 │   └── watch_progress.py # 发布进度监控脚本（轮询 .build_progress.json）
 ├── pyinstaller-hooks/    # PyInstaller 自定义 hook（控制模块收集范围，减小产物体积）
 ├── GUI 使用说明.md       # 图形界面操作说明
@@ -82,6 +83,7 @@ boss-resume-filter/
 - PR 不作统一要求；核心筛选、自动打招呼、存储、更新器、发布脚本、CI/CD 或大范围修改应使用 PR；面向 `master` 的 PR 由 `PR Checks` 验证，PR 合并始终是独立授权，合并不会触发发布
 - 普通分支推送、PR 合并、删除分支/worktree/临时文件默认须分别获得用户授权。用户准确授权“`一键交付分支 <branch>`”后，该一次授权仅覆盖指定分支的本地门禁、普通 push、创建/复用 PR、等待 `PR Checks`、Squash 合并、同步 GitHub/Gitee `master`、删除本地和远端分支、快进本地 `master`；不覆盖 rebase、force push、worktree 删除、冲突处理或正式发布。任一门禁/CI/一致性检查失败必须停止且不得清理分支
 - 用户准确授权“`一键准备版本 vX.Y`”后，允许从干净且双远端一致的 `master` 创建本地 `codex/release-vX.Y`，根据已复核发布说明同步版本号、CHANGELOG、README 和项目版本注释，运行严格门禁并创建本地提交；不覆盖 push、PR 合并、tag 或正式发布。发布准备分支仍使用“`一键交付分支 codex/release-vX.Y`”单独交付
+- 用户准确授权“`一键准备并交付版本 vX.Y`”后，允许先根据上一公开 tag 到 `master` 的实际变更生成项目目录外的临时发布说明，再顺序组合上述版本准备与指定发布准备分支的一键交付权限；任一阶段失败立即停止，发布准备已合并时允许幂等收口；仍不覆盖 tag、安装包、GitHub/Gitee Release、rebase、force push、冲突处理或正式发布
 - 用户明确说“正式发布 vX.Y”后，该一次授权覆盖 `Build & Release` 内部的严格门禁、tag/清单推送、GitHub/Gitee Release 和线上验收，不再逐步确认
 - 发布准备 PR 合并前执行 `/neat-freak`、文案润色和风险相关实测；授权后由工作流重跑严格门禁并核验公开下载、自动更新和双远端状态
 - 已公开 tag 不得移动或覆盖，修复必须发布更高补丁版本；同一提交允许断点续跑
@@ -109,7 +111,8 @@ boss-resume-filter/
 #### 发布命令与门禁
 
 - `python build.py --check [--strict-changelog]`：仅发布前检查；严格模式将 CHANGELOG 启发式覆盖、README 逐条镜像和 latest.json 同步提示升级为硬失败
-- `python scripts/release_prepare.py --version X.Y`：预览版本范围；增加 `--notes-file <file> --execute --authorization="一键准备版本 vX.Y"` 后只创建本地发布准备分支和提交；`python scripts/release_dispatch.py --version X.Y` 预览正式发布，增加 `--execute --authorization="正式发布 vX.Y"` 后触发唯一控制面并等待验收
+- `python scripts/release_delivery.py --version X.Y`：预览版本准备与 PR 交付；增加 `--notes-file <file> --execute --authorization="一键准备并交付版本 vX.Y"` 后自动完成版本材料、严格门禁、提交、PR、CI、合并、双远端同步和分支清理，不会正式发布
+- `release_prepare.py` 与 `pr_delivery.py` 保留为分阶段执行和故障恢复入口；`python scripts/release_dispatch.py --version X.Y` 预览正式发布，增加 `--execute --authorization="正式发布 vX.Y"` 后触发唯一控制面并等待验收
 - `python build.py`：自动打包；`--sync-release-notes` 可修正双平台 Release 说明而不重新打包
 - `python build.py --verify-release X.Y.Z`：只读核验双远端分支/tag、GitHub/Gitee Release、附件完整性和 latest.json，不打包不推送
 - 发布前必须执行 `/neat-freak` 并润色 CHANGELOG 当前版本段落；`gui_main.py` 的 `__version__` 是唯一版本号来源

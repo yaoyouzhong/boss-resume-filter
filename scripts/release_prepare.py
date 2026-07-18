@@ -435,6 +435,7 @@ def prepare_release(
     notes_file: Path | None = None,
     execute: bool = False,
     authorization: str = "",
+    show_next_step: bool = True,
 ) -> dict[str, Any]:
     """Preview or execute one local release-preparation transaction."""
     version = normalize_version(version)
@@ -490,7 +491,8 @@ def prepare_release(
     print(f"\n[OK] v{version} 发布准备已完成")
     print(f"  分支: {plan['release_branch']}")
     print(f"  提交: {commit_sha}")
-    print(f"  下一步: 一键交付分支 {plan['release_branch']}")
+    if show_next_step:
+        print(f"  下一步: 一键交付分支 {plan['release_branch']}")
     return {
         "mode": "prepared",
         "plan": plan,
