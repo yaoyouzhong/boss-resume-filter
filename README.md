@@ -277,7 +277,7 @@ boss-resume-filter/
 ├── education_tool_security.py # 独立工具内置 API Key 解密
 ├── security.py           # API Key 安全存储模块（keyring 加密，按 provider+base_url 组合存储）
 ├── migrate_keys.py       # API Key 迁移工具（明文→加密）
-├── build.py              # PyInstaller 打包脚本（支持 --release 一键发布）
+├── build.py              # PyInstaller 打包、发布门禁与公开版本核验脚本
 ├── build_education_tool.py # 独立学历证书核验助手打包脚本
 ├── latest.json           # 双源版本清单（正式发布工作流自动维护）
 ├── gui.bat               # GUI 启动脚本
@@ -300,6 +300,9 @@ boss-resume-filter/
 ├── install.bat           # 安装脚本
 ├── tests/                # 测试脚本目录
 ├── scripts/              # 辅助脚本目录
+│   ├── pr_delivery.py  # 普通 PR 一次授权交付
+│   ├── release_prepare.py # 本地版本准备、门禁与提交
+│   ├── release_dispatch.py # 正式发布触发、监控与验收
 │   ├── release_ci.py   # GitHub Actions 正式发布编排与线上验收
 │   └── watch_progress.py # 本地打包进度监控脚本
 ├── pyinstaller-hooks/    # PyInstaller 自定义 hook（控制模块收集范围，减小产物体积）
