@@ -1217,7 +1217,7 @@ class BossFilterGUI:
         self.font_stat = (FONT_FAMILY, int(36 * page_fs))
         self.font_stat_label = (FONT_FAMILY, int(15 * page_fs))
         self.font_log = (FONT_FAMILY, int(11 * page_fs))
-        self.font_table = (FONT_FAMILY, int(12 * page_fs))  # 表格字体
+        self.font_table = (FONT_FAMILY, int(10 * page_fs))  # 表格字体（对齐原生列表小字观感）
         modal_font_size = max(9, self.font_log[1])
         messagebox.set_ui_fonts(
             headline=(FONT_FAMILY, max(10, self.font_log[1]), 'bold'),
@@ -1323,7 +1323,7 @@ class BossFilterGUI:
         style.configure('Treeview.Heading',
                         background=c.get('bg_footer', ui_theme.BG_FOOTER),
                         foreground=c['text_secondary'],
-                        bordercolor=c['border'], padding=(8, 6), relief='flat')
+                        bordercolor=c['border'], padding=(4, 3), relief='flat')
         style.map('Treeview.Heading',
                   background=[('active', c['bg_hover'])],
                   foreground=[('active', c['text_primary'])])
@@ -2387,7 +2387,7 @@ class BossFilterGUI:
 
         # 使用 Treeview 显示技能列表
         columns = ("name", "weight", "source", "evidence")
-        tree_font = (FONT_FAMILY, int(11 * self.font_scale))
+        tree_font = (FONT_FAMILY, int(10 * self.font_scale))
 
         self.skills_tree = ttk.Treeview(list_container, columns=columns, show="headings", height=UI_CONFIG['treeview_height'])
         self.skills_tree.heading("name", text="技能名称")
@@ -2407,7 +2407,7 @@ class BossFilterGUI:
         # 设置 Treeview 默认字体和行高
         _style = ttk.Style()
         _style.configure('Treeview', font=tree_font, rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor))
-        _style.configure('Treeview.Heading', font=(FONT_FAMILY, int(12 * self.font_scale), 'bold'))
+        _style.configure('Treeview.Heading', font=(FONT_FAMILY, int(10 * self.font_scale), 'bold'))
 
         skills_scroll = ttk.Scrollbar(list_container, orient="vertical", command=self.skills_tree.yview)
         self.skills_tree.configure(yscrollcommand=skills_scroll.set)
@@ -4114,19 +4114,15 @@ class BossFilterGUI:
                  background=self.colors['bg_card']).pack(side="left")
         # API Key 状态：先显示"检测中"，后台查 keyring 后更新（避免主线程阻塞）
         self.ai_eval_var = tk.BooleanVar(value=False)
-        # 大 indicator + 文字一体，用父容器 anchor 做垂直居中
-        _cb_style = ttk.Style()
-        _indicator_size = int(32 * self.dpi_scale * self.zoom_factor)
-        _cb_style.configure('AIEval.TCheckbutton',
-                            font=self.font_label,
-                            background=self.colors['bg_card'],
-                            indicatordiameter=_indicator_size)
-        _cb_style.map('AIEval.TCheckbutton',
-                      background=[('active', self.colors['bg_card'])])
-        ai_check = ttk.Checkbutton(row_ai, text="启用 AI 辅助评估",
-                                   variable=self.ai_eval_var,
-                                   style='AIEval.TCheckbutton')
-        ai_check.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
+        # 拨动开关 + 可点击文字（替代 clam 下 oversized 的勾选框）
+        ai_switch = self._create_switch(row_ai, self.ai_eval_var)
+        ai_switch.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
+        ai_label = ttk.Label(
+            row_ai, text="启用 AI 辅助评估", font=self.font_label,
+            background=self.colors['bg_card'], cursor='hand2',
+        )
+        ai_label.pack(side="left")
+        ai_label.bind('<Button-1>', lambda _e: self.ai_eval_var.set(not self.ai_eval_var.get()))
         # API Key 状态标签（先显示检测中，后台查询完毕后由 _update_ai_eval_status 更新）
         _status_font = (FONT_FAMILY, int(11 * self.font_scale))
         self.ai_status_label = tk.Label(row_ai, text="⏳ 检测中...", font=_status_font,
@@ -4628,7 +4624,7 @@ class BossFilterGUI:
         # 设置表格字体和样式
         style = ttk.Style()
         style.configure("Result.Treeview", font=self.font_table, rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor))
-        style.configure("Result.Treeview.Heading", font=(FONT_FAMILY, int(12 * self.font_scale), 'bold'))
+        style.configure("Result.Treeview.Heading", font=(FONT_FAMILY, int(10 * self.font_scale), 'bold'))
         self.result_tree.configure(style="Result.Treeview")
 
         self._update_result_tree_columns()
@@ -6254,7 +6250,7 @@ class BossFilterGUI:
         style = ttk.Style()
         style.configure("Stats.Treeview", font=self.font_table,
                        rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor))
-        style.configure("Stats.Treeview.Heading", font=(FONT_FAMILY, int(12 * self.font_scale), 'bold'))
+        style.configure("Stats.Treeview.Heading", font=(FONT_FAMILY, int(10 * self.font_scale), 'bold'))
         self.stats_tree.configure(style="Stats.Treeview")
 
         # 垂直和水平滚动条
@@ -14558,6 +14554,53 @@ class BossFilterGUI:
                 banner.destroy()
             except tk.TclError:
                 pass
+
+    def _create_switch(self, parent, variable):
+        """自绘拨动开关（OFF 灰色圆点居左 / ON 品牌蓝圆点居右），绑定 BooleanVar。
+
+        clam 下 ttk.Checkbutton 的 indicator 尺寸配置会放大成粗大灰框，
+        启用类语义用开关控件更准确；点击或空格切换，可聚焦。
+        """
+        scale = self.dpi_scale * self.zoom_factor
+        width = int(44 * scale)
+        height = int(24 * scale)
+        knob_d = height - int(6 * scale)
+        canvas = tk.Canvas(
+            parent, width=width, height=height,
+            bg=self.colors['bg_card'], highlightthickness=0, bd=0,
+            cursor='hand2', takefocus=1,
+        )
+
+        def _draw():
+            canvas.delete('all')
+            on = bool(variable.get())
+            track = (self.colors['primary'] if on
+                     else self.colors.get('border_strong', ui_theme.BORDER_STRONG))
+            radius = height // 2
+            canvas.create_oval(0, 0, height, height, fill=track, outline='')
+            canvas.create_oval(width - height, 0, width, height, fill=track, outline='')
+            canvas.create_rectangle(radius, 0, width - radius + 1, height, fill=track, outline='')
+            margin = (height - knob_d) // 2
+            knob_x = width - knob_d - margin if on else margin
+            canvas.create_oval(
+                knob_x, margin, knob_x + knob_d, margin + knob_d,
+                fill='#FFFFFF', outline='',
+            )
+
+        def _toggle(_event=None):
+            variable.set(not variable.get())
+            return 'break'
+
+        canvas.bind('<Button-1>', _toggle)
+        canvas.bind('<space>', _toggle)
+        canvas.bind('<FocusIn>', lambda _e: canvas.configure(
+            highlightthickness=2,
+            highlightbackground=self.colors.get('primary_light', ui_theme.PRIMARY_LIGHT),
+        ))
+        canvas.bind('<FocusOut>', lambda _e: canvas.configure(highlightthickness=0))
+        _draw()
+        variable.trace_add('write', lambda *_args: _draw())
+        return canvas
 
     def _styled_tooltip(self, text, x, y, wraplength=None, parent=None):
         """创建统一深色现代 tooltip（圆角观感、白字、无边框），返回 Toplevel。"""
