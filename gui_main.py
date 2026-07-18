@@ -1217,7 +1217,7 @@ class BossFilterGUI:
         self.font_stat = (FONT_FAMILY, int(36 * page_fs))
         self.font_stat_label = (FONT_FAMILY, int(15 * page_fs))
         self.font_log = (FONT_FAMILY, int(11 * page_fs))
-        self.font_table = (FONT_FAMILY, int(11 * page_fs))  # 表格字体
+        self.font_table = (FONT_FAMILY, int(12 * page_fs))  # 表格字体
         modal_font_size = max(9, self.font_log[1])
         messagebox.set_ui_fonts(
             headline=(FONT_FAMILY, max(10, self.font_log[1]), 'bold'),
@@ -2387,7 +2387,7 @@ class BossFilterGUI:
 
         # 使用 Treeview 显示技能列表
         columns = ("name", "weight", "source", "evidence")
-        tree_font = (FONT_FAMILY, int(11 * self.font_scale))
+        tree_font = (FONT_FAMILY, int(12 * self.font_scale))
 
         self.skills_tree = ttk.Treeview(list_container, columns=columns, show="headings", height=UI_CONFIG['treeview_height'])
         self.skills_tree.heading("name", text="技能名称")
@@ -2407,7 +2407,7 @@ class BossFilterGUI:
         # 设置 Treeview 默认字体和行高
         _style = ttk.Style()
         _style.configure('Treeview', font=tree_font, rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor))
-        _style.configure('Treeview.Heading', font=(FONT_FAMILY, int(11 * self.font_scale), 'bold'))
+        _style.configure('Treeview.Heading', font=(FONT_FAMILY, int(12 * self.font_scale), 'bold'))
 
         skills_scroll = ttk.Scrollbar(list_container, orient="vertical", command=self.skills_tree.yview)
         self.skills_tree.configure(yscrollcommand=skills_scroll.set)
@@ -4624,7 +4624,7 @@ class BossFilterGUI:
         # 设置表格字体和样式
         style = ttk.Style()
         style.configure("Result.Treeview", font=self.font_table, rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor))
-        style.configure("Result.Treeview.Heading", font=(FONT_FAMILY, int(11 * self.font_scale), 'bold'))
+        style.configure("Result.Treeview.Heading", font=(FONT_FAMILY, int(12 * self.font_scale), 'bold'))
         self.result_tree.configure(style="Result.Treeview")
 
         self._update_result_tree_columns()
@@ -6250,7 +6250,7 @@ class BossFilterGUI:
         style = ttk.Style()
         style.configure("Stats.Treeview", font=self.font_table,
                        rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor))
-        style.configure("Stats.Treeview.Heading", font=(FONT_FAMILY, int(11 * self.font_scale), 'bold'))
+        style.configure("Stats.Treeview.Heading", font=(FONT_FAMILY, int(12 * self.font_scale), 'bold'))
         self.stats_tree.configure(style="Stats.Treeview")
 
         # 垂直和水平滚动条
