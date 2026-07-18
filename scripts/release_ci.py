@@ -78,6 +78,31 @@ def _git_text(*args: str) -> str:
     return result.stdout.strip()
 
 
+def _configure_git_identity() -> None:
+    """Configure the repository-local identity used by release automation."""
+    _run(["git", "config", "user.name", "github-actions[bot]"])
+    _run([
+        "git", "config", "user.email",
+        "41898282+github-actions[bot]@users.noreply.github.com",
+    ])
+
+
+def _working_tree_paths() -> set[str]:
+    """Return porcelain paths without stripping their status prefix."""
+    result = _run(
+        ["git", "status", "--porcelain"],
+        capture_output=True,
+    )
+    paths: set[str] = set()
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        if len(line) < 4:
+            _fail(f"无法解析 git status 输出：{line!r}")
+        paths.add(line[3:].split(" -> ", 1)[-1].replace("\\", "/"))
+    return paths
+
+
 def _normalize_version(value: str) -> str:
     version = str(value or "").strip().removeprefix("v")
     build._validate_version_format(version)
@@ -262,6 +287,7 @@ def _ensure_origin_tag(tag: str, release_sha: str, notes_path: Path) -> None:
     if local_sha and local_sha != release_sha:
         _fail(f"本地 {tag} 指向其他提交，禁止覆盖")
     if not local_sha:
+        _configure_git_identity()
         _run(["git", "tag", "-a", tag, release_sha, "-F", str(notes_path)])
         print(f"  [OK] 已创建 annotated tag: {tag}")
 
@@ -483,22 +509,13 @@ def _commit_and_sync_manifest(
         require_complete_assets=True,
     )
     if changed:
-        status_lines = _git_text("status", "--porcelain").splitlines()
-        changed_paths = {
-            line[3:].split(" -> ", 1)[-1].replace("\\", "/")
-            for line in status_lines
-            if line.strip()
-        }
+        changed_paths = _working_tree_paths()
         if changed_paths != {"latest.json"}:
             _fail(
                 "更新自动更新清单时出现非预期文件："
                 + ", ".join(sorted(changed_paths))
             )
-        _run(["git", "config", "user.name", "github-actions[bot]"])
-        _run([
-            "git", "config", "user.email",
-            "41898282+github-actions[bot]@users.noreply.github.com",
-        ])
+        _configure_git_identity()
         _run(["git", "add", "latest.json"])
         _run(["git", "commit", "-m", "chore: 更新自动更新清单"])
         _run(["git", "push", "origin", "master"])

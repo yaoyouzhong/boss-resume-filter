@@ -35,6 +35,51 @@ def test_release_authorization_must_match_version_exactly():
         release_ci.validate_authorization("2.21", "release 2.21")
 
 
+def test_origin_tag_configures_git_identity_before_creating_annotated_tag():
+    calls: list[list[str]] = []
+    with (
+        patch.object(release_ci.build, "_remote_tag_commit", return_value=None),
+        patch.object(release_ci, "_commit_for_ref", return_value=None),
+        patch.object(
+            release_ci,
+            "_run",
+            side_effect=lambda args, **_kwargs: calls.append(args),
+        ),
+    ):
+        release_ci._ensure_origin_tag(
+            "v2.21",
+            "a" * 40,
+            Path("release-notes.md"),
+        )
+
+    tag_index = next(i for i, args in enumerate(calls) if args[:2] == ["git", "tag"])
+    assert calls[tag_index - 2] == [
+        "git", "config", "user.name", "github-actions[bot]",
+    ]
+    assert calls[tag_index - 1] == [
+        "git", "config", "user.email",
+        "41898282+github-actions[bot]@users.noreply.github.com",
+    ]
+    assert calls[tag_index + 1] == ["git", "push", "origin", "refs/tags/v2.21"]
+
+
+def test_working_tree_paths_preserves_first_path_character():
+    result = release_ci.subprocess.CompletedProcess(
+        ["git", "status", "--porcelain"],
+        0,
+        stdout=" M latest.json\n",
+        stderr="",
+    )
+    with patch.object(release_ci, "_run", return_value=result) as run:
+        paths = release_ci._working_tree_paths()
+
+    assert paths == {"latest.json"}
+    run.assert_called_once_with(
+        ["git", "status", "--porcelain"],
+        capture_output=True,
+    )
+
+
 def test_resume_rejects_new_business_changes_after_the_release_commit():
     with (
         patch.object(release_ci, "_is_ancestor", return_value=True),
