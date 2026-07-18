@@ -671,6 +671,9 @@ def _call_llm_api(messages: list, api_config: dict, api_key: str,
             temperature=0 if tool_output else LLM_TEMPERATURE,
             tool=_EVALUATION_TOOL if tool_output else None,
             force_tool=tool_output,
+            # 结构化评分不需要深度推理；Kimi Coding 端点的 k3 推理
+            # 实测 54-90 秒且不稳定，关闭后约 4 秒返回
+            disable_thinking=True,
         )
 
     url, headers, body, protocol = _make_request(use_tool_output)
