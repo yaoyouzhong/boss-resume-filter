@@ -1391,11 +1391,28 @@ def test_more_menu_excel_export_uses_exact_visible_result_candidates():
     gui.result_view_var = _FakeVar("待复核")
     gui.result_date_start_entry = Mock()
     gui._get_result_date_filter = Mock(return_value=("20260709", "20260715"))
+    gui.append_log = Mock()
+
+    class _FakeRoot:
+        def after(self, _delay, callback):
+            callback()
+
+    class _SyncThread:
+        """测试用同步线程：start 立即执行 target，让异步导出可断言。"""
+
+        def __init__(self, target, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    gui.root = _FakeRoot()
 
     with (
         patch("gui_main.filedialog.asksaveasfilename", return_value="review.xlsx") as save_dialog,
         patch("bossmaster.export_to_excel", return_value=True) as export_mock,
-        patch("gui_main.messagebox.showinfo") as showinfo,
+        patch("gui_main.threading.Thread", _SyncThread),
+        patch.object(BossFilterGUI, "_status_flash") as flash,
     ):
         gui.export_excel()
 
@@ -1404,7 +1421,7 @@ def test_more_menu_excel_export_uses_exact_visible_result_candidates():
     assert save_dialog.call_args.kwargs["initialfile"] == (
         "Java工程师_待复核_20260709_20260715.xlsx"
     )
-    assert "2 名候选人" in showinfo.call_args.args[1]
+    assert "2 名候选人" in flash.call_args.args[0]
 
 
 def test_model_settings_use_explicit_role_selectors_not_hidden_actions():
@@ -2437,9 +2454,9 @@ def test_candidate_review_workbench_exposes_navigation_tabs_and_direct_actions()
     assert 'text="下一位"' in block
     assert 'text="决策摘要"' in block
     assert 'text="完整资料"' in block
-    assert "preferred_height = max(960, self.root.winfo_height() + 270)" in block
-    assert "height = min(1120, preferred_height" in block
-    assert "max_height_ratio=0.98" in block
+    assert "width = min(880, max(620, int(root_width * 0.55))" in block
+    assert "height = min(root_height, area_height)" in block
+    assert 'win.geometry(f"{width}x{height}+{x}+{y}")' in block
     assert '"确认通过"' in block
     assert '"加入联系清单"' in block
     assert '"更新跟进"' in block

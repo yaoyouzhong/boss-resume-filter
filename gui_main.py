@@ -4654,6 +4654,14 @@ class BossFilterGUI:
         )
         tree_scroll.pack(side="right", fill="y", pady=int(10 * self.dpi_scale * self.zoom_factor))
 
+        # 空态引导层（无可见候选人时覆盖表格区域）
+        self.result_empty_state = self._build_empty_state(
+            table_container, 'filter',
+            "暂无候选人",
+            "调整岗位或时间范围，或到运行控制页开始新一轮筛选",
+            action_text="开始筛选", action_command=self.show_page_run,
+        )
+
         # 操作按钮 - 放在表格下方
         btn_frame = ttk.Frame(self.result_page, style='Page.TFrame')
         btn_frame.pack(fill="x", padx=int(20 * self.dpi_scale * self.zoom_factor), pady=(int(8 * self.dpi_scale * self.zoom_factor), int(12 * self.dpi_scale * self.zoom_factor)))
@@ -6696,8 +6704,11 @@ class BossFilterGUI:
 
                 job_stats[job]['scores'].append(score)
 
-            # 插入表格行
-            for job, stats in sorted(job_stats.items(), key=lambda x: x[1]['total'], reverse=True):
+            # 插入表格行（斑马纹便于宽表横向扫读）
+            self.stats_tree.tag_configure(
+                'zebra_odd', background=self.colors.get('bg_zebra', ui_theme.BG_ZEBRA)
+            )
+            for row_index, (job, stats) in enumerate(sorted(job_stats.items(), key=lambda x: x[1]['total'], reverse=True)):
                 t = stats['total']
                 s = stats['strong']
                 r = stats['recommended']
@@ -6721,7 +6732,7 @@ class BossFilterGUI:
                 self.stats_tree.insert("", "end", values=(
                     job, filter_dist, greeted_str, fb, suitable_rate,
                     false_positive_rate, replied_str, interviewed_str, avg_score
-                ))
+                ), tags=('zebra_odd',) if row_index % 2 else ())
 
         except Exception as e:
             self.append_log(f"刷新统计失败：{e}")
@@ -7121,7 +7132,7 @@ class BossFilterGUI:
         """显示统计详情"""
         try:
             if not CANDIDATES_PATH.exists():
-                messagebox.showinfo("提示", "暂无候选人数据")
+                self._show_inline_banner(self.home_page, 'info', "暂无候选人数据，请先到运行控制页开始筛选。")
                 return
 
             with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
@@ -7166,7 +7177,7 @@ class BossFilterGUI:
                 return
 
             if not filtered:
-                messagebox.showinfo("提示", f"{title}：暂无数据")
+                self._show_inline_banner(self.home_page, 'info', f"{title}：暂无数据。")
                 return
 
             # 创建详情窗口
@@ -7269,7 +7280,6 @@ class BossFilterGUI:
                         )
                         if not selected_data:
                             return
-                        from bossmaster import export_to_excel
                         if len(selected_data) == 1:
                             init_name = f"{selected_data[0].get('name', '候选人')}.xlsx"
                         else:
@@ -7281,8 +7291,7 @@ class BossFilterGUI:
                             initialfile=init_name
                         )
                         if file_path:
-                            export_to_excel(selected_data, file_path)
-                            messagebox.showinfo("成功", f"已导出 {len(selected_data)} 名候选人到：\n{file_path}")
+                            self._run_export(selected_data, file_path)
 
                     def remove_selected():
                         if not messagebox.askyesno("确认删除", f"确定要移除选中的 {len(selection)} 名候选人吗？"):
@@ -7405,7 +7414,6 @@ class BossFilterGUI:
                     )
                     if not selected_data:
                         return
-                    from bossmaster import export_to_excel
                     if len(selected_data) == 1:
                         init_name = f"{selected_data[0].get('name', '候选人')}.xlsx"
                     else:
@@ -7417,8 +7425,7 @@ class BossFilterGUI:
                         initialfile=init_name
                     )
                     if file_path:
-                        export_to_excel(selected_data, file_path)
-                        messagebox.showinfo("成功", f"已导出 {len(selected_data)} 名候选人到：\n{file_path}")
+                        self._run_export(selected_data, file_path)
 
                 self._build_candidate_context_menu(
                     parent=detail_window,
@@ -7485,7 +7492,7 @@ class BossFilterGUI:
         """显示筛选结果统计详情（新指标）"""
         try:
             if not CANDIDATES_PATH.exists():
-                messagebox.showinfo("提示", "暂无候选人数据")
+                self._show_inline_banner(self.result_page, 'info', "暂无候选人数据，请先到运行控制页开始筛选。")
                 return
 
             with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
@@ -7556,7 +7563,7 @@ class BossFilterGUI:
             greeted_count = len(greeted)
 
             if total == 0:
-                messagebox.showinfo("提示", f"{title}：暂无数据")
+                self._show_inline_banner(self.result_page, 'info', f"{title}：暂无数据。")
                 return
 
             # 创建详情窗口
@@ -7687,7 +7694,6 @@ class BossFilterGUI:
                         )
                         if not selected_data:
                             return
-                        from bossmaster import export_to_excel
                         if len(selected_data) == 1:
                             init_name = f"{selected_data[0].get('name', '候选人')}.xlsx"
                         else:
@@ -7699,8 +7705,7 @@ class BossFilterGUI:
                             initialfile=init_name
                         )
                         if file_path:
-                            export_to_excel(selected_data, file_path)
-                            messagebox.showinfo("成功", f"已导出 {len(selected_data)} 名候选人到：\n{file_path}")
+                            self._run_export(selected_data, file_path)
 
                     def remove_selected():
                         if not messagebox.askyesno("确认删除", f"确定要移除选中的 {len(selection)} 名候选人吗？"):
@@ -7822,7 +7827,6 @@ class BossFilterGUI:
                     )
                     if not selected_data:
                         return
-                    from bossmaster import export_to_excel
                     if len(selected_data) == 1:
                         init_name = f"{selected_data[0].get('name', '候选人')}.xlsx"
                     else:
@@ -7834,8 +7838,7 @@ class BossFilterGUI:
                         initialfile=init_name
                     )
                     if file_path:
-                        export_to_excel(selected_data, file_path)
-                        messagebox.showinfo("成功", f"已导出 {len(selected_data)} 名候选人到：\n{file_path}")
+                        self._run_export(selected_data, file_path)
 
                 self._build_candidate_context_menu(
                     parent=detail_window,
@@ -13185,8 +13188,29 @@ class BossFilterGUI:
                 if hasattr(self, 'result_count_var'):
                     self.result_count_var.set(f"显示 {visible_count} / 共 {len(candidates)} 人")
                 self._update_status_bar_right()
+                self._toggle_result_empty_state(visible_count == 0)
                 self._tree_original_order = None  # 搜索排序缓存失效，下次搜索时重建
                 self._update_result_review_button_state()
+            else:
+                # 数据文件不存在：清空表格与统计卡片，展示空态引导
+                for item in self.result_tree.get_children():
+                    self.result_tree.delete(item)
+                self._item_to_candidate = {}
+                self.result_tree_data = []
+                self.all_candidates = []
+                if hasattr(self, 'result_count_var'):
+                    self.result_count_var.set("显示 0 / 共 0 人")
+                if hasattr(self, 'result_stats_vars'):
+                    for stat_var in self.result_stats_vars.values():
+                        stat_var.set('0')
+                if hasattr(self, 'result_stats_greeted'):
+                    for key in ('strong', 'recommended', 'pending'):
+                        if key in self.result_stats_greeted:
+                            self.result_stats_greeted[key].set('0 已打招呼')
+                    if 'greeted' in self.result_stats_greeted:
+                        self.result_stats_greeted['greeted'].set('通过筛选中')
+                self._update_status_bar_right()
+                self._toggle_result_empty_state(True)
         except Exception as e:
             self.append_log(f"加载结果失败：{e}")
 
@@ -13219,7 +13243,7 @@ class BossFilterGUI:
             messagebox.showerror("状态体检", f"读取候选人数据失败：{exc}", parent=self.root)
             return
         if not candidates:
-            messagebox.showinfo("状态体检", f"{scope} 没有候选人数据可检查。", parent=self.root)
+            self._show_inline_banner(self.result_page, 'info', f"{scope} 没有候选人数据可检查。")
             return
 
         issues = diagnose_candidate_states(candidates)
@@ -13234,11 +13258,11 @@ class BossFilterGUI:
             messagebox.showerror("今日待办", f"读取候选人数据失败：{exc}", parent=self.root)
             return
         if not candidates:
-            messagebox.showinfo("今日待办", f"{scope} 没有候选人数据可处理。", parent=self.root)
+            self._show_inline_banner(self.result_page, 'info', f"{scope} 没有候选人数据可处理。")
             return
         items = build_daily_candidate_actions(candidates)
         if not items:
-            messagebox.showinfo("今日待办", f"{scope} 暂无需要优先处理的候选人。", parent=self.root)
+            self._show_inline_banner(self.result_page, 'info', f"{scope} 暂无需要优先处理的候选人。")
             return
         self._show_daily_candidate_actions_dialog(scope, items)
 
@@ -14439,6 +14463,101 @@ class BossFilterGUI:
         self._tooltip_after_id = self.root.after(
             300, lambda: self._show_tooltip(full, x, y, tooltip_key)
         )
+
+    def _build_empty_state(self, parent, icon_name, title, hint, action_text=None, action_command=None):
+        """构建可复用空态引导层（覆盖在父容器上，place 管理，初始隐藏）。"""
+        frame = ttk.Frame(parent, style='TFrame')
+        inner = ttk.Frame(frame, style='TFrame')
+        inner.place(relx=0.5, rely=0.42, anchor='center')
+        icon_img = self.icons.get(
+            icon_name, int(56 * self.dpi_scale * self.zoom_factor),
+            self.colors.get('text_muted', ui_theme.TEXT_MUTED), self.colors['bg_card'],
+        )
+        icon_label = ttk.Label(inner, image=icon_img, background=self.colors['bg_card'])
+        icon_label._icon_ref = icon_img
+        icon_label.pack(anchor='center')
+        ttk.Label(
+            inner, text=title, font=self.font_section,
+            foreground=self.colors['text_primary'], background=self.colors['bg_card'],
+        ).pack(anchor='center', pady=(int(12 * self.dpi_scale), 0))
+        ttk.Label(
+            inner, text=hint, font=self.font_label,
+            foreground=self.colors['text_secondary'], background=self.colors['bg_card'],
+            justify='center',
+        ).pack(anchor='center', pady=(int(6 * self.dpi_scale), 0))
+        if action_text and action_command:
+            ttk.Button(
+                inner, text=action_text, style='Accent.TButton', command=action_command,
+            ).pack(anchor='center', pady=(int(16 * self.dpi_scale), 0))
+        return frame
+
+    def _toggle_result_empty_state(self, show):
+        """按可见候选人数切换结果页空态引导层。"""
+        frame = getattr(self, 'result_empty_state', None)
+        if frame is None:
+            return
+        try:
+            if show:
+                frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+                frame.lift()
+            else:
+                frame.place_forget()
+        except tk.TclError:
+            pass
+
+    def _show_inline_banner(self, page, kind, text, duration_ms=6000):
+        """在页面顶部展示非模态 inline 横幅（自动消失，可点 ✕ 关闭）。
+
+        kind: info / warning / error / success。用于替代打断流程的纯通知弹窗。
+        """
+        try:
+            if page is None or not page.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        self._hide_inline_banner(page)
+        bg_key, bg_fallback = {
+            'info': ('banner_info_bg', ui_theme.BANNER_INFO_BG),
+            'warning': ('banner_warning_bg', ui_theme.BANNER_WARNING_BG),
+            'error': ('banner_error_bg', ui_theme.BANNER_ERROR_BG),
+            'success': ('banner_success_bg', ui_theme.BANNER_SUCCESS_BG),
+        }.get(kind, ('banner_info_bg', ui_theme.BANNER_INFO_BG))
+        bg = self.colors.get(bg_key, bg_fallback)
+        banner = tk.Frame(page, bg=bg)
+        tk.Label(
+            banner, text=text, bg=bg,
+            fg=self.colors['text_primary'], font=self.font_label,
+            anchor='w', justify='left',
+        ).pack(
+            side='left', fill='x', expand=True,
+            padx=(int(12 * self.dpi_scale), int(8 * self.dpi_scale)),
+            pady=int(8 * self.dpi_scale),
+        )
+        close = tk.Label(
+            banner, text='✕', bg=bg, cursor='hand2',
+            fg=self.colors['text_secondary'], font=self.font_label,
+        )
+        close.pack(side='right', padx=(0, int(12 * self.dpi_scale)))
+        close.bind('<Button-1>', lambda _e: self._hide_inline_banner(page))
+        children = page.winfo_children()
+        if children:
+            banner.pack(side='top', fill='x', before=children[0])
+        else:
+            banner.pack(side='top', fill='x')
+        if not hasattr(self, '_inline_banners'):
+            self._inline_banners = {}
+        self._inline_banners[page] = banner
+        if duration_ms:
+            banner.after(duration_ms, lambda p=page: self._hide_inline_banner(p))
+
+    def _hide_inline_banner(self, page):
+        """关闭指定页面顶部的 inline 横幅（若存在）。"""
+        banner = getattr(self, '_inline_banners', {}).pop(page, None)
+        if banner is not None:
+            try:
+                banner.destroy()
+            except tk.TclError:
+                pass
 
     def _styled_tooltip(self, text, x, y, wraplength=None, parent=None):
         """创建统一深色现代 tooltip（圆角观感、白字、无边框），返回 Toplevel。"""
@@ -15956,7 +16075,7 @@ class BossFilterGUI:
                 self.refresh_results()
                 if on_saved:
                     on_saved()
-                messagebox.showinfo("成功", f"已屏蔽：{name}")
+                self._status_flash(f"已屏蔽：{name}")
             except Exception as exc:
                 messagebox.showerror("错误", f"加入黑名单失败：{exc}")
 
@@ -16006,7 +16125,7 @@ class BossFilterGUI:
             self.refresh_results()
             if on_saved:
                 on_saved()
-            messagebox.showinfo("成功", f"已移出黑名单：{name}")
+            self._status_flash(f"已移出黑名单：{name}")
         except Exception as exc:
             messagebox.showerror("错误", f"移出黑名单失败：{exc}")
 
@@ -16144,8 +16263,7 @@ class BossFilterGUI:
                 candidate.get('geek_id'), candidate.get('job_name', '')
             )
             if not updated:
-                messagebox.showinfo("提示", f"{name} 当前已无需人工确认",
-                                    parent=parent or self.root)
+                self._status_flash(f"{name} 当前已无需人工确认")
                 return
             candidate['manual_review_required'] = False
             candidate['qualification_status'] = 'qualified'
@@ -16156,8 +16274,7 @@ class BossFilterGUI:
             self.refresh_results()
             if on_saved:
                 on_saved()
-            messagebox.showinfo("成功", f"已确认通过：{name}",
-                                parent=parent or self.root)
+            self._status_flash(f"已确认通过：{name}")
         except Exception as exc:
             messagebox.showerror("错误", f"操作失败：{exc}",
                                  parent=parent or self.root)
@@ -16166,8 +16283,7 @@ class BossFilterGUI:
         """批量清除候选人的需人工确认标记。"""
         to_confirm = [c for c in candidates if c.get('manual_review_required')]
         if not to_confirm:
-            messagebox.showinfo("提示", "选中候选人中无需确认的标记",
-                                parent=parent or self.root)
+            self._status_flash("选中候选人中没有需确认的标记")
             return
         names = ", ".join(c.get('name', '?') for c in to_confirm[:5])
         if len(to_confirm) > 5:
@@ -16199,8 +16315,7 @@ class BossFilterGUI:
             self.refresh_home_stats()
             self.refresh_stats()
             self.refresh_results()
-        messagebox.showinfo("完成", f"已确认通过 {confirmed}/{len(to_confirm)} 人",
-                            parent=parent or self.root)
+        self._status_flash(f"已确认通过 {confirmed}/{len(to_confirm)} 人")
 
     def _mark_candidate_followup(self, item, candidate=None, parent=None, on_saved=None):
         """标记候选人的跟进状态和备注。"""
@@ -18733,21 +18848,34 @@ class BossFilterGUI:
         win.bind('<Right>', lambda _event: self._navigate_candidate_review(1))
 
         try:
-            width = min(1120, max(920, self.root.winfo_width() - 120))
+            self.root.update_idletasks()
+            root_x = self.root.winfo_x()
+            root_y = self.root.winfo_y()
+            root_width = self.root.winfo_width()
+            root_height = self.root.winfo_height()
             monitor_area = _get_windows_monitor_area(win, self.root)
-            available_height = (
-                monitor_area[3] if monitor_area is not None
-                else win.winfo_screenheight()
+            if monitor_area is not None:
+                area_x, area_y, area_width, area_height = monitor_area
+            else:
+                area_x, area_y = 0, 0
+                area_width = win.winfo_screenwidth()
+                area_height = win.winfo_screenheight()
+            # 停靠在主窗口右缘（侧滑面板式初始位置）：左侧保留结果表格可见，
+            # 复核过程中可继续点选表格候选人，工作台内容随之刷新；
+            # 仍是独立窗口，用户可自由拖动调整。
+            width = min(880, max(620, int(root_width * 0.55)), int(area_width * 0.9))
+            height = min(root_height, area_height)
+            x = min(
+                max(root_x + root_width - width, area_x),
+                max(area_x, area_x + area_width - width),
             )
-            # 固定双层操作区会多占一行高度，为详情区补回可视空间；
-            # 同时保留少量屏幕边距，避免窗口压到任务栏或显示器边缘。
-            preferred_height = max(960, self.root.winfo_height() + 270)
-            height = min(1120, preferred_height, max(860, int(available_height * 0.98)))
+            y = min(
+                max(root_y, area_y),
+                max(area_y, area_y + area_height - height),
+            )
         except tk.TclError:
-            width, height = 1060, 1060
-        _place_window_centered(
-            win, width, height, parent=self.root, max_height_ratio=0.98
-        )
+            width, height, x, y = 860, 960, 60, 40
+        win.geometry(f"{width}x{height}+{x}+{y}")
         self._render_candidate_review_workbench()
         win.deiconify()
 
@@ -19214,9 +19342,36 @@ class BossFilterGUI:
                     # 刷新统计
                     self.refresh_results()
 
-                    messagebox.showinfo("成功", f"已移除：{name}")
+                    self._status_flash(f"已移除：{name}")
             except Exception as e:
                 messagebox.showerror("错误", f"移除失败：{e}")
+
+    def _run_export(self, candidates, file_path, preserve_input=False):
+        """后台线程写 Excel，避免大数据量导出冻结界面；完成 toast 反馈，失败弹窗。"""
+        from bossmaster import export_to_excel
+        count = len(candidates)
+        if hasattr(self, 'status_bar_left_var'):
+            self.status_bar_left_var.set(f"正在导出 {count} 名候选人…")
+
+        def worker():
+            try:
+                export_to_excel(candidates, file_path, preserve_input=preserve_input)
+            except Exception as exc:
+                def show_error():
+                    if hasattr(self, 'status_bar_left_var'):
+                        self.status_bar_left_var.set("就绪")
+                    messagebox.showerror("错误", f"导出失败：{exc}", parent=self.root)
+                self.root.after(0, show_error)
+                return
+
+            def notify_success():
+                if hasattr(self, 'status_bar_left_var'):
+                    self.status_bar_left_var.set("就绪")
+                self.append_log(f"已导出 {count} 名候选人：{file_path}")
+                self._status_flash(f"已导出 {count} 名候选人")
+            self.root.after(0, notify_success)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _export_selected(self):
         """导出选中的候选人"""
@@ -19236,7 +19391,6 @@ class BossFilterGUI:
             return
 
         # 导出到 Excel
-        from bossmaster import export_to_excel
         if len(selected_data) == 1:
             init_name = f"{selected_data[0].get('name', '候选人')}.xlsx"
         else:
@@ -19249,13 +19403,11 @@ class BossFilterGUI:
         )
 
         if file_path:
-            export_to_excel(selected_data, file_path)
-            messagebox.showinfo("成功", f"已导出 {len(selected_data)} 名候选人到：\n{file_path}")
+            self._run_export(selected_data, file_path)
 
     def export_excel(self):
         """Export the candidates currently visible in the result table."""
         try:
-            from bossmaster import export_to_excel
             self.refresh_results(force=True)
             candidates = []
             for item in self.result_tree.get_children():
@@ -19286,11 +19438,7 @@ class BossFilterGUI:
             )
 
             if file_path:
-                export_to_excel(candidates, file_path, preserve_input=True)
-                messagebox.showinfo(
-                    "成功",
-                    f"已导出当前筛选范围的 {len(candidates)} 名候选人：\n{file_path}",
-                )
+                self._run_export(candidates, file_path, preserve_input=True)
         except Exception as e:
             messagebox.showerror("错误", f"导出失败：{e}")
 
@@ -19304,7 +19452,7 @@ class BossFilterGUI:
     def clear_candidates(self):
         """清空候选人数据"""
         if not CANDIDATES_PATH.exists():
-            messagebox.showinfo("提示", "暂无候选人数据")
+            self._show_inline_banner(self.result_page, 'info', "暂无候选人数据。")
             return
 
         # 读取当前岗位过滤条件
