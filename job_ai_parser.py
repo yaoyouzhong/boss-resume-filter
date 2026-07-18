@@ -202,18 +202,25 @@ def _call_chat_completion(base_url: str, model: str, api_key: str, messages: lis
     except ImportError:
         verify_path = True
 
+    # 与 ai_adapter.build_request 保持一致：Kimi Coding 端点只接受 temperature=1，
+    # 且要求用 max_completion_tokens 替代 max_tokens，否则直接返回 HTTP 400
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": AI_PARSE_MAX_TOKENS,
+        "temperature": AI_PARSE_TEMPERATURE,
+        "stream": False,
+    }
+    if "api.kimi.com/coding" in base_url.lower():
+        payload["temperature"] = 1
+        payload["max_completion_tokens"] = payload.pop("max_tokens")
+
     last_error = ""
     for attempt in range(AI_PARSE_MAX_RETRIES):
         try:
             response = requests.post(
                 f"{base_url}/chat/completions",
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "max_tokens": AI_PARSE_MAX_TOKENS,
-                    "temperature": AI_PARSE_TEMPERATURE,
-                    "stream": False,
-                },
+                json=payload,
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {api_key}",

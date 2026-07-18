@@ -329,9 +329,13 @@ def _invoke_model(
     messages: list[dict[str, Any]],
     *,
     timeout: int = 60,
-    max_tokens: int = 500,
+    max_tokens: int = 2048,
 ) -> dict[str, Any]:
-    """发送消息给当前模型并返回解析后的 JSON 对象（视觉/文本协议通用）。"""
+    """发送消息给当前模型并返回解析后的 JSON 对象（视觉/文本协议通用）。
+
+    max_tokens 是上限不是目标：普通模型输出约 200 tokens 即停止；
+    推理模型（kimi k3/k2.6 等）的 reasoning tokens 也计入该预算，需要更大余量。
+    """
     if not api_key:
         raise ValueError("当前模型未配置 API Key")
     if not config.get("base_url") or not config.get("model"):
@@ -365,7 +369,7 @@ def recognize_certificate_image(
     api_config: dict[str, Any],
     api_key: str,
     *,
-    timeout: int = 60,
+    timeout: int = 120,
 ) -> CertificateRecognition:
     """调用当前视觉模型识别毕业证书图片。"""
     vision_config = resolve_vision_api_config(api_config)
@@ -373,7 +377,7 @@ def recognize_certificate_image(
     orientation_data_url = prepare_orientation_sheet_data_url(path)
     messages = build_vision_messages(vision_config, data_url, orientation_data_url)
     base_url = str(vision_config.get("base_url") or "").lower()
-    max_tokens = 1024 if "api.kimi.com/coding" in base_url else 500
+    max_tokens = 4096 if "api.kimi.com/coding" in base_url else 2048
     parsed = _invoke_model(
         vision_config, api_key, messages, timeout=timeout, max_tokens=max_tokens,
     )
@@ -393,7 +397,7 @@ def recognize_certificate_pdf(
     api_config: dict[str, Any],
     api_key: str,
     *,
-    timeout: int = 60,
+    timeout: int = 120,
 ) -> CertificateRecognition:
     """从 PDF 文本层提取字段，走当前文本模型识别。
 
@@ -725,13 +729,13 @@ def recognize_captcha(
     api_config: dict[str, Any],
     api_key: str,
     *,
-    timeout: int = 30,
+    timeout: int = 60,
 ) -> tuple[str, str, int]:
     """调用视觉模型识别验证码图片。返回 (captcha_type, answer, confidence)。"""
     vision_config = resolve_vision_api_config(api_config)
     messages = build_captcha_messages(vision_config, data_url)
     base_url = str(vision_config.get("base_url") or "").lower()
-    max_tokens = 1024 if "api.kimi.com/coding" in base_url else 500
+    max_tokens = 4096 if "api.kimi.com/coding" in base_url else 2048
     parsed = _invoke_model(
         vision_config,
         api_key,

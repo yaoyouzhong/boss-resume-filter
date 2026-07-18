@@ -10944,6 +10944,8 @@ class BossFilterGUI:
             return "网络证书校验失败"
         if any(token in text for token in ("404", "接口不存在", "Base URL")):
             return "服务地址可能填错了"
+        if "HTTP 400" in text:
+            return "模型服务拒绝了请求参数"
         if any(token in text for token in ("500", "502", "503", "504", "服务端错误")):
             return "模型服务临时不可用"
         if any(token in text for token in ("JSON", "返回为空")):
