@@ -1,21 +1,20 @@
 """Probe GitHub-hosted runner uploads to a temporary Gitee Release.
 
 The probe uploads real release-sized artifacts serially, verifies their remote
-sizes, and removes the temporary Gitee Release and tag in ``finally``.  It is
-deliberately separate from the formal release path: production CI must not be
-changed until this network gate succeeds.
+sizes, and removes the temporary Gitee Release in ``finally``.  Gitee API does
+not expose tag deletion, so the local orchestrator removes the uniquely named
+probe tag after the Actions run.  This remains separate from the formal release
+path: production CI must not change until this network gate succeeds.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -95,28 +94,32 @@ def _session() -> requests.Session:
     return session
 
 
-def _sanitize(text: str, token: str) -> str:
-    return (text or "").replace(token, "***").replace(quote(token, safe=""), "***")
-
-
-def _git_push_tag(tag: str, token: str, *, delete: bool = False) -> None:
-    """Push or delete one temporary Gitee tag without logging the credential."""
-    auth_url = (
-        f"https://{GITEE_OWNER}:{quote(token, safe='')}@gitee.com/"
-        f"{GITEE_OWNER}/{GITEE_REPO}.git"
+def _create_tag(session: requests.Session, tag: str, token: str) -> None:
+    """Create the temporary tag through Gitee API, avoiding hosted Git pushes."""
+    response = session.post(
+        f"{GITEE_API}/tags",
+        params={"access_token": token},
+        json={
+            "tag_name": tag,
+            "refs": "master",
+            "tag_message": "Temporary GitHub Actions upload probe",
+        },
+        timeout=(20, 30),
     )
-    refspec = f":refs/tags/{tag}" if delete else f"refs/tags/{tag}:refs/tags/{tag}"
-    result = subprocess.run(
-        ["git", "push", auth_url, refspec],
-        cwd=BASE_DIR,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if result.returncode != 0:
-        detail = _sanitize(result.stderr or result.stdout, token)
-        raise ProbeError(f"Gitee temporary tag {'cleanup' if delete else 'push'} failed: {detail}")
+    if response.status_code in {200, 201}:
+        return
+    if response.status_code in {400, 409, 422}:
+        tags_response = session.get(
+            f"{GITEE_API}/tags",
+            params={"access_token": token, "per_page": 100},
+            timeout=(20, 30),
+        )
+        tags_response.raise_for_status()
+        if any(item.get("name") == tag for item in tags_response.json()):
+            print(f"  [reuse] Temporary Gitee tag already exists: {tag}", flush=True)
+            return
+    detail = response.text.strip()[:300]
+    raise ProbeError(f"Gitee temporary tag API failed: HTTP {response.status_code}: {detail}")
 
 
 def _create_release(session: requests.Session, tag: str, token: str) -> int:
@@ -127,7 +130,7 @@ def _create_release(session: requests.Session, tag: str, token: str) -> int:
             "tag_name": tag,
             "name": f"GitHub Actions upload probe {tag}",
             "body": "Temporary upload probe. It will be removed automatically.",
-            "target_commitish": tag,
+            "target_commitish": "master",
             "prerelease": True,
         },
         timeout=(20, 30),
@@ -262,6 +265,7 @@ def _delete_release(session: requests.Session, release_id: int, token: str) -> N
 
 
 def run_probe(tag: str, artifact_dir: Path) -> None:
+    _record_state(tag, "preflight", "running", "Starting Gitee upload probe")
     if MultipartEncoder is None or MultipartEncoderMonitor is None:
         raise ProbeError(
             "requests-toolbelt is missing; install requirements-release.txt"
@@ -284,22 +288,11 @@ def run_probe(tag: str, artifact_dir: Path) -> None:
         raise ProbeError(f"Gitee token validation failed: HTTP {user_response.status_code}")
 
     release_id: int | None = None
-    local_tag_created = False
-    remote_tag_pushed = False
     cleanup_errors: list[str] = []
-    _record_state(tag, "preflight", "running", "Gitee token validated")
+    _record_state(tag, "preflight", "complete", "Gitee token validated")
     try:
-        subprocess.run(
-            ["git", "tag", tag, "HEAD"],
-            cwd=BASE_DIR,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        local_tag_created = True
-        _git_push_tag(tag, token)
-        remote_tag_pushed = True
-        _record_state(tag, "tag", "complete", "Temporary tag pushed")
+        _create_tag(session, tag, token)
+        _record_state(tag, "tag", "complete", "Temporary tag created through Gitee API")
 
         release_id = _create_release(session, tag, token)
         _record_state(tag, "release", "complete", "Temporary prerelease created")
@@ -346,24 +339,19 @@ def run_probe(tag: str, artifact_dir: Path) -> None:
                 _delete_release(session, release_id, token)
             except Exception as exc:
                 cleanup_errors.append(f"release cleanup: {type(exc).__name__}: {exc}")
-        if remote_tag_pushed:
-            try:
-                _git_push_tag(tag, token, delete=True)
-            except Exception as exc:
-                cleanup_errors.append(f"remote tag cleanup: {type(exc).__name__}: {exc}")
-        if local_tag_created:
-            subprocess.run(
-                ["git", "tag", "-d", tag],
-                cwd=BASE_DIR,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
         if cleanup_errors:
             _record_state(tag, "cleanup", "failed", "; ".join(cleanup_errors))
             raise ProbeError("; ".join(cleanup_errors))
-        _record_state(tag, "cleanup", "complete", "Temporary Release and tag removed")
-        print("[OK] Temporary Gitee Release and tag removed", flush=True)
+        _record_state(
+            tag,
+            "cleanup",
+            "complete",
+            "Temporary Release removed; tag awaits local orchestrator cleanup",
+        )
+        print(
+            f"[OK] Temporary Gitee Release removed; delete probe tag locally: {tag}",
+            flush=True,
+        )
 
 
 def main() -> int:
@@ -373,7 +361,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         run_probe(args.tag, args.artifact_dir.resolve())
-    except (ProbeError, requests.exceptions.RequestException, subprocess.CalledProcessError) as exc:
+    except (ProbeError, requests.exceptions.RequestException) as exc:
         print(f"[ERROR] {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         return 1
     return 0

@@ -41,20 +41,14 @@ def test_probe_uploads_serially_verifies_sizes_and_cleans_remote_state():
             for path in artifacts
         }
 
-        def fake_run(args, **_kwargs):
-            events.append("local_tag_delete" if "-d" in args else "local_tag_create")
-            return probe.subprocess.CompletedProcess(args, 0, "", "")
-
         with (
             patch.dict(os.environ, {"GITEE_TOKEN": "token"}),
             patch.object(probe, "STATE_PATH", directory / ".release_state.json"),
             patch.object(probe, "_session", return_value=_Session()),
             patch.object(
                 probe,
-                "_git_push_tag",
-                side_effect=lambda _tag, _token, delete=False: events.append(
-                    "remote_tag_delete" if delete else "remote_tag_push"
-                ),
+                "_create_tag",
+                side_effect=lambda *_: events.append("tag_create_api"),
             ),
             patch.object(probe, "_create_release", side_effect=lambda *_: events.append("release_create") or 7),
             patch.object(
@@ -68,33 +62,25 @@ def test_probe_uploads_serially_verifies_sizes_and_cleans_remote_state():
                 "_delete_release",
                 side_effect=lambda *_: events.append("release_delete"),
             ),
-            patch.object(probe.subprocess, "run", side_effect=fake_run),
         ):
             probe.run_probe("gitee-actions-probe-test", directory)
 
         assert events == [
-            "local_tag_create",
-            "remote_tag_push",
+            "tag_create_api",
             "release_create",
             *probe.ARTIFACT_NAMES,
             "release_delete",
-            "remote_tag_delete",
-            "local_tag_delete",
         ]
         state = (directory / ".release_state.json").read_text(encoding="utf-8")
         assert '"status": "complete"' in state
-        assert "Temporary Release and tag removed" in state
+        assert "Temporary Release removed; tag awaits local orchestrator cleanup" in state
 
 
-def test_probe_cleans_tag_when_release_creation_fails():
+def test_probe_records_tag_for_local_cleanup_when_release_creation_fails():
     with tempfile.TemporaryDirectory() as temp_dir:
         directory = Path(temp_dir)
         _artifacts(directory)
         events: list[str] = []
-
-        def fake_run(args, **_kwargs):
-            events.append("local_tag_delete" if "-d" in args else "local_tag_create")
-            return probe.subprocess.CompletedProcess(args, 0, "", "")
 
         with (
             patch.dict(os.environ, {"GITEE_TOKEN": "token"}),
@@ -102,13 +88,10 @@ def test_probe_cleans_tag_when_release_creation_fails():
             patch.object(probe, "_session", return_value=_Session()),
             patch.object(
                 probe,
-                "_git_push_tag",
-                side_effect=lambda _tag, _token, delete=False: events.append(
-                    "remote_tag_delete" if delete else "remote_tag_push"
-                ),
+                "_create_tag",
+                side_effect=lambda *_: events.append("tag_create_api"),
             ),
             patch.object(probe, "_create_release", side_effect=probe.ProbeError("create failed")),
-            patch.object(probe.subprocess, "run", side_effect=fake_run),
         ):
             try:
                 probe.run_probe("gitee-actions-probe-test", directory)
@@ -117,9 +100,4 @@ def test_probe_cleans_tag_when_release_creation_fails():
             else:
                 raise AssertionError("probe should fail")
 
-        assert events == [
-            "local_tag_create",
-            "remote_tag_push",
-            "remote_tag_delete",
-            "local_tag_delete",
-        ]
+        assert events == ["tag_create_api"]
