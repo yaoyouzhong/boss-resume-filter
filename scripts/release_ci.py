@@ -34,10 +34,13 @@ from urllib.parse import quote
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
+SCRIPTS_DIR = Path(__file__).resolve().parent
+for import_path in (BASE_DIR, SCRIPTS_DIR):
+    if str(import_path) not in sys.path:
+        sys.path.insert(0, str(import_path))
 
 import build  # noqa: E402
+import release_content_review  # noqa: E402
 
 
 RELEASE_ARTIFACTS = (
@@ -114,7 +117,7 @@ def _normalize_version(value: str) -> str:
 
 
 def expected_authorization(version: str) -> str:
-    return f"正式发布 v{version}"
+    return f"确认正式发布 v{version}"
 
 
 def validate_authorization(version: str, authorization: str) -> None:
@@ -205,7 +208,9 @@ def prepare_release(
     version: str,
     authorization: str,
     *,
+    approved_content_sha: str = "",
     dry_run: bool = False,
+    reuse_reviewed_gate: bool = False,
     github_output: str | None = None,
 ) -> dict[str, str]:
     """Run the strict, mutation-free release preparation gate."""
@@ -219,15 +224,23 @@ def prepare_release(
             _fail("正式发布工作流只能从 master 触发")
 
     release_sha, resume = resolve_release_sha(version)
-    release_title, _release_notes = build._extract_changelog_release(version)
+    review = release_content_review.review_release_content(version, release_sha)
+    if not dry_run or reuse_reviewed_gate:
+        release_content_review.require_approved_content(review, approved_content_sha)
+    release_title = review["release_title"]
 
     # A local dry run may inspect an intentionally dirty implementation branch.
     # Hosted dry runs still start from a clean checkout, but do not need a
     # special code path.
-    build._preflight_checks(
-        require_clean=not dry_run,
-        strict_changelog=True,
-    )
+    if reuse_reviewed_gate:
+        if not dry_run:
+            _fail("复用内容审核门禁只允许用于本机无副作用预检")
+        print(f"  [OK] 复用已确认的本机严格门禁: {review['content_sha'][:12]}")
+    else:
+        build._preflight_checks(
+            require_clean=not dry_run,
+            strict_changelog=True,
+        )
 
     tag = f"v{version}"
     remote_assets = build._get_github_release_assets(tag) if resume else {}
@@ -244,18 +257,25 @@ def prepare_release(
         "resume": str(resume).lower(),
         "needs_windows": str(needs_windows).lower(),
         "needs_macos": str(needs_macos).lower(),
+        "content_sha": review["content_sha"],
     }
     _write_github_outputs(github_output, outputs)
+    result = {
+        **outputs,
+        "release_title": review["release_title"],
+        "release_body": review["release_body"],
+    }
 
     mode = "断点续跑" if resume else "首次发布"
     print(f"\n[OK] {tag} 发布准备通过（{mode}）")
     print(f"  发布提交: {release_sha}")
     print(f"  Release 标题: {release_title}")
+    print(f"  内容凭证: {review['content_sha'][:12]}")
     print(f"  Windows 构建: {'需要' if needs_windows else '复用'}")
     print(f"  macOS 构建: {'需要' if needs_macos else '复用'}")
     if dry_run:
         print("  Dry Run：未创建标签、未上传附件、未发布")
-    return outputs
+    return result
 
 
 def _notes_file(title: str, body: str) -> Path:
@@ -319,7 +339,18 @@ def require_local_gitee_access() -> str:
     return token
 
 
-def _sanitized_git_push(url: str, refspec: str, token: str) -> None:
+def _sanitized_git_push(
+    url: str,
+    refspec: str,
+    token: str,
+    *,
+    remote_ref: str = "",
+    expected_commit: str = "",
+) -> None:
+    if remote_ref and expected_commit:
+        if build._remote_ref_commit("gitee", remote_ref) == expected_commit:
+            print(f"  [跳过] Gitee {remote_ref} 已是目标提交")
+            return
     result = _run(
         ["git", "push", url, refspec],
         check=False,
@@ -327,6 +358,10 @@ def _sanitized_git_push(url: str, refspec: str, token: str) -> None:
     )
     if result.returncode == 0:
         return
+    if remote_ref and expected_commit:
+        if build._remote_ref_commit("gitee", remote_ref) == expected_commit:
+            print(f"  [OK] Gitee {remote_ref} 同值竞态已自动收敛")
+            return
     encoded = quote(token, safe="")
     detail = (result.stderr or result.stdout or "git push failed")
     detail = detail.replace(token, "***").replace(encoded, "***")
@@ -366,6 +401,8 @@ def _ensure_gitee_tag(tag: str, release_sha: str, token: str) -> None:
         _gitee_authenticated_url(token),
         f"refs/tags/{tag}:refs/tags/{tag}",
         token,
+        remote_ref=f"refs/tags/{tag}",
+        expected_commit=release_sha,
     )
     verified = build._remote_tag_commit("gitee", tag)
     if verified != release_sha:
@@ -603,6 +640,8 @@ def _commit_and_sync_manifest(
         _gitee_authenticated_url(gitee_token),
         "HEAD:refs/heads/master",
         gitee_token,
+        remote_ref="refs/heads/master",
+        expected_commit=current_master,
     )
     if build._remote_ref_commit("gitee", "refs/heads/master") != current_master:
         _fail("Gitee master 推送后校验失败")
@@ -671,6 +710,7 @@ def stage_github_release(
     version: str,
     authorization: str,
     release_sha: str,
+    approved_content_sha: str,
 ) -> None:
     """Stage the immutable tag and complete GitHub Draft on hosted Actions."""
     version = _normalize_version(version)
@@ -692,8 +732,11 @@ def stage_github_release(
     # Build jobs can run for tens of minutes. Recheck master immediately before
     # the first remote mutation, but leave all Gitee/public mutations to local.
     _fetch_and_assert_current_master_compatible(release_sha)
+    review = release_content_review.review_release_content(version, release_sha)
+    release_content_review.require_approved_content(review, approved_content_sha)
     tag = f"v{version}"
-    title, body = build._extract_changelog_release(version)
+    title = review["release_title"]
+    body = review["release_body"]
     tag_notes = _notes_file(title, body)
     try:
         _ensure_origin_tag(tag, release_sha, tag_notes)
@@ -709,6 +752,7 @@ def finalize_release_local(
     version: str,
     authorization: str,
     release_sha: str,
+    approved_content_sha: str,
 ) -> None:
     """Mirror staged artifacts from local machine, publish, and verify."""
     version = _normalize_version(version)
@@ -727,10 +771,13 @@ def finalize_release_local(
         _fail("发布提交版本与请求版本不一致")
     _fetch_and_assert_current_master_compatible(release_sha)
 
+    review = release_content_review.review_release_content(version, release_sha)
+    release_content_review.require_approved_content(review, approved_content_sha)
     tag = f"v{version}"
     if build._remote_tag_commit("origin", tag) != release_sha:
         _fail("GitHub 暂存未完成：远端 tag 缺失或指向不一致")
-    title, body = build._extract_changelog_release(version)
+    title = review["release_title"]
+    body = review["release_body"]
     info = build._get_github_release_info(tag)
     if info is None:
         _fail("GitHub 暂存未完成：Draft Release 不存在")
@@ -770,6 +817,7 @@ def _build_parser() -> argparse.ArgumentParser:
     prepare = subparsers.add_parser("prepare", help="运行无副作用严格门禁")
     prepare.add_argument("--version", required=True)
     prepare.add_argument("--authorization", required=True)
+    prepare.add_argument("--approved-content-sha", default="")
     prepare.add_argument("--github-output")
     prepare.add_argument("--dry-run", action="store_true")
 
@@ -777,11 +825,13 @@ def _build_parser() -> argparse.ArgumentParser:
     stage.add_argument("--version", required=True)
     stage.add_argument("--authorization", required=True)
     stage.add_argument("--release-sha", required=True)
+    stage.add_argument("--approved-content-sha", required=True)
 
     finalize = subparsers.add_parser("finalize-local", help="从本机镜像 Gitee 并公开发布")
     finalize.add_argument("--version", required=True)
     finalize.add_argument("--authorization", required=True)
     finalize.add_argument("--release-sha", required=True)
+    finalize.add_argument("--approved-content-sha", required=True)
 
     verify = subparsers.add_parser("verify-public", help="核验公开下载和在线清单")
     verify.add_argument("--version", required=True)
@@ -797,16 +847,23 @@ def main() -> int:
             prepare_release(
                 args.version,
                 args.authorization,
+                approved_content_sha=args.approved_content_sha,
                 dry_run=args.dry_run or env_dry_run,
                 github_output=args.github_output,
             )
         elif args.command == "stage-github":
-            stage_github_release(args.version, args.authorization, args.release_sha)
+            stage_github_release(
+                args.version, args.authorization, args.release_sha,
+                args.approved_content_sha,
+            )
         elif args.command == "finalize-local":
-            finalize_release_local(args.version, args.authorization, args.release_sha)
+            finalize_release_local(
+                args.version, args.authorization, args.release_sha,
+                args.approved_content_sha,
+            )
         else:
             verify_public_endpoints(args.version)
-    except ReleaseAutomationError as exc:
+    except (ReleaseAutomationError, release_content_review.ReleaseContentReviewError) as exc:
         print(f"[错误] {exc}")
         return 1
     return 0

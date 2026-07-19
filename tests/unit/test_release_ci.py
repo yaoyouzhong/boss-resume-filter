@@ -18,6 +18,15 @@ def _asset(size: int = 123) -> dict:
     return {"size": size, "digest": "sha256:" + "a" * 64}
 
 
+def _review() -> dict:
+    return {
+        "release_title": "v2.21 — Test",
+        "release_body": "### 新增功能\n\n- **Test**：Description",
+        "content_sha": "c" * 64,
+        "review_warnings": [],
+    }
+
+
 @contextmanager
 def _raises(error_type, message: str):
     try:
@@ -29,7 +38,7 @@ def _raises(error_type, message: str):
 
 
 def test_release_authorization_must_match_version_exactly():
-    release_ci.validate_authorization("2.21", "正式发布 v2.21")
+    release_ci.validate_authorization("2.21", "确认正式发布 v2.21")
 
     with _raises(release_ci.ReleaseAutomationError, "发布授权不匹配"):
         release_ci.validate_authorization("2.21", "release 2.21")
@@ -120,9 +129,9 @@ def test_prepare_reuses_complete_remote_artifacts_on_same_commit_resume():
             ),
             patch.object(release_ci, "resolve_release_sha", return_value=("a" * 40, True)),
             patch.object(
-                release_ci.build,
-                "_extract_changelog_release",
-                return_value=("v2.21 — Test", "### 新增功能\n\n- Test"),
+                release_ci.release_content_review,
+                "review_release_content",
+                return_value=_review(),
             ),
             patch.object(release_ci.build, "_preflight_checks") as preflight,
             patch.object(
@@ -133,7 +142,7 @@ def test_prepare_reuses_complete_remote_artifacts_on_same_commit_resume():
         ):
             result = release_ci.prepare_release(
                 "2.21",
-                "正式发布 v2.21",
+                "确认正式发布 v2.21",
                 dry_run=True,
                 github_output=str(output),
             )
@@ -160,7 +169,7 @@ def test_prepare_rejects_non_manual_github_actions_event():
         with _raises(release_ci.ReleaseAutomationError, "只能由 workflow_dispatch 手动触发"):
             release_ci.prepare_release(
                 "2.21",
-                "正式发布 v2.21",
+                "确认正式发布 v2.21",
                 dry_run=True,
             )
 
@@ -194,9 +203,9 @@ def test_stage_github_stops_after_draft_and_artifacts_are_complete():
                 side_effect=lambda *_: events.append("master_safe") or "a" * 40,
             ),
             patch.object(
-                release_ci.build,
-                "_extract_changelog_release",
-                return_value=("v2.21 — Test", "### 新增功能\n\n- Test"),
+                release_ci.release_content_review,
+                "review_release_content",
+                return_value=_review(),
             ),
             patch.object(release_ci, "_notes_file", return_value=notes_path),
             patch.object(release_ci, "_ensure_origin_tag", side_effect=lambda *_: events.append("tag")),
@@ -215,12 +224,34 @@ def test_stage_github_stops_after_draft_and_artifacts_are_complete():
             patch.object(release_ci, "_publish_gitee_artifacts") as gitee_publish,
             patch.object(release_ci, "_publish_github_release") as github_publish,
         ):
-            release_ci.stage_github_release("2.21", "正式发布 v2.21", "a" * 40)
+            release_ci.stage_github_release(
+                "2.21", "确认正式发布 v2.21", "a" * 40, "c" * 64,
+            )
 
         assert events == ["master_safe", "tag", "github_draft", "github_assets"]
         gitee_publish.assert_not_called()
         github_publish.assert_not_called()
 
+
+def test_confirmed_local_preview_reuses_gate_only_for_the_same_content():
+    with (
+        patch.object(release_ci, "resolve_release_sha", return_value=("a" * 40, False)),
+        patch.object(
+            release_ci.release_content_review,
+            "review_release_content",
+            return_value=_review(),
+        ),
+        patch.object(release_ci.build, "_preflight_checks") as preflight,
+        patch.object(release_ci.build, "_get_github_release_assets", return_value={}),
+    ):
+        release_ci.prepare_release(
+            "2.21",
+            "确认正式发布 v2.21",
+            approved_content_sha="c" * 64,
+            dry_run=True,
+            reuse_reviewed_gate=True,
+        )
+    preflight.assert_not_called()
 
 def test_finalize_local_exposes_release_only_after_gitee_is_complete():
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -251,9 +282,9 @@ def test_finalize_local_exposes_release_only_after_gitee_is_complete():
             ),
             patch.object(release_ci.build, "_remote_tag_commit", return_value="a" * 40),
             patch.object(
-                release_ci.build,
-                "_extract_changelog_release",
-                return_value=("v2.21 — Test", "### 新增功能\n\n- Test"),
+                release_ci.release_content_review,
+                "review_release_content",
+                return_value=_review(),
             ),
             patch.object(release_ci.build, "_get_github_release_info", return_value={"isDraft": True}),
             patch.object(
@@ -294,7 +325,9 @@ def test_finalize_local_exposes_release_only_after_gitee_is_complete():
                 side_effect=lambda *_: events.append("public_verify"),
             ),
         ):
-            release_ci.finalize_release_local("2.21", "正式发布 v2.21", "a" * 40)
+            release_ci.finalize_release_local(
+                "2.21", "确认正式发布 v2.21", "a" * 40, "c" * 64,
+            )
 
         assert events.count("master_safe") == 2
         assert events.index("download_verify") < events.index("gitee_assets")
@@ -307,6 +340,27 @@ def test_gitee_large_upload_is_rejected_on_github_actions():
     with patch.dict(release_ci.os.environ, {"GITHUB_ACTIONS": "true", "GITEE_TOKEN": "token"}):
         with _raises(release_ci.ReleaseAutomationError, "禁止在 GitHub Actions 中上传"):
             release_ci.require_local_gitee_access()
+
+
+def test_gitee_same_value_push_race_is_treated_as_idempotent_success():
+    failed = release_ci.subprocess.CompletedProcess(
+        ["git", "push"], 1, stdout="", stderr="incorrect old value provided",
+    )
+    with (
+        patch.object(release_ci, "_run", return_value=failed),
+        patch.object(
+            release_ci.build,
+            "_remote_ref_commit",
+            side_effect=["a" * 40, "b" * 40],
+        ),
+    ):
+        release_ci._sanitized_git_push(
+            "https://token.invalid/repo.git",
+            "HEAD:refs/heads/master",
+            "token",
+            remote_ref="refs/heads/master",
+            expected_commit="b" * 40,
+        )
 
 
 def test_local_gitee_resume_reuses_existing_same_size_staged_assets():

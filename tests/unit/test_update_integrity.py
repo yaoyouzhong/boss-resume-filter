@@ -1,11 +1,44 @@
 import contextlib
+import inspect
 import io
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import build
 import updater
+
+
+def test_release_note_recovery_never_commits_local_files_and_requires_final_verify():
+    source = inspect.getsource(build._sync_release_notes)
+    assert '"git", "commit"' not in source
+    assert "_verify_release_remote_state(version)" in source
+    assert "latest.json.release_notes" in source
+
+
+def test_prepared_ci_build_is_bound_to_the_exact_workflow_commit():
+    completed = build.subprocess.CompletedProcess(
+        ["git", "rev-parse", "HEAD"], 0, stdout="a" * 40 + "\n", stderr="",
+    )
+    with (
+        patch.dict(build.os.environ, {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+        }),
+        patch.object(build.subprocess, "run", return_value=completed),
+        patch.object(build, "_check_source_compiles") as compile_check,
+    ):
+        build._validate_prepared_ci_build("a" * 40)
+    compile_check.assert_called_once_with()
+
+    with patch.dict(build.os.environ, {}, clear=True):
+        try:
+            build._validate_prepared_ci_build("a" * 40)
+        except SystemExit as exc:
+            assert exc.code == 1
+        else:
+            raise AssertionError("local callers must not skip the strict release gate")
 
 
 def test_changelog_coverage_does_not_block_on_prompt_schema_or_internal_status():

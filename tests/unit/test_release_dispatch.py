@@ -33,6 +33,9 @@ def _plan(*, published: bool = False, staged: bool | None = None, runs=None):
         "resume": "true" if staged else "false",
         "needs_windows": "false" if staged else "true",
         "needs_macos": "false" if staged else "true",
+        "release_title": "v2.22 — Test",
+        "release_body": "### 新增功能\n\n- **Test**：Description",
+        "content_sha": "c" * 64,
         "staged": staged,
         "published": published,
         "runs": runs or [],
@@ -92,6 +95,9 @@ def test_preflight_reuses_hosted_prepare_contract_after_local_remote_checks():
         "resume": "false",
         "needs_windows": "true",
         "needs_macos": "true",
+        "release_title": "v2.22 — Test",
+        "release_body": "### 新增功能\n\n- **Test**：Description",
+        "content_sha": "c" * 64,
     }
     with (
         patch.object(release_dispatch, "_git_text", side_effect=fake_git_text),
@@ -106,7 +112,13 @@ def test_preflight_reuses_hosted_prepare_contract_after_local_remote_checks():
         result = release_dispatch.preflight("2.22")
 
     assert result["release_sha"] == "a" * 40
-    prepare.assert_called_once_with("2.22", "正式发布 v2.22", dry_run=True)
+    prepare.assert_called_once_with(
+        "2.22",
+        "确认正式发布 v2.22",
+        approved_content_sha="",
+        dry_run=True,
+        reuse_reviewed_gate=False,
+    )
     assert run.call_count == 3
 
 
@@ -124,6 +136,22 @@ def test_preview_never_dispatches_or_waits():
     wait.assert_not_called()
 
 
+def test_execute_requires_the_exact_content_review_evidence():
+    plan = _plan()
+    with (
+        patch.object(release_dispatch, "preflight", return_value=plan),
+        patch.object(release_dispatch, "_dispatch_workflow") as dispatch,
+    ):
+        with _raises(release_dispatch.ReleaseDispatchError, "必须重新展示并确认"):
+            release_dispatch.dispatch_release(
+                "2.22",
+                execute=True,
+                authorization="确认正式发布 v2.22",
+                approved_content_sha="d" * 64,
+            )
+    dispatch.assert_not_called()
+
+
 def test_completed_public_release_is_verified_without_dispatching_again():
     plan = _plan(published=True)
     finished = {"mode": "already_published"}
@@ -135,7 +163,8 @@ def test_completed_public_release_is_verified_without_dispatching_again():
         result = release_dispatch.dispatch_release(
             "2.22",
             execute=True,
-            authorization="正式发布 v2.22",
+            authorization="确认正式发布 v2.22",
+            approved_content_sha="c" * 64,
         )
 
     assert result == finished
@@ -162,13 +191,16 @@ def test_execute_reuses_active_matching_run_instead_of_dispatching_duplicate():
         result = release_dispatch.dispatch_release(
             "2.22",
             execute=True,
-            authorization="正式发布 v2.22",
+            authorization="确认正式发布 v2.22",
+            approved_content_sha="c" * 64,
         )
 
     assert result["mode"] == "published"
     dispatch.assert_not_called()
     wait.assert_called_once_with(101, timeout=release_dispatch.DEFAULT_RELEASE_TIMEOUT, poll_interval=15)
-    finalize.assert_called_once_with("2.22", "正式发布 v2.22", "a" * 40)
+    finalize.assert_called_once_with(
+        "2.22", "确认正式发布 v2.22", "a" * 40, "c" * 64,
+    )
     finish.assert_called_once_with("2.22", completed)
 
 
@@ -215,14 +247,17 @@ def test_execute_snapshots_runs_dispatches_discovers_waits_and_finishes():
         result = release_dispatch.dispatch_release(
             "2.22",
             execute=True,
-            authorization="正式发布 v2.22",
+            authorization="确认正式发布 v2.22",
+            approved_content_sha="c" * 64,
             timeout=100,
             poll_interval=2,
         )
 
     assert result["mode"] == "published"
     assert events == ["local_access", "dispatch", "discover", "wait", "finalize", "finish"]
-    dispatch.assert_called_once_with("2.22", "正式发布 v2.22")
+    dispatch.assert_called_once_with(
+        "2.22", "确认正式发布 v2.22", "c" * 64,
+    )
     discover.assert_called_once_with("2.22", "a" * 40, {99})
 
 
@@ -248,14 +283,17 @@ def test_staged_github_release_skips_actions_and_finalizes_locally():
         result = release_dispatch.dispatch_release(
             "2.22",
             execute=True,
-            authorization="正式发布 v2.22",
+            authorization="确认正式发布 v2.22",
+            approved_content_sha="c" * 64,
         )
 
     assert result["mode"] == "published"
     assert events == ["finalize", "finish"]
     dispatch.assert_not_called()
     wait.assert_not_called()
-    finalize.assert_called_once_with("2.22", "正式发布 v2.22", "a" * 40)
+    finalize.assert_called_once_with(
+        "2.22", "确认正式发布 v2.22", "a" * 40, "c" * 64,
+    )
 
 
 def test_wait_for_run_reports_progress_then_accepts_only_success():

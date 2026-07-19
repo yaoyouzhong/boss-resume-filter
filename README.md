@@ -292,6 +292,7 @@ boss-resume-filter/
 │   ├── release_prepare.py # 本地版本准备、门禁与提交
 │   ├── release_dispatch.py # 正式发布触发、监控与验收
 │   ├── release_ci.py   # GitHub 暂存、本机镜像与正式发布规则
+│   ├── release_content_review.py # 发布内容审核与内部凭证绑定
 │   └── watch_progress.py # 本地打包进度监控脚本
 ├── pyinstaller-hooks/    # PyInstaller 自定义 hook（控制模块收集范围，减小产物体积）
 └── .build_progress.json  # 发布进度文件（build.py 实时更新，供外部监控）

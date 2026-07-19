@@ -15,7 +15,7 @@
 
 ### 正式发布（Actions 构建 + 本机镜像）
 
-正式发布的唯一用户入口是本机 `scripts/release_dispatch.py`。PR 合并和正式发布是两个独立授权点：合并 `master` 不会自动发布；只有准确提供“正式发布 vX.Y”才会进入发布流程。本机驱动器负责预检、触发 Actions 暂存、Gitee 镜像、公开发布和最终验收：
+正式发布的唯一用户入口是本机 `scripts/release_dispatch.py`。PR 合并后必须先运行只读预览，脚本会完整展示标题、正文和内容审核结果。用户确认“确认正式发布 vX.Y”后，内容凭证由脚本在后台传给 Actions；用户无需手工复制摘要。版本、提交、标题或正文任一变化都会使旧确认失效。
 
 ```bash
 # 默认只读预览，不触发 Actions
@@ -24,7 +24,8 @@ python scripts/release_dispatch.py --version 2.22
 # 精确授权后触发、等待并核验公开版本
 python scripts/release_dispatch.py --version 2.22 \
   --execute \
-  --authorization="正式发布 v2.22"
+  --authorization="确认正式发布 v2.22" \
+  --approved-content-sha="<预览输出的内部凭证>"
 ```
 
 确定性发布规则仍统一放在 `scripts/release_ci.py`，不是两套实现；`.github/workflows/release.yml` 只运行其中的 GitHub 暂存阶段，本机驱动器运行 Gitee 镜像和最终发布阶段。不要把 Actions 暂存任务成功误判为正式版本已经公开。
@@ -111,8 +112,8 @@ python scripts/release_delivery.py --version 2.22 --notes-file "<项目目录外
 # 发布准备分支交付后：只读预览正式发布
 python scripts/release_dispatch.py --version 2.22
 
-# PR 合并后正式发布（单独授权、自动等待和验收）
-python scripts/release_dispatch.py --version 2.22 --execute --authorization "正式发布 v2.22"
+# 用户确认预览内容后正式发布（内容凭证由调用方传入）
+python scripts/release_dispatch.py --version 2.22 --execute --authorization "确认正式发布 v2.22" --approved-content-sha "<sha256>"
 
 # 发布完成后只读核验 GitHub/Gitee、附件和 latest.json
 python build.py --verify-release 2.5
@@ -366,7 +367,7 @@ pip install -r requirements.txt pyinstaller
 python3 build.py
 
 # 正式发布由 GitHub Actions 双平台构建，不在 Mac 本地执行
-python3 scripts/release_dispatch.py --version 2.22 --execute --authorization="正式发布 v2.22"
+python3 scripts/release_dispatch.py --version 2.22 --execute --authorization="确认正式发布 v2.22" --approved-content-sha="<sha256>"
 ```
 
 ### 3. 输出文件

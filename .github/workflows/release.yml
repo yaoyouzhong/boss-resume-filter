@@ -9,8 +9,13 @@ on:
         required: true
         type: string
       authorization:
-        description: "Exact authorization text: 正式发布 vX.Y"
+        description: "Exact authorization text: 确认正式发布 vX.Y"
         required: true
+        type: string
+      content_sha:
+        description: "Internal content approval digest from release_dispatch.py"
+        required: false
+        default: ""
         type: string
       dry_run:
         description: "Run the strict gate only; do not build, tag, push, or publish"
@@ -42,6 +47,7 @@ jobs:
       resume: ${{ steps.prepare.outputs.resume }}
       needs_windows: ${{ steps.prepare.outputs.needs_windows }}
       needs_macos: ${{ steps.prepare.outputs.needs_macos }}
+      content_sha: ${{ steps.prepare.outputs.content_sha }}
 
     steps:
       - name: Checkout master
@@ -66,10 +72,12 @@ jobs:
           RELEASE_DRY_RUN: ${{ inputs.dry_run }}
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_AUTHORIZATION: ${{ inputs.authorization }}
+          RELEASE_CONTENT_SHA: ${{ inputs.content_sha }}
         run: >-
           python scripts/release_ci.py prepare
           --version "$env:RELEASE_VERSION"
           --authorization "$env:RELEASE_AUTHORIZATION"
+          --approved-content-sha "$env:RELEASE_CONTENT_SHA"
           --github-output "$env:GITHUB_OUTPUT"
 
   build_windows:
@@ -97,7 +105,9 @@ jobs:
         run: python -m pip install -r requirements.txt pyinstaller
 
       - name: Build and verify Windows package
-        run: python build.py --ci --release --strict-changelog
+        env:
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+        run: python build.py --ci --release --strict-changelog --prepared-sha "$env:RELEASE_SHA"
 
       - name: Upload Windows workflow artifact
         uses: actions/upload-artifact@v4
@@ -132,7 +142,9 @@ jobs:
         run: python -m pip install -r requirements.txt pyinstaller dmgbuild
 
       - name: Build and verify macOS packages
-        run: python build.py --ci --release --strict-changelog
+        env:
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+        run: python build.py --ci --release --strict-changelog --prepared-sha "$RELEASE_SHA"
 
       - name: Upload macOS workflow artifacts
         uses: actions/upload-artifact@v4
@@ -195,9 +207,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           RELEASE_AUTHORIZATION: ${{ inputs.authorization }}
+          RELEASE_CONTENT_SHA: ${{ needs.prepare.outputs.content_sha }}
           RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
         run: >-
           python scripts/release_ci.py stage-github
           --version "$env:RELEASE_VERSION"
           --authorization "$env:RELEASE_AUTHORIZATION"
+          --approved-content-sha "$env:RELEASE_CONTENT_SHA"
           --release-sha "$env:RELEASE_SHA"

@@ -13,6 +13,7 @@ STYLE_KEYWORDS = (
     "正则", "OR 条件", "AND 条件", "provider", "keyring", "DPI", "sha256", "SHA256",
     "locale-data", "openpyxl", "srcdoc", "iframe", "greet_context", "latest.json",
     "job_config.json", "api_config.json", "selectors.json", "ui_config.json",
+    "Icon", "Sort",
 )
 
 

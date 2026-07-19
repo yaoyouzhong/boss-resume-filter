@@ -440,6 +440,7 @@ def deliver(
     execute: bool = False,
     authorization: str = "",
     title: str | None = None,
+    run_local_tests: bool = True,
     timeout: int = DEFAULT_CHECK_TIMEOUT,
     poll_interval: int = DEFAULT_POLL_INTERVAL,
 ) -> dict[str, Any]:
@@ -462,7 +463,11 @@ def deliver(
         result = finalize_delivery(branch, merge_sha)
         return {"mode": "execute", "pr": existing_pr, **result}
 
-    gate = preflight(branch)
+    gate = (
+        preflight(branch)
+        if run_local_tests
+        else preflight(branch, run_tests=False)
+    )
     if not execute:
         print("\n[预览] 本地门禁通过；未 push、未创建 PR、未合并、未清理")
         print(f"  执行授权: {expected_authorization(branch)}")

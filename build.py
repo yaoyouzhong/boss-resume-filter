@@ -1640,6 +1640,28 @@ def _preflight_checks(require_clean=True, strict_changelog=False):
     print(">>> 发布前检查通过\n")
 
 
+def _validate_prepared_ci_build(prepared_sha):
+    """Allow build jobs to reuse the strict gate from the same workflow SHA."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        print("错误: --prepared-sha 只能在 GitHub Actions 中使用")
+        sys.exit(1)
+    if os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
+        print("错误: --prepared-sha 只能用于手动正式发布工作流")
+        sys.exit(1)
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", prepared_sha or ""):
+        print("错误: --prepared-sha 必须是完整的 Git 提交 SHA")
+        sys.exit(1)
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=BASE_DIR,
+        capture_output=True, text=True, check=True,
+    )
+    if result.stdout.strip().lower() != prepared_sha.lower():
+        print("错误: 打包任务检出的提交与严格门禁通过的提交不一致")
+        sys.exit(1)
+    _check_source_compiles()
+    print(f"  [OK] 复用同一工作流的严格门禁: {prepared_sha[:12]}")
+
+
 def _read_version():
     """AST 解析 gui_main.py 提取 __version__"""
     gui_path = BASE_DIR / "gui_main.py"
@@ -2510,50 +2532,59 @@ def _extract_changelog_release(version):
     return title, body
 
 
-def _update_latest_json_release_notes(release_notes):
-    """更新 latest.json 的 release_notes 字段，提交并提示用户推送。"""
-    latest_path = BASE_DIR / "latest.json"
-    if not latest_path.exists():
-        print("  [跳过] latest.json 不存在")
-        return
-
-    try:
-        data = json.loads(latest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        print(f"  [跳过] latest.json 读取失败: {e}")
-        return
-
-    old_notes = data.get("release_notes", "")
-    if old_notes.strip() == release_notes.strip():
-        print("  [跳过] latest.json release_notes 已是最新")
-        return
-
-    data["release_notes"] = release_notes
-    latest_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    print("  [OK] latest.json release_notes 已更新")
-
-    try:
-        subprocess.run(
-            ["git", "add", "latest.json"],
-            cwd=BASE_DIR, check=True, capture_output=True,
-        )
-        subprocess.run(
-            ["git", "commit", "-m", f"chore: sync release_notes v{data.get('version', '?')}"],
-            cwd=BASE_DIR, check=True, capture_output=True,
-        )
-        print("  [OK] latest.json 已提交，请手动 git push")
-    except subprocess.CalledProcessError as e:
-        print(f"  [警告] latest.json 提交失败: {e}")
-
-
 def _sync_release_notes():
-    """从 CHANGELOG.md 同步 Release 说明到 GitHub、Gitee 和 latest.json，不重新打包。"""
+    """从已推送的 CHANGELOG 恢复同步 GitHub/Gitee Release 说明。"""
     version = _read_version()
     tag = f"v{version}"
     release_title, release_notes = _extract_changelog_release(version)
+
+    branch = subprocess.run(
+        ["git", "branch", "--show-current"], cwd=BASE_DIR,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    has_changes, status_text = _git_status()
+    if branch != "master" or has_changes:
+        print("错误: Release 说明恢复只能从干净的 master 执行")
+        if status_text:
+            print(status_text)
+        sys.exit(1)
+    subprocess.run(["git", "fetch", "origin", "master"], cwd=BASE_DIR, check=True)
+    subprocess.run(["git", "fetch", "gitee", "master"], cwd=BASE_DIR, check=True)
+    head = _local_ref_commit("HEAD")
+    origin_master = _remote_ref_commit("origin", "refs/heads/master")
+    gitee_master = _remote_ref_commit("gitee", "refs/heads/master")
+    if not head or head != origin_master or head != gitee_master:
+        print("错误: 本地、GitHub 和 Gitee master 必须先完全一致")
+        sys.exit(1)
+
+    latest = json.loads((BASE_DIR / "latest.json").read_text(encoding="utf-8"))
+    if str(latest.get("version", "")).lstrip("v") != version:
+        print("错误: latest.json 版本与当前版本不一致")
+        sys.exit(1)
+    if _normalize_markdown(latest.get("release_notes", "")) != _normalize_markdown(release_notes):
+        print("错误: 请先同步、提交并推送 latest.json.release_notes")
+        sys.exit(1)
+
+    token = os.environ.get("GITEE_TOKEN", "")
+    if not token or not _gitee_ping(token):
+        print("错误: Gitee 访问预检未通过，未修改任何公开 Release")
+        sys.exit(1)
+    owner = "yaoyouzhong"
+    repo = "boss-resume-filter"
+    api_base = f"https://gitee.com/api/v5/repos/{owner}/{repo}"
+    try:
+        gitee_release = requests.get(
+            f"{api_base}/releases/tags/{tag}",
+            params={"access_token": token},
+            timeout=15,
+        )
+    except requests.exceptions.RequestException as e:
+        print(f"错误: Gitee Release 预检失败: {e}")
+        sys.exit(1)
+    if gitee_release.status_code != 200:
+        print(f"错误: Gitee Release {tag} 不存在或查询失败 ({gitee_release.status_code})")
+        sys.exit(1)
+    release_id = gitee_release.json()["id"]
 
     print(f"\n>>> 同步 Release 说明到 {tag}")
     print(f"  标题: {release_title}")
@@ -2586,30 +2617,8 @@ def _sync_release_notes():
     finally:
         _notes_file.unlink(missing_ok=True)
 
-    # 2. latest.json（本地 + 推送，保证 GUI 远端说明一致）
-    _update_latest_json_release_notes(release_notes)
-
-    # 3. Gitee Release
-    token = os.environ.get("GITEE_TOKEN", "")
-    if not token:
-        print("  [跳过] Gitee Release 更新：未设置 GITEE_TOKEN")
-        return
-
-    owner = "yaoyouzhong"
-    repo = "boss-resume-filter"
-    api_base = f"https://gitee.com/api/v5/repos/{owner}/{repo}"
-
+    # 2. Gitee Release
     try:
-        resp = requests.get(
-            f"{api_base}/releases/tags/{tag}",
-            params={"access_token": token},
-            timeout=15,
-        )
-        if resp.status_code != 200:
-            print(f"  [跳过] Gitee Release {tag} 不存在或查询失败 ({resp.status_code})")
-            return
-
-        release_id = resp.json()["id"]
         resp = requests.patch(
             f"{api_base}/releases/{release_id}",
             params={"access_token": token},
@@ -2624,8 +2633,14 @@ def _sync_release_notes():
             print(f"  [OK] Gitee Release {tag} 说明已更新")
         else:
             print(f"  [错误] Gitee Release 更新失败: {resp.status_code} {resp.text[:200]}")
+            sys.exit(1)
     except requests.exceptions.RequestException as e:
         print(f"  [错误] Gitee API 请求失败: {e}")
+        sys.exit(1)
+
+    if not _verify_release_remote_state(version):
+        print("  [错误] Release 说明同步后验收未通过")
+        sys.exit(1)
 
     print(f"\n>>> Release 说明同步完成")
 
@@ -4442,18 +4457,17 @@ def main():
                         help="修正 CHANGELOG 后同步 GitHub + Gitee Release 说明，不重新打包")
     parser.add_argument("--strict-changelog", action="store_true",
                         help="将 CHANGELOG 启发式覆盖、README 逐条镜像和 latest.json 同步检查作为硬门禁")
+    parser.add_argument("--prepared-sha", default="", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if args.release and not args.ci:
         requested_version = (args.version or _read_version()).removeprefix("v")
         _validate_version_format(requested_version)
-        authorization = f"正式发布 v{requested_version}"
         print("本地 build.py --release 已停用，避免绕过正式发布编排。")
-        print("请在 PR 合并后单独授权，并从本机启动正式发布：")
+        print("请在 PR 合并后先预览并确认最终发布内容：")
         print(
             "  python scripts/release_dispatch.py "
-            f"--version {requested_version} --execute "
-            f"--authorization \"{authorization}\""
+            f"--version {requested_version}"
         )
         sys.exit(2)
 
@@ -4679,7 +4693,16 @@ def main():
 
     # ---- 步骤 1：发布前检查 ----
     progress.start_step(0)
-    _preflight_checks(require_clean=not version_changed, strict_changelog=args.strict_changelog)
+    if args.prepared_sha:
+        if not (args.ci and args.release):
+            print("错误: --prepared-sha 必须与 --ci --release 同时使用")
+            sys.exit(1)
+        _validate_prepared_ci_build(args.prepared_sha)
+    else:
+        _preflight_checks(
+            require_clean=not version_changed,
+            strict_changelog=args.strict_changelog,
+        )
     progress.end_step()
 
     tk_args, pyinstaller_env = _pyinstaller_tk_args()

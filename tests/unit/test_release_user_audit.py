@@ -75,3 +75,18 @@ def test_summarize_release_user_audit_reports_blocking_status():
     ])
 
     assert "不建议发布" in text
+
+
+def test_release_user_audit_flags_unnecessary_english_ui_terms():
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_project(
+            tmp,
+            changelog=(
+                "## v9.9.9 — Test\n\n"
+                "### 体验优化\n\n"
+                "- **界面优化**：统一状态图标（Icon）。\n"
+            ),
+        )
+        issues = audit_user_facing_release(tmp)
+
+    assert any(issue.title == "CHANGELOG 含内部实现表述" for issue in issues)

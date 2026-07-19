@@ -92,6 +92,7 @@ def test_execute_composes_existing_transactions_in_order_with_internal_authoriza
         assert args == ("codex/release-v2.22",)
         assert kwargs["authorization"] == "一键交付分支 codex/release-v2.22"
         assert kwargs["title"] == "chore: 准备 v2.22 正式发布"
+        assert kwargs["run_local_tests"] is False
         return delivered
 
     with (
