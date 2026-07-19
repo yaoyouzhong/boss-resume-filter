@@ -445,6 +445,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    release_prepare.build.run_in_venv(__file__)
     args = _build_parser().parse_args()
     try:
         dispatch_release(

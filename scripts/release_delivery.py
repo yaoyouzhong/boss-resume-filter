@@ -142,6 +142,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    release_prepare.build.run_in_venv(__file__)
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")

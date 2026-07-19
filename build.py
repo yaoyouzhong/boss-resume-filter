@@ -442,8 +442,8 @@ def _pyinstaller_tk_args():
     ], env
 
 
-def run_in_venv():
-    """如果在系统 Python 中运行，切换到 pack_venv 执行"""
+def run_in_venv(entrypoint: str | Path | None = None) -> None:
+    """如果在系统 Python 中运行，使用 pack_venv 重新启动指定入口。"""
     if Path(sys.executable).resolve() != VENV_PYTHON.resolve():
         if not VENV_PYTHON.exists():
             print(f"[错误] 虚拟环境不存在：{VENV_DIR}")
@@ -452,8 +452,9 @@ def run_in_venv():
             else:
                 print("请先创建：python -m venv pack_venv && pack_venv\\Scripts\\activate && pip install -r requirements.txt pyinstaller")
             sys.exit(1)
-        print(f"[使用虚拟环境] {VENV_PYTHON}")
-        result = subprocess.run([str(VENV_PYTHON), __file__] + sys.argv[1:])
+        target = Path(entrypoint or __file__).resolve()
+        print(f"[使用虚拟环境] {VENV_PYTHON}", flush=True)
+        result = subprocess.run([str(VENV_PYTHON), str(target), *sys.argv[1:]])
         sys.exit(result.returncode)
 
 

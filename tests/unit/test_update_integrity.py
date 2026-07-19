@@ -10,6 +10,43 @@ import build
 import updater
 
 
+def test_run_in_venv_relaunches_the_requested_release_entrypoint():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        current_python = root / "system" / "python.exe"
+        project_python = root / "pack_venv" / "Scripts" / "python.exe"
+        entrypoint = root / "scripts" / "release_delivery.py"
+        project_python.parent.mkdir(parents=True)
+        project_python.touch()
+        entrypoint.parent.mkdir(parents=True)
+        entrypoint.touch()
+        completed = build.subprocess.CompletedProcess([], 0)
+
+        with (
+            patch.object(build, "VENV_PYTHON", project_python),
+            patch.object(build.sys, "executable", str(current_python)),
+            patch.object(
+                build.sys,
+                "argv",
+                ["release_delivery.py", "--version", "2.24"],
+            ),
+            patch.object(build.subprocess, "run", return_value=completed) as run,
+        ):
+            try:
+                build.run_in_venv(entrypoint)
+            except SystemExit as exc:
+                assert exc.code == 0
+            else:
+                raise AssertionError("system Python must hand off to pack_venv")
+
+    run.assert_called_once_with([
+        str(project_python),
+        str(entrypoint.resolve()),
+        "--version",
+        "2.24",
+    ])
+
+
 def test_release_note_recovery_never_commits_local_files_and_requires_final_verify():
     source = inspect.getsource(build._sync_release_notes)
     assert '"git", "commit"' not in source

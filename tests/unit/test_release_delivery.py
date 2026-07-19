@@ -1,4 +1,5 @@
 import importlib.util
+from argparse import Namespace
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -50,6 +51,36 @@ def test_combined_authorization_must_match_before_repository_inspection():
                 authorization="一键准备版本 v2.22",
             )
     inspect.assert_not_called()
+
+
+def test_main_switches_to_pack_venv_before_combined_delivery():
+    events = []
+    args = Namespace(
+        version="2.22",
+        notes_file=None,
+        execute=False,
+        authorization="",
+        timeout=30,
+        poll_interval=2,
+    )
+    with (
+        patch.object(
+            release_delivery.release_prepare.build,
+            "run_in_venv",
+            side_effect=lambda *_: events.append("venv"),
+        ) as run_in_venv,
+        patch.object(release_delivery, "_build_parser") as build_parser,
+        patch.object(
+            release_delivery,
+            "deliver_release_preparation",
+            side_effect=lambda *_args, **_kwargs: events.append("deliver"),
+        ),
+    ):
+        build_parser.return_value.parse_args.return_value = args
+        assert release_delivery.main() == 0
+
+    run_in_venv.assert_called_once_with(release_delivery.__file__)
+    assert events == ["venv", "deliver"]
 
 
 def test_preview_only_inspects_and_does_not_enter_mutating_executors():
