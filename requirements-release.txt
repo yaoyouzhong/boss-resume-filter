@@ -1,0 +1,3 @@
+# 发布编排和 Gitee 流式上传的最小依赖
+requests>=2.31.0
+requests-toolbelt>=1.0.0

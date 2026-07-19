@@ -1,0 +1,69 @@
+name: Gitee Upload Probe
+
+on:
+  push:
+    branches:
+      - codex/direct-gitee-actions
+    paths:
+      - ".github/workflows/gitee-upload-probe.yml"
+      - "requirements-release.txt"
+      - "scripts/gitee_actions_probe.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitee-upload-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Upload real-sized artifacts from GitHub to Gitee
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout probe branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-release.txt
+
+      - name: Install minimal release dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-release.txt
+
+      - name: Download the three current release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          gh release download v2.23.1
+          --dir dist
+          --pattern BOSS_ResumeFilter.exe
+          --pattern BOSS_ResumeFilter_mac.zip
+          --pattern BOSS_ResumeFilter.dmg
+
+      - name: Probe serial Gitee uploads and clean up
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          PROBE_TAG: gitee-actions-probe-${{ github.run_id }}
+        run: >-
+          python -u scripts/gitee_actions_probe.py
+          --tag "$PROBE_TAG"
+          --artifact-dir dist
+
+      - name: Upload probe state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitee-upload-probe-state-${{ github.run_id }}
+          path: .release_state.json
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
