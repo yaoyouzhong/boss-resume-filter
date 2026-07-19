@@ -1,29 +1,29 @@
 {
-  "version": "2.22",
-  "release_date": "2026-07-18",
+  "version": "2.23",
+  "release_date": "2026-07-19",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.22/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.22/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.22/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "macos_dmg": {
-      "size": 33447425,
-      "sha256": "094eb17e743925b6b1304bbc397d335220e73a421f0d1dea7ebde90f0d9c7c6a"
+      "size": 33504068,
+      "sha256": "8abd195330092f25fa31f703076e515d47e0409be3b9cbe97d01b46cfac2c298"
     },
     "windows": {
-      "size": 35673489,
-      "sha256": "7c49dec986286429f37d91bd3db608627d5ad6a9bae37c8a19881c31de6c397b"
+      "size": 35728036,
+      "sha256": "f1d4f0d0c08f845809dac887c34cf8a5f82cce7b132132bfd3da3082297a4c0b"
     },
     "macos": {
-      "size": 34220488,
-      "sha256": "555954794ea341a3d27aede32094c454256088dd3f0b4d086cd918dbb1806649"
+      "size": 34273812,
+      "sha256": "639a5153f2bd569a191334547f4f58ad1badfd51aaf8a999c20b2c63cb494126"
     }
   },
-  "release_notes": "### 新增功能\n\n- **下次跟进计划**：更新候选人跟进状态时可安排下次处理日期，并提供今天、明天、3 天后、7 天后和不设置等快捷选项\n- **快捷跟进操作**：可在今日待办、状态体检和候选人复核入口直接标记已回复、推进待约面或安排明天跟进\n- **待办时间分层**：今日待办按立即处理、已逾期、今天、待安排和以后区分处理时点，待复核、待约面和面试后待反馈等任务按统一层级展示，未来任务不再计入今日人数\n- **跟进状态体检扩展**：自动检查无效日期、结束状态仍有提醒、待约面未安排日期等问题，并给出对应处理建议\n\n### 体验优化\n\n- **跟进信息贯通**：下次跟进日期会在候选人详情、待办报告、状态体检和 Excel 导出中保持一致，重复扫描后继续保留最新安排\n- **状态信息查看优化**：候选人状态体检的问题类型、具体问题和处理建议支持悬停查看完整内容，长文本不再受列宽限制\n- **跟进状态刷新**：更新候选人状态后同步刷新首页、数据统计、筛选结果和待办内容，避免不同页面显示旧状态\n- **岗位复盘口径优化**：岗位复盘纳入全部反馈样本，低分误杀不再被通过线排除；样本不足时只展示已有原因和谨慎建议，岗位配置缺失时可直接前往配置\n\n### 问题修复\n\n- **候选人联系状态修复**：已有后续跟进状态的候选人不再因旧沟通标记缺失而重复进入联系清单",
+  "release_notes": "### 新增功能\n\n- **全局快捷操作**：新增 Ctrl+S 保存、F5 按页刷新、Ctrl+F 聚焦结果搜索、Delete 移除选中以及 Ctrl+1～7 切换页面，常用操作无需反复移动鼠标\n- **待核实状态提醒**：筛选结果导航增加联系清单待核实人数角标，保存、刷新和候选人处理结果通过底部状态提示及时反馈\n\n### 体验优化\n\n- **页面打开与切换提速**：岗位配置、运行控制和系统设置按需分段打开并缓存，首次进入先显示加载状态，重复切换更加流畅\n- **结果处理响应优化**：Excel 导出改为后台执行，F5 只刷新当前页面的数据，减少导出、刷新或切页期间的界面停顿\n- **界面主题与布局统一**：统一品牌蓝色、边框、背景、卡片、输入框、侧边栏、文字、标题、悬停和成功、警告、危险、待定等状态图标（Icon）与主题表现，并通过表格高、中、低权重行的颜色分层提升信息识别效率\n- **业务状态反馈统一**：统一浏览器连接与重连、AI 评估检测、请求超时、扫描完成或中断、停止、打招呼、简历评估、黑名单屏蔽和导出等操作的状态提示，减少重复弹窗和含义不一致的符号\n- **窗口操作优化**：信息窗口支持 Esc 关闭，并在双屏和不同缩放比例下保持位于目标屏幕的可见区域\n- **模型配置打开提速**：系统设置和运行控制按需读取当前模型的 API Key，减少首次进入页面的等待\n\n### 问题修复\n\n- **结果搜索与排序修复**：结果搜索会实际隐藏不匹配记录并支持分数条件查询，同时修正连续点击表头时排序（Sort）方向和空值位置不一致的问题\n- **Kimi Coding 调用修复**：修复 AI 增强解析、候选人二次评分和学历核验在 Kimi Coding 接入下可能出现参数拒绝、响应过慢或输出不完整的问题\n- **弹窗定位修复**：修复筛选结果明细、查看与复核等窗口未按主界面居中，以及跨屏时可能偏移到错误显示器的问题",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.22/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.22/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.22/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23/BOSS_ResumeFilter.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23/BOSS_ResumeFilter.dmg"
   }
 }
