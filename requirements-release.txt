@@ -1,0 +1,2 @@
+# GitHub Release 暂存与本机发布编排的最小依赖
+requests>=2.31.0

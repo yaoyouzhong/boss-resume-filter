@@ -99,10 +99,12 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
 
       - name: Install build dependencies
-        run: python -m pip install -r requirements.txt pyinstaller
+        run: python -m pip install --disable-pip-version-check -r requirements-build.txt
 
       - name: Build and verify Windows package
         env:
@@ -136,10 +138,12 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
 
       - name: Install build dependencies
-        run: python -m pip install -r requirements.txt pyinstaller dmgbuild
+        run: python -m pip install --disable-pip-version-check -r requirements-build.txt
 
       - name: Build and verify macOS packages
         env:
@@ -182,10 +186,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: requirements-release.txt
 
       - name: Install publishing dependencies
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install --disable-pip-version-check -r requirements-release.txt
 
       - name: Download Windows workflow artifact
         if: ${{ needs.prepare.outputs.needs_windows == 'true' }}
