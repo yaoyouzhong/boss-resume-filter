@@ -1,3 +1,4 @@
+import ast
 import json
 import queue
 import re
@@ -3225,18 +3226,22 @@ def test_update_candidate_followup_persists_due_date_for_only_matching_job():
         assert "next_followup_at" not in saved[1]
 
 
-def test_candidate_review_workbench_exposes_navigation_tabs_and_direct_actions():
+def test_candidate_review_workbench_exposes_flat_switch_and_direct_actions():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     block = source[source.index("def _open_candidate_review_workbench"):]
     block = block[:block.index("\n    def _show_candidate_detail")]
 
     assert 'win.title("候选人查看与复核")' in block
-    assert "'CandidateReview.TNotebook.Tab'" in block
-    assert "font=(FONT_FAMILY, max(11, int(13 * self.font_scale)), 'bold')" in block
+    assert "ttk.Notebook" not in block
+    assert "CandidateReview.TNotebook" not in block
+    assert "self.candidate_review_view_buttons" in block
+    assert "self.candidate_review_view_indicators" in block
+    assert "self._show_candidate_review_view('summary')" in block
+    assert "'<Control-Tab>'" in block
     assert 'text="上一位"' in block
     assert 'text="下一位"' in block
-    assert 'text="决策摘要"' in block
-    assert 'text="完整资料"' in block
+    assert '("summary", "决策摘要")' in block
+    assert '("detail", "完整资料")' in block
     assert "width = min(880, max(620, int(root_width * 0.55))" in block
     assert "height = min(root_height, int(area_height * 0.9))" in block
     assert "_place_window_centered(win, width, height, parent=self.root)" in block
@@ -3248,8 +3253,31 @@ def test_candidate_review_workbench_exposes_navigation_tabs_and_direct_actions()
     assert '"导入简历"' in block
     assert 'text="建议下一步"' in block
     assert 'text="其他操作"' in block
+    assert "int(9 * self.font_scale)" not in block
+    assert block.count("int(10 * self.font_scale)") >= 4
     assert "orient='horizontal'" in block
     assert "style='Accent.TButton'" not in block
+
+
+def test_candidate_review_flat_switch_uses_theme_colors_and_raises_selected_panel():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _show_candidate_review_view"):]
+    block = block[:block.index("\n    def _toggle_candidate_review_view")]
+
+    assert "frames[view_name].tkraise()" in block
+    assert "self.colors['banner_info_bg'] if selected" in block
+    assert "self.colors['primary'] if selected" in block
+    assert "self.colors['text_secondary']" in block
+    assert "self.colors['bg_hover']" in block
+
+
+def test_candidate_review_shortcut_switch_does_not_force_focus_repaint():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _toggle_candidate_review_view"):]
+    block = block[:block.index("\n    @staticmethod")]
+
+    assert "self._show_candidate_review_view(target)" in block
+    assert ".focus_set()" not in block
 
 
 def test_candidate_review_actions_keep_stable_two_row_layout_and_button_style():
@@ -3468,7 +3496,7 @@ def test_greet_confirmation_hint_explains_current_page_fallback():
 
 
 def test_update_log_waits_until_lazy_run_page_creates_log_widget():
-    """未进入运行控制页时保留日志，不能因 log_text 尚未创建而报错或丢消息。"""
+    """未进入运行控制页时保留扫描日志，不能因控件尚未创建而丢失。"""
     class FakeRoot:
         def __init__(self):
             self.scheduled = []
@@ -3479,12 +3507,61 @@ def test_update_log_waits_until_lazy_run_page_creates_log_widget():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = FakeRoot()
     gui.log_queue = queue.Queue()
-    gui.log_queue.put("打招呼成功")
+    gui.log_queue.put("候选人扫描中")
 
     gui.update_log()
 
     assert gui.log_queue.qsize() == 1
     assert gui.root.scheduled == [(100, gui.update_log)]
+
+
+def test_non_run_page_diagnostics_do_not_feed_run_log():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.log_queue = queue.Queue()
+
+    with patch("gui_main.logger.info") as info:
+        gui.append_log("[联系候选人] 已恢复 3 个未完成任务")
+
+    assert gui.log_queue.empty()
+    info.assert_called_once_with(
+        "[GUI] %s", "[联系候选人] 已恢复 3 个未完成任务"
+    )
+
+
+def test_scan_messages_feed_run_log_explicitly():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.log_queue = queue.Queue()
+
+    gui.append_run_log("开始扫描候选人")
+
+    assert gui.log_queue.get_nowait() == "开始扫描候选人"
+
+
+def test_run_log_sink_is_only_used_by_run_control_methods():
+    tree = ast.parse(Path("gui_main.py").read_text(encoding="utf-8"))
+    gui_class = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BossFilterGUI"
+    )
+    actual_methods = {
+        method.name
+        for method in gui_class.body
+        if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "append_run_log"
+            for node in ast.walk(method)
+        )
+    }
+
+    assert actual_methods == {
+        "_auto_check_selectors",
+        "check_browser_connection",
+        "start_run",
+        "stop_run",
+        "run_worker",
+    }
 
 
 def test_browser_auto_check_debounces_one_transient_navigation_miss():
@@ -3599,7 +3676,7 @@ def test_greet_queue_item_builds_only_sendable_pending_items():
     assert "中高级 AI 工程师" in tooltip
 
 
-def test_contact_summary_dialog_keeps_scrollbar_and_confirmation_visible():
+def test_text_dialog_keeps_scrollbar_buttons_and_horizontal_inset_visible():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     block = source[source.index("def _show_text_dialog"):]
     block = block[:block.index("\n    def refresh_stats")]
@@ -3612,7 +3689,13 @@ def test_contact_summary_dialog_keeps_scrollbar_and_confirmation_visible():
     assert 'text=button_text' in block
     assert add_block.count('button_text="确定"') == 2
     assert add_block.count('button_align="center"') == 2
-    assert 'horizontal_padding if button_align == "center" else 0' in block
+    assert 'horizontal_padding if button_align == "center" else 0' not in block
+    assert (
+        'padding=(\n'
+        '                horizontal_padding,\n'
+        '                0,\n'
+        '                horizontal_padding,'
+    ) in block
     assert 'if button_align == "center":' in block
     assert "button.pack()" in block
 
@@ -3783,16 +3866,18 @@ def test_restored_contact_list_reflects_latest_blocked_state_immediately():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui._greet_queue_loaded = False
     gui.greet_queue_items = []
-    gui.append_log = Mock()
+    gui.log_queue = queue.Queue()
     gui._persist_greet_queue = Mock()
 
     with patch("gui_main.load_candidates_all", return_value=[candidate]), patch(
         "gui_main.load_contact_queue", return_value=[item]
-    ):
+    ), patch("gui_main.logger.info") as info:
         gui._ensure_greet_queue_loaded()
 
     assert item["status"] == "已跳过"
     assert item["message"] == "已加入黑名单"
+    assert gui.log_queue.empty()
+    assert any("已恢复 1 个未完成任务" in call.args[1] for call in info.call_args_list)
     gui._persist_greet_queue.assert_called_once()
 
 
@@ -3875,7 +3960,7 @@ def test_greet_queue_dialog_has_status_groups_and_double_click_detail():
     assert "GreetQueue.Primary.TButton" not in dialog_block
     assert 'win.title("联系候选人")' in dialog_block
     assert 'text="联系待发送"' in dialog_block
-    assert 'width=14' in dialog_block
+    assert 'width=14' not in dialog_block
     assert 'text="暂停",' in dialog_block and 'width=8' in dialog_block
     assert 'text="确认已发送"' in dialog_block
     assert 'text="确认未发送"' in dialog_block
@@ -4159,12 +4244,12 @@ def test_greet_queue_run_feedback_covers_success_and_visible_errors():
     assert "下一步：切换对应岗位后再次发送" in partial[2]
 
 
-def test_greet_queue_result_dialog_uses_compact_fonts_and_adaptive_width():
+def test_greet_queue_result_dialog_uses_shared_fonts_and_adaptive_width():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     block = source[source.index("def _show_greet_queue_run_result"):]
     block = block[:block.index("\n    @staticmethod\n    def _candidate_identity_key")]
 
-    assert "font_delta=self.font_log[1] - self.font_label[1]" in block
+    assert "font_delta=" not in block
     assert 'min_width=620 if message.count("\\n") >= 2 else 540' in block
     assert "content_bottom_padding=28" in block
 
@@ -4344,7 +4429,7 @@ def test_greet_queue_start_requires_confirmation():
     assert 'headline=headline' in confirm_block
     assert 'show_icon=False' in confirm_block
     assert 'min_width=620' in confirm_block
-    assert "font_delta=self.font_log[1] - self.font_label[1]" in confirm_block
+    assert "font_delta=" not in confirm_block
     assert "当前已就绪" not in confirm_block
     assert "待核实不会自动重发" not in confirm_block
     assert "失败待重试" not in confirm_block
@@ -4732,7 +4817,7 @@ def test_start_run_accepts_frame_recommend_page():
     gui.stop_event = _FakeStopEvent()
     gui.colors = {"warning": "#F9A825"}
     logs = []
-    gui.append_log = logs.append
+    gui.append_run_log = logs.append
     started = []
 
     class FakeThread:
@@ -4842,7 +4927,7 @@ def test_selector_auto_check_does_not_warn_for_skipped_card_check():
     gui.browser_page = FakePage()
     logs = []
     ui_callbacks = []
-    gui.append_log = logs.append
+    gui.append_run_log = logs.append
     gui.run_on_ui = ui_callbacks.append
     results = [{
         "group": "candidate_card",
@@ -4875,7 +4960,7 @@ def test_selector_auto_check_defers_refresh_errors_and_keeps_page_for_retry():
     gui.browser_connected = True
     gui.browser_page = FakePage()
     logs = []
-    gui.append_log = logs.append
+    gui.append_run_log = logs.append
 
     with patch(
         "bossmaster.check_selectors_health",
@@ -4907,7 +4992,7 @@ def test_selector_auto_check_treats_closed_browser_as_disconnect_not_selector_fa
     gui.browser_connected = True
     gui.browser_page = FakePage()
     logs = []
-    gui.append_log = logs.append
+    gui.append_run_log = logs.append
 
     with patch(
         "bossmaster.check_selectors_health",
@@ -4950,6 +5035,40 @@ def test_run_worker_preserves_scan_completion_state():
     assert 'self.run_summary_text_label' in create_block
     assert '本轮结果摘要' in create_block
     assert '✔ 运行完成' not in run_block
+
+
+def test_run_control_buttons_keep_icons_visible_while_disabled():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    create_block = source[source.index("def create_run_page"):]
+    create_block = create_block[:create_block.index("\n    def create_result_page")]
+
+    assert "icon_play_run_disabled = self.icons.button('play', self.colors['text_muted'])" in create_block
+    assert "image=(icon_play_run, 'disabled', icon_play_run_disabled)" in create_block
+    assert "self.start_btn._icon_refs = (icon_play_run, icon_play_run_disabled)" in create_block
+    assert "icon_stop_disabled = self.icons.button('stop', self.colors['text_muted'])" in create_block
+    assert "image=(icon_stop, 'disabled', icon_stop_disabled)" in create_block
+    assert "self.stop_btn._icon_refs = (icon_stop, icon_stop_disabled)" in create_block
+
+
+def test_run_log_and_shared_dialogs_use_the_larger_font():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    styles_block = source[source.index("def setup_styles"):]
+    styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
+    create_block = source[source.index("def create_run_page"):]
+    create_block = create_block[:create_block.index("\n    def create_result_page")]
+
+    assert "self.font_log = (FONT_FAMILY, int(12 * page_fs))" in styles_block
+    assert "font_run_log" not in styles_block
+    assert "font=self.font_log" in create_block
+
+
+def test_ai_parse_reminder_uses_shared_modal_font_without_compact_delta():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _apply_ai_enhance_result"):]
+    block = block[:block.index("\n    def _start_ai_progress_animation")]
+
+    assert '"AI 解析提醒"' in block
+    assert "font_delta=" not in block
 
 
 def test_run_summary_splits_status_prefix_for_fixed_summary_card():
@@ -5027,7 +5146,8 @@ def test_terminal_log_keeps_one_status_line_without_repeating_summary():
     run_block = source[source.index("def run_worker"):]
     run_block = run_block[:run_block.index("\n    def on_closing")]
     assert "terminal_log = self._format_terminal_log_text(final_desc)" in run_block
-    assert 'self.append_log(f"[{datetime.now().strftime(\'%H:%M:%S\')}] {final_desc}")' not in run_block
+    assert "LogRedirector(self.append_run_log)" in run_block
+    assert "self.append_log(" not in run_block
 
 
 def test_passed_filter_uses_enlarged_original_people_icon():
@@ -5171,7 +5291,7 @@ def test_job_review_text_aggregates_structured_feedback_reasons():
     assert "多人反馈" not in text
 
 
-def test_job_review_dialog_exposes_feedback_samples_and_job_config_actions():
+def test_job_review_dialog_opens_structured_workbench_with_shared_model():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     candidates = [{
         "name": "候选人甲",
@@ -5181,16 +5301,64 @@ def test_job_review_dialog_exposes_feedback_samples_and_job_config_actions():
     }]
     gui._selected_stats_job_name = Mock(return_value="Java")
     gui._load_stats_candidates = Mock(return_value=candidates)
-    gui._build_job_review_text = Mock(return_value="复盘内容")
-    gui._show_text_dialog = Mock()
+    gui._build_job_review_model = Mock(return_value={"job_name": "Java"})
+    gui._show_job_review_workbench = Mock()
 
     gui._show_selected_job_review()
 
-    action_labels = [
-        label for label, _command
-        in gui._show_text_dialog.call_args.kwargs["extra_actions"]
-    ]
-    assert action_labels == ["查看反馈候选人", "前往岗位配置"]
+    gui._build_job_review_model.assert_called_once_with("Java", candidates)
+    gui._show_job_review_workbench.assert_called_once_with(
+        "Java", candidates, {"job_name": "Java"}
+    )
+
+
+def test_job_review_workbench_uses_cards_funnel_and_contextual_actions():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _show_job_review_workbench"):]
+    block = block[:block.index("\n    def _show_job_review_feedback_candidates")]
+
+    assert '"筛选转化"' in block
+    assert '"反馈质量"' in block
+    assert '"问题洞察"' in block
+    assert '"建议调整"' in block
+    assert "if insight_sections:" in block
+    assert 'text="查看反馈候选人"' in block
+    assert 'text="前往岗位配置"' in block
+    assert "if review['feedback_count'] < 5:" in block
+    assert "title_trailing_builder=build_suggestion_action" in block
+    assert "enumerate(review['suggestions'], start=1)" in block
+    assert "anchor='w'" in block
+    assert "int(9 * self.font_scale)" not in block
+    assert "self._show_text_dialog(" not in block
+
+
+def test_job_review_suggestion_format_separates_heading_and_detail():
+    assert BossFilterGUI._format_job_review_suggestion(
+        "- 先积累反馈样本；没有结构化反馈时不建议调整岗位规则。"
+    ) == (
+        "先积累反馈样本",
+        "没有结构化反馈时不建议调整岗位规则。",
+    )
+    assert BossFilterGUI._format_job_review_suggestion(
+        "- 规则过宽：2/5 条；补充硬性约束。"
+    ) == (
+        "规则过宽",
+        "2/5 条；补充硬性约束。",
+    )
+
+
+def test_job_review_model_keeps_low_score_false_negative_as_evidence():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    review = gui._build_job_review_model("Java", [{
+        "match_score": 40,
+        "feedback_status": "误杀",
+        "feedback_reasons": ["规则过窄", "AI 低估"],
+    }])
+
+    assert review["qualified_count"] == 0
+    assert review["feedback_count"] == 1
+    assert review["false_negative_reasons"] == {"规则过窄": 1, "AI 低估": 1}
+    assert review["ai_bias_counts"] == {"AI 低估": 1}
 
 
 def test_job_review_feedback_drilldown_keeps_low_score_feedback_evidence():

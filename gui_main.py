@@ -1280,7 +1280,7 @@ class BossFilterGUI:
         self.font_label = (FONT_FAMILY, int(13 * page_fs))  # 通用 UI 字体（表单标签、按钮、下拉框、副标题）
         self.font_stat = (FONT_FAMILY, int(36 * page_fs))
         self.font_stat_label = (FONT_FAMILY, int(15 * page_fs))
-        self.font_log = (FONT_FAMILY, int(11 * page_fs))
+        self.font_log = (FONT_FAMILY, int(12 * page_fs))
         self.font_table = (FONT_FAMILY, int(12 * page_fs))  # 表格字体
         modal_font_size = max(9, self.font_log[1])
         messagebox.set_ui_fonts(
@@ -4646,13 +4646,31 @@ class BossFilterGUI:
 
         # 开始/停止按钮
         icon_play_run = self.icons.button('play', '#FFFFFF')
-        self.start_btn = ttk.Button(btn_container, image=icon_play_run, text=" 开始运行", compound=tk.LEFT, command=self.start_run, style='Accent.TButton', state="disabled")
-        self.start_btn._icon_ref = icon_play_run
+        icon_play_run_disabled = self.icons.button('play', self.colors['text_muted'])
+        self.start_btn = ttk.Button(
+            btn_container,
+            image=(icon_play_run, 'disabled', icon_play_run_disabled),
+            text=" 开始运行",
+            compound=tk.LEFT,
+            command=self.start_run,
+            style='Accent.TButton',
+            state="disabled",
+        )
+        self.start_btn._icon_refs = (icon_play_run, icon_play_run_disabled)
         self.start_btn.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
 
         icon_stop = self.icons.button('stop', '#FFFFFF')
-        self.stop_btn = ttk.Button(btn_container, image=icon_stop, text=" 停止", compound=tk.LEFT, command=self.stop_run, style='Danger.TButton', state="disabled")
-        self.stop_btn._icon_ref = icon_stop
+        icon_stop_disabled = self.icons.button('stop', self.colors['text_muted'])
+        self.stop_btn = ttk.Button(
+            btn_container,
+            image=(icon_stop, 'disabled', icon_stop_disabled),
+            text=" 停止",
+            compound=tk.LEFT,
+            command=self.stop_run,
+            style='Danger.TButton',
+            state="disabled",
+        )
+        self.stop_btn._icon_refs = (icon_stop, icon_stop_disabled)
         self.stop_btn.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
 
         # 状态指示器
@@ -6654,24 +6672,390 @@ class BossFilterGUI:
         if not candidates:
             messagebox.showinfo("岗位复盘", f"{job_name} 在当前时间范围内没有可复盘候选人。")
             return
-        text = self._build_job_review_text(job_name, candidates)
-        extra_actions = []
-        if any(c.get('feedback_status') in FEEDBACK_STATUS_OPTIONS for c in candidates):
-            extra_actions.append((
-                "查看反馈候选人",
-                lambda: self._show_job_review_feedback_candidates(job_name, candidates),
-            ))
-        extra_actions.append((
-            "前往岗位配置",
-            lambda: self._open_job_config_from_review(job_name),
-        ))
-        self._show_text_dialog(
-            f"岗位复盘 - {job_name}",
-            text,
-            width=760,
-            height=560,
-            extra_actions=extra_actions,
+        review = self._build_job_review_model(job_name, candidates)
+        self._show_job_review_workbench(job_name, candidates, review)
+
+    def _show_job_review_workbench(self, job_name, candidates, review):
+        """Show one job review as a structured, evidence-first workbench."""
+        scale = self.dpi_scale * self.zoom_factor
+        win = tk.Toplevel(self.root)
+        win.title(f"岗位复盘 - {job_name}")
+        win.transient(self.root)
+        win.grab_set()
+        win.withdraw()
+        win.configure(bg=self.colors['bg_main'])
+        win.grid_rowconfigure(0, weight=1)
+        win.grid_columnconfigure(0, weight=1)
+
+        def close():
+            try:
+                win.grab_release()
+            except tk.TclError:
+                pass
+            win.destroy()
+
+        def show_feedback_candidates():
+            close()
+            self._show_job_review_feedback_candidates(job_name, candidates)
+
+        def open_job_config():
+            close()
+            self._open_job_config_from_review(job_name)
+
+        shell = ttk.Frame(
+            win,
+            style='Page.TFrame',
+            padding=(int(20 * scale), int(18 * scale), int(20 * scale), 0),
         )
+        shell.grid(row=0, column=0, sticky='nsew')
+        shell.grid_rowconfigure(0, weight=1)
+        shell.grid_columnconfigure(0, weight=1)
+
+        canvas = tk.Canvas(
+            shell,
+            bg=self.colors['bg_main'],
+            highlightthickness=0,
+            bd=0,
+        )
+        scrollbar = ttk.Scrollbar(shell, orient='vertical', command=canvas.yview)
+        content = tk.Frame(canvas, bg=self.colors['bg_main'])
+        content_window = canvas.create_window((0, 0), window=content, anchor='nw')
+        canvas.configure(yscrollcommand=scrollbar.set)
+        content.bind(
+            '<Configure>',
+            lambda _event: canvas.configure(scrollregion=canvas.bbox('all')),
+        )
+        canvas.bind(
+            '<Configure>',
+            lambda event: canvas.itemconfigure(content_window, width=event.width),
+        )
+        canvas.grid(row=0, column=0, sticky='nsew')
+        scrollbar.grid(row=0, column=1, sticky='ns')
+
+        header = tk.Frame(content, bg=self.colors['bg_main'])
+        header.pack(fill='x', pady=(0, int(14 * scale)))
+        tk.Label(
+            header,
+            text=f"{job_name} · 岗位复盘",
+            font=(FONT_FAMILY, int(17 * self.font_scale), 'bold'),
+            fg=self.colors['text_primary'],
+            bg=self.colors['bg_main'],
+        ).pack(anchor='w')
+        time_range = (
+            self.stats_time_var.get()
+            if hasattr(self, 'stats_time_var') else "全部"
+        )
+        tk.Label(
+            header,
+            text=f"数据范围：{time_range}    复盘样本：{review['candidate_count']} 人",
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            fg=self.colors['text_secondary'],
+            bg=self.colors['bg_main'],
+        ).pack(anchor='w', pady=(int(3 * scale), 0))
+
+        metrics = tk.Frame(content, bg=self.colors['bg_main'])
+        metrics.pack(fill='x', pady=(0, int(14 * scale)))
+        metric_items = (
+            ("通过筛选", review['qualified_count'], self.colors['primary']),
+            ("已打招呼", review['greeted_count'], self.colors['warning_text']),
+            ("已回复", review['replied_count'], self.colors['success']),
+            ("已约面", review['interviewed_count'], self.colors['purple']),
+            ("平均分", f"{review['avg_score']:.1f}" if review['avg_score'] is not None else "—", self.colors['text_primary']),
+        )
+        for column, (label, value, color) in enumerate(metric_items):
+            metrics.grid_columnconfigure(column, weight=1, uniform='job_review_metric')
+            card = tk.Frame(
+                metrics,
+                bg=self.colors['bg_card'],
+                highlightbackground=self.colors['border'],
+                highlightthickness=1,
+            )
+            card.grid(
+                row=0,
+                column=column,
+                sticky='nsew',
+                padx=(0 if column == 0 else int(5 * scale), 0),
+            )
+            tk.Label(
+                card,
+                text=label,
+                font=(FONT_FAMILY, int(10 * self.font_scale)),
+                fg=self.colors['text_secondary'],
+                bg=self.colors['bg_card'],
+            ).pack(anchor='w', padx=int(12 * scale), pady=(int(10 * scale), 0))
+            tk.Label(
+                card,
+                text=str(value),
+                font=(FONT_FAMILY, int(18 * self.font_scale), 'bold'),
+                fg=color,
+                bg=self.colors['bg_card'],
+            ).pack(anchor='w', padx=int(12 * scale), pady=(0, int(10 * scale)))
+
+        funnel = self._create_card(
+            content,
+            "筛选转化",
+            fill='x',
+            pady=(0, int(14 * scale)),
+        )
+        funnel_base = review['qualified_count']
+        funnel_items = (
+            ("通过筛选", review['qualified_count'], self.colors['primary']),
+            ("已打招呼", review['greeted_count'], self.colors['warning']),
+            ("已回复", review['replied_count'], self.colors['success']),
+            ("已约面", review['interviewed_count'], self.colors['purple']),
+        )
+        for row_index, (label, count, color) in enumerate(funnel_items):
+            row = tk.Frame(funnel, bg=self.colors['bg_card'])
+            row.pack(fill='x', pady=(0 if row_index == 0 else int(7 * scale), 0))
+            tk.Label(
+                row,
+                text=label,
+                width=9,
+                anchor='w',
+                font=(FONT_FAMILY, int(10 * self.font_scale)),
+                fg=self.colors['text_primary'],
+                bg=self.colors['bg_card'],
+            ).pack(side='left')
+            tk.Label(
+                row,
+                text=str(count),
+                width=5,
+                anchor='e',
+                font=(FONT_FAMILY, int(10 * self.font_scale), 'bold'),
+                fg=self.colors['text_primary'],
+                bg=self.colors['bg_card'],
+            ).pack(side='left', padx=(0, int(10 * scale)))
+            ratio = min(1.0, count / funnel_base) if funnel_base else 0.0
+            bar = tk.Canvas(
+                row,
+                height=max(8, int(10 * scale)),
+                bg=self.colors['bg_input'],
+                highlightthickness=0,
+                bd=0,
+            )
+            bar.pack(side='left', fill='x', expand=True)
+
+            def draw_bar(event, target=bar, value=ratio, fill=color):
+                target.delete('all')
+                width = max(1, event.width)
+                height = max(1, event.height)
+                if value > 0:
+                    target.create_rectangle(
+                        0, 0, max(2, int(width * value)), height,
+                        fill=fill, outline='',
+                    )
+
+            bar.bind('<Configure>', draw_bar)
+            percent = int(round(ratio * 100)) if funnel_base else 0
+            tk.Label(
+                row,
+                text=f"{percent}%",
+                width=5,
+                anchor='e',
+                font=(FONT_FAMILY, int(10 * self.font_scale)),
+                fg=self.colors['text_secondary'],
+                bg=self.colors['bg_card'],
+            ).pack(side='left', padx=(int(10 * scale), 0))
+
+        feedback = self._create_card(
+            content,
+            "反馈质量",
+            fill='x',
+            pady=(0, int(14 * scale)),
+        )
+        feedback_count = review['feedback_count']
+        if feedback_count == 0:
+            feedback_state = "暂无反馈"
+            feedback_message = "尚无结构化反馈，当前不生成趋势判断。"
+            feedback_bg = self.colors['banner_warning_bg']
+            feedback_color = self.colors['warning_text']
+        elif feedback_count < 5:
+            feedback_state = "样本不足"
+            feedback_message = f"当前只有 {feedback_count} 条反馈，样本不足 5 条，暂不根据趋势调整岗位规则。"
+            feedback_bg = self.colors['banner_warning_bg']
+            feedback_color = self.colors['warning_text']
+        else:
+            feedback_state = "可生成趋势"
+            feedback_message = "反馈样本已达到趋势判断门槛，可结合原因分布调整岗位规则。"
+            feedback_bg = self.colors['banner_success_bg']
+            feedback_color = self.colors['success']
+        feedback_banner = tk.Frame(feedback, bg=feedback_bg)
+        feedback_banner.pack(fill='x')
+        feedback_text = tk.Frame(feedback_banner, bg=feedback_bg)
+        feedback_text.pack(side='left', fill='x', expand=True, padx=int(12 * scale), pady=int(10 * scale))
+        tk.Label(
+            feedback_text,
+            text=f"反馈覆盖 {feedback_count}/{review['candidate_count']} 人  ·  {feedback_state}",
+            font=(FONT_FAMILY, int(11 * self.font_scale), 'bold'),
+            fg=feedback_color,
+            bg=feedback_bg,
+        ).pack(anchor='w')
+        tk.Label(
+            feedback_text,
+            text=feedback_message,
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            fg=self.colors['text_primary'],
+            bg=feedback_bg,
+            justify='left',
+            wraplength=max(420, int(580 * min(scale, 1.2))),
+        ).pack(anchor='w', pady=(int(2 * scale), 0))
+        if feedback_count:
+            ttk.Button(
+                feedback_banner,
+                text="查看反馈候选人",
+                command=show_feedback_candidates,
+            ).pack(side='right', padx=int(12 * scale), pady=int(10 * scale))
+
+        insight_sections = [
+            ("反馈分布", review['status_counts']),
+            ("高频原因", review['reason_counts']),
+            ("误推原因", review['false_positive_reasons']),
+            ("误杀原因", review['false_negative_reasons']),
+            ("AI 偏差", review['ai_bias_counts']),
+        ]
+        insight_sections = [item for item in insight_sections if item[1]]
+        if insight_sections:
+            insights = self._create_card(
+                content,
+                "问题洞察",
+                fill='x',
+                pady=(0, int(14 * scale)),
+            )
+            for column in range(2):
+                insights.grid_columnconfigure(column, weight=1, uniform='job_review_insight')
+            for index, (title, counter) in enumerate(insight_sections):
+                panel = tk.Frame(
+                    insights,
+                    bg=self.colors['bg_card'],
+                    highlightbackground=self.colors['border'],
+                    highlightthickness=1,
+                )
+                panel.grid(
+                    row=index // 2,
+                    column=index % 2,
+                    sticky='nsew',
+                    padx=(0, int(6 * scale)) if index % 2 == 0 else (int(6 * scale), 0),
+                    pady=(0, int(8 * scale)),
+                )
+                tk.Label(
+                    panel,
+                    text=title,
+                    font=(FONT_FAMILY, int(10 * self.font_scale), 'bold'),
+                    fg=self.colors['text_primary'],
+                    bg=self.colors['bg_card'],
+                ).pack(anchor='w', padx=int(10 * scale), pady=(int(8 * scale), int(4 * scale)))
+                for name, count in counter.most_common(4):
+                    item_row = tk.Frame(panel, bg=self.colors['bg_card'])
+                    item_row.pack(fill='x', padx=int(10 * scale), pady=(0, int(4 * scale)))
+                    tk.Label(
+                        item_row,
+                        text=str(name),
+                        font=(FONT_FAMILY, int(10 * self.font_scale)),
+                        fg=self.colors['text_secondary'],
+                        bg=self.colors['bg_card'],
+                        anchor='w',
+                    ).pack(side='left', fill='x', expand=True)
+                    tk.Label(
+                        item_row,
+                        text=str(count),
+                        font=(FONT_FAMILY, int(10 * self.font_scale), 'bold'),
+                        fg=self.colors['primary'],
+                        bg=self.colors['bg_card'],
+                    ).pack(side='right')
+
+        def build_suggestion_action(title_bar, padding):
+            if review['feedback_count'] < 5:
+                return
+            ttk.Button(
+                title_bar,
+                text="前往岗位配置",
+                command=open_job_config,
+            ).pack(
+                side='right',
+                padx=(0, padding),
+                pady=max(4, int(padding * 0.45)),
+            )
+
+        suggestions = self._create_card(
+            content,
+            "建议调整",
+            fill='x',
+            pady=(0, int(10 * scale)),
+            title_trailing_builder=build_suggestion_action,
+        )
+        for index, suggestion in enumerate(review['suggestions'], start=1):
+            title, detail = self._format_job_review_suggestion(suggestion)
+            row = tk.Frame(
+                suggestions,
+                bg=self.colors['bg_input'],
+                highlightbackground=self.colors['border'],
+                highlightthickness=1,
+            )
+            row.pack(fill='x', pady=(0, int(7 * scale)))
+            tk.Label(
+                row,
+                text=str(index),
+                width=2,
+                font=(FONT_FAMILY, int(10 * self.font_scale), 'bold'),
+                fg='white',
+                bg=self.colors['primary'],
+            ).pack(
+                side='left',
+                anchor='n',
+                padx=int(10 * scale),
+                pady=int(10 * scale),
+            )
+            text_box = tk.Frame(row, bg=self.colors['bg_input'])
+            text_box.pack(
+                side='left',
+                fill='x',
+                expand=True,
+                padx=(0, int(12 * scale)),
+                pady=int(9 * scale),
+            )
+            tk.Label(
+                text_box,
+                text=title,
+                font=(FONT_FAMILY, int(10 * self.font_scale), 'bold'),
+                fg=self.colors['text_primary'],
+                bg=self.colors['bg_input'],
+                justify='left',
+                anchor='w',
+                wraplength=max(520, int(700 * min(scale, 1.2))),
+            ).pack(fill='x', anchor='w')
+            if detail:
+                tk.Label(
+                    text_box,
+                    text=detail,
+                    font=(FONT_FAMILY, int(10 * self.font_scale)),
+                    fg=self.colors['text_secondary'],
+                    bg=self.colors['bg_input'],
+                    justify='left',
+                    anchor='w',
+                    wraplength=max(520, int(700 * min(scale, 1.2))),
+                ).pack(fill='x', anchor='w', pady=(int(2 * scale), 0))
+
+        footer = ttk.Frame(
+            win,
+            style='Page.TFrame',
+            padding=(int(20 * scale), int(12 * scale), int(20 * scale), int(14 * scale)),
+        )
+        footer.grid(row=1, column=0, sticky='ew')
+        ttk.Button(footer, text="关闭", command=close).pack(side='right')
+
+        self._bind_mousewheel(canvas, content)
+        win.protocol('WM_DELETE_WINDOW', close)
+        win.bind('<Escape>', lambda _event: close())
+        try:
+            monitor_area = _get_windows_monitor_area(win, self.root)
+            area_width = monitor_area[2] if monitor_area else win.winfo_screenwidth()
+            area_height = monitor_area[3] if monitor_area else win.winfo_screenheight()
+            width = min(int(820 * scale), int(area_width * 0.92))
+            height = min(int(640 * scale), int(area_height * 0.9))
+        except tk.TclError:
+            width, height = int(820 * scale), int(640 * scale)
+        _place_window_centered(win, width, height, parent=self.root)
+        win.deiconify()
 
     def _show_job_review_feedback_candidates(self, job_name, candidates):
         """Show the feedback samples behind a job review without changing them."""
@@ -6735,8 +7119,20 @@ class BossFilterGUI:
             return []
         return [str(r).strip() for r in reasons if str(r).strip()]
 
-    def _build_job_review_text(self, job_name, candidates):
-        """Build a text review for one job from structured feedback and outcomes."""
+    @staticmethod
+    def _format_job_review_suggestion(suggestion):
+        """Split one suggestion into a short heading and supporting detail."""
+        text = str(suggestion or '').lstrip('- ').strip()
+        for delimiter in ('：', ':', '；', ';'):
+            if delimiter not in text:
+                continue
+            title, detail = text.split(delimiter, 1)
+            if title.strip() and detail.strip():
+                return title.strip().rstrip('。'), detail.strip()
+        return text.rstrip('。'), ''
+
+    def _build_job_review_model(self, job_name, candidates):
+        """Build the shared job-review model without changing candidate data."""
         qualified = [c for c in candidates if c.get('match_score', 0) >= SCORE_THRESHOLD_PASS]
         feedback_candidates = [
             c for c in candidates
@@ -6765,46 +7161,66 @@ class BossFilterGUI:
         interviewed = sum(1 for c in candidates if c.get('followup_status') == "已约面")
         avg_score = sum(c.get('match_score', 0) for c in qualified) / len(qualified) if qualified else 0
 
-        def fmt_counter(counter, empty="暂无"):
-            if not counter:
-                return [f"- {empty}"]
-            return [f"- {name}: {count}" for name, count in counter.most_common(8)]
-
         suggestions = self._build_job_review_suggestions(
             status_counts,
             reason_counts,
             len(feedback_candidates),
         )
+        return {
+            "job_name": job_name,
+            "candidate_count": len(candidates),
+            "qualified_count": len(qualified),
+            "greeted_count": greeted,
+            "replied_count": replied,
+            "interviewed_count": interviewed,
+            "avg_score": avg_score if qualified else None,
+            "feedback_count": len(feedback_candidates),
+            "status_counts": status_counts,
+            "reason_counts": reason_counts,
+            "false_positive_reasons": false_positive_reasons,
+            "false_negative_reasons": false_negative_reasons,
+            "ai_bias_counts": ai_bias_counts,
+            "suggestions": suggestions,
+        }
+
+    def _build_job_review_text(self, job_name, candidates):
+        """Build the compatibility text report from the shared review model."""
+        review = self._build_job_review_model(job_name, candidates)
+
+        def fmt_counter(counter, empty="暂无"):
+            if not counter:
+                return [f"- {empty}"]
+            return [f"- {name}: {count}" for name, count in counter.most_common(8)]
 
         lines = [
             f"{job_name} 岗位复盘",
             "",
             "【样本概览】",
-            f"- 通过筛选：{len(qualified)} 人",
-            f"- 已打招呼：{greeted} 人",
-            f"- 已回复：{replied} 人",
-            f"- 已约面：{interviewed} 人",
-            f"- 平均分：{avg_score:.1f}" if qualified else "- 平均分：暂无",
-            f"- 已反馈：{len(feedback_candidates)} 人",
-            f"- 反馈覆盖：{len(feedback_candidates)}/{len(candidates)} 人",
+            f"- 通过筛选：{review['qualified_count']} 人",
+            f"- 已打招呼：{review['greeted_count']} 人",
+            f"- 已回复：{review['replied_count']} 人",
+            f"- 已约面：{review['interviewed_count']} 人",
+            f"- 平均分：{review['avg_score']:.1f}" if review['avg_score'] is not None else "- 平均分：暂无",
+            f"- 已反馈：{review['feedback_count']} 人",
+            f"- 反馈覆盖：{review['feedback_count']}/{review['candidate_count']} 人",
             "",
             "【反馈分布】",
-            *fmt_counter(status_counts, "暂无反馈状态"),
+            *fmt_counter(review['status_counts'], "暂无反馈状态"),
             "",
             "【结构化原因 Top】",
-            *fmt_counter(reason_counts, "暂无结构化原因"),
+            *fmt_counter(review['reason_counts'], "暂无结构化原因"),
             "",
             "【误推原因】",
-            *fmt_counter(false_positive_reasons, "暂无误推原因"),
+            *fmt_counter(review['false_positive_reasons'], "暂无误推原因"),
             "",
             "【误杀原因】",
-            *fmt_counter(false_negative_reasons, "暂无误杀原因"),
+            *fmt_counter(review['false_negative_reasons'], "暂无误杀原因"),
             "",
             "【AI 偏差】",
-            *fmt_counter(ai_bias_counts, "暂无 AI 偏差反馈"),
+            *fmt_counter(review['ai_bias_counts'], "暂无 AI 偏差反馈"),
             "",
             "【建议调整方向】",
-            *suggestions,
+            *review['suggestions'],
         ]
         return "\n".join(lines)
 
@@ -6893,7 +7309,7 @@ class BossFilterGUI:
             win,
             style='Page.TFrame',
             padding=(
-                horizontal_padding if button_align == "center" else 0,
+                horizontal_padding,
                 0,
                 horizontal_padding,
                 int(12 * scale),
@@ -11565,7 +11981,6 @@ class BossFilterGUI:
                     numbered_items=warning_items,
                     min_width=820,
                     max_width=900,
-                    font_delta=-1,
                     content_bottom_padding=18,
                 )
 
@@ -12119,7 +12534,11 @@ class BossFilterGUI:
         self.log_text.config(state="disabled")
 
     def append_log(self, message):
-        """追加日志"""
+        """记录非扫描页面的诊断信息，不写入运行日志。"""
+        logger.info("[GUI] %s", message)
+
+    def append_run_log(self, message):
+        """追加候选人扫描及其运行准备过程日志。"""
         self.log_queue.put(message)
 
     def run_on_ui(self, callback):
@@ -12201,7 +12620,7 @@ class BossFilterGUI:
                 return
             current_url = str(getattr(page, 'url', '') or '')
             if not self._is_boss_recommend_url(current_url):
-                self.append_log("选择器自动检查已跳过：当前页面不是 BOSS 推荐牛人页面")
+                self.append_run_log("选择器自动检查已跳过：当前页面不是 BOSS 推荐牛人页面")
                 return
             from bossmaster import check_selectors_health
             results = check_selectors_health(page)
@@ -12215,11 +12634,11 @@ class BossFilterGUI:
 
             for r in results:
                 if r['status'] == 'skip':
-                    self.append_log(f"选择器自动检查已跳过 [{r['group']}]：{r['detail']}")
+                    self.append_run_log(f"选择器自动检查已跳过 [{r['group']}]：{r['detail']}")
 
             # 只在有异常时输出日志
             if warn_count + fail_count > 0:
-                self.append_log(
+                self.append_run_log(
                     f"选择器自动检查：{ok_count} 正常 / {skip_count} 跳过 / "
                     f"{warn_count} 警告 / {fail_count} 失败"
                 )
@@ -12227,9 +12646,9 @@ class BossFilterGUI:
                 for r in results:
                     if r['status'] in ('warn', 'fail'):
                         icon = {'warn': '⚠', 'fail': '✗'}.get(r['status'], '?')
-                        self.append_log(f"  {icon} [{r['group']}] {r['name']}: {r['detail']}")
+                        self.append_run_log(f"  {icon} [{r['group']}] {r['name']}: {r['detail']}")
 
-                self.append_log("⚠ 选择器异常可能导致扫描功能不正常，可编辑 selectors.json 修复")
+                self.append_run_log("⚠ 选择器异常可能导致扫描功能不正常，可编辑 selectors.json 修复")
                 # 主线程弹窗提醒（线程安全）
                 self.run_on_ui(lambda: messagebox.showwarning(
                     "选择器异常",
@@ -12243,7 +12662,7 @@ class BossFilterGUI:
             from bossmaster import is_transient_page_refresh_error
             if is_transient_page_refresh_error(e):
                 if not getattr(self, '_selector_check_retry_pending', False):
-                    self.append_log("选择器自动检查暂缓：页面正在加载，稳定后将自动重试")
+                    self.append_run_log("选择器自动检查暂缓：页面正在加载，稳定后将自动重试")
                 self._selector_check_retry_pending = True
                 return
             from bossmaster import is_page_connection_error
@@ -12251,9 +12670,9 @@ class BossFilterGUI:
                 self.browser_connected = False
                 if page is self.browser_page:
                     self.browser_page = None
-                self.append_log("浏览器页面连接短暂中断，等待自动重连...")
+                self.append_run_log("浏览器页面连接短暂中断，等待自动重连...")
                 return
-            self.append_log(f"选择器自动检查失败：{error_text}")
+            self.append_run_log(f"选择器自动检查失败：{error_text}")
 
     def _reactivate_and_navigate(self, page, target_url):
         """激活已有的 Chrome 进程并导航到目标页面。
@@ -12303,7 +12722,7 @@ class BossFilterGUI:
             # 手动点击优先：标记待处理，当前 silent 检查结束后自动重试
             if not silent:
                 self._pending_manual_check = True
-                self.append_log("⏳ 正在执行其他检测，稍后自动重试...")
+                self.append_run_log("⏳ 正在执行其他检测，稍后自动重试...")
             return
         self._browser_check_running = True
 
@@ -12314,7 +12733,7 @@ class BossFilterGUI:
                 if not connection_lock_acquired:
                     return
                 if not silent:
-                    self.append_log("正在检测浏览器连接...")
+                    self.append_run_log("正在检测浏览器连接...")
 
                 # 已有可用连接，直接复用，不做端口检查
                 if self.browser_page is not None:
@@ -12342,21 +12761,21 @@ class BossFilterGUI:
                             self.browser_connected = True
                             self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
                             if prev_help != "已连接到 BOSS 直聘推荐牛人页面":
-                                self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
+                                self.append_run_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                         elif 'zhipin.com' in current_url.lower() or 'boss' in current_url.lower():
                             if self._should_defer_browser_navigation_warning(silent):
                                 return
                             self.browser_connected = False
                             self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
                             if prev_help != "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面":
-                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                                self.append_run_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                         else:
                             if self._should_defer_browser_navigation_warning(silent):
                                 return
                             self.browser_connected = False
                             self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
                             if prev_help != "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面":
-                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                                self.append_run_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                         return
                     except Exception:
                         # 页面对象已失效，清理后走完整检测流程
@@ -12390,7 +12809,7 @@ class BossFilterGUI:
                     # 自动启动 Chrome（仅在手动点击时）
                     if not silent:
                         self.set_browser_ui(help_text="正在启动 Chrome 浏览器...")
-                        self.append_log("正在启动 Chrome 浏览器...")
+                        self.append_run_log("正在启动 Chrome 浏览器...")
 
                         # 找到 Chrome 可执行文件
                         if sys.platform == 'darwin':
@@ -12407,7 +12826,7 @@ class BossFilterGUI:
                         chrome_path = next((p for p in candidates if os.path.exists(p)), None)
                         if not chrome_path:
                             self.set_browser_ui(help_text="未找到 Chrome 浏览器，请安装后重试")
-                            self.append_log("✗ 未找到 Chrome 浏览器")
+                            self.append_run_log("✗ 未找到 Chrome 浏览器")
                             return
 
                         # 自动选一个空闲端口，避免 9222 被占用
@@ -12429,7 +12848,7 @@ class BossFilterGUI:
                                     pass
 
                         # 用 subprocess 直接启动 Chrome（不依赖 DrissionPage 的启动逻辑）
-                        self.append_log(f"正在启动 Chrome（调试端口 {debug_port}）...")
+                        self.append_run_log(f"正在启动 Chrome（调试端口 {debug_port}）...")
                         subprocess.Popen(
                             [
                                 chrome_path,
@@ -12460,13 +12879,13 @@ class BossFilterGUI:
                                 break
                             s.close()
                             if i == 0:
-                                self.append_log("⏳ 等待 Chrome 就绪...")
+                                self.append_run_log("⏳ 等待 Chrome 就绪...")
                             elif i % 5 == 4:
-                                self.append_log(f"⏳ 等待 Chrome 就绪... ({i+1}/30)")
+                                self.append_run_log(f"⏳ 等待 Chrome 就绪... ({i+1}/30)")
 
                         if not port_ready:
                             self.set_browser_ui("● 未连接", self.colors['danger'], "Chrome 启动超时，请关闭所有 Chrome 窗口后重试")
-                            self.append_log("✗ Chrome 启动超时，调试端口未开启")
+                            self.append_run_log("✗ Chrome 启动超时，调试端口未开启")
                             return
 
                         # 端口已开，用 DrissionPage 连接
@@ -12506,25 +12925,25 @@ class BossFilterGUI:
                                 self.browser_page = page
                                 self.browser_address = page.address
                                 self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
-                                self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
+                                self.append_run_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                             else:
                                 self.browser_connected = True
                                 self.browser_page = page
                                 self.browser_address = page.address
                                 self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
-                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                                self.append_run_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                         except Exception as e:
                             self.browser_connected = False
                             self.browser_page = None
                             self._selectors_auto_checked = False
                             self.set_browser_ui("● 未连接", self.colors['danger'], "Chrome 已启动，但页面连接失败", "disabled")
                             error_text = str(e).splitlines()[0] if str(e) else type(e).__name__
-                            self.append_log(f"✗ Chrome 已启动，但页面连接失败：{error_text}")
+                            self.append_run_log(f"✗ Chrome 已启动，但页面连接失败：{error_text}")
                         return
                     else:
                         self.set_browser_ui(help_text="未检测到 Chrome，请确保浏览器已启动")
                         if not silent and prev_state != "● 未连接":
-                            self.append_log("✗ 未检测到 Chrome 调试端口")
+                            self.append_run_log("✗ 未检测到 Chrome 调试端口")
                     return
 
                 from DrissionPage import ChromiumPage, ChromiumOptions
@@ -12566,7 +12985,7 @@ class BossFilterGUI:
                     target_url = 'https://www.zhipin.com/web/chat/recommend'
                     if current_url in ('about:blank', ''):
                         if not silent:
-                            self.append_log("⚠ Chrome 进程存在但无有效页面，正在激活并导航...")
+                            self.append_run_log("⚠ Chrome 进程存在但无有效页面，正在激活并导航...")
                             nav_page = self._reactivate_and_navigate(page, target_url)
                             if nav_page is not None:
                                 self.browser_connected = True
@@ -12578,15 +12997,15 @@ class BossFilterGUI:
                                     nav_url = ''
                                 if self._is_boss_recommend_url(nav_url):
                                     self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
-                                    self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
+                                    self.append_run_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                                 else:
                                     self.set_browser_ui("● 需导航", self.colors['warning'], "已激活 Chrome，正在加载页面...", "disabled")
-                                    self.append_log("⚠ 已激活 Chrome，请等待页面加载完成")
+                                    self.append_run_log("⚠ 已激活 Chrome，请等待页面加载完成")
                             else:
                                 self.browser_connected = False
                                 self.browser_page = None
                                 self.set_browser_ui("● 需导航", self.colors['warning'], "请手动打开 Chrome 窗口", "disabled")
-                                self.append_log("⚠ 无法激活 Chrome 页面，请手动打开 Chrome 窗口后点击重试")
+                                self.append_run_log("⚠ 无法激活 Chrome 页面，请手动打开 Chrome 窗口后点击重试")
                         else:
                             # 自动轮询：不尝试导航，避免 page.get() 挂起
                             self.browser_connected = False
@@ -12594,7 +13013,7 @@ class BossFilterGUI:
                             prev_state = self._browser_status_text
                             self.set_browser_ui("● 需导航", self.colors['warning'], "Chrome 进程存在但无有效页面", "disabled")
                             if prev_state != "● 需导航":
-                                self.append_log("⚠ Chrome 进程存在但无有效页面，请点击按钮激活")
+                                self.append_run_log("⚠ Chrome 进程存在但无有效页面，请点击按钮激活")
                         # 处理完毕，不再往下走 URL 检查
                         return
 
@@ -12606,7 +13025,7 @@ class BossFilterGUI:
                         self.browser_address = page.address
                         self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
                         if not silent or not prev_connected:
-                            self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
+                            self.append_run_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                     elif 'zhipin.com' in current_url.lower() or 'boss' in current_url.lower():
                         if self._should_defer_browser_navigation_warning(silent):
                             return
@@ -12616,7 +13035,7 @@ class BossFilterGUI:
                         self.browser_address = page.address
                         self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
                         if not silent or prev_state != "● 需导航":
-                            self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                            self.append_run_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                     else:
                         if self._should_defer_browser_navigation_warning(silent):
                             return
@@ -12626,7 +13045,7 @@ class BossFilterGUI:
                         self.browser_address = page.address
                         self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
                         if not silent or prev_state != "● 需导航":
-                            self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                            self.append_run_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
 
                 except Exception as e:
                     if self._should_defer_browser_connection_failure(silent):
@@ -12648,11 +13067,11 @@ class BossFilterGUI:
                     self.set_browser_ui("● 未连接", self.colors['danger'], "浏览器页面连接失败", "disabled")
                     if not silent or prev_state != "● 未连接":
                         error_text = str(e).splitlines()[0] if str(e) else type(e).__name__
-                        self.append_log(f"✗ 浏览器页面连接失败：{error_text}")
+                        self.append_run_log(f"✗ 浏览器页面连接失败：{error_text}")
 
                     # 手动点击时，尝试杀掉彻底挂掉的调试 Chrome 进程并重启
                     if not silent:
-                        self.append_log("⚠ 正在尝试清理残留的调试 Chrome 进程...")
+                        self.append_run_log("⚠ 正在尝试清理残留的调试 Chrome 进程...")
                         killed = False
                         try:
                             port_num = int(port)
@@ -12685,20 +13104,20 @@ class BossFilterGUI:
                                                      timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                                         killed = True
                         except Exception as kill_err:
-                            self.append_log(f"清理残留进程失败：{kill_err}")
+                            self.append_run_log(f"清理残留进程失败：{kill_err}")
 
                         if killed:
                             time.sleep(1)
-                            self.append_log("✓ 已清理残留的调试 Chrome 进程，2秒后自动重新启动...")
+                            self.append_run_log("✓ 已清理残留的调试 Chrome 进程，2秒后自动重新启动...")
                             self._pending_chrome_restart = True
                         else:
-                            self.append_log("⚠ Chrome 调试端口被占用但无法清理，请手动关闭所有 Chrome 窗口后重试")
+                            self.append_run_log("⚠ Chrome 调试端口被占用但无法清理，请手动关闭所有 Chrome 窗口后重试")
                             self.set_browser_ui("● 未连接", self.colors['danger'],
                                               "请关闭所有 Chrome 窗口后点击重试", "disabled")
 
             except ImportError:
                 self.set_browser_ui("● 错误", self.colors['danger'], "未安装 DrissionPage，请运行：pip install DrissionPage")
-                self.append_log("✗ DrissionPage 未安装")
+                self.append_run_log("✗ DrissionPage 未安装")
             finally:
                 # 连接成功后自动检查选择器（仅首次）
                 if self.browser_connected and self.browser_page and not self._selectors_auto_checked:
@@ -13012,7 +13431,7 @@ class BossFilterGUI:
         self.progress_label.config(text="0%", image='', compound='text')
         self._reset_run_summary()
 
-        self.append_log(f"[{datetime.now().strftime('%H:%M:%S')}] ▶ 开始运行...")
+        self.append_run_log(f"[{datetime.now().strftime('%H:%M:%S')}] ▶ 开始运行...")
 
         self.worker_thread = threading.Thread(target=self.run_worker)
         self.worker_thread.daemon = True
@@ -13025,7 +13444,7 @@ class BossFilterGUI:
         self.status_label.config(text="● 已停止", foreground=self.colors['danger'])
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
-        self.append_log(f"[{datetime.now().strftime('%H:%M:%S')}] ⏹ 已停止")
+        self.append_run_log(f"[{datetime.now().strftime('%H:%M:%S')}] ⏹ 已停止")
 
     def run_worker(self):
         """运行工作线程"""
@@ -13054,7 +13473,7 @@ class BossFilterGUI:
                         self.callback(f"[{datetime.now().strftime('%H:%M:%S')}] {self.buffer}")
                     self.buffer = ""
 
-            log_redirector = LogRedirector(self.append_log)
+            log_redirector = LogRedirector(self.append_run_log)
             sys.stdout = log_redirector
 
             rounds = int(self.rounds_var.get())
@@ -13068,9 +13487,9 @@ class BossFilterGUI:
             from bossmaster import load_job_config, ChromiumPage, time, run_smart_scan
             import argparse
 
-            self.append_log(f">>> BOSS 直聘候选人智能提取工具 v{__version__} [图形界面模式]")
-            self.append_log(f"滚动轮次：{rounds}, 筛选完成后：{contact_policy_text}")
-            self.append_log("提取链路：listener + refresh 优先捕获结构化数据；DOM 扫描确认可点击候选人；必要时 API 最后补全已出现候选人")
+            self.append_run_log(f">>> BOSS 直聘候选人智能提取工具 v{__version__} [图形界面模式]")
+            self.append_run_log(f"滚动轮次：{rounds}, 筛选完成后：{contact_policy_text}")
+            self.append_run_log("提取链路：listener + refresh 优先捕获结构化数据；DOM 扫描确认可点击候选人；必要时 API 最后补全已出现候选人")
 
             # 获取选择的岗位
             selected_job = self.job_select_var.get()
@@ -13102,13 +13521,13 @@ class BossFilterGUI:
                         self.api_config.get('base_url', ''),
                     )
                     if not ai_api_key:
-                        self.append_log("AI 评估需要 API Key，但未配置，将跳过")
+                        self.append_run_log("AI 评估需要 API Key，但未配置，将跳过")
                         ai_eval_enabled = False
                     else:
                         model_name = self.api_config.get('model', 'unknown')
-                        self.append_log(f"AI 辅助评估已启用（模型：{model_name}）")
+                        self.append_run_log(f"AI 辅助评估已启用（模型：{model_name}）")
                 except Exception as e:
-                    self.append_log(f"加载 API 配置失败：{e}，跳过 AI 评估")
+                    self.append_run_log(f"加载 API 配置失败：{e}，跳过 AI 评估")
                     ai_eval_enabled = False
 
             args = argparse.Namespace(
@@ -13130,10 +13549,10 @@ class BossFilterGUI:
             )
 
             if job_arg:
-                self.append_log(f"[初次扫描模式] 指定岗位：{job_arg}")
+                self.append_run_log(f"[初次扫描模式] 指定岗位：{job_arg}")
             else:
-                self.append_log("[初次扫描模式] 处理全部岗位")
-            self.append_log("开始扫描候选人...")
+                self.append_run_log("[初次扫描模式] 处理全部岗位")
+            self.append_run_log("开始扫描候选人...")
 
             # 进度回调 — 将 bossmaster 的进度报告送入队列
             def on_progress(percentage, description):
@@ -13240,7 +13659,7 @@ class BossFilterGUI:
             def job_config_callback(text, has_error):
                 """运行前岗位配置体检 — 在 UI 线程展示并等待用户决定。"""
                 if not self._should_prompt_run_job_config(text, has_error):
-                    self.append_log("岗位配置未变化，沿用本次启动中已确认的体检提醒")
+                    self.append_run_log("岗位配置未变化，沿用本次启动中已确认的体检提醒")
                     return True
                 event = threading.Event()
                 result = [False]
@@ -13276,18 +13695,18 @@ class BossFilterGUI:
         except KeyboardInterrupt:
             if not final_progress['desc']:
                 final_progress['desc'] = "[已停止] 用户取消岗位切换"
-            self.append_log("用户取消岗位切换，已停止")
+            self.append_run_log("用户取消岗位切换，已停止")
         except Exception as e:
             final_progress['desc'] = f"[出错] {str(e)[:30]}"
-            self.append_log(f"运行出错：{e}")
+            self.append_run_log(f"运行出错：{e}")
             import traceback
-            self.append_log(traceback.format_exc())
+            self.append_run_log(traceback.format_exc())
         finally:
             sys.stdout = old_stdout
             self.is_running = False
             final_desc = final_progress['desc'] or "[出错] 未取得最终运行状态"
             terminal_log = self._format_terminal_log_text(final_desc)
-            self.append_log(f"[{datetime.now().strftime('%H:%M:%S')}] {terminal_log}")
+            self.append_run_log(f"[{datetime.now().strftime('%H:%M:%S')}] {terminal_log}")
 
             if final_desc.startswith("[完成]"):
                 status_text, status_color = "● 已完成", self.colors['success']
@@ -17747,7 +18166,6 @@ class BossFilterGUI:
             text="联系待发送",
             command=self._start_greet_queue,
             style="GreetQueue.Small.TButton",
-            width=14,
         )
         self.greet_queue_start_btn.pack(side="left", padx=(0, int(6 * scale)))
         self.greet_queue_pause_btn = ttk.Button(
@@ -18440,7 +18858,6 @@ class BossFilterGUI:
             headline=headline,
             show_icon=False,
             min_width=620,
-            font_delta=self.font_log[1] - self.font_label[1],
         )
 
     def _make_greet_queue_captcha_callback(self, parent):
@@ -18983,7 +19400,6 @@ class BossFilterGUI:
             headline=headline,
             show_icon=False,
             min_width=620 if message.count("\n") >= 2 else 540,
-            font_delta=self.font_log[1] - self.font_label[1],
             content_bottom_padding=28,
         )
 
@@ -19228,7 +19644,7 @@ class BossFilterGUI:
             tk.Label(
                 cell,
                 text=label,
-                font=(FONT_FAMILY, int(9 * self.font_scale)),
+                font=(FONT_FAMILY, int(10 * self.font_scale)),
                 fg=self.colors['text_secondary'],
                 bg=self.colors['bg_card'],
             ).pack(anchor='w')
@@ -19252,7 +19668,7 @@ class BossFilterGUI:
         ttk.Label(
             self.candidate_review_primary_section,
             text="建议下一步",
-            font=(FONT_FAMILY, int(9 * self.font_scale)),
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
             foreground=self.colors['text_secondary'],
             background=self.colors['bg_main'],
         ).pack(anchor='w', pady=(0, int(4 * scale)))
@@ -19269,7 +19685,7 @@ class BossFilterGUI:
         ttk.Label(
             self.candidate_review_secondary_section,
             text="其他操作",
-            font=(FONT_FAMILY, int(9 * self.font_scale)),
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
             foreground=self.colors['text_secondary'],
             background=self.colors['bg_main'],
         ).pack(anchor='w', pady=(0, int(4 * scale)))
@@ -19279,21 +19695,84 @@ class BossFilterGUI:
         self.candidate_review_secondary_actions.pack(anchor='w')
         self.candidate_review_secondary_section.grid(row=2, column=0, sticky='w')
 
-        review_style = ttk.Style()
-        review_style.configure(
-            'CandidateReview.TNotebook.Tab',
-            font=(FONT_FAMILY, max(11, int(13 * self.font_scale)), 'bold'),
-            padding=(int(14 * scale), int(7 * scale)),
+        switch_bar = tk.Frame(
+            body,
+            bg=self.colors['bg_card'],
+            highlightbackground=self.colors['border'],
+            highlightthickness=1,
         )
-        notebook = ttk.Notebook(body, style='CandidateReview.TNotebook')
-        notebook.pack(fill='both', expand=True)
-        summary_tab = ttk.Frame(notebook, style='Page.TFrame')
-        detail_tab = ttk.Frame(notebook, style='Page.TFrame')
-        notebook.add(summary_tab, text="决策摘要")
-        notebook.add(detail_tab, text="完整资料")
+        switch_bar.pack(fill='x')
+        switch_inner = tk.Frame(switch_bar, bg=self.colors['bg_card'])
+        switch_inner.pack(anchor='w')
+        self.candidate_review_view_buttons = {}
+        self.candidate_review_view_indicators = {}
+        switch_items = (("summary", "决策摘要"), ("detail", "完整资料"))
+        for view_name, label in switch_items:
+            cell = tk.Frame(switch_inner, bg=self.colors['bg_card'])
+            cell.pack(side='left')
+            button = tk.Button(
+                cell,
+                text=label,
+                command=lambda name=view_name: self._show_candidate_review_view(name),
+                font=(FONT_FAMILY, max(10, int(12 * self.font_scale)), 'bold'),
+                relief='flat',
+                bd=0,
+                padx=int(18 * scale),
+                pady=int(7 * scale),
+                cursor='hand2',
+                takefocus=1,
+                highlightthickness=1,
+                highlightbackground=self.colors['bg_card'],
+                highlightcolor=self.colors['primary'],
+            )
+            button.pack(fill='x')
+            indicator = tk.Frame(
+                cell,
+                height=max(2, int(3 * scale)),
+                bg=self.colors['bg_card'],
+            )
+            indicator.pack(fill='x')
+            self.candidate_review_view_buttons[view_name] = button
+            self.candidate_review_view_indicators[view_name] = indicator
+            button.bind(
+                '<Enter>',
+                lambda _event, name=view_name, widget=button: (
+                    widget.configure(bg=self.colors['bg_hover'])
+                    if getattr(self, '_candidate_review_view_name', 'summary') != name
+                    else None
+                ),
+            )
+            button.bind(
+                '<Leave>',
+                lambda _event: self._show_candidate_review_view(
+                    getattr(self, '_candidate_review_view_name', 'summary')
+                ),
+            )
+            button.bind(
+                '<Return>',
+                lambda _event, name=view_name: self._show_candidate_review_view(name),
+            )
 
-        self.candidate_review_summary_text = self._create_review_text_area(summary_tab)
-        self.candidate_review_detail_text = self._create_review_text_area(detail_tab)
+        review_content = tk.Frame(
+            body,
+            bg=self.colors['bg_card'],
+            highlightbackground=self.colors['border'],
+            highlightthickness=1,
+        )
+        review_content.pack(fill='both', expand=True)
+        review_content.grid_rowconfigure(0, weight=1)
+        review_content.grid_columnconfigure(0, weight=1)
+        summary_panel = tk.Frame(review_content, bg=self.colors['bg_card'])
+        detail_panel = tk.Frame(review_content, bg=self.colors['bg_card'])
+        summary_panel.grid(row=0, column=0, sticky='nsew')
+        detail_panel.grid(row=0, column=0, sticky='nsew')
+        self.candidate_review_view_frames = {
+            'summary': summary_panel,
+            'detail': detail_panel,
+        }
+        self.candidate_review_summary_text = self._create_review_text_area(summary_panel)
+        self.candidate_review_detail_text = self._create_review_text_area(detail_panel)
+        self._show_candidate_review_view('summary')
 
         def close_workbench():
             self.candidate_review_window = None
@@ -19302,6 +19781,8 @@ class BossFilterGUI:
         win.protocol('WM_DELETE_WINDOW', close_workbench)
         win.bind('<Left>', lambda _event: self._navigate_candidate_review(-1))
         win.bind('<Right>', lambda _event: self._navigate_candidate_review(1))
+        win.bind('<Control-Tab>', lambda _event: self._toggle_candidate_review_view())
+        win.bind('<Control-Shift-Tab>', lambda _event: self._toggle_candidate_review_view())
 
         try:
             self.root.update_idletasks()
@@ -19448,6 +19929,37 @@ class BossFilterGUI:
         scrollbar.pack(side='right', fill='y')
         self.bind_text_context_menu(text_widget, editable=False)
         return text_widget
+
+    def _show_candidate_review_view(self, view_name):
+        """Switch the review content immediately and refresh the flat selected state."""
+        frames = getattr(self, 'candidate_review_view_frames', {})
+        if view_name not in frames:
+            return 'break'
+        self._candidate_review_view_name = view_name
+        frames[view_name].tkraise()
+        for name, button in self.candidate_review_view_buttons.items():
+            selected = name == view_name
+            button.configure(
+                bg=(self.colors['banner_info_bg'] if selected else self.colors['bg_card']),
+                fg=(self.colors['primary'] if selected else self.colors['text_secondary']),
+                activebackground=(
+                    self.colors['banner_info_bg'] if selected else self.colors['bg_hover']
+                ),
+                activeforeground=(
+                    self.colors['primary'] if selected else self.colors['text_primary']
+                ),
+            )
+            self.candidate_review_view_indicators[name].configure(
+                bg=self.colors['primary'] if selected else self.colors['bg_card']
+            )
+        return 'break'
+
+    def _toggle_candidate_review_view(self):
+        """Toggle summary/detail without forcing a distracting focus repaint."""
+        current = getattr(self, '_candidate_review_view_name', 'summary')
+        target = 'detail' if current == 'summary' else 'summary'
+        self._show_candidate_review_view(target)
+        return 'break'
 
     @staticmethod
     def _replace_readonly_text(text_widget, text):
