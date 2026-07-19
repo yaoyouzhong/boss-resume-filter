@@ -235,6 +235,7 @@ def test_stage_github_stops_after_draft_and_artifacts_are_complete():
 
 def test_confirmed_local_preview_reuses_gate_only_for_the_same_content():
     with (
+        patch.dict(release_ci.os.environ, {"GITHUB_ACTIONS": "false"}),
         patch.object(release_ci, "resolve_release_sha", return_value=("a" * 40, False)),
         patch.object(
             release_ci.release_content_review,
