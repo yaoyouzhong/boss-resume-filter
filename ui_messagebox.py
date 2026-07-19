@@ -4,19 +4,38 @@ import math
 import tkinter as tk
 from tkinter import messagebox as _native_messagebox, ttk
 
+import ui_theme
+
 
 class CenteredMessageBox:
     """Drop-in subset of tkinter.messagebox with reliable parent centering."""
 
     _ICON_STYLE = {
-        "info": ("i", "#2563EB"),
-        "warning": ("!", "#D97706"),
-        "error": ("x", "#DC2626"),
-        "question": ("?", "#2563EB"),
+        "info": ("i", ui_theme.PRIMARY),
+        "warning": ("!", ui_theme.WARNING),
+        "error": ("×", ui_theme.DANGER),
+        "question": ("?", ui_theme.PRIMARY),
     }
+
+    @staticmethod
+    def _make_icon(parent, kind, size=30):
+        """绘制圆形语义图标（有色圆底 + 白色符号），替代裸字母文本。"""
+        symbol, color = CenteredMessageBox._ICON_STYLE[kind]
+        canvas = tk.Canvas(
+            parent, width=size, height=size,
+            bg=ui_theme.BG_CARD, highlightthickness=0, bd=0,
+        )
+        canvas.create_oval(1, 1, size - 1, size - 1, fill=color, outline="")
+        canvas.create_text(
+            size / 2, size / 2, text=symbol, fill="#FFFFFF",
+            font=("Microsoft YaHei UI", int(size * 0.46), "bold"),
+        )
+        return canvas
 
     def __init__(self):
         self._window_placer = None
+        # 哪些弹窗类型强制显示语义图标（调用方 show_icon 仍可按需覆盖）
+        self.icon_kinds = frozenset()
         self._headline_font = ("Microsoft YaHei UI", 13, "bold")
         self._message_font = ("Microsoft YaHei UI", 13)
         self._button_font = ("Microsoft YaHei UI", 13)
@@ -141,17 +160,8 @@ class CenteredMessageBox:
             padx=26,
             pady=(24, max(0, int(content_bottom_padding))),
         )
-        if show_icon:
-            symbol, color = self._ICON_STYLE[kind]
-            tk.Label(
-                body,
-                text=symbol,
-                font=headline_font,
-                fg=color,
-                bg="#FFFFFF",
-                width=2,
-                anchor="n",
-            ).pack(side="left", anchor="n", padx=(0, 12))
+        if show_icon or kind in self.icon_kinds:
+            self._make_icon(body, kind).pack(side="left", anchor="n", padx=(0, 12))
 
         content = tk.Frame(body, bg="#FFFFFF")
         content.pack(side="left", fill="both", expand=True)
@@ -160,7 +170,7 @@ class CenteredMessageBox:
                 content,
                 text=str(headline),
                 font=headline_font,
-                fg="#111827",
+                fg=ui_theme.TEXT_PRIMARY,
                 bg="#FFFFFF",
                 justify="left",
                 anchor="w",
@@ -176,7 +186,7 @@ class CenteredMessageBox:
                     items_frame,
                     text=f"{index}.",
                     font=message_font,
-                    fg="#1F2937",
+                    fg=ui_theme.TEXT_PRIMARY,
                     bg="#FFFFFF",
                     justify="right",
                     anchor="ne",
@@ -185,7 +195,7 @@ class CenteredMessageBox:
                     items_frame,
                     text=str(item),
                     font=message_font,
-                    fg="#1F2937",
+                    fg=ui_theme.TEXT_PRIMARY,
                     bg="#FFFFFF",
                     justify="left",
                     anchor="nw",
@@ -201,7 +211,7 @@ class CenteredMessageBox:
                 wrap="word",
                 font=message_font,
                 bg="#FFFFFF",
-                fg="#1F2937",
+                fg=ui_theme.TEXT_PRIMARY,
                 relief="flat",
                 borderwidth=0,
                 highlightthickness=0,
@@ -217,17 +227,17 @@ class CenteredMessageBox:
                 content,
                 text=message,
                 font=message_font,
-                fg="#1F2937",
+                fg=ui_theme.TEXT_PRIMARY,
                 bg="#FFFFFF",
                 justify="left",
                 anchor="w",
                 wraplength=content_wraplength,
             ).pack(fill="both", expand=True, anchor="w")
 
-        tk.Frame(window, bg="#E5E7EB", height=1).grid(
+        tk.Frame(window, bg=ui_theme.BORDER, height=1).grid(
             row=1, column=0, sticky="ew"
         )
-        footer = tk.Frame(window, bg="#F7F8FA")
+        footer = tk.Frame(window, bg=ui_theme.BG_FOOTER)
         footer.grid(row=2, column=0, sticky="ew")
 
         result = {"value": close_value}
@@ -254,14 +264,28 @@ class CenteredMessageBox:
             font=button_font,
             padding=(15, 8),
         )
+        # 主按钮（第一个）使用实心品牌蓝，建立主次层级
+        button_style.configure(
+            "CenteredMessageBox.Accent.TButton",
+            font=button_font,
+            padding=(15, 8),
+            background=ui_theme.PRIMARY,
+            foreground="#FFFFFF",
+            bordercolor=ui_theme.PRIMARY_DARK,
+        )
+        button_style.map(
+            "CenteredMessageBox.Accent.TButton",
+            background=[("pressed", ui_theme.PRIMARY_DEEP), ("active", ui_theme.PRIMARY_DARK)],
+        )
         equal_button_width = max(8, max(len(str(label)) for label, _value in buttons) + 2)
         single_button = len(buttons) == 1
         for label, value in reversed(buttons):
+            is_primary = (label, value) == buttons[0]
             button = ttk.Button(
                 footer,
                 text=label,
                 command=lambda selected=value: finish(selected),
-                style="CenteredMessageBox.TButton",
+                style="CenteredMessageBox.Accent.TButton" if is_primary else "CenteredMessageBox.TButton",
                 width=equal_button_width,
             )
             if single_button:

@@ -117,7 +117,7 @@ def test_kimi_code_image_recognition_uses_larger_output_budget():
             "key",
         )
 
-    assert captured["max_tokens"] == 1024
+    assert captured["max_tokens"] == 4096
     assert result.name == "张三"
 
 
@@ -142,7 +142,7 @@ def test_kimi_code_captcha_recognition_uses_larger_output_budget():
             "key",
         )
 
-    assert captured["max_tokens"] == 1024
+    assert captured["max_tokens"] == 4096
     assert result == ("letter", "aB3x", 90)
 
 

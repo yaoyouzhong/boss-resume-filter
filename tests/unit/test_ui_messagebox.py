@@ -149,7 +149,7 @@ def test_centered_messagebox_can_add_space_above_action_footer():
 
 def test_centered_messagebox_centers_buttons_vertically_in_footer():
     source = Path("ui_messagebox.py").read_text(encoding="utf-8")
-    footer_block = source[source.index('footer = tk.Frame(window, bg="#F7F8FA")'):]
+    footer_block = source[source.index('footer = tk.Frame(window, bg=ui_theme.BG_FOOTER)'):]
     footer_block = footer_block[:footer_block.index('window.protocol("WM_DELETE_WINDOW"')]
 
     assert 'footer.grid(row=2, column=0, sticky="ew")' in footer_block

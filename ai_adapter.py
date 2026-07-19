@@ -564,8 +564,15 @@ def build_request(
     temperature: float,
     tool: dict | None = None,
     force_tool: bool = False,
+    disable_thinking: bool = False,
 ) -> tuple[str, dict, dict, str]:
-    """Build a provider-specific request with one normalized input shape."""
+    """Build a provider-specific request with one normalized input shape.
+
+    disable_thinking: 仅对 Kimi Coding 端点生效（该端点的 k3 是推理模型，
+    且 temperature 与 thinking 状态绑定：开启=1 / 关闭=0.6）。
+    结构化提取类调用（AI 评估、JD 解析）传 True 避免推理耗时与预算耗尽；
+    需要推理能力的调用保持默认 False。
+    """
     protocol = detect_protocol(api_config)
     base_url = normalize_api_base_url(api_config)
     model = str(api_config.get("model") or "")
@@ -624,9 +631,14 @@ def build_request(
     base_lower = base_url.lower()
     model_lower = model.lower()
     if "api.kimi.com/coding" in base_lower:
-        # Kimi Code accepts temperature=1 and prefers max_completion_tokens.
-        body["temperature"] = 1
+        # Kimi Code prefers max_completion_tokens and binds temperature to the
+        # thinking mode: thinking on requires temperature=1, off requires 0.6.
         body["max_completion_tokens"] = body.pop("max_tokens")
+        if disable_thinking:
+            body["temperature"] = 0.6
+            body["thinking"] = {"type": "disabled"}
+        else:
+            body["temperature"] = 1
     if "dashscope.aliyuncs.com" in base_lower and model_lower.startswith("qwen3.7"):
         body["enable_thinking"] = False
     if api_config.get("_disable_thinking") and "xiaomimimo.com" in base_lower:

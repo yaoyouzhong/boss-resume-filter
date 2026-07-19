@@ -32,6 +32,15 @@ def test_pandas_is_not_a_packaging_dependency():
     assert "--exclude-module=numpy.libs" in build_source
 
 
+def test_windows_credential_backend_is_a_declared_packaging_dependency():
+    """The direct Windows credential path must exist in the formal build environment."""
+    requirements = (BASE_DIR / "requirements.txt").read_text(encoding="utf-8")
+    build_source = (BASE_DIR / "build.py").read_text(encoding="utf-8")
+
+    assert 'pywin32-ctypes>=0.2.3; sys_platform == "win32"' in requirements
+    assert '"win32ctypes.pywin32": "pywin32-ctypes"' in build_source
+
+
 def test_release_workflow_rebuilds_macos_when_dmg_is_missing():
     """macOS release completeness requires both the auto-update ZIP and installer DMG."""
     workflow = (BASE_DIR / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")

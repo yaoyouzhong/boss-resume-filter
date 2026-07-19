@@ -286,6 +286,34 @@ def test_call_llm_api_qwen37_uses_function_arguments(mock_requests, _mock_cap):
 
 
 @patch('llm_eval.requests')
+def test_call_llm_api_disables_thinking_for_kimi_coding(mock_requests):
+    import requests as real_requests
+    mock_requests.exceptions = real_requests.exceptions
+    ok_response = MagicMock()
+    ok_response.status_code = 200
+    ok_response.json.return_value = {
+        'choices': [{'message': {'content': '{"adjustment": 5, "reason": "匹配"}'}}]
+    }
+    mock_session = MagicMock()
+    mock_session.post.return_value = ok_response
+    mock_requests.Session.return_value = mock_session
+
+    api_config = {
+        'base_url': 'https://api.kimi.com/coding/v1',
+        'model': 'k3',
+        '_ignore_capability_cache': True,
+    }
+    result = _call_llm_api([{"role": "user", "content": "test"}], api_config, "fake-key")
+
+    assert result.success is True
+    request_body = mock_session.post.call_args.kwargs["json"]
+    assert request_body["thinking"] == {"type": "disabled"}
+    assert request_body["temperature"] == 0.6
+    assert "max_completion_tokens" in request_body
+    assert "max_tokens" not in request_body
+
+
+@patch('llm_eval.requests')
 def test_call_llm_api_retries_once_after_invalid_json(mock_requests):
     import requests as real_requests
     mock_requests.exceptions = real_requests.exceptions

@@ -593,6 +593,19 @@ REQUIRED_IMPORTS = {
     "striprtf": "striprtf",
 }
 
+PLATFORM_REQUIRED_IMPORTS = {
+    "win32": {
+        "win32ctypes.pywin32": "pywin32-ctypes",
+    },
+}
+
+
+def _required_imports_for_current_platform():
+    """Return common imports plus dependencies required by this OS."""
+    imports = dict(REQUIRED_IMPORTS)
+    imports.update(PLATFORM_REQUIRED_IMPORTS.get(sys.platform, {}))
+    return imports
+
 
 def _normalize_package_name(name):
     """Normalize package names for requirements/import-check comparison."""
@@ -616,7 +629,15 @@ def _requirements_packages():
 def _check_dependency_manifest_complete():
     """Ensure every requirements.txt package has an explicit import check."""
     requirements = _requirements_packages()
-    checked = {_normalize_package_name(pkg_name) for pkg_name in REQUIRED_IMPORTS.values()}
+    checked = {
+        _normalize_package_name(pkg_name)
+        for pkg_name in REQUIRED_IMPORTS.values()
+    }
+    checked.update(
+        _normalize_package_name(pkg_name)
+        for platform_imports in PLATFORM_REQUIRED_IMPORTS.values()
+        for pkg_name in platform_imports.values()
+    )
     missing = sorted(requirements - checked)
     if missing:
         print("[错误] requirements.txt 中存在未纳入打包依赖检查的包：\n")
@@ -631,7 +652,7 @@ def _check_dependencies():
     _check_dependency_manifest_complete()
 
     missing = []
-    for import_name, pkg_name in REQUIRED_IMPORTS.items():
+    for import_name, pkg_name in _required_imports_for_current_platform().items():
         try:
             __import__(import_name)
         except ImportError:

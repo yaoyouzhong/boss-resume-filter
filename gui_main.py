@@ -19,14 +19,43 @@ import queue
 import random
 import socket
 import subprocess
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import IntEnum
 from pathlib import Path
 from tkinter import filedialog, font, ttk
 from urllib.parse import urlparse
 
 import icons
+import ui_theme
 
 logger = logging.getLogger(__name__)
+
+
+class _EscCloseToplevel(tk.Toplevel):
+    """统一支持 Esc 关闭的 Toplevel（等同点击窗口 X 按钮）。
+
+    通过 WM_DELETE_WINDOW 协议关闭，走各弹窗自己的关闭清理逻辑；
+    弹窗内已显式绑定 <Escape> 的会覆盖本补丁，行为不受影响。
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.bind('<Escape>', self._on_escape_close, add='+')
+
+    def _on_escape_close(self, _event=None):
+        try:
+            cmd = self.tk.call('wm', 'protocol', self._w, 'WM_DELETE_WINDOW')
+            if cmd:
+                self.tk.call(cmd)
+            elif self.winfo_exists():
+                self.destroy()
+        except Exception:
+            pass
+
+
+tk.Toplevel = _EscCloseToplevel
 from collections import Counter
 from candidate_workflow import (
     ACTION_TIMING_ORDER,
@@ -57,7 +86,9 @@ from greeting_failure import diagnose_greeting_failure, format_greeting_failure_
 from contact_queue import (
     build_contact_queue_item,
     candidate_identity as contact_queue_candidate_identity,
+    count_pending_contact_queue,
     load_contact_queue,
+    load_pending_contact_queue_count,
     save_contact_queue,
 )
 from job_config_diagnostics import (
@@ -119,6 +150,50 @@ FEEDBACK_REASON_OPTIONS = [
     "其他",
 ]
 FOLLOWUP_STATUS_OPTIONS = ["未沟通", "已打招呼", "已回复", "待约面", "已约面", "不合适", "已归档"]
+
+
+class PageIndex(IntEnum):
+    """Stable sidebar page identities shared by navigation and page logic."""
+
+    HOME = 0
+    CONFIG = 1
+    RUN = 2
+    RESULTS = 3
+    EDUCATION = 4
+    STATS = 5
+    SETTINGS = 6
+
+
+@dataclass(frozen=True)
+class PageSpec:
+    icon_name: str
+    title: str
+    page_attr: str
+    creator_name: str
+    show_name: str
+    full_width: bool = False
+
+
+PAGE_SPECS = {
+    PageIndex.HOME: PageSpec("home", "首页", "home_page", "create_home_page", "show_page_home"),
+    PageIndex.CONFIG: PageSpec(
+        "briefcase", "岗位配置", "config_page", "_create_config_page_steps", "show_page_config"
+    ),
+    PageIndex.RUN: PageSpec("play", "运行控制", "run_page", "_create_run_page_steps", "show_page_run"),
+    PageIndex.RESULTS: PageSpec(
+        "filter", "筛选结果", "result_page", "create_result_page", "show_page_result", True
+    ),
+    PageIndex.EDUCATION: PageSpec(
+        "document", "学历核验", "education_page", "create_education_page", "show_page_education"
+    ),
+    PageIndex.STATS: PageSpec(
+        "chart", "数据统计", "stats_page", "create_stats_page", "show_page_stats", True
+    ),
+    PageIndex.SETTINGS: PageSpec(
+        "gear", "系统设置", "api_config_page", "_create_api_config_page_steps", "show_page_api"
+    ),
+}
+PRIMARY_NAV_PAGES = tuple(page for page in PageIndex if page is not PageIndex.SETTINGS)
 
 # 服务商显示名称映射（内部键 -> 显示名称）
 PROVIDER_DISPLAY = {
@@ -582,13 +657,19 @@ def _place_window_centered(
         height = max(1, int(screen_height * max_height_ratio))
 
     if parent is not None:
-        parent_x = parent.winfo_rootx()
-        parent_y = parent.winfo_rooty()
+        try:
+            # geometry() uses the outer-window origin.  Using winfo_rootx/y
+            # here mixes client-area and outer-window coordinates on Windows
+            # and leaves dialogs offset by the title bar and resize border.
+            parent_x = parent.winfo_x()
+            parent_y = parent.winfo_y()
+        except (tk.TclError, AttributeError):
+            parent_x = parent.winfo_rootx()
+            parent_y = parent.winfo_rooty()
         parent_width = parent.winfo_width()
         parent_height = parent.winfo_height()
         x = parent_x + (parent_width - width) // 2
         y = parent_y + (parent_height - height) // 2
-        y -= _get_parent_titlebar_center_offset(parent)
     else:
         x = screen_left + (screen_width - width) // 2
         y = screen_top + (screen_height - height) // 2
@@ -599,7 +680,7 @@ def _place_window_centered(
     max_y = screen_top + max(0, screen_height - height)
     x = min(max(min_x, x), max_x)
     y = min(max(min_y, y), max_y)
-    window.geometry(f"{width}x{height}+{x}+{y}")
+    window.geometry(f"{width}x{height}{x:+d}{y:+d}")
     if parent is not None:
         _bind_parent_center_correction(window, parent, width, height, screen_left, screen_top, screen_width, screen_height)
     return width, height, x, y
@@ -635,24 +716,24 @@ def _bind_parent_center_correction(window, parent, width, height, screen_left, s
                 parent.update_idletasks()
                 window.update_idletasks()
                 parent_center_x = parent.winfo_rootx() + parent.winfo_width() // 2
-                parent_center_y = (
-                    parent.winfo_rooty()
-                    + parent.winfo_height() // 2
-                    - _get_parent_titlebar_center_offset(parent)
-                )
+                parent_center_y = parent.winfo_rooty() + parent.winfo_height() // 2
                 window_center_x = window.winfo_rootx() + window.winfo_width() // 2
                 window_center_y = window.winfo_rooty() + window.winfo_height() // 2
                 dx = parent_center_x - window_center_x
                 dy = parent_center_y - window_center_y
                 if abs(dx) < 1 and abs(dy) < 1:
                     return
-                new_x = window.winfo_rootx() + dx
-                new_y = window.winfo_rooty() + dy
+                try:
+                    new_x = window.winfo_x() + dx
+                    new_y = window.winfo_y() + dy
+                except (tk.TclError, AttributeError):
+                    new_x = window.winfo_rootx() + dx
+                    new_y = window.winfo_rooty() + dy
                 max_x = screen_left + max(0, screen_width - width)
                 max_y = screen_top + max(0, screen_height - height)
                 new_x = min(max(screen_left, new_x), max_x)
                 new_y = min(max(screen_top, new_y), max_y)
-                window.geometry(f"{width}x{height}+{int(new_x)}+{int(new_y)}")
+                window.geometry(f"{width}x{height}{int(new_x):+d}{int(new_y):+d}")
             except (tk.TclError, AttributeError):
                 return
 
@@ -734,7 +815,7 @@ def _draw_search_icon(S, fill, sw_ratio=0.10):
     img = Image.new('RGBA', (S, S), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     # 镜片
-    rim_color = '#4B5563'      # 金属边框
+    rim_color = ui_theme.PRIMARY      # 品牌蓝边框
     glass_fill = (147, 197, 253, 80)  # 淡蓝玻璃
     rim_w = max(3, int(S * 0.07))
     r = int(S * 0.24)
@@ -755,7 +836,7 @@ def _draw_search_icon(S, fill, sw_ratio=0.10):
     sy2 = int(shine_y + shine_len * math.sin(angle))
     d.line([(sx1, sy1), (sx2, sy2)], fill=shine_color, width=shine_w)
     # 手柄
-    handle_color = '#374151'
+    handle_color = ui_theme.PRIMARY_DARK
     handle_w = max(3, int(S * 0.07))
     angle45 = math.radians(45)
     hx0 = int(cx + (r + rim_w // 2) * math.cos(angle45))
@@ -950,8 +1031,13 @@ class BossFilterGUI:
         self._ai_eval_batch_summary = None
         self._api_ui_config_mtime = None
         self._api_key_resolve_thread = None
+        self._api_key_resolve_after_id = None
+        self._api_key_cache = {}
+        self._api_key_cache_lock = threading.Lock()
         self._pending_idle_tasks = set()
+        self._pending_page_builds = set()
         self._page_width_policy_after_id = None
+        self._highlighted_page_index = None
 
         # 设置样式
         self.setup_styles()
@@ -993,6 +1079,10 @@ class BossFilterGUI:
         if _NEED_COCOA_SCROLL_HOOK:
             self.root.after(500, self._setup_cocoa_scroll_hook)
 
+        # 全局快捷键（F5 / Ctrl+F / Delete / Ctrl+1~7）
+        if not standalone_education:
+            self._setup_global_shortcuts()
+
         # 更新模块含 requests 等重型依赖，延迟并在后台导入，避免阻塞 GUI 冷启动。
         if not standalone_education:
             self.root.after(12000, self._load_startup_updater)
@@ -1015,6 +1105,138 @@ class BossFilterGUI:
             self.run_on_ui(_start)
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _setup_global_shortcuts(self):
+        """注册全局快捷键：F5 刷新、Ctrl+F 搜索、Delete 移除选中、Ctrl+1~7 切换页面。"""
+        self.root.bind('<F5>', lambda _e: self._shortcut_refresh())
+        self.root.bind('<Control-f>', lambda _e: self._shortcut_focus_search())
+        self.root.bind('<Delete>', lambda _e: self._shortcut_delete_selected())
+        for key_number, page_index in enumerate(PageIndex, start=1):
+            self.root.bind(
+                f'<Control-Key-{key_number}>',
+                lambda _event, index=page_index: self._request_sidebar_page(index),
+            )
+
+    def _shortcut_refresh(self):
+        """F5：只刷新当前页面拥有的本地数据视图。"""
+        try:
+            current_page = PageIndex(getattr(self, 'current_page_index', PageIndex.HOME))
+            refresh_action = {
+                PageIndex.HOME: self.refresh_home_stats,
+                PageIndex.RESULTS: lambda: self.refresh_results(force=True),
+                PageIndex.STATS: self.refresh_stats,
+            }.get(current_page)
+            if refresh_action is None:
+                self._status_flash("当前页面无需刷新")
+                return
+            refresh_action()
+            self._status_flash("已刷新")
+        except Exception as exc:
+            logger.warning("F5 刷新失败：%s", exc)
+
+    def _shortcut_focus_search(self):
+        """Ctrl+F：跳到筛选结果页并聚焦搜索框。"""
+        try:
+            def _focus_search() -> None:
+                if hasattr(self, 'result_search_entry'):
+                    self.result_search_entry.focus_set()
+                    self.result_search_entry.select_range(0, 'end')
+
+            self._request_sidebar_page(PageIndex.RESULTS, on_ready=_focus_search)
+        except Exception as exc:
+            logger.warning("Ctrl+F 聚焦搜索失败：%s", exc)
+
+    def _shortcut_delete_selected(self):
+        """Delete：焦点在结果表且有选中行时移除选中候选人。"""
+        try:
+            focus = self.root.focus_get()
+            if focus is None or not str(focus).startswith(str(self.result_tree)):
+                return
+            if not self.result_tree.selection():
+                return
+            self._remove_selected_candidates()
+        except Exception as exc:
+            logger.warning("Delete 移除失败：%s", exc)
+
+    def _schedule_status_bar_reset(self, expected_text: str, duration_ms: int) -> None:
+        """Reset a transient status only if no newer status has replaced it."""
+        previous_after_id = getattr(self, '_status_flash_after_id', None)
+        if previous_after_id is not None:
+            try:
+                self.root.after_cancel(previous_after_id)
+            except tk.TclError:
+                pass
+
+        def _reset_status():
+            self._status_flash_after_id = None
+            if self.status_bar_left_var.get() == expected_text:
+                self.status_bar_left_var.set("就绪")
+
+        self._status_flash_after_id = self.root.after(duration_ms, _reset_status)
+
+    def _status_flash(self, text, duration_ms=2200):
+        """右下角轻量提示 + 状态栏消息，自动消失（非模态）。"""
+        try:
+            if hasattr(self, 'status_bar_left_var'):
+                self.status_bar_left_var.set(text)
+                self._schedule_status_bar_reset(text, duration_ms)
+            if getattr(self, '_status_flash_win', None) and self._status_flash_win.winfo_exists():
+                self._status_flash_win.destroy()
+            win = tk.Toplevel(self.root)
+            win.overrideredirect(True)
+            win.attributes('-topmost', True)
+            label = tk.Label(
+                win, text=text, font=self.font_label,
+                background=self.colors.get('tooltip_bg', ui_theme.TOOLTIP_BG), foreground=self.colors.get('tooltip_fg', ui_theme.TOOLTIP_FG),
+                padx=14, pady=8,
+            )
+            label.pack()
+            self.root.update_idletasks()
+            x = self.root.winfo_x() + self.root.winfo_width() - win.winfo_reqwidth() - 24
+            y = self.root.winfo_y() + self.root.winfo_height() - win.winfo_reqheight() - 24
+            monitor_area = _get_windows_monitor_area(win, self.root)
+            if monitor_area is not None:
+                left, top, monitor_width, monitor_height = monitor_area
+                x = min(max(left, x), left + monitor_width - win.winfo_reqwidth())
+                y = min(max(top, y), top + monitor_height - win.winfo_reqheight())
+            win.geometry(f"{x:+d}{y:+d}")
+            self._status_flash_win = win
+            win.after(duration_ms, lambda: win.winfo_exists() and win.destroy())
+        except Exception:
+            pass
+
+    def _remove_selected_candidates(self):
+        """移除结果表当前选中的候选人（多选批量，单选走单人确认）。"""
+        selection = self.result_tree.selection()
+        if not selection:
+            return
+        if len(selection) == 1:
+            self._remove_candidate(selection[0])
+            return
+        if not messagebox.askyesno("确认删除", f"确定要移除选中的 {len(selection)} 名候选人吗？"):
+            return
+        remove_keys = set()
+        for sel_item in selection:
+            candidate = self._find_candidate_by_tree_item(sel_item)
+            if candidate and candidate.get('geek_id'):
+                remove_keys.add(self._candidate_identity_key(candidate))
+        self.result_tree_data = [
+            candidate for candidate in self.result_tree_data
+            if self._candidate_identity_key(candidate) not in remove_keys
+        ]
+        if remove_keys and CANDIDATES_PATH.exists():
+            with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
+                candidates = json.load(f)
+            candidates = [
+                candidate for candidate in candidates
+                if self._candidate_identity_key(candidate) not in remove_keys
+            ]
+            save_candidates_all(candidates, CANDIDATES_PATH)
+        for sel_item in selection:
+            if self.result_tree.exists(sel_item):
+                self.result_tree.delete(sel_item)
+        self.refresh_home_stats()
+        self._status_flash(f"已移除 {len(remove_keys)} 名候选人")
 
     def _setup_macos_reopen_handler(self):
         """点击 macOS Dock 图标时恢复主窗口。"""
@@ -1040,43 +1262,15 @@ class BossFilterGUI:
         """设置自定义样式"""
         style = ttk.Style()
 
-        # 尝试使用现代主题
+        # 统一使用 clam：唯一允许完整定制背景/边框/hover 的主题，
+        # vista 下按钮等控件无法着色，导致主操作与普通按钮无视觉层级
         try:
-            style.theme_use('vista')
+            style.theme_use('clam')
         except tk.TclError:
-            try:
-                style.theme_use('clam')
-            except tk.TclError:
-                pass  # 使用默认主题
+            pass  # 使用默认主题
 
-        # 配色方案 - 现代化渐变色
-        self.colors = {
-            'primary': '#1E88E5',      # 主蓝色
-            'primary_dark': '#1565C0',
-            'primary_light': '#64B5F6',
-            'success': '#43A047',       # 成功绿
-            'success_light': '#81C784',
-            'warning': '#FB8C00',       # 警告橙
-            'danger': '#E53935',        # 危险红
-            'purple': '#8E24AA',        # 紫色
-            'pending': '#546E7A',       # 待定蓝灰色
-            'bg_main': '#F8F9FA',       # 主背景
-            'bg_card': '#FFFFFF',       # 卡片背景
-            'bg_input': '#FAFAFA',      # 输入框背景
-            'bg_sidebar': '#2D3748',    # 侧边栏背景
-            'bg_tree_tag_high': '#E8F5E9',   # 表格高权重行
-            'bg_tree_tag_mid': '#FFF3E0',    # 表格中权重行
-            'bg_tree_tag_low': '#F5F5F5',    # 表格低权重行
-            'text_primary': '#1A202C',  # 主文字
-            'text_secondary': '#718096',# 次要文字
-            'text_muted': '#999999',    # 弱化文字
-            'text_sidebar': '#A0AEC0',  # 侧边栏文字
-            'text_sidebar_active': '#FFFFFF',      # 侧边栏激活文字
-            'text_sidebar_subtitle': '#94A3B8',    # 侧边栏副标题
-            'text_sidebar_version': '#64748B',     # 侧边栏版本号
-            'border': '#E2E8F0',        # 边框
-            'bg_hover': '#EDF2F7',      # 悬停背景
-        }
+        # 配色方案 - 统一来自 ui_theme 设计令牌
+        self.colors = ui_theme.build_palette()
 
         # 设置右侧功能页字体。左侧边栏在 create_sidebar() 中单独计算，避免被这里牵动。
         fs = self.dpi_scale * self.zoom_factor
@@ -1094,6 +1288,8 @@ class BossFilterGUI:
             message=(FONT_FAMILY, modal_font_size),
             button=(FONT_FAMILY, modal_font_size),
         )
+        # 警告/错误弹窗自动带语义图标，提升可扫读性
+        messagebox.icon_kinds = frozenset({"warning", "error"})
 
         # 设置 Combobox 下拉列表字体（与 font_label 保持一致）
         # 必须用元组格式 + priority 80，确保 Tk option database 正确解析并覆盖默认值
@@ -1105,13 +1301,71 @@ class BossFilterGUI:
         self.root.bind_class('TCombobox', '<Button-5>', lambda e: 'break')
 
         # 配置样式
-        style.configure('TFrame', background=self.colors['bg_card'])
-        style.configure('Page.TFrame', background=self.colors['bg_main'])
-        style.configure('TLabel', font=self.font_label, foreground=self.colors['text_primary'],
-                        background=self.colors['bg_card'])
-        style.configure('TButton', font=self.font_label, padding=(15, 8))
-        style.configure('Accent.TButton', font=(FONT_FAMILY_SEMIBOLD, int(13 * page_fs)), padding=(20, 8))
-        style.configure('Card.TFrame', background=self.colors['bg_card'], relief='solid', borderwidth=1)
+        c = self.colors
+        style.configure('TFrame', background=c['bg_card'])
+        style.configure('Page.TFrame', background=c['bg_main'])
+        style.configure('TLabel', font=self.font_label, foreground=c['text_primary'],
+                        background=c['bg_card'])
+
+        # ---------------- 三级按钮体系（clam 下可完整着色） ----------------
+        # 次级（默认）：白底灰边，hover 浅灰
+        style.configure('TButton', font=self.font_label, padding=(15, 8),
+                        background=c['bg_card'], foreground=c['text_primary'],
+                        bordercolor=c.get('border_strong', ui_theme.BORDER_STRONG),
+                        focuscolor=c['primary'], lightcolor=c['bg_card'], darkcolor=c['bg_card'])
+        style.map('TButton',
+                  background=[('pressed', c['bg_hover']), ('active', c['bg_hover']),
+                              ('disabled', c['bg_input'])],
+                  foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
+                  bordercolor=[('focus', c['primary'])])
+        # Menubutton 的原生下拉指示区默认会从文字区域扣除宽度，导致文字
+        # 相对整个按钮视觉偏左。让箭头覆盖在右侧对称内边距中，文字继续
+        # 使用完整按钮宽度居中，同时保留原生下拉提示和交互。
+        style.layout(
+            'CenteredActions.TMenubutton',
+            [
+                ('Menubutton.button', {
+                    'sticky': 'nswe',
+                    'children': [
+                        ('Menubutton.padding', {
+                            'sticky': 'nswe',
+                            'children': [('Menubutton.label', {'sticky': ''})],
+                        }),
+                        ('Menubutton.dropdown', {'sticky': 'e'}),
+                    ],
+                }),
+            ],
+        )
+        style.configure(
+            'CenteredActions.TMenubutton',
+            font=self.font_label,
+            padding=(24, 8),
+            anchor='center',
+            justify='center',
+        )
+        # 主级（Accent）：实心品牌蓝白字，hover 深蓝，pressed 更深
+        style.configure('Accent.TButton', font=(FONT_FAMILY_SEMIBOLD, int(13 * page_fs)), padding=(20, 8),
+                        background=c['primary'], foreground='#FFFFFF',
+                        bordercolor=c['primary_dark'], focuscolor=c['primary_dark'],
+                        lightcolor=c['primary'], darkcolor=c['primary'])
+        style.map('Accent.TButton',
+                  background=[('pressed', c.get('primary_deep', ui_theme.PRIMARY_DEEP)),
+                              ('active', c['primary_dark']),
+                              ('disabled', c['bg_input'])],
+                  foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
+                  bordercolor=[('disabled', c['border'])])
+        # 危险级（Danger）：实心红，用于删除/停止等需警示的动作
+        style.configure('Danger.TButton', font=self.font_label, padding=(15, 8),
+                        background=c['danger'], foreground='#FFFFFF',
+                        bordercolor=c.get('danger_text', ui_theme.DANGER_TEXT),
+                        lightcolor=c['danger'], darkcolor=c['danger'])
+        style.map('Danger.TButton',
+                  background=[('pressed', c.get('danger_deep', ui_theme.DANGER_DEEP)), ('active', c.get('danger_text', ui_theme.DANGER_TEXT)),
+                              ('disabled', c['bg_input'])],
+                  foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
+                  bordercolor=[('disabled', c['border'])])
+
+        style.configure('Card.TFrame', background=c['bg_card'], relief='solid', borderwidth=1)
         style.configure('WelcomeCard.TFrame', background=self.colors['bg_card'],
                         relief='flat', borderwidth=0)
         style.configure('WelcomeInner.TFrame', background=self.colors['bg_card'])
@@ -1146,6 +1400,47 @@ class BossFilterGUI:
         style.map('TEntry',
                   fieldbackground=[('!disabled', self.colors['bg_card']),
                                    ('disabled', self.colors['bg_input'])])
+
+        # ---------------- 表格 / 表头 / 滚动条 / 输入控件（clam 扁平化） ----------------
+        style.configure('Treeview',
+                        background=c['bg_card'], fieldbackground=c['bg_card'],
+                        foreground=c['text_primary'],
+                        bordercolor=c['border'], lightcolor=c['border'], darkcolor=c['border'])
+        style.map('Treeview',
+                  background=[('selected', c.get('banner_info_bg', ui_theme.BANNER_INFO_BG))],
+                  foreground=[('selected', c['primary_dark'])])
+        style.configure('Treeview.Heading',
+                        background=c.get('bg_footer', ui_theme.BG_FOOTER),
+                        foreground=c['text_secondary'],
+                        bordercolor=c['border'], padding=(4, 3), relief='flat')
+        style.map('Treeview.Heading',
+                  background=[('active', c['bg_hover'])],
+                  foreground=[('active', c['text_primary'])])
+        for _sb in ('Vertical.TScrollbar', 'Horizontal.TScrollbar'):
+            style.configure(_sb,
+                            background=c['border'], troughcolor=c['bg_main'],
+                            bordercolor=c['bg_main'], arrowcolor=c['text_secondary'],
+                            lightcolor=c['border'], darkcolor=c['border'])
+            style.map(_sb, background=[('active', c.get('border_strong', ui_theme.BORDER_STRONG)),
+                                       ('pressed', c['text_secondary'])])
+        # 输入控件：白底灰边，聚焦时品牌蓝边
+        for _input in ('TEntry', 'TCombobox', 'TSpinbox'):
+            style.configure(_input,
+                            bordercolor=c.get('border_strong', ui_theme.BORDER_STRONG),
+                            lightcolor=c.get('border_strong', ui_theme.BORDER_STRONG),
+                            darkcolor=c.get('border_strong', ui_theme.BORDER_STRONG),
+                            focuscolor=c['primary'])
+            style.map(_input,
+                      bordercolor=[('focus', c['primary'])],
+                      lightcolor=[('focus', c['primary'])],
+                      darkcolor=[('focus', c['primary'])])
+        style.configure('TCheckbutton', background=c['bg_card'], foreground=c['text_primary'])
+        style.configure('TRadiobutton', background=c['bg_card'], foreground=c['text_primary'])
+        style.configure('Horizontal.TProgressbar',
+                        troughcolor=c['bg_main'], background=c['primary'],
+                        bordercolor=c['bg_main'], lightcolor=c['primary'], darkcolor=c['primary'])
+        style.configure('TSeparator', background=c['border'])
+
         style.configure('Custom.TLabelframe', font=self.font_label, background=self.colors['bg_card'])
         style.configure('Custom.TLabelframe.Label', font=self.font_label, background=self.colors['bg_card'])
 
@@ -1183,21 +1478,15 @@ class BossFilterGUI:
         sep.pack(fill="x", padx=0, pady=int(10 * self.dpi_scale * self.zoom_factor))
 
         # 导航项 - 使用 Frame 容器确保文字对齐（图标固定宽度）
-        nav_items = [
-            ("home", "首页", self.show_page_home),
-            ("briefcase", "岗位配置", self.show_page_config),
-            ("play", "运行控制", self.show_page_run),
-            ("filter", "筛选结果", self.show_page_result),
-            ("document", "学历核验", self.show_page_education),
-            ("chart", "数据统计", self.show_page_stats),
-        ]
+        nav_items = [(page, PAGE_SPECS[page]) for page in PRIMARY_NAV_PAGES]
 
         self.nav_labels = []
         self.nav_components = []  # 保存所有导航组件引用，用于 hover 效果
         sidebar_nav_font_size = int(15 * self.font_scale)
 
-        # 设置导航项样式
+        # 设置导航项样式（含 pill 选中态与 hover 态）
         style = ttk.Style()
+        pill_bg = self.colors.get('bg_sidebar_pill', ui_theme.BG_SIDEBAR_PILL)
         style.configure('SidebarNav.TLabel',
                        font=(FONT_FAMILY, sidebar_nav_font_size),
                        foreground=self.colors['text_sidebar'],
@@ -1206,19 +1495,38 @@ class BossFilterGUI:
                        font=(FONT_FAMILY_SEMIBOLD, sidebar_nav_font_size),
                        foreground=self.colors['text_sidebar_active'],
                        background=self.colors['bg_sidebar'])
+        style.configure('SidebarPill.TFrame', background=pill_bg)
+        style.configure('SidebarNavPill.TLabel',
+                       font=(FONT_FAMILY, sidebar_nav_font_size),
+                       foreground=self.colors['text_sidebar_active'],
+                       background=pill_bg)
+        style.configure('SidebarNavSelectedPill.TLabel',
+                       font=(FONT_FAMILY_SEMIBOLD, sidebar_nav_font_size),
+                       foreground=self.colors['text_sidebar_active'],
+                       background=pill_bg)
 
-        # emoji 容器内边距（固定宽度，确保文字对齐）- 增大左侧距使导航项整体居中
-        emoji_padx = int(40 * self.dpi_scale * self.zoom_factor)
+        # 图标容器内边距（固定宽度，确保文字对齐）
+        emoji_padx = int(14 * self.dpi_scale * self.zoom_factor)
         text_padx = int(10 * self.dpi_scale * self.zoom_factor)
+        nav_outer_padx = int(12 * self.dpi_scale * self.zoom_factor)
+        badge_font = (FONT_FAMILY, int(10 * self.font_scale), 'bold')
 
-        for idx, (icon_name, text, command) in enumerate(nav_items):
-            # 生成两个颜色版本的图标
+        for page_index, page_spec in nav_items:
+            idx = int(page_index)
+            icon_name = page_spec.icon_name
+            text = page_spec.title
+            command = lambda index=page_index: self._request_sidebar_page(index)
+            # 生成两个颜色版本的图标（默认态 / pill 底高亮态）
             icon_default = self.icons.nav(icon_name, self.colors['text_sidebar'], self.colors['bg_sidebar'])
-            icon_active = self.icons.nav(icon_name, self.colors['text_sidebar_active'], self.colors['bg_sidebar'])
+            icon_active = self.icons.nav(icon_name, self.colors['text_sidebar_active'], pill_bg)
 
             # 使用 Frame 容器
             nav_frame = ttk.Frame(sidebar, style='Sidebar.TFrame')
-            nav_frame.pack(fill="x", padx=0, pady=1)
+            nav_frame.pack(fill="x", padx=nav_outer_padx, pady=1)
+
+            # 左侧选中强调条
+            accent_bar = tk.Frame(nav_frame, width=3, background=self.colors['bg_sidebar'])
+            accent_bar.pack(side="left", fill="y")
 
             # 图标标签
             icon_label = ttk.Label(nav_frame, image=icon_default,
@@ -1233,8 +1541,15 @@ class BossFilterGUI:
                                   padding=(text_padx, int(14 * self.dpi_scale * self.zoom_factor)))
             text_label.pack(side="left", fill="x", expand=True)
 
+            # 角标（默认隐藏，set_nav_badge 按需显示）
+            badge_label = tk.Label(
+                nav_frame, text="", font=badge_font, cursor="hand2",
+                background=self.colors['danger'], foreground='#FFFFFF',
+                padx=int(5 * self.dpi_scale), pady=0,
+            )
+
             # 绑定点击和 hover 事件 - 所有子组件绑定到同一个 command
-            for widget in [nav_frame, icon_label, text_label]:
+            for widget in [nav_frame, accent_bar, icon_label, text_label, badge_label]:
                 widget.bind("<Button-1>", lambda e, c=command: c())
                 widget.bind("<Enter>", lambda e, i=idx: self.on_nav_enter(i))
                 widget.bind("<Leave>", lambda e, i=idx: self.on_nav_leave(i))
@@ -1242,10 +1557,12 @@ class BossFilterGUI:
             # 保存所有组件引用，用于 hover 效果
             self.nav_components.append({
                 'frame': nav_frame,
+                'accent': accent_bar,
                 'icon': icon_label,
                 'icon_default': icon_default,
                 'icon_active': icon_active,
                 'text': text_label,
+                'badge': badge_label,
                 'command': command,
                 'index': idx
             })
@@ -1257,35 +1574,48 @@ class BossFilterGUI:
         sep2.pack(fill="x", padx=0, pady=int(10 * self.dpi_scale * self.zoom_factor))
 
         # 系统设置（独立导航项）- 使用 Frame 容器保持一致对齐
-        settings_idx = len(nav_items)
+        settings_page = PageIndex.SETTINGS
+        settings_spec = PAGE_SPECS[settings_page]
+        settings_idx = int(settings_page)
         settings_frame = ttk.Frame(sidebar, style='Sidebar.TFrame')
-        settings_frame.pack(fill="x", padx=0, pady=1)
+        settings_frame.pack(fill="x", padx=nav_outer_padx, pady=1)
 
-        settings_icon_default = self.icons.nav('gear', self.colors['text_sidebar'], self.colors['bg_sidebar'])
-        settings_icon_active = self.icons.nav('gear', self.colors['text_sidebar_active'], self.colors['bg_sidebar'])
+        settings_accent = tk.Frame(settings_frame, width=3, background=self.colors['bg_sidebar'])
+        settings_accent.pack(side="left", fill="y")
+
+        settings_icon_default = self.icons.nav(settings_spec.icon_name, self.colors['text_sidebar'], self.colors['bg_sidebar'])
+        settings_icon_active = self.icons.nav(settings_spec.icon_name, self.colors['text_sidebar_active'], pill_bg)
         settings_icon_label = ttk.Label(settings_frame, image=settings_icon_default,
                                   style='SidebarNav.TLabel', cursor="hand2")
         settings_icon_label._icon_default = settings_icon_default
         settings_icon_label._icon_active = settings_icon_active
         settings_icon_label.pack(side="left", padx=(emoji_padx, 0))
 
-        settings_text = ttk.Label(settings_frame, text="系统设置",
+        settings_text = ttk.Label(settings_frame, text=settings_spec.title,
                                  style='SidebarNav.TLabel', cursor="hand2",
                                  padding=(text_padx, int(14 * self.dpi_scale * self.zoom_factor)))
         settings_text.pack(side="left", fill="x", expand=True)
 
-        for widget in [settings_frame, settings_icon_label, settings_text]:
-            widget.bind("<Button-1>", lambda e: self.show_page_api())
+        settings_badge = tk.Label(
+            settings_frame, text="", font=badge_font, cursor="hand2",
+            background=self.colors['danger'], foreground='#FFFFFF',
+            padx=int(5 * self.dpi_scale), pady=0,
+        )
+
+        for widget in [settings_frame, settings_accent, settings_icon_label, settings_text, settings_badge]:
+            widget.bind("<Button-1>", lambda _event: self._request_sidebar_page(settings_page))
             widget.bind("<Enter>", lambda e, i=settings_idx: self.on_nav_enter(i))
             widget.bind("<Leave>", lambda e, i=settings_idx: self.on_nav_leave(i))
 
         self.nav_components.append({
             'frame': settings_frame,
+            'accent': settings_accent,
             'icon': settings_icon_label,
             'icon_default': settings_icon_default,
             'icon_active': settings_icon_active,
             'text': settings_text,
-            'command': self.show_page_api,
+            'badge': settings_badge,
+            'command': lambda: self._request_sidebar_page(settings_page),
             'index': settings_idx
         })
         self.nav_labels.append(settings_text)
@@ -1326,8 +1656,43 @@ class BossFilterGUI:
         self.stats_page = None
         self.education_page = None
 
+        self._page_loading_var = tk.StringVar(value="正在打开…")
+        self._page_loading_frame = ttk.Frame(self.pages_frame, style='Page.TFrame')
+        loading_inner = ttk.Frame(self._page_loading_frame, style='Page.TFrame')
+        loading_inner.place(relx=0.5, rely=0.42, anchor='center')
+        ttk.Label(
+            loading_inner,
+            textvariable=self._page_loading_var,
+            font=self.font_section,
+            foreground=self.colors['text_primary'],
+            background=self.colors['bg_main'],
+        ).pack(anchor='center')
+        ttk.Label(
+            loading_inner,
+            text="首次打开正在准备页面，后续切换将直接显示",
+            font=self.font_label,
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_main'],
+        ).pack(anchor='center', pady=(int(8 * self.dpi_scale), 0))
+
         # 首屏只创建首页，其他页面首次点击时再构建并缓存。
         self.create_home_page()
+
+        # 全局状态栏：瞬时操作反馈（导出完成、已屏蔽等提示的落点）
+        footer_bg = self.colors.get('bg_footer', ui_theme.BG_FOOTER)
+        status_bar = tk.Frame(
+            self.main_frame, background=footer_bg,
+            highlightthickness=1, highlightbackground=self.colors['border'],
+        )
+        status_bar.pack(side="bottom", fill="x")
+        status_font = (FONT_FAMILY, int(10 * self.font_scale))
+        self.status_bar_left_var = tk.StringVar(value="就绪")
+        tk.Label(
+            status_bar, textvariable=self.status_bar_left_var, font=status_font,
+            foreground=self.colors['text_secondary'], background=footer_bg,
+            anchor='w', padx=12, pady=3,
+        ).pack(side="left", fill="x", expand=True)
+        self._refresh_nav_badges()
 
         # 默认显示首页（current_page_index 在 show_page_home 中已设置为 0）
         self.show_page_home()
@@ -1354,20 +1719,144 @@ class BossFilterGUI:
         self.create_education_page()
         self.show_page_education()
 
-    def _defer_ui_work(self, key, callback):
-        """Run non-urgent UI work after the current redraw, coalescing duplicates."""
+    def _defer_ui_work(
+        self,
+        key: str,
+        callback: Callable[[], None],
+        page_index: int | None = None,
+    ) -> None:
+        """Run coalesced UI work after redraw and skip it after navigation."""
         if key in self._pending_idle_tasks:
             return
         self._pending_idle_tasks.add(key)
 
         def _run():
             self._pending_idle_tasks.discard(key)
+            if (
+                page_index is not None
+                and getattr(self, 'current_page_index', None) != page_index
+            ):
+                return
             try:
                 callback()
             except tk.TclError:
                 return
 
         self.root.after_idle(_run)
+
+    def _request_sidebar_page(
+        self,
+        page_index: PageIndex | int,
+        on_ready: Callable[[], None] | None = None,
+    ) -> None:
+        """Navigate to a page, painting feedback before its first build."""
+        try:
+            page = PageIndex(page_index)
+        except (TypeError, ValueError):
+            return
+        page_spec = PAGE_SPECS[page]
+        self._request_page_first_open(
+            page,
+            page_spec.page_attr,
+            page_spec.title,
+            getattr(self, page_spec.creator_name),
+            getattr(self, page_spec.show_name),
+            on_ready=on_ready,
+        )
+
+    def _request_page_first_open(
+        self,
+        page_index: int,
+        page_attr: str,
+        title: str,
+        creator: Callable[[], object | None],
+        show_page: Callable[[], None],
+        on_ready: Callable[[], None] | None = None,
+    ) -> None:
+        """Show a lightweight first frame, then build and cache a missing page."""
+        if not hasattr(self, '_pending_page_builds'):
+            self._pending_page_builds = set()
+        if not hasattr(self, '_pending_page_ready_callbacks'):
+            self._pending_page_ready_callbacks = {}
+        if on_ready is not None:
+            self._pending_page_ready_callbacks.setdefault(page_attr, []).append(on_ready)
+
+        def _run_ready_callbacks() -> None:
+            callbacks = self._pending_page_ready_callbacks.pop(page_attr, [])
+            for callback in callbacks:
+                try:
+                    callback()
+                except Exception:
+                    logger.exception("%s页面就绪回调失败", title)
+
+        def _paint_loading_frame() -> None:
+            self.hide_all_pages()
+            self._page_loading_var.set(f"正在打开{title}…")
+            self._page_loading_frame.pack(fill="both", expand=True)
+            self.current_page_index = page_index
+            self._schedule_page_width_policy()
+            self.update_nav_highlight()
+
+        if page_attr in self._pending_page_builds:
+            _paint_loading_frame()
+            return
+        if getattr(self, page_attr, None) is not None:
+            show_page()
+            _run_ready_callbacks()
+            return
+
+        _paint_loading_frame()
+        self._pending_page_builds.add(page_attr)
+
+        def _discard_partial_page() -> None:
+            partial_page = getattr(self, page_attr, None)
+            if partial_page is not None:
+                try:
+                    partial_page.destroy()
+                except tk.TclError:
+                    pass
+                setattr(self, page_attr, None)
+
+        def _advance(iterator: Iterator[object] | None = None) -> None:
+            if getattr(self, 'current_page_index', None) != page_index:
+                self._pending_page_builds.discard(page_attr)
+                self._pending_page_ready_callbacks.pop(page_attr, None)
+                _discard_partial_page()
+                return
+            self._pending_page_builds.discard(page_attr)
+            try:
+                if iterator is None:
+                    build_result = creator()
+                    if isinstance(build_result, Iterator):
+                        iterator = build_result
+                    else:
+                        show_page()
+                        _run_ready_callbacks()
+                        return
+                next(iterator)
+            except StopIteration:
+                if getattr(self, 'current_page_index', None) == page_index:
+                    show_page()
+                    _run_ready_callbacks()
+                return
+            except Exception as exc:
+                logger.exception("首次创建%s页面失败", title)
+                self._pending_page_ready_callbacks.pop(page_attr, None)
+                _discard_partial_page()
+                if getattr(self, 'current_page_index', None) == page_index:
+                    self._page_loading_var.set(f"{title}打开失败")
+                    messagebox.showerror(
+                        "页面打开失败",
+                        f"{title}页面打开失败：{exc}",
+                        parent=self.root,
+                    )
+                return
+
+            self._pending_page_builds.add(page_attr)
+            self.root.after(1, lambda: _advance(iterator))
+
+        # Give Tk one frame to paint the selected navigation state and loading shell.
+        self.root.after(30, _advance)
 
     def _create_result_date_entry(self, parent, **kwargs):
         """创建结果页日期控件；只在结果页构建时加载 tkcalendar。"""
@@ -1403,11 +1892,13 @@ class BossFilterGUI:
         scale = self.dpi_scale * self.zoom_factor
         base_pad_x = int(UI_CONFIG['page_padding_x'] * scale)
         base_pad_y = int(UI_CONFIG['page_padding_y'] * scale)
-        current_page = getattr(self, 'current_page_index', 0)
+        current_page = getattr(self, 'current_page_index', PageIndex.HOME)
 
         # Result and stats pages are table-first surfaces; they should use the
         # available width. Other pages read better when the content stays bounded.
-        full_width_pages = {3, 4}
+        full_width_pages = {
+            page for page, page_spec in PAGE_SPECS.items() if page_spec.full_width
+        }
         if current_page in full_width_pages:
             target_pad_x = base_pad_x
         else:
@@ -1597,7 +2088,7 @@ class BossFilterGUI:
         card.pack(**pack_opts)
 
         # 标题行 - 左侧蓝色竖线 + 浅灰背景，与页面标题风格一致
-        title_bg = '#F7F8FA'
+        title_bg = self.colors.get('bg_footer', ui_theme.BG_FOOTER)
         title_bar = tk.Frame(card, bg=title_bg)
         title_bar.pack(fill="x")
 
@@ -1727,20 +2218,34 @@ class BossFilterGUI:
         quick_buttons = ttk.Frame(quick_frame, style='TFrame')
         quick_buttons.pack(fill="x")
 
-        icon_play = self.icons.button('play', self.colors['text_primary'])
-        btn1 = ttk.Button(quick_buttons, image=icon_play, text=" 开始筛选", compound=tk.LEFT, command=self.show_page_run, style='TButton')
+        icon_play = self.icons.button('play', '#FFFFFF')
+        btn1 = ttk.Button(
+            quick_buttons, image=icon_play, text=" 开始筛选", compound=tk.LEFT,
+            command=lambda: self._request_sidebar_page(PageIndex.RUN), style='Accent.TButton',
+        )
         btn1._icon_ref = icon_play
         btn1.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
         icon_filter = self.icons.button('filter', self.colors['text_primary'])
-        btn2 = ttk.Button(quick_buttons, image=icon_filter, text=" 查看结果", compound=tk.LEFT, command=self.show_page_result, style='TButton')
+        btn2 = ttk.Button(
+            quick_buttons, image=icon_filter, text=" 查看结果", compound=tk.LEFT,
+            command=lambda: self._request_sidebar_page(PageIndex.RESULTS), style='TButton',
+        )
         btn2._icon_ref = icon_filter
         btn2.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
         icon_briefcase = self.icons.button('briefcase', self.colors['text_primary'])
-        btn3 = ttk.Button(quick_buttons, image=icon_briefcase, text=" 配置岗位", compound=tk.LEFT, command=self.show_page_config, style='TButton')
+        btn3 = ttk.Button(
+            quick_buttons, image=icon_briefcase, text=" 配置岗位", compound=tk.LEFT,
+            command=lambda: self._request_sidebar_page(PageIndex.CONFIG), style='TButton',
+        )
         btn3._icon_ref = icon_briefcase
         btn3.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
 
-    def create_config_page(self):
+    def create_config_page(self) -> None:
+        """同步创建岗位配置页，供需要立即访问控件的内部流程使用。"""
+        for _step in self._create_config_page_steps():
+            pass
+
+    def _create_config_page_steps(self) -> Iterator[None]:
         """创建岗位配置页面"""
         self.config_page = ttk.Frame(self.pages_frame, style='Page.TFrame')
         self._job_form_tracking_ready = False
@@ -1765,6 +2270,8 @@ class BossFilterGUI:
 
         # 使用 scrollable_frame 作为实际容器
         config_container = self.config_scrollable_frame
+
+        yield
 
         # 岗位选择区域
         select_frame = ttk.Frame(config_container, style='TFrame')
@@ -1792,18 +2299,12 @@ class BossFilterGUI:
             label=" 删除当前岗位", image=icon_trash_small, compound=tk.LEFT,
             command=self.delete_job,
         )
-        more_style = ttk.Style()
-        more_style.configure(
-            'ConfigActions.TMenubutton',
-            font=self.font_label,
-            padding=(20, 13),
-        )
         btn_more = ttk.Menubutton(
             select_frame,
             text="更多操作",
             menu=more_menu,
             width=9,
-            style='ConfigActions.TMenubutton',
+            style='CenteredActions.TMenubutton',
         )
         self.config_more_menu_button = btn_more
         btn_more.pack(side="right", padx=(int(8 * self.dpi_scale * self.zoom_factor), 0))
@@ -1855,7 +2356,7 @@ class BossFilterGUI:
         for i, text in enumerate(_step_texts):
             if i > 0:
                 arrow = ttk.Label(_steps_row, text="→", font=_step_font,
-                                  foreground=self.colors['text_muted'],
+                                  foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
                                   background=self.colors['bg_card'])
                 arrow.pack(side="left", padx=int(6 * _fs))
             lbl = ttk.Label(_steps_row, text=text, font=_step_font,
@@ -1865,9 +2366,11 @@ class BossFilterGUI:
 
         self._job_step_active = -1  # -1 = 隐藏
 
+        yield
+
         # ===== 需求文档解析区域 =====
         def _build_requirement_toggle(title_bar, padding):
-            title_bg = '#F7F8FA'
+            title_bg = self.colors.get('bg_footer', ui_theme.BG_FOOTER)
             self.requirement_title_bar = title_bar
             self.requirement_header_status_var = tk.StringVar(value="")
             self.requirement_expand_icon = self.icons.button(
@@ -1907,6 +2410,8 @@ class BossFilterGUI:
         self.requirement_section_expanded = True
         self._bind_requirement_header_interaction()
 
+        yield
+
         # 需求输入框
         self._req_header_frame = ttk.Frame(parse_frame, style='TFrame')
         req_header = self._req_header_frame
@@ -1926,7 +2431,7 @@ class BossFilterGUI:
 
         self.requirement_text = tk.Text(text_container, height=UI_CONFIG['text_height_large'],
                                         font=(FONT_FAMILY, int(10 * self.font_scale)),
-                                        bg='#FFFFFF', fg=self.colors['text_primary'],
+                                        bg=self.colors['bg_card'], fg=self.colors['text_primary'],
                                         borderwidth=0, highlightthickness=2,
                                         highlightbackground=self.colors['border'],
                                         highlightcolor=self.colors['primary'])
@@ -1938,7 +2443,7 @@ class BossFilterGUI:
 
         # 占位提示文字
         self._req_placeholder_text = "在此粘贴招聘需求内容..."
-        _placeholder_color = self.colors['text_muted']
+        _placeholder_color = self.colors.get('text_muted', ui_theme.TEXT_MUTED)
         self.requirement_text.tag_configure("placeholder", foreground=_placeholder_color)
         self.requirement_text.insert("1.0", self._req_placeholder_text, "placeholder")
         self._req_placeholder_active = True
@@ -1984,6 +2489,8 @@ class BossFilterGUI:
                                            foreground=self.colors['success'], background=self.colors['bg_card'],
                                            justify="left")
         self.parse_result_label.pack(fill="x", anchor="w", pady=int(10 * self.dpi_scale * self.zoom_factor))
+
+        yield
 
         # ===== 解析结果详细展示区域 =====
         self.result_detail_frame = ttk.Frame(config_container, style='Card.TFrame')
@@ -2082,6 +2589,8 @@ class BossFilterGUI:
                  font=(FONT_FAMILY, int(10 * self.font_scale)),
                  foreground=self.colors['text_secondary'], background=self.colors['bg_card']).pack(side="left", padx=(int(10 * self.dpi_scale * self.zoom_factor), 0))
 
+        yield
+
         # 技能关键词区域（带权重显示）- 左右分栏布局
         skills_frame = self._create_card(self.result_detail_frame, "技能评分条件",
             fill="both", side="top", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
@@ -2105,7 +2614,7 @@ class BossFilterGUI:
 
         # 使用 Treeview 显示技能列表
         columns = ("name", "weight", "source", "evidence")
-        tree_font = (FONT_FAMILY, int(11 * self.font_scale))
+        tree_font = (FONT_FAMILY, int(12 * self.font_scale))
 
         self.skills_tree = ttk.Treeview(list_container, columns=columns, show="headings", height=UI_CONFIG['treeview_height'])
         self.skills_tree.heading("name", text="技能名称")
@@ -2124,7 +2633,7 @@ class BossFilterGUI:
 
         # 设置 Treeview 默认字体和行高
         _style = ttk.Style()
-        _style.configure('Treeview', font=tree_font, rowheight=int(30 * self.dpi_scale * self.zoom_factor))
+        _style.configure('Treeview', font=tree_font, rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor))
         _style.configure('Treeview.Heading', font=(FONT_FAMILY, int(12 * self.font_scale), 'bold'))
 
         skills_scroll = ttk.Scrollbar(list_container, orient="vertical", command=self.skills_tree.yview)
@@ -2170,6 +2679,8 @@ class BossFilterGUI:
 
         self.skills_tree.bind("<Motion>", _on_skills_motion)
         self.skills_tree.bind("<Leave>", _on_skills_leave)
+
+        yield
 
         # 选中技能编辑区
         edit_card = self._create_card(skills_right, "编辑选中技能",
@@ -2260,6 +2771,8 @@ class BossFilterGUI:
         # 绑定选中事件
         self.skills_tree.bind("<<TreeviewSelect>>", self.on_skill_selected)
 
+        yield
+
         # 必要条件区域
         required_frame = self._create_card(self.result_detail_frame, "必要条件",
             fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
@@ -2333,9 +2846,11 @@ class BossFilterGUI:
         ttk.Button(required_edit_frame, text="添加", command=self.add_required_condition).pack(side="left", padx=(int(8 * self.dpi_scale * self.zoom_factor), int(3 * self.dpi_scale * self.zoom_factor)))
         ttk.Button(required_edit_frame, text="删除选中", command=self.delete_required_condition).pack(side="left", padx=(int(3 * self.dpi_scale * self.zoom_factor), 0))
 
+        yield
+
         # 按钮行（居中布局，固定在页面底部，不随 Canvas 滚动）
         self.btn_frame = ttk.Frame(self.config_page, style='Page.TFrame')
-        quality_bg = '#F7F8FA'
+        quality_bg = self.colors.get('bg_footer', ui_theme.BG_FOOTER)
         quality_frame = tk.Frame(
             self.btn_frame,
             bg=quality_bg,
@@ -2439,7 +2954,12 @@ class BossFilterGUI:
         # 在所有控件创建完毕后绑定滚轮事件
         self._bind_mousewheel(self.config_canvas, self.config_scrollable_frame)
 
-    def create_api_config_page(self):
+    def create_api_config_page(self) -> None:
+        """同步创建系统设置页，供需要立即访问控件的内部流程使用。"""
+        for _step in self._create_api_config_page_steps():
+            pass
+
+    def _create_api_config_page_steps(self) -> Iterator[None]:
         """创建 API 配置页面"""
         # 创建带滚动条的页面
         self.api_config_page = ttk.Frame(self.pages_frame, style='Page.TFrame')
@@ -2448,8 +2968,8 @@ class BossFilterGUI:
         self.api_canvas, self.api_scrollable_frame = self._create_scroll_container(
             self.api_config_page, self.colors['bg_card'])
 
-        # 在可滚动框架中创建内容
-        self._create_api_config_content()
+        yield
+        yield from self._create_api_config_content_steps()
 
     def _on_api_canvas_configure(self, event):
         """调整可滚动框架宽度以匹配 Canvas"""
@@ -2712,10 +3232,10 @@ class BossFilterGUI:
 
                     # 直接滚动当前页面的 Canvas
                     page_canvas = {
-                        1: getattr(self, 'config_canvas', None),
-                        2: getattr(self, 'run_canvas', None),
-                        4: getattr(self, 'education_canvas', None),
-                        6: getattr(self, 'api_canvas', None),
+                        PageIndex.CONFIG: getattr(self, 'config_canvas', None),
+                        PageIndex.RUN: getattr(self, 'run_canvas', None),
+                        PageIndex.EDUCATION: getattr(self, 'education_canvas', None),
+                        PageIndex.SETTINGS: getattr(self, 'api_canvas', None),
                     }.get(getattr(self, 'current_page_index', -1))
 
                     if page_canvas:
@@ -2810,9 +3330,9 @@ class BossFilterGUI:
 
         if target_canvas is None:
             target_canvas = {
-                1: getattr(self, 'config_canvas', None),
-                2: getattr(self, 'run_canvas', None),
-                4: getattr(self, 'education_canvas', None),
+                PageIndex.CONFIG: getattr(self, 'config_canvas', None),
+                PageIndex.RUN: getattr(self, 'run_canvas', None),
+                PageIndex.EDUCATION: getattr(self, 'education_canvas', None),
             }.get(getattr(self, 'current_page_index', -1))
 
         if target_canvas is None:
@@ -2833,7 +3353,12 @@ class BossFilterGUI:
                       min(UI_CONFIG['spinbox_rounds_max'], new_val))
         self.rounds_var.set(str(new_val))
 
-    def _create_api_config_content(self):
+    def _create_api_config_content(self) -> None:
+        """同步创建系统设置内容。"""
+        for _step in self._create_api_config_content_steps():
+            pass
+
+    def _create_api_config_content_steps(self) -> Iterator[None]:
         """创建 API 配置页面内容（在可滚动框架中）"""
         api_container = self.api_scrollable_frame
 
@@ -2847,7 +3372,7 @@ class BossFilterGUI:
             self.reconfig_card = tk.Frame(api_container, bg=self.colors['bg_card'],
                                           highlightbackground=self.colors['border'], highlightthickness=1)
             self.reconfig_card.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
-            tk.Label(self.reconfig_card, text="  ⚠️  提示  ",
+            tk.Label(self.reconfig_card, text="提示",
                      font=(FONT_FAMILY_SEMIBOLD, int(13 * self.font_scale)),
                      fg=self.colors['text_primary'], bg=self.colors['bg_card']).pack(anchor="w", padx=_pad, pady=(_pad, 0))
             _inner = ttk.Frame(self.reconfig_card, style='TFrame')
@@ -2858,6 +3383,8 @@ class BossFilterGUI:
             ttk.Label(_inner, text="请在下方重新输入 API Key 并点击「保存模型」",
                      font=self.font_label, foreground=self.colors['text_secondary'],
                      background=self.colors['bg_card']).pack(anchor="w", pady=(5, 0))
+
+        yield
 
         # 模型用途分配
         assignment_card = self._create_card(api_container, "使用中的模型",
@@ -2925,6 +3452,8 @@ class BossFilterGUI:
         )
         btn_test_default_model.bind("<Leave>", self._hide_tooltip)
 
+        yield
+
         education_row = ttk.Frame(assignment_frame, style='TFrame')
         education_row.pack(fill="x", pady=(int(10 * self.dpi_scale * self.zoom_factor), 0))
         ttk.Label(education_row, text="学历核验模型:", font=self.font_label,
@@ -2962,6 +3491,8 @@ class BossFilterGUI:
             lambda e: self._show_assigned_model_test_tooltip("education", e),
         )
         btn_test_education_model.bind("<Leave>", self._hide_tooltip)
+
+        yield
 
         # 模型接入配置
         config_card = self._create_card(api_container, "模型接入",
@@ -3009,6 +3540,8 @@ class BossFilterGUI:
         btn_fetch._icon_ref = icon_download_models
         btn_fetch.pack(side="left")
 
+        yield
+
         # 第三行：API Key
         row3 = ttk.Frame(input_frame, style='TFrame')
         row3.pack(fill="x", pady=(int(10 * self.dpi_scale * self.zoom_factor), 0))
@@ -3037,6 +3570,8 @@ class BossFilterGUI:
         self.api_key_toggle_btn.bind("<ButtonRelease-1>", self._hide_api_key_after_release)
         self.api_key_toggle_btn.bind("<Leave>", self._hide_api_key_after_release)
         self.api_key_toggle_btn.bind("<FocusOut>", self._hide_api_key_after_release)
+
+        yield
 
         # 第四行：Base URL
         row4 = ttk.Frame(input_frame, style='TFrame')
@@ -3073,6 +3608,8 @@ class BossFilterGUI:
         self.api_status_label.pack(side="left")
         # 用于存放可点击的标签引用
         self._status_clickable_labels = []
+
+        yield
 
         # 已保存模型列表
         model_list_card = self._create_card(api_container, "已保存模型",
@@ -3216,7 +3753,7 @@ class BossFilterGUI:
         # 后台线程会在读取完成后回填。
         if resolve_key:
             _base_url = self.api_config.get("base_url", "")
-            saved_key = get_api_key(provider_key, _base_url)
+            saved_key = self._get_api_key_cached(provider_key, _base_url)
             self.api_key_var.set(saved_key if saved_key else "")
         else:
             self.api_key_var.set(self.api_config.get("api_key", ""))
@@ -3267,10 +3804,58 @@ class BossFilterGUI:
             self.load_api_config(resolve_keys=False)
         self.load_api_config_to_ui(resolve_key=False)
         self._api_ui_config_mtime = mtime
-        self._resolve_api_keys_async()
+
+    def _schedule_api_key_resolution(self, delay_ms: int = 250) -> None:
+        """Resolve keyring after the settings page has painted its first frame."""
+        resolve_thread = getattr(self, '_api_key_resolve_thread', None)
+        if resolve_thread and resolve_thread.is_alive():
+            return
+        if getattr(self, '_api_key_resolve_after_id', None) is not None:
+            return
+
+        def _start():
+            self._api_key_resolve_after_id = None
+            if getattr(self, 'current_page_index', None) != PageIndex.SETTINGS:
+                return
+            self._resolve_api_keys_async()
+
+        self._api_key_resolve_after_id = self.root.after(delay_ms, _start)
+
+    @staticmethod
+    def _api_key_cache_identity(provider: str, base_url: str = "") -> tuple[str, str]:
+        """Return the normalized keyring identity used by the per-session cache."""
+        return str(provider or "").strip(), str(base_url or "").strip().rstrip("/")
+
+    def _remember_api_key(self, provider: str, base_url: str, api_key: str) -> None:
+        """Cache a successfully resolved key without persisting any new plaintext copy."""
+        if not api_key:
+            return
+        cache = getattr(self, '_api_key_cache', None)
+        if cache is None:
+            cache = self._api_key_cache = {}
+        cache[self._api_key_cache_identity(provider, base_url)] = api_key
+
+    def _get_api_key_cached(self, provider: str, base_url: str = "") -> str:
+        """Read one keyring entry on demand and reuse successful reads this session."""
+        if not provider:
+            return ""
+        cache = getattr(self, '_api_key_cache', None)
+        if cache is None:
+            cache = self._api_key_cache = {}
+        identity = self._api_key_cache_identity(provider, base_url)
+        lock = getattr(self, '_api_key_cache_lock', None)
+        if lock is None:
+            lock = self._api_key_cache_lock = threading.Lock()
+        with lock:
+            cached = cache.get(identity)
+            if cached:
+                return cached
+            api_key = str(get_api_key(provider, base_url) or "")
+            self._remember_api_key(provider, base_url, api_key)
+            return api_key
 
     def _resolve_api_keys_async(self):
-        """后台读取 keyring，避免首次打开 API 页阻塞主线程。"""
+        """后台只读取当前模型的 keyring 项，其他模型在实际使用时按需读取。"""
         if self._api_key_resolve_thread and self._api_key_resolve_thread.is_alive():
             return
         if not getattr(self, 'api_config', None):
@@ -3278,19 +3863,12 @@ class BossFilterGUI:
 
         provider = self.api_config.get("api_provider", "")
         base_url = self.api_config.get("base_url", "")
-        saved_models = list(self.api_config.get("saved_models", []))
 
         def _worker():
             current_key = ""
-            missing_saved_key = False
             try:
                 if provider:
-                    current_key = get_api_key(provider, base_url) or ""
-                for model_config in saved_models:
-                    model_provider = model_config.get("api_provider", "")
-                    if model_provider and not get_api_key(model_provider, model_config.get("base_url", "")):
-                        missing_saved_key = True
-                        break
+                    current_key = self._get_api_key_cached(provider, base_url)
             except Exception:
                 current_key = ""
 
@@ -3300,8 +3878,15 @@ class BossFilterGUI:
                 if (self.api_config.get("api_provider", ""), self.api_config.get("base_url", "")) != (provider, base_url):
                     return
                 self.api_config["api_key"] = current_key
-                if missing_saved_key:
+                if provider and not current_key:
                     self.api_config["needs_reconfigure"] = True
+                    if hasattr(self, 'api_status_frame'):
+                        self._update_api_status(
+                            text="当前模型的 API Key 未配置，请重新输入并保存模型",
+                            foreground=self.colors['warning'],
+                        )
+                else:
+                    self.api_config.pop("needs_reconfigure", None)
                 if hasattr(self, 'api_key_var'):
                     self.api_key_var.set(current_key)
                 self._update_ai_eval_status()
@@ -3543,7 +4128,7 @@ class BossFilterGUI:
         )
         self.model_list_tree.tag_configure(
             "education_model",
-            background="#E3F2FD",
+            background=self.colors.get('banner_info_bg', ui_theme.BANNER_INFO_BG),
             foreground=self.colors['primary'],
         )
         self.model_list_tree.tag_configure(
@@ -3700,7 +4285,12 @@ class BossFilterGUI:
                 stretch=column in ("file", "number", "school", "major"),
             )
 
-    def create_run_page(self):
+    def create_run_page(self) -> None:
+        """同步创建运行控制页，供需要立即访问控件的内部流程使用。"""
+        for _step in self._create_run_page_steps():
+            pass
+
+    def _create_run_page_steps(self) -> Iterator[None]:
         """创建运行控制页面 - 增强版：浏览器状态检测 + 进度条 + 滚动支持"""
         self.run_page = ttk.Frame(self.pages_frame, style='Page.TFrame')
 
@@ -3719,6 +4309,8 @@ class BossFilterGUI:
         # 页面标题
         self._create_page_header(content, "运行控制")
 
+        yield
+
         # 控制卡片
         control_container = ttk.Frame(content, style='Card.TFrame')
         control_container.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
@@ -3731,7 +4323,7 @@ class BossFilterGUI:
         browser_status_row.pack(fill="x")
 
         # 状态指示灯
-        self.browser_status_indicator = ttk.Label(browser_status_row, text="🔴 未连接",
+        self.browser_status_indicator = ttk.Label(browser_status_row, text="● 未连接",
                                                   font=(FONT_FAMILY, int(11 * self.font_scale)),
                                                   foreground=self.colors['danger'])
         self.browser_status_indicator.pack(side="left")
@@ -3747,6 +4339,8 @@ class BossFilterGUI:
                                              font=(FONT_FAMILY, int(11 * self.font_scale)),
                                              foreground=self.colors['text_secondary'])
         self.browser_status_help.pack(side="left", padx=int(20 * self.dpi_scale * self.zoom_factor))
+
+        yield
 
         # 运行参数
         param_frame = ttk.Frame(control_container, style='TFrame')
@@ -3769,7 +4363,7 @@ class BossFilterGUI:
         self.rounds_spin.bind('<Leave>',
             lambda e: self.rounds_spin.unbind('<MouseWheel>'))
         self.rounds_hint_label = ttk.Label(row1, text="(推荐 50-200 轮次)", font=(FONT_FAMILY, int(11 * self.font_scale)),
-                 foreground=self.colors['text_muted'], background=self.colors['bg_card'])
+                 foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card'])
         self.rounds_hint_label.pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
 
         # 选择岗位（多岗位运行时指定处理哪个岗位）
@@ -3785,8 +4379,10 @@ class BossFilterGUI:
         self.job_combo.bind("<<ComboboxSelected>>", self.on_run_job_selected)
         ttk.Label(row_job, text="建议每次选择一个岗位，\"全部岗位\"将依次处理",
                  font=(FONT_FAMILY, int(11 * self.font_scale)),
-                 foreground=self.colors['text_muted'],
+                 foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
                  background=self.colors['bg_card']).pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
+
+        yield
 
         # 筛选完成后的联系策略。GUI 发送统一进入联系清单。
         row2 = ttk.Frame(param_frame, style='TFrame')
@@ -3809,7 +4405,7 @@ class BossFilterGUI:
         contact_combo.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
         self._contact_after_scan_note_label = ttk.Label(row2, text="",
                  font=(FONT_FAMILY, int(11 * self.font_scale)),
-                 foreground=self.colors['text_muted'], background=self.colors['bg_card'])
+                 foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card'])
         self._contact_after_scan_note_label.pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
 
         def _update_contact_after_scan_note(*_):
@@ -3825,6 +4421,8 @@ class BossFilterGUI:
         _update_contact_after_scan_note()
         contact_combo.bind("<<ComboboxSelected>>", _update_contact_after_scan_note)
 
+        yield
+
         # AI 辅助评估开关
         row_ai = ttk.Frame(param_frame, style='TFrame')
         row_ai.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
@@ -3832,25 +4430,25 @@ class BossFilterGUI:
                  background=self.colors['bg_card']).pack(side="left")
         # API Key 状态：先显示"检测中"，后台查 keyring 后更新（避免主线程阻塞）
         self.ai_eval_var = tk.BooleanVar(value=False)
-        # 大 indicator + 文字一体，用父容器 anchor 做垂直居中
-        _cb_style = ttk.Style()
-        _indicator_size = int(32 * self.dpi_scale * self.zoom_factor)
-        _cb_style.configure('AIEval.TCheckbutton',
-                            font=self.font_label,
-                            background=self.colors['bg_card'],
-                            indicatordiameter=_indicator_size)
-        _cb_style.map('AIEval.TCheckbutton',
-                      background=[('active', self.colors['bg_card'])])
-        ai_check = ttk.Checkbutton(row_ai, text="启用 AI 辅助评估",
-                                   variable=self.ai_eval_var,
-                                   style='AIEval.TCheckbutton')
-        ai_check.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
+        # 拨动开关 + 可点击文字（替代 clam 下 oversized 的勾选框）
+        ai_switch = self._create_switch(row_ai, self.ai_eval_var)
+        ai_switch.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
+        ai_label = ttk.Label(
+            row_ai, text="启用 AI 辅助评估", font=self.font_label,
+            background=self.colors['bg_card'], cursor='hand2',
+        )
+        ai_label.pack(side="left")
+        ai_label.bind('<Button-1>', lambda _e: self.ai_eval_var.set(not self.ai_eval_var.get()))
         # API Key 状态标签（先显示检测中，后台查询完毕后由 _update_ai_eval_status 更新）
         _status_font = (FONT_FAMILY, int(11 * self.font_scale))
-        self.ai_status_label = tk.Label(row_ai, text="⏳ 检测中...", font=_status_font,
+        self.ai_status_label = tk.Label(row_ai, text="检测中…", font=_status_font,
                                         foreground=self.colors['text_secondary'],
                                         background=self.colors['bg_card'])
         self.ai_status_label.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
+        target_ai_status_label = self.ai_status_label
+
+        yield
+
         # 页面先完成绘制，再后台查询 keyring，避免导入 keyring 与 Tk 控件创建争抢主线程。
         def _check_run_page_key_bg():
             _provider = self.api_config.get("api_provider", "")
@@ -3858,17 +4456,30 @@ class BossFilterGUI:
                 self.run_on_ui(self._update_ai_eval_status)
                 return
             try:
-                _key = get_api_key(_provider, self.api_config.get("base_url", ""))
+                _key = self._get_api_key_cached(
+                    _provider, self.api_config.get("base_url", "")
+                )
             except Exception:
                 _key = None
             def _apply():
+                if getattr(self, 'ai_status_label', None) is not target_ai_status_label:
+                    return
                 if _key and not self.api_config.get("api_key"):
                     self.api_config["api_key"] = _key
                 self._update_ai_eval_status()
             self.run_on_ui(_apply)
+
+        def _start_run_page_key_check():
+            if (
+                getattr(self, 'current_page_index', None) != PageIndex.RUN
+                or getattr(self, 'run_page', None) is None
+            ):
+                return
+            threading.Thread(target=_check_run_page_key_bg, daemon=True).start()
+
         self.root.after(
             150,
-            lambda: threading.Thread(target=_check_run_page_key_bg, daemon=True).start(),
+            _start_run_page_key_check,
         )
         # 备注：+- 分色显示
         _note_prefix = "(对通过筛选的候选人进行 LLM 二次评分，"
@@ -3876,13 +4487,15 @@ class BossFilterGUI:
         _note_font = (FONT_FAMILY, int(11 * self.font_scale))
         _sign_font = (FONT_FAMILY, int(14 * self.font_scale))  # +/- 显式加大
         tk.Label(row_ai, text=_note_prefix, font=_note_font,
-                 foreground=self.colors['text_muted'], background=self.colors['bg_card']).pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
+                 foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card']).pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
         tk.Label(row_ai, text="+", font=_sign_font,
                  foreground=self.colors['success'], background=self.colors['bg_card']).pack(side="left")
         tk.Label(row_ai, text="-", font=_sign_font,
                  foreground=self.colors['danger'], background=self.colors['bg_card']).pack(side="left")
         tk.Label(row_ai, text=_note_suffix, font=_note_font,
-                 foreground=self.colors['text_muted'], background=self.colors['bg_card']).pack(side="left")
+                 foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card']).pack(side="left")
+
+        yield
 
         # AI 评估超时设置（紧跟 AI 评估行下方，缩进对齐）
         row_ai_timeout = ttk.Frame(param_frame, style='TFrame')
@@ -3918,8 +4531,10 @@ class BossFilterGUI:
             _hint = f"（{_label}，默认 60 秒）"
         self._timeout_hint_label = ttk.Label(row_ai_timeout, text=_hint, font=_sub_font,
                  background=self.colors['bg_card'],
-                 foreground=self.colors['text_muted'])
+                 foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
         self._timeout_hint_label.pack(side="left")
+
+        yield
 
         # === 进度条 ===
         progress_frame = ttk.Frame(param_frame, style='TFrame')
@@ -3953,6 +4568,8 @@ class BossFilterGUI:
                                        anchor="w", justify="left",
                                        background=self.colors['bg_card'])
         self.progress_label.pack(fill="x", pady=(int(4 * self.dpi_scale * self.zoom_factor), 0))
+
+        yield
 
         # 本轮结果摘要：终态时固定展示，便于复盘筛选漏斗。
         summary_outer = tk.Frame(
@@ -4021,25 +4638,29 @@ class BossFilterGUI:
             self.colors['text_secondary'],
         )
 
+        yield
+
         # 控制按钮区
         btn_container = ttk.Frame(control_container, style='TFrame')
         btn_container.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(20 * self.dpi_scale * self.zoom_factor))
 
         # 开始/停止按钮
-        icon_play_run = self.icons.button('play', self.colors['text_primary'])
+        icon_play_run = self.icons.button('play', '#FFFFFF')
         self.start_btn = ttk.Button(btn_container, image=icon_play_run, text=" 开始运行", compound=tk.LEFT, command=self.start_run, style='Accent.TButton', state="disabled")
         self.start_btn._icon_ref = icon_play_run
         self.start_btn.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
 
-        icon_stop = self.icons.button('stop', self.colors['text_primary'])
-        self.stop_btn = ttk.Button(btn_container, image=icon_stop, text=" 停止", compound=tk.LEFT, command=self.stop_run, style='Accent.TButton', state="disabled")
+        icon_stop = self.icons.button('stop', '#FFFFFF')
+        self.stop_btn = ttk.Button(btn_container, image=icon_stop, text=" 停止", compound=tk.LEFT, command=self.stop_run, style='Danger.TButton', state="disabled")
         self.stop_btn._icon_ref = icon_stop
         self.stop_btn.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
 
         # 状态指示器
-        self.status_label = ttk.Label(btn_container, text="🟢 就绪",
+        self.status_label = ttk.Label(btn_container, text="● 就绪",
                                       font=(FONT_FAMILY, int(13 * self.font_scale)), foreground=self.colors['success'])
         self.status_label.pack(side="left", padx=int(50 * self.dpi_scale * self.zoom_factor))
+
+        yield
 
         # 日志区域 — 与浏览器状态卡片一致的卡片式设计
         log_card = self._create_card(content, "运行日志",
@@ -4117,38 +4738,10 @@ class BossFilterGUI:
         )
 
         self.result_custom_date_frame = ttk.Frame(filter_frame, style='Page.TFrame')
-        _cal_font = (FONT_FAMILY, int(11 * self.font_scale))
-        _cal_kw = dict(width=12, font=_cal_font, date_pattern='yyyy-mm-dd',
-                       showweeknumbers=False)
-        self.result_date_start_entry = self._create_result_date_entry(
-            self.result_custom_date_frame, **_cal_kw
-        )
-        self.result_date_start_entry.pack(side="left", padx=int(4 * self.dpi_scale * self.zoom_factor))
-        self.result_date_start_entry.bind("<<DateEntrySelected>>",
-                                          lambda e: self._validate_date_range('start'))
-        self.result_date_start_entry.bind("<Return>", lambda e: self._validate_date_range('start'))
-        self.result_date_start_entry.bind("<FocusOut>", lambda e: self._validate_date_range('start'))
-
-        ttk.Label(self.result_custom_date_frame, text="~", font=self.font_label,
-                 background=self.colors['bg_main']).pack(side="left", padx=int(2 * self.dpi_scale * self.zoom_factor))
-
-        self.result_date_end_entry = self._create_result_date_entry(
-            self.result_custom_date_frame, **_cal_kw
-        )
-        self.result_date_end_entry.pack(side="left", padx=int(4 * self.dpi_scale * self.zoom_factor))
-        self.result_date_end_entry.bind("<<DateEntrySelected>>",
-                                        lambda e: self._validate_date_range('end'))
-        self.result_date_end_entry.bind("<Return>", lambda e: self._validate_date_range('end'))
-        self.result_date_end_entry.bind("<FocusOut>", lambda e: self._validate_date_range('end'))
-
-        # 自定义日期首次展开时使用近 7 个自然日。
-        _today = datetime.now().date()
-        self.result_date_start_entry.set_date(_today - timedelta(days=6))
-        self.result_date_end_entry.set_date(_today)
-
-        # 互斥关闭：展开一个日历前收起另一个，避免两个弹层同时存在。
-        self._wrap_date_dropdown_mutex(self.result_date_start_entry, self.result_date_end_entry)
-        self._wrap_date_dropdown_mutex(self.result_date_end_entry, self.result_date_start_entry)
+        # 默认时间范围不需要日历。保留属性供日期过滤判断，首次选择“自定义”时再创建，
+        # 避免结果页首开同步导入 tkcalendar 并初始化两个隐藏 Calendar。
+        self.result_date_start_entry = None
+        self.result_date_end_entry = None
 
         # 统计卡片区（纵向卡片布局）
         stats_container = ttk.Frame(self.result_page, style='Page.TFrame')
@@ -4217,11 +4810,11 @@ class BossFilterGUI:
         self.result_search_var = tk.StringVar()
         self.result_search_var.trace_add('write', lambda *_: self._filter_result_tree())
         self.result_search_entry = ttk.Entry(
-            search_frame, textvariable=self.result_search_var, width=16, font=self.font_label)
+            search_frame, textvariable=self.result_search_var, width=22, font=self.font_label)
         self.result_search_entry.pack(side="left", padx=int(6 * self.dpi_scale * self.zoom_factor))
         ttk.Label(search_frame, text="（姓名/匹配分/推荐指数/状态，Esc 清空）",
                  font=(FONT_FAMILY, int(10 * self.font_scale)),
-                 foreground=self.colors.get('text_secondary', '#666'),
+                 foreground=self.colors['text_secondary'],
                  background=self.colors['bg_main']).pack(side="left", padx=int(4 * self.dpi_scale * self.zoom_factor))
         self.result_search_entry.bind('<Escape>', lambda e: self.result_search_var.set(''))
 
@@ -4244,7 +4837,7 @@ class BossFilterGUI:
             search_frame,
             textvariable=self.result_count_var,
             font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors.get('text_secondary', '#666'),
+            foreground=self.colors['text_secondary'],
             background=self.colors['bg_main'],
         ).pack(side="left", padx=int(8 * self.dpi_scale * self.zoom_factor))
 
@@ -4372,6 +4965,14 @@ class BossFilterGUI:
         )
         tree_scroll.pack(side="right", fill="y", pady=int(10 * self.dpi_scale * self.zoom_factor))
 
+        # 空态引导层（无可见候选人时覆盖表格区域）
+        self.result_empty_state = self._build_empty_state(
+            table_container, 'filter',
+            "暂无候选人",
+            "调整岗位或时间范围，或到运行控制页开始新一轮筛选",
+            action_text="开始筛选", action_command=lambda: self._request_sidebar_page(PageIndex.RUN),
+        )
+
         # 操作按钮 - 放在表格下方
         btn_frame = ttk.Frame(self.result_page, style='Page.TFrame')
         btn_frame.pack(fill="x", padx=int(20 * self.dpi_scale * self.zoom_factor), pady=(int(8 * self.dpi_scale * self.zoom_factor), int(12 * self.dpi_scale * self.zoom_factor)))
@@ -4447,17 +5048,11 @@ class BossFilterGUI:
             compound=tk.LEFT,
             command=self.clear_candidates,
         )
-        more_style = ttk.Style()
-        more_style.configure(
-            'ResultActions.TMenubutton',
-            font=self.font_label,
-            padding=(15, 8),
-        )
         self.result_more_menu_button = ttk.Menubutton(
             btn_inner,
             text="更多操作",
             menu=more_menu,
-            style='ResultActions.TMenubutton',
+            style='CenteredActions.TMenubutton',
         )
         self.result_more_menu_button.pack(
             side="left", padx=int(8 * self.dpi_scale * self.zoom_factor)
@@ -4518,7 +5113,7 @@ class BossFilterGUI:
         education_style.configure(
             "Education.Treeview",
             font=(FONT_FAMILY, int(10 * self.font_scale)),
-            rowheight=int(30 * self.dpi_scale * self.zoom_factor),
+            rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor),
         )
         education_style.configure(
             "Education.Treeview.Heading",
@@ -5763,7 +6358,7 @@ class BossFilterGUI:
         provider = str(config.get("api_provider") or "")
         if not provider:
             return ""
-        return str(get_api_key(provider, config.get("base_url", "")) or "")
+        return self._get_api_key_cached(provider, config.get("base_url", ""))
 
     def _create_fresh_browser_page(self):
         """启动或连接新的 ChromiumPage，并验证连接。"""
@@ -6108,26 +6703,28 @@ class BossFilterGUI:
 
     def _open_job_config_from_review(self, job_name):
         """Navigate from a job review to the matching saved job configuration."""
-        self.show_page_config()
-        normalized_target = " ".join(str(job_name or '').strip().split()).casefold()
-        matched_job = next(
-            (
-                saved_name for saved_name in self.job_rules
-                if " ".join(str(saved_name).strip().split()).casefold() == normalized_target
-            ),
-            "",
-        )
-        if not matched_job:
-            messagebox.showwarning(
-                "岗位配置不存在",
-                f"未找到“{job_name}”的已保存岗位配置。",
-                parent=self.root,
+        def _select_reviewed_job() -> None:
+            normalized_target = " ".join(str(job_name or '').strip().split()).casefold()
+            matched_job = next(
+                (
+                    saved_name for saved_name in self.job_rules
+                    if " ".join(str(saved_name).strip().split()).casefold() == normalized_target
+                ),
+                "",
             )
-            return
-        if self.config_job_combo.get() == matched_job:
-            return
-        self.config_job_combo.set(matched_job)
-        self.on_job_selected(None)
+            if not matched_job:
+                messagebox.showwarning(
+                    "岗位配置不存在",
+                    f"未找到“{job_name}”的已保存岗位配置。",
+                    parent=self.root,
+                )
+                return
+            if self.config_job_combo.get() == matched_job:
+                return
+            self.config_job_combo.set(matched_job)
+            self.on_job_selected(None)
+
+        self._request_sidebar_page(PageIndex.CONFIG, on_ready=_select_reviewed_job)
 
     @staticmethod
     def _feedback_reasons(candidate):
@@ -6279,7 +6876,7 @@ class BossFilterGUI:
             body,
             wrap="word",
             font=self.font_log,
-            bg="#FFFFFF",
+            bg=self.colors['bg_card'],
             fg=self.colors['text_primary'],
             relief="solid",
             bd=1,
@@ -6414,8 +7011,11 @@ class BossFilterGUI:
 
                 job_stats[job]['scores'].append(score)
 
-            # 插入表格行
-            for job, stats in sorted(job_stats.items(), key=lambda x: x[1]['total'], reverse=True):
+            # 插入表格行（斑马纹便于宽表横向扫读）
+            self.stats_tree.tag_configure(
+                'zebra_odd', background=self.colors.get('bg_zebra', ui_theme.BG_ZEBRA)
+            )
+            for row_index, (job, stats) in enumerate(sorted(job_stats.items(), key=lambda x: x[1]['total'], reverse=True)):
                 t = stats['total']
                 s = stats['strong']
                 r = stats['recommended']
@@ -6439,7 +7039,7 @@ class BossFilterGUI:
                 self.stats_tree.insert("", "end", values=(
                     job, filter_dist, greeted_str, fb, suitable_rate,
                     false_positive_rate, replied_str, interviewed_str, avg_score
-                ))
+                ), tags=('zebra_odd',) if row_index % 2 else ())
 
         except Exception as e:
             self.append_log(f"刷新统计失败：{e}")
@@ -6450,7 +7050,7 @@ class BossFilterGUI:
             self.create_home_page()
         self.hide_all_pages()
         self.home_page.pack(fill="both", expand=True)
-        self.current_page_index = 0
+        self.current_page_index = PageIndex.HOME
         self._schedule_page_width_policy()
         self.update_nav_highlight()
         # 刷新岗位过滤列表
@@ -6460,7 +7060,9 @@ class BossFilterGUI:
             self.home_job_combo['values'] = jobs
         except Exception:
             pass
-        self._defer_ui_work("home_stats", self.refresh_home_stats)
+        self._defer_ui_work(
+            "home_stats", self.refresh_home_stats, page_index=PageIndex.HOME
+        )
 
     def show_page_config(self):
         """显示配置页面"""
@@ -6468,11 +7070,15 @@ class BossFilterGUI:
             self.create_config_page()
         self.hide_all_pages()
         self.config_page.pack(fill="both", expand=True)
-        self.current_page_index = 1
+        self.current_page_index = PageIndex.CONFIG
         self._schedule_page_width_policy()
         # 刷新技能树和必要条件列表
         if self.job_rules:
-            self._defer_ui_work("config_lists", self._refresh_config_lists_if_needed)
+            self._defer_ui_work(
+                "config_lists",
+                self._refresh_config_lists_if_needed,
+                page_index=PageIndex.CONFIG,
+            )
         # 始终显示详细结果区域（基本信息、技能关键词、必要条件、话术模板）
         self.result_detail_frame.pack(fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
         self.update_nav_highlight()
@@ -6485,7 +7091,7 @@ class BossFilterGUI:
             self.create_run_page()
         self.hide_all_pages()
         self.run_page.pack(fill="both", expand=True)
-        self.current_page_index = 2
+        self.current_page_index = PageIndex.RUN
         self._schedule_page_width_policy()
         self.update_nav_highlight()
         # 恢复浏览器自动检测（仅检测连接，不启动浏览器）
@@ -6506,7 +7112,7 @@ class BossFilterGUI:
             self.create_result_page()
         self.hide_all_pages()
         self.result_page.pack(fill="both", expand=True)
-        self.current_page_index = 3
+        self.current_page_index = PageIndex.RESULTS
         self._schedule_page_width_policy()
         self.update_nav_highlight()
         # 刷新岗位过滤列表
@@ -6516,7 +7122,9 @@ class BossFilterGUI:
             self.result_job_combo['values'] = jobs
         except Exception:
             pass
-        self._defer_ui_work("results_refresh", self.refresh_results)
+        self._defer_ui_work(
+            "results_refresh", self.refresh_results, page_index=PageIndex.RESULTS
+        )
 
     def show_page_stats(self):
         """显示数据统计页面"""
@@ -6524,7 +7132,7 @@ class BossFilterGUI:
             self.create_stats_page()
         self.hide_all_pages()
         self.stats_page.pack(fill="both", expand=True)
-        self.current_page_index = 5
+        self.current_page_index = PageIndex.STATS
         self._schedule_page_width_policy()
         self.update_nav_highlight()
         # 刷新岗位过滤列表
@@ -6534,7 +7142,9 @@ class BossFilterGUI:
             self.stats_job_combo['values'] = jobs
         except Exception:
             pass
-        self._defer_ui_work("stats_refresh", self.refresh_stats)
+        self._defer_ui_work(
+            "stats_refresh", self.refresh_stats, page_index=PageIndex.STATS
+        )
 
     def show_page_education(self):
         """显示学历核验页面。"""
@@ -6542,7 +7152,7 @@ class BossFilterGUI:
             self.create_education_page()
         self.hide_all_pages()
         self.education_page.pack(fill="both", expand=True)
-        self.current_page_index = 4
+        self.current_page_index = PageIndex.EDUCATION
         self._schedule_page_width_policy()
         self.update_nav_highlight()
         self._bind_mousewheel(self.education_canvas, self.education_scrollable_frame)
@@ -6552,11 +7162,11 @@ class BossFilterGUI:
         if self.api_config_page is None:
             self.create_api_config_page()
         # 配置文件已在启动时读取；在页面首次绘制前回填普通字段，避免短暂显示空下拉框。
-        # API Key 仍由 _resolve_api_keys_async() 在后台读取，不阻塞打开系统设置。
+        # 普通字段先回填，API Key 等页面首帧绘制后再到后台读取。
         self._load_api_config_to_ui_if_needed()
         self.hide_all_pages()
         self.api_config_page.pack(fill="both", expand=True)
-        self.current_page_index = 6
+        self.current_page_index = PageIndex.SETTINGS
         self._schedule_page_width_policy()
         self.update_nav_highlight()
         # 重置滚动条位置到顶部
@@ -6564,11 +7174,13 @@ class BossFilterGUI:
             self.api_canvas.yview_moveto(0.0)
         # 重新绑定滚轮事件（覆盖动态创建的控件）
         self._bind_mousewheel(self.api_canvas, self.api_scrollable_frame)
+        self._schedule_api_key_resolution()
 
     def hide_all_pages(self):
         """隐藏所有页面"""
         self._stop_browser_auto_check()
         for page in [
+            getattr(self, '_page_loading_frame', None),
             self.home_page,
             self.config_page,
             self.api_config_page,
@@ -6581,27 +7193,73 @@ class BossFilterGUI:
                 page.pack_forget()
 
     def update_nav_highlight(self):
-        """更新导航高亮 - 当前页面使用选中颜色，其他使用默认颜色"""
-        for i, comp in enumerate(self.nav_components):
-            if i == self.current_page_index:
-                comp['icon'].configure(image=comp['icon_active'])
-                comp['text'].configure(foreground=self.colors['text_sidebar_active'])
-            else:
-                comp['icon'].configure(image=comp['icon_default'])
-                comp['text'].configure(foreground=self.colors['text_sidebar'])
+        """只更新前后两个导航项，避免每次切页重绘整条侧边栏。"""
+        current_index = self.current_page_index
+        previous_index = getattr(self, '_highlighted_page_index', None)
+        if previous_index == current_index:
+            return
+
+        if previous_index is not None and 0 <= previous_index < len(self.nav_components):
+            self._apply_nav_state(self.nav_components[previous_index], 'default')
+        if 0 <= current_index < len(self.nav_components):
+            self._apply_nav_state(self.nav_components[current_index], 'selected')
+        self._highlighted_page_index = current_index
+
+    def _apply_nav_state(self, comp, state):
+        """应用导航项视觉状态：default / hover / selected（pill 背景 + 左侧强调条）。"""
+        pill_bg = self.colors.get('bg_sidebar_pill', ui_theme.BG_SIDEBAR_PILL)
+        active = state in ('hover', 'selected')
+        selected = state == 'selected'
+        comp['frame'].configure(style='SidebarPill.TFrame' if active else 'Sidebar.TFrame')
+        label_style = (
+            ('SidebarNavSelectedPill.TLabel' if selected else 'SidebarNavPill.TLabel')
+            if active else 'SidebarNav.TLabel'
+        )
+        comp['icon'].configure(
+            image=comp['icon_active'] if active else comp['icon_default'],
+            style=label_style,
+        )
+        comp['text'].configure(style=label_style)
+        if 'accent' in comp:
+            comp['accent'].configure(
+                background=(self.colors['primary_light'] if selected
+                            else (pill_bg if active else self.colors['bg_sidebar']))
+            )
 
     def on_nav_enter(self, index):
-        """鼠标移入导航项时高亮（交换图标和前景色）"""
-        comp = self.nav_components[index]
-        comp['icon'].configure(image=comp['icon_active'])
-        comp['text'].configure(foreground=self.colors['text_sidebar_active'])
+        """鼠标移入导航项时 pill 高亮（当前页面保持选中态）"""
+        if index != self.current_page_index:
+            self._apply_nav_state(self.nav_components[index], 'hover')
 
     def on_nav_leave(self, index):
         """鼠标移出导航项时恢复样式（当前页面除外）"""
         if index != self.current_page_index:
-            comp = self.nav_components[index]
-            comp['icon'].configure(image=comp['icon_default'])
-            comp['text'].configure(foreground=self.colors['text_sidebar'])
+            self._apply_nav_state(self.nav_components[index], 'default')
+
+    def set_nav_badge(self, page_index, count):
+        """设置导航角标数字；0 或负数时隐藏。"""
+        if not (0 <= page_index < len(self.nav_components)):
+            return
+        badge = self.nav_components[page_index].get('badge')
+        if badge is None:
+            return
+        if count and count > 0:
+            badge.configure(text=str(count if count < 100 else '99+'))
+            if not badge.winfo_ismapped():
+                badge.pack(side="right", padx=(0, int(12 * self.dpi_scale * self.zoom_factor)))
+        else:
+            badge.pack_forget()
+
+    def _refresh_nav_badges(self):
+        """刷新导航角标：「筛选结果」显示联系清单待核实数。"""
+        try:
+            if self._greet_queue_loaded:
+                pending = count_pending_contact_queue(self.greet_queue_items)
+            else:
+                pending = load_pending_contact_queue_count(CONTACT_QUEUE_PATH)
+            self.set_nav_badge(PageIndex.RESULTS, pending)
+        except Exception as exc:
+            logger.warning("刷新联系清单角标失败：%s", exc)
 
     # ===== 右键菜单功能 =====
     def bind_entry_context_menu(self, entry_widget):
@@ -6745,7 +7403,7 @@ class BossFilterGUI:
             print(f"刷新首页统计失败：{e}")
 
         # 如果当前在数据统计页，同步刷新统计
-        if self.current_page_index == 5:
+        if self.current_page_index == PageIndex.STATS:
             self.refresh_stats()
 
     def _center_window(self, window, width, height):
@@ -6788,7 +7446,7 @@ class BossFilterGUI:
         """设置窗口图标，替换 tkinter 默认羽毛图标"""
         try:
             from PIL import Image, ImageTk
-            icon_img = _draw_search_icon(256, '#2563EB', sw_ratio=0.10)
+            icon_img = _draw_search_icon(256, ui_theme.PRIMARY, sw_ratio=0.10)
             # 用 iconphoto 设置高分图标，Windows 10/11 原生缩放比 ICO 清晰
             self._icon_photo = ImageTk.PhotoImage(icon_img)
             self.root.iconphoto(True, self._icon_photo)
@@ -6799,7 +7457,7 @@ class BossFilterGUI:
         """显示统计详情"""
         try:
             if not CANDIDATES_PATH.exists():
-                messagebox.showinfo("提示", "暂无候选人数据")
+                self._show_inline_banner(self.home_page, 'info', "暂无候选人数据，请先到运行控制页开始筛选。")
                 return
 
             with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
@@ -6844,7 +7502,7 @@ class BossFilterGUI:
                 return
 
             if not filtered:
-                messagebox.showinfo("提示", f"{title}：暂无数据")
+                self._show_inline_banner(self.home_page, 'info', f"{title}：暂无数据。")
                 return
 
             # 创建详情窗口
@@ -6947,7 +7605,6 @@ class BossFilterGUI:
                         )
                         if not selected_data:
                             return
-                        from bossmaster import export_to_excel
                         if len(selected_data) == 1:
                             init_name = f"{selected_data[0].get('name', '候选人')}.xlsx"
                         else:
@@ -6959,8 +7616,7 @@ class BossFilterGUI:
                             initialfile=init_name
                         )
                         if file_path:
-                            export_to_excel(selected_data, file_path)
-                            messagebox.showinfo("成功", f"已导出 {len(selected_data)} 名候选人到：\n{file_path}")
+                            self._run_export(selected_data, file_path)
 
                     def remove_selected():
                         if not messagebox.askyesno("确认删除", f"确定要移除选中的 {len(selection)} 名候选人吗？"):
@@ -7083,7 +7739,6 @@ class BossFilterGUI:
                     )
                     if not selected_data:
                         return
-                    from bossmaster import export_to_excel
                     if len(selected_data) == 1:
                         init_name = f"{selected_data[0].get('name', '候选人')}.xlsx"
                     else:
@@ -7095,8 +7750,7 @@ class BossFilterGUI:
                         initialfile=init_name
                     )
                     if file_path:
-                        export_to_excel(selected_data, file_path)
-                        messagebox.showinfo("成功", f"已导出 {len(selected_data)} 名候选人到：\n{file_path}")
+                        self._run_export(selected_data, file_path)
 
                 self._build_candidate_context_menu(
                     parent=detail_window,
@@ -7163,7 +7817,7 @@ class BossFilterGUI:
         """显示筛选结果统计详情（新指标）"""
         try:
             if not CANDIDATES_PATH.exists():
-                messagebox.showinfo("提示", "暂无候选人数据")
+                self._show_inline_banner(self.result_page, 'info', "暂无候选人数据，请先到运行控制页开始筛选。")
                 return
 
             with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
@@ -7234,7 +7888,7 @@ class BossFilterGUI:
             greeted_count = len(greeted)
 
             if total == 0:
-                messagebox.showinfo("提示", f"{title}：暂无数据")
+                self._show_inline_banner(self.result_page, 'info', f"{title}：暂无数据。")
                 return
 
             # 创建详情窗口
@@ -7365,7 +8019,6 @@ class BossFilterGUI:
                         )
                         if not selected_data:
                             return
-                        from bossmaster import export_to_excel
                         if len(selected_data) == 1:
                             init_name = f"{selected_data[0].get('name', '候选人')}.xlsx"
                         else:
@@ -7377,8 +8030,7 @@ class BossFilterGUI:
                             initialfile=init_name
                         )
                         if file_path:
-                            export_to_excel(selected_data, file_path)
-                            messagebox.showinfo("成功", f"已导出 {len(selected_data)} 名候选人到：\n{file_path}")
+                            self._run_export(selected_data, file_path)
 
                     def remove_selected():
                         if not messagebox.askyesno("确认删除", f"确定要移除选中的 {len(selection)} 名候选人吗？"):
@@ -7500,7 +8152,6 @@ class BossFilterGUI:
                     )
                     if not selected_data:
                         return
-                    from bossmaster import export_to_excel
                     if len(selected_data) == 1:
                         init_name = f"{selected_data[0].get('name', '候选人')}.xlsx"
                     else:
@@ -7512,8 +8163,7 @@ class BossFilterGUI:
                         initialfile=init_name
                     )
                     if file_path:
-                        export_to_excel(selected_data, file_path)
-                        messagebox.showinfo("成功", f"已导出 {len(selected_data)} 名候选人到：\n{file_path}")
+                        self._run_export(selected_data, file_path)
 
                 self._build_candidate_context_menu(
                     parent=detail_window,
@@ -7633,22 +8283,11 @@ class BossFilterGUI:
                     # 从 keyring 读取当前服务商的 API Key
                     current_provider = self.api_config.get("api_provider", "")
                     if current_provider:
-                        encrypted_key = get_api_key(current_provider, self.api_config.get("base_url", ""))
+                        encrypted_key = self._get_api_key_cached(
+                            current_provider, self.api_config.get("base_url", "")
+                        )
                         if encrypted_key:
                             self.api_config["api_key"] = encrypted_key
-
-                    # 检测是否有 saved_models 但 keyring 中无对应 API Key（新电脑场景）
-                    if self.api_config["saved_models"]:
-                        has_missing_key = False
-                        for m in self.api_config["saved_models"]:
-                            provider = m.get("api_provider", "")
-                            if provider and not get_api_key(provider, m.get("base_url", "")):
-                                has_missing_key = True
-                                break
-                        if has_missing_key:
-                            self.api_config["needs_reconfigure"] = True
-                            print("[提示] 检测到已保存的模型配置，但 API Key 未配置（可能是新电脑）")
-                            print("[提示] 请在「岗位配置」->「API 配置」中重新输入 API Key 并保存")
             except Exception as e:
                 print(f"加载 API 配置失败：{e}")
                 self.api_config = self._default_api_config()
@@ -7984,7 +8623,7 @@ class BossFilterGUI:
         base_url = model_config.get("base_url", "")
         model_name = model_config.get("model", "")
         provider_display = self.PROVIDER_DISPLAY.get(provider_key, provider_key)
-        saved_api_key = get_api_key(provider_key, base_url)
+        saved_api_key = self._get_api_key_cached(provider_key, base_url)
 
         if not saved_api_key:
             messagebox.showwarning("警告",
@@ -8051,7 +8690,6 @@ class BossFilterGUI:
                 continue
 
             base_url = model_config.get("base_url", "").strip()
-            api_key = get_api_key(provider_key, base_url)
             models_to_test.append({
                 "item_id": item_id,
                 "model_name": model_name,
@@ -8059,7 +8697,6 @@ class BossFilterGUI:
                 "provider_key": provider_key,
                 "model_config": model_config,
                 "base_url": base_url,
-                "api_key": api_key,
                 "assigned_role": assigned_role,
                 "assigned_model_ref": assigned_model_ref,
                 "assigned_test_token": assigned_test_token,
@@ -8087,7 +8724,10 @@ class BossFilterGUI:
         progress = {"done": 0, "success": 0, "fail": 0}
 
         def _test_one(entry):
-            if not entry["api_key"]:
+            api_key = self._get_api_key_cached(
+                entry["provider_key"], entry["base_url"]
+            )
+            if not api_key:
                 result = {"status": "error", "msg": "API Key 未配置"}
             elif not entry["base_url"]:
                 result = {"status": "error", "msg": "Base URL 未配置"}
@@ -8096,7 +8736,7 @@ class BossFilterGUI:
                     from llm_eval import probe_model_compatibility
                     config = dict(entry["model_config"])
                     config["api_provider"] = entry["provider_key"]
-                    capability = probe_model_compatibility(config, entry["api_key"], force=True)
+                    capability = probe_model_compatibility(config, api_key, force=True)
                     if capability.get("status") in ("compatible", "limited"):
                         result = {
                             "status": "success",
@@ -8289,7 +8929,9 @@ class BossFilterGUI:
                 base_url = normalized_base_url
                 self.api_base_url_var.set(base_url)
             # 按服务商 + Base URL 组合存储 API Key（区分同一服务商的不同接入方式）
-            save_api_key(provider, api_key, base_url)
+            if not save_api_key(provider, api_key, base_url):
+                raise RuntimeError("API Key 未能写入系统凭据存储，请检查系统凭据服务后重试")
+            self._remember_api_key(provider, base_url, api_key)
 
             # 顶层当前活动模型：
             # - 首次配置或当前默认模型尚未入库时，使用本次保存的第一个模型。
@@ -8474,7 +9116,7 @@ class BossFilterGUI:
                 self.api_model_var.set(config["model"])
 
         # 切换服务商时，从 keyring 读取该服务商的 API Key，没有则清空
-        saved_key = get_api_key(provider, resolved_base_url)
+        saved_key = self._get_api_key_cached(provider, resolved_base_url)
         self.api_key_var.set(saved_key if saved_key else "")
 
     _model_dialog = None  # 防止重复打开模型列表对话框
@@ -8743,7 +9385,7 @@ class BossFilterGUI:
 
                             # 占位文字
                             _search_placeholder = "输入关键词搜索模型..."
-                            search_entry.config(foreground=self.colors['text_muted'])
+                            search_entry.config(foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
                             search_var.set(_search_placeholder)
                             _search_active = [False]  # 用列表避免闭包问题
 
@@ -8757,7 +9399,7 @@ class BossFilterGUI:
                                 if not search_var.get():
                                     _search_active[0] = False
                                     search_var.set(_search_placeholder)
-                                    search_entry.config(foreground=self.colors['text_muted'])
+                                    search_entry.config(foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
 
                             search_entry.bind("<FocusIn>", _on_search_focus_in)
                             search_entry.bind("<FocusOut>", _on_search_focus_out)
@@ -8825,7 +9467,9 @@ class BossFilterGUI:
                                 # 获取 API Key 和 Base URL
                                 provider_key = self.DISPLAY_TO_KEY.get(provider, provider)
                                 test_base_url = self.api_base_url_var.get().strip()
-                                test_api_key = get_api_key(provider_key, test_base_url)
+                                test_api_key = self._get_api_key_cached(
+                                    provider_key, test_base_url
+                                )
 
                                 if not test_api_key:
                                     messagebox.showwarning("警告",
@@ -8893,7 +9537,7 @@ class BossFilterGUI:
                                                 self.root.after(0, lambda i=idx, t=new_text: (
                                                     listbox.delete(i),
                                                     listbox.insert(i, t),
-                                                    listbox.itemconfig(i, foreground=self.colors['text_muted'])
+                                                    listbox.itemconfig(i, foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
                                                 ))
                                             break
 
@@ -9118,7 +9762,7 @@ class BossFilterGUI:
                             self.root.after(100, show_model_dialog)
                     else:
                         self.root.after(0, lambda: self._update_api_status(
-                            text="⚠️ 未找到模型列表",
+                            text="⚠ 未找到模型列表",
                             foreground=self.colors['warning']
                         ))
                         self.root.after(0, lambda: messagebox.showwarning(
@@ -9165,7 +9809,7 @@ class BossFilterGUI:
 
             except requests.exceptions.Timeout:
                 self.root.after(0, lambda: self._update_api_status(
-                    text="⏱️ 请求超时",
+                    text="⏱ 请求超时",
                     foreground=self.colors['warning']
                 ))
                 self.root.after(0, lambda: messagebox.showwarning(
@@ -9399,7 +10043,7 @@ class BossFilterGUI:
                         return
                     elif response.status_code == 429:
                         session.close()
-                        self.root.after(0, lambda: self._update_api_status(text="⚠️ 请求受限", foreground=self.colors['warning']))
+                        self.root.after(0, lambda: self._update_api_status(text="⚠ 请求受限", foreground=self.colors['warning']))
                         self.root.after(0, lambda: messagebox.showwarning(
                             "请求限额",
                             f"API 请求超限额\n\n"
@@ -9485,7 +10129,7 @@ class BossFilterGUI:
                 except requests.exceptions.SSLError as e:
                     # SSL 错误不重试，直接提示警告
                     last_error = "SSL 证书错误"
-                    self.root.after(0, lambda: self._update_api_status(text="⚠️ SSL 错误", foreground=self.colors['warning']))
+                    self.root.after(0, lambda: self._update_api_status(text="⚠ SSL 错误", foreground=self.colors['warning']))
                     self.root.after(0, lambda: messagebox.showwarning(
                         "SSL 证书错误",
                         "SSL 证书验证失败，可忽略此错误，保存配置后尝试实际使用"
@@ -10189,11 +10833,63 @@ class BossFilterGUI:
                 # 空值合法，恢复默认样式
                 entry.configure(foreground=self.colors['text_primary'])
             elif not text.isdigit():
-                entry.configure(foreground='red')
+                entry.configure(foreground=self.colors.get('danger_text', ui_theme.DANGER_TEXT))
             else:
                 entry.configure(foreground=self.colors['text_primary'])
 
     # ── 筛选结果页日期过滤（日历控件） ─────────────────────────────────
+
+    def _ensure_result_custom_date_entries(self) -> None:
+        """Create the two calendar widgets only when custom dates are requested."""
+        if (
+            getattr(self, 'result_date_start_entry', None) is not None
+            and getattr(self, 'result_date_end_entry', None) is not None
+        ):
+            return
+
+        calendar_font = (FONT_FAMILY, int(11 * self.font_scale))
+        calendar_options = {
+            'width': 12,
+            'font': calendar_font,
+            'date_pattern': 'yyyy-mm-dd',
+            'showweeknumbers': False,
+        }
+        start_entry = self._create_result_date_entry(
+            self.result_custom_date_frame, **calendar_options
+        )
+        end_entry = self._create_result_date_entry(
+            self.result_custom_date_frame, **calendar_options
+        )
+        self.result_date_start_entry = start_entry
+        self.result_date_end_entry = end_entry
+
+        entry_pad = int(4 * self.dpi_scale * self.zoom_factor)
+        start_entry.pack(side="left", padx=entry_pad)
+        start_entry.bind(
+            "<<DateEntrySelected>>", lambda _event: self._validate_date_range('start')
+        )
+        start_entry.bind("<Return>", lambda _event: self._validate_date_range('start'))
+        start_entry.bind("<FocusOut>", lambda _event: self._validate_date_range('start'))
+
+        ttk.Label(
+            self.result_custom_date_frame,
+            text="~",
+            font=self.font_label,
+            background=self.colors['bg_main'],
+        ).pack(side="left", padx=int(2 * self.dpi_scale * self.zoom_factor))
+
+        end_entry.pack(side="left", padx=entry_pad)
+        end_entry.bind(
+            "<<DateEntrySelected>>", lambda _event: self._validate_date_range('end')
+        )
+        end_entry.bind("<Return>", lambda _event: self._validate_date_range('end'))
+        end_entry.bind("<FocusOut>", lambda _event: self._validate_date_range('end'))
+
+        today = datetime.now().date()
+        start_entry.set_date(today - timedelta(days=6))
+        end_entry.set_date(today)
+        self._wrap_date_dropdown_mutex(start_entry, end_entry)
+        self._wrap_date_dropdown_mutex(end_entry, start_entry)
 
     @staticmethod
     def _close_date_dropdown(entry):
@@ -10229,6 +10925,7 @@ class BossFilterGUI:
         """切换预设时间范围，并按需显示自定义日期控件。"""
         self._close_result_date_dropdowns()
         if self.result_time_range_var.get() == "自定义":
+            self._ensure_result_custom_date_entries()
             if not self.result_custom_date_frame.winfo_manager():
                 self.result_custom_date_frame.pack(side="left")
         else:
@@ -10343,7 +11040,7 @@ class BossFilterGUI:
         title_bar = getattr(self, 'requirement_title_bar', None)
         if title_bar is None:
             return
-        background = '#EEF4FC' if active else '#F7F8FA'
+        background = self.colors.get('banner_info_bg', ui_theme.BANNER_INFO_BG) if active else self.colors.get('bg_footer', ui_theme.BG_FOOTER)
         title_bar.configure(bg=background)
         for widget in title_bar.winfo_children():
             if isinstance(widget, tk.Label):
@@ -10508,7 +11205,10 @@ class BossFilterGUI:
         ai_provider = self.api_config.get("api_provider", "") if getattr(self, "api_config", None) else ""
         ai_base_url = self.api_config.get("base_url", "") if getattr(self, "api_config", None) else ""
         ai_model = self.api_config.get("model", "") if getattr(self, "api_config", None) else ""
-        ai_key = get_api_key(ai_provider, ai_base_url) if ai_provider and ai_base_url and ai_model else None
+        ai_key = (
+            self._get_api_key_cached(ai_provider, ai_base_url)
+            if ai_provider and ai_base_url and ai_model else None
+        )
         parse_id = self._begin_requirement_parse()
         if hasattr(self, "btn_parse_requirement"):
             self._parse_requirement_button_text = self.btn_parse_requirement.cget("text")
@@ -10623,6 +11323,8 @@ class BossFilterGUI:
             return "网络证书校验失败"
         if any(token in text for token in ("404", "接口不存在", "Base URL")):
             return "服务地址可能填错了"
+        if "HTTP 400" in text:
+            return "模型服务拒绝了请求参数"
         if any(token in text for token in ("500", "502", "503", "504", "服务端错误")):
             return "模型服务临时不可用"
         if any(token in text for token in ("JSON", "返回为空")):
@@ -11006,7 +11708,7 @@ class BossFilterGUI:
             else:
                 # 未到：灰色
                 original = ["① 填入需求", "② 解析需求", "③ 检查结果", "④ 保存配置"][i]
-                lbl.config(text=original, foreground=self.colors['text_muted'])
+                lbl.config(text=original, foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
 
     def _hide_job_step_bar(self):
         """隐藏新建岗位步骤引导条"""
@@ -11189,7 +11891,7 @@ class BossFilterGUI:
             body,
             wrap="word",
             font=self.font_log,
-            bg="#FFFFFF",
+            bg=self.colors['bg_card'],
             fg=self.colors['text_primary'],
             borderwidth=1,
             relief="solid",
@@ -11524,10 +12226,10 @@ class BossFilterGUI:
 
                 for r in results:
                     if r['status'] in ('warn', 'fail'):
-                        icon = {'warn': '⚠️', 'fail': '❌'}.get(r['status'], '?')
+                        icon = {'warn': '⚠', 'fail': '✗'}.get(r['status'], '?')
                         self.append_log(f"  {icon} [{r['group']}] {r['name']}: {r['detail']}")
 
-                self.append_log("⚠️ 选择器异常可能导致扫描功能不正常，可编辑 selectors.json 修复")
+                self.append_log("⚠ 选择器异常可能导致扫描功能不正常，可编辑 selectors.json 修复")
                 # 主线程弹窗提醒（线程安全）
                 self.run_on_ui(lambda: messagebox.showwarning(
                     "选择器异常",
@@ -11638,23 +12340,23 @@ class BossFilterGUI:
                         if self._is_boss_recommend_url(current_url):
                             self._browser_non_target_checks = 0
                             self.browser_connected = True
-                            self.set_browser_ui("🟢 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
+                            self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
                             if prev_help != "已连接到 BOSS 直聘推荐牛人页面":
-                                self.append_log("✅ 已连接到 BOSS 直聘推荐牛人页面")
+                                self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                         elif 'zhipin.com' in current_url.lower() or 'boss' in current_url.lower():
                             if self._should_defer_browser_navigation_warning(silent):
                                 return
                             self.browser_connected = False
-                            self.set_browser_ui("🟡 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
+                            self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
                             if prev_help != "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面":
-                                self.append_log("⚠️ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                         else:
                             if self._should_defer_browser_navigation_warning(silent):
                                 return
                             self.browser_connected = False
-                            self.set_browser_ui("🟡 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
+                            self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
                             if prev_help != "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面":
-                                self.append_log("⚠️ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                         return
                     except Exception:
                         # 页面对象已失效，清理后走完整检测流程
@@ -11683,7 +12385,7 @@ class BossFilterGUI:
                 if not port_open:
                     prev_state = self._browser_status_text
                     self.browser_connected = False
-                    self.set_browser_ui("🔴 未连接", self.colors['danger'], start_state="disabled")
+                    self.set_browser_ui("● 未连接", self.colors['danger'], start_state="disabled")
 
                     # 自动启动 Chrome（仅在手动点击时）
                     if not silent:
@@ -11705,7 +12407,7 @@ class BossFilterGUI:
                         chrome_path = next((p for p in candidates if os.path.exists(p)), None)
                         if not chrome_path:
                             self.set_browser_ui(help_text="未找到 Chrome 浏览器，请安装后重试")
-                            self.append_log("❌ 未找到 Chrome 浏览器")
+                            self.append_log("✗ 未找到 Chrome 浏览器")
                             return
 
                         # 自动选一个空闲端口，避免 9222 被占用
@@ -11763,8 +12465,8 @@ class BossFilterGUI:
                                 self.append_log(f"⏳ 等待 Chrome 就绪... ({i+1}/30)")
 
                         if not port_ready:
-                            self.set_browser_ui("🔴 未连接", self.colors['danger'], "Chrome 启动超时，请关闭所有 Chrome 窗口后重试")
-                            self.append_log("❌ Chrome 启动超时，调试端口未开启")
+                            self.set_browser_ui("● 未连接", self.colors['danger'], "Chrome 启动超时，请关闭所有 Chrome 窗口后重试")
+                            self.append_log("✗ Chrome 启动超时，调试端口未开启")
                             return
 
                         # 端口已开，用 DrissionPage 连接
@@ -11803,26 +12505,26 @@ class BossFilterGUI:
                                 self.browser_connected = True
                                 self.browser_page = page
                                 self.browser_address = page.address
-                                self.set_browser_ui("🟢 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
-                                self.append_log("✅ 已连接到 BOSS 直聘推荐牛人页面")
+                                self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
+                                self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                             else:
                                 self.browser_connected = True
                                 self.browser_page = page
                                 self.browser_address = page.address
-                                self.set_browser_ui("🟡 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
-                                self.append_log("⚠️ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                                self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
+                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                         except Exception as e:
                             self.browser_connected = False
                             self.browser_page = None
                             self._selectors_auto_checked = False
-                            self.set_browser_ui("🔴 未连接", self.colors['danger'], "Chrome 已启动，但页面连接失败", "disabled")
+                            self.set_browser_ui("● 未连接", self.colors['danger'], "Chrome 已启动，但页面连接失败", "disabled")
                             error_text = str(e).splitlines()[0] if str(e) else type(e).__name__
-                            self.append_log(f"❌ Chrome 已启动，但页面连接失败：{error_text}")
+                            self.append_log(f"✗ Chrome 已启动，但页面连接失败：{error_text}")
                         return
                     else:
                         self.set_browser_ui(help_text="未检测到 Chrome，请确保浏览器已启动")
-                        if not silent and prev_state != "🔴 未连接":
-                            self.append_log("❌ 未检测到 Chrome 调试端口")
+                        if not silent and prev_state != "● 未连接":
+                            self.append_log("✗ 未检测到 Chrome 调试端口")
                     return
 
                 from DrissionPage import ChromiumPage, ChromiumOptions
@@ -11864,7 +12566,7 @@ class BossFilterGUI:
                     target_url = 'https://www.zhipin.com/web/chat/recommend'
                     if current_url in ('about:blank', ''):
                         if not silent:
-                            self.append_log("⚠️ Chrome 进程存在但无有效页面，正在激活并导航...")
+                            self.append_log("⚠ Chrome 进程存在但无有效页面，正在激活并导航...")
                             nav_page = self._reactivate_and_navigate(page, target_url)
                             if nav_page is not None:
                                 self.browser_connected = True
@@ -11875,24 +12577,24 @@ class BossFilterGUI:
                                 except Exception:
                                     nav_url = ''
                                 if self._is_boss_recommend_url(nav_url):
-                                    self.set_browser_ui("🟢 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
-                                    self.append_log("✅ 已连接到 BOSS 直聘推荐牛人页面")
+                                    self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
+                                    self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                                 else:
-                                    self.set_browser_ui("🟡 需导航", self.colors['warning'], "已激活 Chrome，正在加载页面...", "disabled")
-                                    self.append_log("⚠️ 已激活 Chrome，请等待页面加载完成")
+                                    self.set_browser_ui("● 需导航", self.colors['warning'], "已激活 Chrome，正在加载页面...", "disabled")
+                                    self.append_log("⚠ 已激活 Chrome，请等待页面加载完成")
                             else:
                                 self.browser_connected = False
                                 self.browser_page = None
-                                self.set_browser_ui("🟡 需导航", self.colors['warning'], "请手动打开 Chrome 窗口", "disabled")
-                                self.append_log("⚠️ 无法激活 Chrome 页面，请手动打开 Chrome 窗口后点击重试")
+                                self.set_browser_ui("● 需导航", self.colors['warning'], "请手动打开 Chrome 窗口", "disabled")
+                                self.append_log("⚠ 无法激活 Chrome 页面，请手动打开 Chrome 窗口后点击重试")
                         else:
                             # 自动轮询：不尝试导航，避免 page.get() 挂起
                             self.browser_connected = False
                             self.browser_page = None
                             prev_state = self._browser_status_text
-                            self.set_browser_ui("🟡 需导航", self.colors['warning'], "Chrome 进程存在但无有效页面", "disabled")
-                            if prev_state != "🟡 需导航":
-                                self.append_log("⚠️ Chrome 进程存在但无有效页面，请点击按钮激活")
+                            self.set_browser_ui("● 需导航", self.colors['warning'], "Chrome 进程存在但无有效页面", "disabled")
+                            if prev_state != "● 需导航":
+                                self.append_log("⚠ Chrome 进程存在但无有效页面，请点击按钮激活")
                         # 处理完毕，不再往下走 URL 检查
                         return
 
@@ -11902,9 +12604,9 @@ class BossFilterGUI:
                         self.browser_connected = True
                         self.browser_page = page
                         self.browser_address = page.address
-                        self.set_browser_ui("🟢 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
+                        self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
                         if not silent or not prev_connected:
-                            self.append_log("✅ 已连接到 BOSS 直聘推荐牛人页面")
+                            self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                     elif 'zhipin.com' in current_url.lower() or 'boss' in current_url.lower():
                         if self._should_defer_browser_navigation_warning(silent):
                             return
@@ -11912,9 +12614,9 @@ class BossFilterGUI:
                         self.browser_connected = False
                         self.browser_page = page
                         self.browser_address = page.address
-                        self.set_browser_ui("🟡 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
-                        if not silent or prev_state != "🟡 需导航":
-                            self.append_log("⚠️ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                        self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
+                        if not silent or prev_state != "● 需导航":
+                            self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                     else:
                         if self._should_defer_browser_navigation_warning(silent):
                             return
@@ -11922,9 +12624,9 @@ class BossFilterGUI:
                         self.browser_connected = False
                         self.browser_page = page
                         self.browser_address = page.address
-                        self.set_browser_ui("🟡 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
-                        if not silent or prev_state != "🟡 需导航":
-                            self.append_log("⚠️ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                        self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
+                        if not silent or prev_state != "● 需导航":
+                            self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
 
                 except Exception as e:
                     if self._should_defer_browser_connection_failure(silent):
@@ -11932,7 +12634,7 @@ class BossFilterGUI:
                         self.browser_page = None
                         self._selectors_auto_checked = False
                         self.set_browser_ui(
-                            "🟡 重连中",
+                            "● 重连中",
                             self.colors['warning'],
                             "页面连接短暂中断，正在自动重连...",
                             "disabled",
@@ -11943,14 +12645,14 @@ class BossFilterGUI:
                     self.browser_connected = False
                     self.browser_page = None  # 清理失效的 page 对象
                     self._selectors_auto_checked = False
-                    self.set_browser_ui("🔴 未连接", self.colors['danger'], "浏览器页面连接失败", "disabled")
-                    if not silent or prev_state != "🔴 未连接":
+                    self.set_browser_ui("● 未连接", self.colors['danger'], "浏览器页面连接失败", "disabled")
+                    if not silent or prev_state != "● 未连接":
                         error_text = str(e).splitlines()[0] if str(e) else type(e).__name__
-                        self.append_log(f"❌ 浏览器页面连接失败：{error_text}")
+                        self.append_log(f"✗ 浏览器页面连接失败：{error_text}")
 
                     # 手动点击时，尝试杀掉彻底挂掉的调试 Chrome 进程并重启
                     if not silent:
-                        self.append_log("⚠️ 正在尝试清理残留的调试 Chrome 进程...")
+                        self.append_log("⚠ 正在尝试清理残留的调试 Chrome 进程...")
                         killed = False
                         try:
                             port_num = int(port)
@@ -11987,16 +12689,16 @@ class BossFilterGUI:
 
                         if killed:
                             time.sleep(1)
-                            self.append_log("✅ 已清理残留的调试 Chrome 进程，2秒后自动重新启动...")
+                            self.append_log("✓ 已清理残留的调试 Chrome 进程，2秒后自动重新启动...")
                             self._pending_chrome_restart = True
                         else:
-                            self.append_log("⚠️ Chrome 调试端口被占用但无法清理，请手动关闭所有 Chrome 窗口后重试")
-                            self.set_browser_ui("🔴 未连接", self.colors['danger'],
+                            self.append_log("⚠ Chrome 调试端口被占用但无法清理，请手动关闭所有 Chrome 窗口后重试")
+                            self.set_browser_ui("● 未连接", self.colors['danger'],
                                               "请关闭所有 Chrome 窗口后点击重试", "disabled")
 
             except ImportError:
-                self.set_browser_ui("🔴 错误", self.colors['danger'], "未安装 DrissionPage，请运行：pip install DrissionPage")
-                self.append_log("❌ DrissionPage 未安装")
+                self.set_browser_ui("● 错误", self.colors['danger'], "未安装 DrissionPage，请运行：pip install DrissionPage")
+                self.append_log("✗ DrissionPage 未安装")
             finally:
                 # 连接成功后自动检查选择器（仅首次）
                 if self.browser_connected and self.browser_page and not self._selectors_auto_checked:
@@ -12302,7 +13004,7 @@ class BossFilterGUI:
 
         self.is_running = True
         self.stop_event.clear()
-        self.status_label.config(text="🟡 运行中...", foreground=self.colors['warning'])
+        self.status_label.config(text="● 运行中...", foreground=self.colors['warning'])
         self.stop_btn.config(state="normal")
 
         # 重置进度显示
@@ -12320,7 +13022,7 @@ class BossFilterGUI:
         """停止运行"""
         self.is_running = False
         self.stop_event.set()
-        self.status_label.config(text="🔴 已停止", foreground=self.colors['danger'])
+        self.status_label.config(text="● 已停止", foreground=self.colors['danger'])
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.append_log(f"[{datetime.now().strftime('%H:%M:%S')}] ⏹ 已停止")
@@ -12395,8 +13097,10 @@ class BossFilterGUI:
                         except Exception:
                             pass
                     ai_api_config = self.api_config
-                    from security import get_api_key
-                    ai_api_key = get_api_key(self.api_config.get('api_provider', ''), self.api_config.get('base_url', ''))
+                    ai_api_key = self._get_api_key_cached(
+                        self.api_config.get('api_provider', ''),
+                        self.api_config.get('base_url', ''),
+                    )
                     if not ai_api_key:
                         self.append_log("AI 评估需要 API Key，但未配置，将跳过")
                         ai_eval_enabled = False
@@ -12586,15 +13290,15 @@ class BossFilterGUI:
             self.append_log(f"[{datetime.now().strftime('%H:%M:%S')}] {terminal_log}")
 
             if final_desc.startswith("[完成]"):
-                status_text, status_color = "🟢 已完成", self.colors['success']
+                status_text, status_color = "● 已完成", self.colors['success']
             elif final_desc.startswith(("[达到轮次上限]", "[可能未扫完]")):
-                status_text, status_color = "🟢 本轮处理完成", self.colors['success']
+                status_text, status_color = "● 本轮处理完成", self.colors['success']
             elif final_desc.startswith("[扫描中断]"):
-                status_text, status_color = "🟠 扫描中断", self.colors['warning']
+                status_text, status_color = "● 扫描中断", self.colors['warning']
             elif final_desc.startswith("[已停止]"):
-                status_text, status_color = "🔴 已停止", self.colors['danger']
+                status_text, status_color = "● 已停止", self.colors['danger']
             else:
-                status_text, status_color = "🔴 运行出错", self.colors['danger']
+                status_text, status_color = "● 运行出错", self.colors['danger']
             progress_text = self._format_terminal_progress_text(final_desc)
             should_build_contact_list = bool(
                 contact_policy_text != "仅保存筛选结果"
@@ -12777,8 +13481,16 @@ class BossFilterGUI:
                 self.result_stats_greeted['pending'].set(f"{pending_greeted} 已打招呼")
                 self.result_stats_greeted['greeted'].set("通过筛选中")
 
-                for item in self.result_tree.get_children():
-                    self.result_tree.delete(item)
+                cached_items = getattr(self, '_tree_original_order', None)
+                tree_items = (
+                    list(cached_items)
+                    if cached_items is not None
+                    else list(self.result_tree.get_children())
+                )
+                for item in tree_items:
+                    if self.result_tree.exists(item):
+                        self.result_tree.delete(item)
+                self._tree_original_order = None
                 self._item_to_candidate: dict[str, dict] = {}
 
                 sorted_candidates = sorted(candidates, key=lambda x: x.get('match_score', 0), reverse=True)
@@ -12787,8 +13499,8 @@ class BossFilterGUI:
                 self.result_tree.tag_configure('strong_recommend', background=self.colors['bg_tree_tag_high'])
                 self.result_tree.tag_configure('recommend', background=self.colors['bg_tree_tag_mid'])
                 self.result_tree.tag_configure('pending', background=self.colors['bg_tree_tag_low'])
-                self.result_tree.tag_configure('blacklisted', background='#F5F5F5', foreground='#C62828')
-                self.result_tree.tag_configure('rejected', background='#F5F5F5', foreground='#757575')
+                self.result_tree.tag_configure('blacklisted', background=self.colors['bg_tree_tag_low'], foreground=self.colors.get('danger_text', ui_theme.DANGER_TEXT))
+                self.result_tree.tag_configure('rejected', background=self.colors['bg_tree_tag_low'], foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
 
                 visible_count = 0
                 for c in sorted_candidates:
@@ -12861,8 +13573,36 @@ class BossFilterGUI:
                 self.result_tree_data = sorted_candidates
                 if hasattr(self, 'result_count_var'):
                     self.result_count_var.set(f"显示 {visible_count} / 共 {len(candidates)} 人")
+                self._toggle_result_empty_state(visible_count == 0)
                 self._tree_original_order = None  # 搜索排序缓存失效，下次搜索时重建
                 self._update_result_review_button_state()
+            else:
+                # 数据文件不存在：清空表格与统计卡片，展示空态引导
+                cached_items = getattr(self, '_tree_original_order', None)
+                tree_items = (
+                    list(cached_items)
+                    if cached_items is not None
+                    else list(self.result_tree.get_children())
+                )
+                for item in tree_items:
+                    if self.result_tree.exists(item):
+                        self.result_tree.delete(item)
+                self._tree_original_order = None
+                self._item_to_candidate = {}
+                self.result_tree_data = []
+                self.all_candidates = []
+                if hasattr(self, 'result_count_var'):
+                    self.result_count_var.set("显示 0 / 共 0 人")
+                if hasattr(self, 'result_stats_vars'):
+                    for stat_var in self.result_stats_vars.values():
+                        stat_var.set('0')
+                if hasattr(self, 'result_stats_greeted'):
+                    for key in ('strong', 'recommended', 'pending'):
+                        if key in self.result_stats_greeted:
+                            self.result_stats_greeted[key].set('0 已打招呼')
+                    if 'greeted' in self.result_stats_greeted:
+                        self.result_stats_greeted['greeted'].set('通过筛选中')
+                self._toggle_result_empty_state(True)
         except Exception as e:
             self.append_log(f"加载结果失败：{e}")
 
@@ -12895,7 +13635,7 @@ class BossFilterGUI:
             messagebox.showerror("状态体检", f"读取候选人数据失败：{exc}", parent=self.root)
             return
         if not candidates:
-            messagebox.showinfo("状态体检", f"{scope} 没有候选人数据可检查。", parent=self.root)
+            self._show_inline_banner(self.result_page, 'info', f"{scope} 没有候选人数据可检查。")
             return
 
         issues = diagnose_candidate_states(candidates)
@@ -12910,11 +13650,11 @@ class BossFilterGUI:
             messagebox.showerror("今日待办", f"读取候选人数据失败：{exc}", parent=self.root)
             return
         if not candidates:
-            messagebox.showinfo("今日待办", f"{scope} 没有候选人数据可处理。", parent=self.root)
+            self._show_inline_banner(self.result_page, 'info', f"{scope} 没有候选人数据可处理。")
             return
         items = build_daily_candidate_actions(candidates)
         if not items:
-            messagebox.showinfo("今日待办", f"{scope} 暂无需要优先处理的候选人。", parent=self.root)
+            self._show_inline_banner(self.result_page, 'info', f"{scope} 暂无需要优先处理的候选人。")
             return
         self._show_daily_candidate_actions_dialog(scope, items)
 
@@ -12993,7 +13733,7 @@ class BossFilterGUI:
         style.configure(
             "ActionQueue.Treeview",
             font=(FONT_FAMILY, int(11 * self.font_scale)),
-            rowheight=int(30 * scale),
+            rowheight=int(UI_CONFIG['treeview_rowheight'] * scale),
         )
         style.configure(
             "ActionQueue.Treeview.Heading",
@@ -13317,7 +14057,7 @@ class BossFilterGUI:
         state_style.configure(
             "StateCheck.Treeview",
             font=(FONT_FAMILY, int(11 * self.font_scale)),
-            rowheight=int(30 * scale),
+            rowheight=int(UI_CONFIG['treeview_rowheight'] * scale),
         )
         state_style.configure(
             "StateCheck.Treeview.Heading",
@@ -13421,9 +14161,9 @@ class BossFilterGUI:
         tree.column("job", width=int(145 * scale), minwidth=110, anchor="w")
         tree.column("problem", width=int(350 * scale), minwidth=240, anchor="w")
         tree.column("action", width=int(392 * scale), minwidth=260, anchor="w")
-        tree.tag_configure("error", background="#FDECEC")
-        tree.tag_configure("warning", background="#FFF7E6")
-        tree.tag_configure("info", background="#EEF6FF")
+        tree.tag_configure("error", background=self.colors.get('banner_error_bg', ui_theme.BANNER_ERROR_BG))
+        tree.tag_configure("warning", background=self.colors.get('banner_warning_bg', ui_theme.BANNER_WARNING_BG))
+        tree.tag_configure("info", background=self.colors.get('banner_info_bg', ui_theme.BANNER_INFO_BG))
 
         current_issues = []
         current_issue_group_name = {"value": next(iter(grouped_issues), "")}
@@ -13869,74 +14609,124 @@ class BossFilterGUI:
             "school": "毕业学校",
             "company": "最近公司",
         }
+        self._column_headers = column_headers
+        self._sort_col = None
+        self._sort_reverse = False
         columns = self.result_tree['columns']
         for col in columns:
             # 为每个表头添加点击事件，使用中文显示
             header_text = column_headers.get(col, col)
             self.result_tree.heading(col, text=header_text, command=lambda c=col: self._sort_treeview(c))
 
+    def _update_sort_indicators(self):
+        """根据当前排序状态刷新表头 ▲▼ 指示"""
+        for col in self.result_tree['columns']:
+            base = self._column_headers.get(col, col)
+            if col == self._sort_col:
+                base += ' ▼' if self._sort_reverse else ' ▲'
+            self.result_tree.heading(col, text=base)
+
     def _sort_treeview(self, col):
-        """按指定列排序 Treeview"""
+        """按指定列排序 Treeview（重复点击同一列切换升降序）"""
         try:
-            # 获取当前数据
-            items = [(self.result_tree.set(item, col), item) for item in self.result_tree.get_children()]
+            # 同一列再次点击 → 反转方向；新列 → 升序（匹配分列默认降序）
+            if self._sort_col == col:
+                self._sort_reverse = not self._sort_reverse
+            else:
+                self._sort_col = col
+                self._sort_reverse = (col == 'score')
 
-            # 尝试数值排序
-            def sort_key(val):
-                try:
-                    # 移除单位（如"年"、"K"）
-                    val_clean = val.replace('年', '').replace('K', '').replace('千', '')
-                    if '-' in val_clean:
-                        # 范围值取平均
-                        parts = val_clean.split('-')
-                        return (float(parts[0]) + float(parts[1])) / 2
-                    return float(val_clean)
-                except (ValueError, TypeError):
-                    return 0 if val == '' else 999999
+            parsed_items = []
+            for item in self.result_tree.get_children():
+                value = self.result_tree.set(item, col)
+                valid, sort_value = self._result_tree_sort_value(col, value)
+                parsed_items.append((valid, sort_value, item))
 
-            items.sort(key=sort_key)
+            # 空值和无法解析的数值始终放在末尾，避免降序时跑到最前面。
+            valid_items = [entry for entry in parsed_items if entry[0]]
+            invalid_items = [entry for entry in parsed_items if not entry[0]]
+            valid_items.sort(key=lambda entry: entry[1], reverse=self._sort_reverse)
+            items = valid_items + invalid_items
 
             # 移动项
-            for index, (val, item) in enumerate(items):
+            for index, (_valid, _value, item) in enumerate(items):
                 self.result_tree.move(item, '', index)
 
-            # 切换排序方向（可选优化：下次点击反向排序）
-            if not hasattr(self, '_sort_reverse'):
-                self._sort_reverse = False
-            self._sort_reverse = not self._sort_reverse
+            self._update_sort_indicators()
 
-        except Exception as e:
-            pass
+        except Exception:
+            logger.exception("结果表按%s列排序失败", col)
+
+    @staticmethod
+    def _result_tree_sort_value(col: str, value) -> tuple[bool, float | str]:
+        """Return a typed sort value for one result-table cell."""
+        text = str(value or '').strip()
+        if not text or text in {'—', '-'}:
+            return False, 0.0
+
+        numeric_columns = {'exp', 'salary', 'skills', 'score', 'ai_eval', 'age'}
+        if col not in numeric_columns:
+            return True, text.casefold()
+
+        if col in {'exp', 'salary'}:
+            numbers = [float(number) for number in re.findall(r'\d+(?:\.\d+)?', text)]
+            if not numbers:
+                return False, 0.0
+            if len(numbers) >= 2:
+                return True, (numbers[0] + numbers[1]) / 2
+            return True, numbers[0]
+
+        match = re.search(r'[-+]?\d+(?:\.\d+)?', text)
+        if match is None:
+            return False, 0.0
+        return True, float(match.group())
 
     def _filter_result_tree(self):
-        """根据搜索框内容实时过滤 Treeview 行。
+        """根据搜索框内容实时过滤 Treeview 行（不匹配的行隐藏）。
 
-        搜索范围：姓名、匹配分、推荐指数、状态。
-        匹配项红色文字高亮并按优先级排序（完全匹配姓名 > 部分匹配 > 分数 ≥ 搜索值 > 等级 > 状态），
-        清空搜索时恢复原始排序。
+        搜索范围：姓名、匹配分、推荐指数、状态（与列表可见列一致）。
+        数字语义：``60`` 表示匹配分 ≥ 60；支持 ``>=60``、``>60``、``=60`` 显式比较。
+        匹配项高亮并按优先级排序（完全匹配姓名 > 部分匹配 > 分数 > 等级 > 状态），
+        清空搜索时恢复全部行和原始排序。
         """
         query = self.result_search_var.get().strip().lower()
-        all_items = self.result_tree.get_children()
+        visible_items = list(self.result_tree.get_children())
 
         # 保存原始顺序（首次过滤时）
-        if not hasattr(self, '_tree_original_order') or self._tree_original_order is None:
-            self._tree_original_order = list(all_items)
+        original_order = getattr(self, '_tree_original_order', None)
+        if query and original_order is None:
+            original_order = visible_items
+            self._tree_original_order = list(original_order)
+        all_items = list(
+            original_order if original_order is not None else visible_items
+        )
 
         # 构建 item_id → candidate 映射（插入时建立，不受排序影响）
         item_map = getattr(self, '_item_to_candidate', {}) or {}
 
         if not query:
-            # 清空搜索：恢复原始排序，清除高亮
+            # 清空搜索：恢复全部行、原始排序，清除高亮
             for item_id in all_items:
                 tags = list(self.result_tree.item(item_id, 'tags') or ())
                 if 'search_match' in tags:
                     tags.remove('search_match')
                     self.result_tree.item(item_id, tags=tuple(tags))
-            for i, item_id in enumerate(self._tree_original_order):
+            for i, item_id in enumerate(all_items):
                 if self.result_tree.exists(item_id):
-                    self.result_tree.move(item_id, '', i)
+                    self.result_tree.reattach(item_id, '', i)
             self._tree_original_order = None
+            # 恢复默认计数文案
+            if hasattr(self, 'result_count_var'):
+                total = len(getattr(self, 'result_tree_data', []) or [])
+                self.result_count_var.set(f"显示 {len(all_items)} / 共 {total} 人")
             return
+
+        # 解析数字比较查询（>=60 / >60 / =60 / 60）
+        num_op, num_val = None, None
+        m = re.fullmatch(r'(>=|>|=)?\s*(\d{1,3})', query)
+        if m:
+            num_op = m.group(1) or '>='
+            num_val = int(m.group(2))
 
         # 匹配判断：返回匹配类型用于优先级排序
         def _match_type(cand: dict) -> str | None:
@@ -13957,25 +14747,27 @@ class BossFilterGUI:
                 return 'level'
             if query in status:
                 return 'status'
-            # 数字查询：匹配分数 ≥ 搜索值
-            try:
-                q_num = int(query)
-                s_num = int(score_str) if score_str else 0
-                if s_num >= q_num:
+            # 数字查询：匹配分比较（默认 ≥）
+            if num_val is not None:
+                try:
+                    s_num = int(score_str) if score_str else 0
+                except (ValueError, TypeError):
+                    s_num = 0
+                if num_op == '>=' and s_num >= num_val:
                     return 'score'
-            except (ValueError, TypeError):
-                pass
+                if num_op == '>' and s_num > num_val:
+                    return 'score'
+                if num_op == '=' and s_num == num_val:
+                    return 'score'
+                return None
             return None
 
         _priority = {'exact_name': 0, 'partial_name': 1, 'score': 2, 'level': 3, 'status': 4}
         matched_with_type: list[tuple[str, str]] = []
-        unmatched: list[str] = []
         for item_id in all_items:
             mt = _match_type(item_map.get(item_id, {}))
             if mt:
                 matched_with_type.append((item_id, mt))
-            else:
-                unmatched.append(item_id)
 
         # 匹配项按优先级排序：完全匹配姓名 > 部分匹配姓名 > 分数 > 等级 > 状态
         matched_with_type.sort(key=lambda x: _priority.get(x[1], 99))
@@ -13988,22 +14780,24 @@ class BossFilterGUI:
                 self.result_tree.item(item_id, tags=tuple(tags))
 
         # 匹配项：深青加粗高亮 tag（bold 继承 self.font_table 基础字号，避免行高不一致）
-        self.result_tree.tag_configure('search_match', foreground='#00695C', font=(*self.font_table, 'bold'))
+        self.result_tree.tag_configure('search_match', foreground=self.colors['primary_dark'], font=(*self.font_table, 'bold'))
         for item_id, _ in matched_with_type:
             tags = list(self.result_tree.item(item_id, 'tags') or ())
             if 'search_match' not in tags:
                 tags.append('search_match')
             self.result_tree.item(item_id, tags=tuple(tags))
 
-        # detach 全部 → 按优先级 reattach
-        for item_id in all_items:
+        # detach 全部 → 仅 reattach 匹配项（真筛选：不匹配的行隐藏）
+        for item_id in visible_items:
             self.result_tree.detach(item_id)
         for item_id, _ in matched_with_type:
             self.result_tree.reattach(item_id, '', 'end')
-        for item_id in unmatched:
-            self.result_tree.reattach(item_id, '', 'end')
 
-        # 滚动到第一个匹配项
+        # 更新计数提示并滚动到第一个匹配项
+        total = len(all_items)
+        shown = len(matched_with_type)
+        if hasattr(self, 'result_count_var'):
+            self.result_count_var.set(f"搜索命中 {shown} / {total} 人")
         if matched_with_type:
             self.result_tree.see(matched_with_type[0][0])
             self.result_tree.selection_set(matched_with_type[0][0])
@@ -14076,18 +14870,172 @@ class BossFilterGUI:
             300, lambda: self._show_tooltip(full, x, y, tooltip_key)
         )
 
-    def _show_tooltip(self, text, x, y, tooltip_key=None, parent=None):
-        """显示 tooltip 窗口。"""
-        self._hide_tooltip()
+    def _build_empty_state(self, parent, icon_name, title, hint, action_text=None, action_command=None):
+        """构建可复用空态引导层（覆盖在父容器上，place 管理，初始隐藏）。"""
+        frame = ttk.Frame(parent, style='TFrame')
+        inner = ttk.Frame(frame, style='TFrame')
+        inner.place(relx=0.5, rely=0.42, anchor='center')
+        icon_img = self.icons.get(
+            icon_name, int(56 * self.dpi_scale * self.zoom_factor),
+            self.colors.get('text_muted', ui_theme.TEXT_MUTED), self.colors['bg_card'],
+        )
+        icon_label = ttk.Label(inner, image=icon_img, background=self.colors['bg_card'])
+        icon_label._icon_ref = icon_img
+        icon_label.pack(anchor='center')
+        ttk.Label(
+            inner, text=title, font=self.font_section,
+            foreground=self.colors['text_primary'], background=self.colors['bg_card'],
+        ).pack(anchor='center', pady=(int(12 * self.dpi_scale), 0))
+        ttk.Label(
+            inner, text=hint, font=self.font_label,
+            foreground=self.colors['text_secondary'], background=self.colors['bg_card'],
+            justify='center',
+        ).pack(anchor='center', pady=(int(6 * self.dpi_scale), 0))
+        if action_text and action_command:
+            ttk.Button(
+                inner, text=action_text, style='Accent.TButton', command=action_command,
+            ).pack(anchor='center', pady=(int(16 * self.dpi_scale), 0))
+        return frame
+
+    def _toggle_result_empty_state(self, show):
+        """按可见候选人数切换结果页空态引导层。"""
+        frame = getattr(self, 'result_empty_state', None)
+        if frame is None:
+            return
+        try:
+            if show:
+                frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+                frame.lift()
+            else:
+                frame.place_forget()
+        except tk.TclError:
+            pass
+
+    def _show_inline_banner(self, page, kind, text, duration_ms=6000):
+        """在页面顶部展示非模态 inline 横幅（自动消失，可点 ✕ 关闭）。
+
+        kind: info / warning / error / success。用于替代打断流程的纯通知弹窗。
+        """
+        try:
+            if page is None or not page.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        self._hide_inline_banner(page)
+        bg_key, bg_fallback = {
+            'info': ('banner_info_bg', ui_theme.BANNER_INFO_BG),
+            'warning': ('banner_warning_bg', ui_theme.BANNER_WARNING_BG),
+            'error': ('banner_error_bg', ui_theme.BANNER_ERROR_BG),
+            'success': ('banner_success_bg', ui_theme.BANNER_SUCCESS_BG),
+        }.get(kind, ('banner_info_bg', ui_theme.BANNER_INFO_BG))
+        bg = self.colors.get(bg_key, bg_fallback)
+        banner = tk.Frame(page, bg=bg)
+        tk.Label(
+            banner, text=text, bg=bg,
+            fg=self.colors['text_primary'], font=self.font_label,
+            anchor='w', justify='left',
+        ).pack(
+            side='left', fill='x', expand=True,
+            padx=(int(12 * self.dpi_scale), int(8 * self.dpi_scale)),
+            pady=int(8 * self.dpi_scale),
+        )
+        close = tk.Label(
+            banner, text='✕', bg=bg, cursor='hand2',
+            fg=self.colors['text_secondary'], font=self.font_label,
+        )
+        close.pack(side='right', padx=(0, int(12 * self.dpi_scale)))
+        close.bind('<Button-1>', lambda _e: self._hide_inline_banner(page))
+        children = page.winfo_children()
+        if children:
+            banner.pack(side='top', fill='x', before=children[0])
+        else:
+            banner.pack(side='top', fill='x')
+        if not hasattr(self, '_inline_banners'):
+            self._inline_banners = {}
+        self._inline_banners[page] = banner
+        if duration_ms:
+            banner.after(duration_ms, lambda p=page: self._hide_inline_banner(p))
+
+    def _hide_inline_banner(self, page):
+        """关闭指定页面顶部的 inline 横幅（若存在）。"""
+        banner = getattr(self, '_inline_banners', {}).pop(page, None)
+        if banner is not None:
+            try:
+                banner.destroy()
+            except tk.TclError:
+                pass
+
+    def _create_switch(self, parent, variable):
+        """自绘拨动开关（OFF 灰色圆点居左 / ON 品牌蓝圆点居右），绑定 BooleanVar。
+
+        clam 下 ttk.Checkbutton 的 indicator 尺寸配置会放大成粗大灰框，
+        启用类语义用开关控件更准确；点击或空格切换，可聚焦。
+        """
+        scale = self.dpi_scale * self.zoom_factor
+        width = int(44 * scale)
+        height = int(24 * scale)
+        knob_d = height - int(6 * scale)
+        canvas = tk.Canvas(
+            parent, width=width, height=height,
+            bg=self.colors['bg_card'], highlightthickness=0, bd=0,
+            cursor='hand2', takefocus=1,
+        )
+
+        def _draw():
+            canvas.delete('all')
+            on = bool(variable.get())
+            track = (self.colors['primary'] if on
+                     else self.colors.get('border_strong', ui_theme.BORDER_STRONG))
+            radius = height // 2
+            canvas.create_oval(0, 0, height, height, fill=track, outline='')
+            canvas.create_oval(width - height, 0, width, height, fill=track, outline='')
+            canvas.create_rectangle(radius, 0, width - radius + 1, height, fill=track, outline='')
+            margin = (height - knob_d) // 2
+            knob_x = width - knob_d - margin if on else margin
+            canvas.create_oval(
+                knob_x, margin, knob_x + knob_d, margin + knob_d,
+                fill='#FFFFFF', outline='',
+            )
+
+        def _toggle(_event=None):
+            variable.set(not variable.get())
+            return 'break'
+
+        canvas.bind('<Button-1>', _toggle)
+        canvas.bind('<space>', _toggle)
+        canvas.bind('<FocusIn>', lambda _e: canvas.configure(
+            highlightthickness=2,
+            highlightbackground=self.colors.get('primary_light', ui_theme.PRIMARY_LIGHT),
+        ))
+        canvas.bind('<FocusOut>', lambda _e: canvas.configure(highlightthickness=0))
+        _draw()
+        variable.trace_add('write', lambda *_args: _draw())
+        return canvas
+
+    def _styled_tooltip(self, text, x, y, wraplength=None, parent=None):
+        """创建统一深色现代 tooltip（圆角观感、白字、无边框），返回 Toplevel。"""
         tip = tk.Toplevel(parent or self.root)
         tip.wm_overrideredirect(True)
         tip.wm_geometry(f'+{x}+{y}')
+        kwargs = {}
+        if wraplength:
+            kwargs['wraplength'] = wraplength
+            kwargs['justify'] = 'left'
         label = tk.Label(
-            tip, text=text, background='#FFFFE0', relief='solid', borderwidth=1,
+            tip, text=text,
+            background=self.colors.get('tooltip_bg', ui_theme.TOOLTIP_BG),
+            foreground=self.colors.get('tooltip_fg', ui_theme.TOOLTIP_FG),
+            relief='flat', borderwidth=0,
             font=(FONT_FAMILY, int(10 * self.dpi_scale * self.zoom_factor)),
-            padx=6, pady=3
+            padx=10, pady=6, **kwargs
         )
         label.pack()
+        return tip
+
+    def _show_tooltip(self, text, x, y, tooltip_key=None, parent=None):
+        """显示 tooltip 窗口。"""
+        self._hide_tooltip()
+        tip = self._styled_tooltip(text, x, y, parent=parent)
         self._tooltip = tip
         self._tooltip_item = tooltip_key
 
@@ -14106,15 +15054,7 @@ class BossFilterGUI:
     def _show_model_tooltip(self, text, x, y, tooltip_key=None):
         """显示模型列表的 Base URL tooltip"""
         self._hide_model_tooltip()
-        tip = tk.Toplevel(self.root)
-        tip.wm_overrideredirect(True)
-        tip.wm_geometry(f'+{x}+{y}')
-        label = tk.Label(
-            tip, text=text, background='#FFFFE0', relief='solid', borderwidth=1,
-            font=(FONT_FAMILY, int(10 * self.dpi_scale * self.zoom_factor)),
-            padx=6, pady=3, wraplength=400
-        )
-        label.pack()
+        tip = self._styled_tooltip(text, x, y, wraplength=400)
         self._model_tooltip = tip
         self._model_tooltip_item = tooltip_key
 
@@ -14130,16 +15070,7 @@ class BossFilterGUI:
 
     def _create_simple_tooltip(self, text, x, y):
         """创建简单的浮动 tooltip，返回 Toplevel 对象。"""
-        tip = tk.Toplevel(self.root)
-        tip.wm_overrideredirect(True)
-        tip.wm_geometry(f'+{x}+{y}')
-        label = tk.Label(
-            tip, text=text, background='#FFFFE0', relief='solid', borderwidth=1,
-            font=(FONT_FAMILY, int(10 * self.dpi_scale * self.zoom_factor)),
-            padx=6, pady=3, wraplength=500
-        )
-        label.pack()
-        return tip
+        return self._styled_tooltip(text, x, y, wraplength=500)
 
     def _hide_skills_tooltip(self, event=None):
         """隐藏技能表 tooltip"""
@@ -14281,40 +15212,7 @@ class BossFilterGUI:
             menu._icon_refs = [icon_export_menu, icon_trash_menu, icon_greet]
 
             def remove_selected():
-                if not messagebox.askyesno("确认删除", f"确定要移除选中的 {len(selection)} 名候选人吗？"):
-                    return
-                remove_keys = set()
-                for sel_item in selection:
-                    candidate = self._find_candidate_by_tree_item(sel_item)
-                    if candidate:
-                        geek_id = candidate.get('geek_id')
-                        if geek_id:
-                            remove_keys.add((
-                                str(geek_id),
-                                candidate.get('job_name', '').replace(' ', ''),
-                            ))
-                self.result_tree_data = [
-                    candidate for candidate in self.result_tree_data
-                    if (
-                        str(candidate.get('geek_id', '')),
-                        candidate.get('job_name', '').replace(' ', ''),
-                    ) not in remove_keys
-                ]
-                if remove_keys and CANDIDATES_PATH.exists():
-                    with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                        candidates = json.load(f)
-                    candidates = [
-                        candidate for candidate in candidates
-                        if (
-                            str(candidate.get('geek_id', '')),
-                            candidate.get('job_name', '').replace(' ', ''),
-                        ) not in remove_keys
-                    ]
-                    save_candidates_all(candidates, CANDIDATES_PATH)
-                # 删除 Treeview 中的项
-                for sel_item in selection:
-                    self.result_tree.delete(sel_item)
-                self.refresh_home_stats()
+                self._remove_selected_candidates()
 
             menu.add_command(
                 label=" 加入联系清单",
@@ -14669,7 +15567,7 @@ class BossFilterGUI:
 
         def show_placeholder():
             placeholder_active['value'] = True
-            reason_text.config(fg=self.colors['text_muted'])
+            reason_text.config(fg=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
             reason_text.delete("1.0", "end")
             reason_text.insert("1.0", reason_placeholder)
 
@@ -14952,7 +15850,7 @@ class BossFilterGUI:
                 api_config = self.api_config
                 provider_key = api_config.get('api_provider', '')
                 base_url = api_config.get('base_url', '')
-                api_key = get_api_key(provider_key, base_url)
+                api_key = self._get_api_key_cached(provider_key, base_url)
 
                 if not api_key:
                     def _no_key():
@@ -14997,7 +15895,7 @@ class BossFilterGUI:
                     if result.success:
                         sign = "+" if result.adjustment > 0 else ""
                         self.append_log(
-                            f"[简历评估] ✅ {name}: {sign}{result.adjustment} "
+                            f"[简历评估] ✓ {name}: {sign}{result.adjustment} "
                             f"→ 总分 {candidate.get('match_score', '?')}")
                         # 自定义对话框
                         eval_dialog = tk.Toplevel(_parent)
@@ -15049,7 +15947,7 @@ class BossFilterGUI:
                                             style='ResumeEval.TButton')
                         ok_btn.pack(anchor="center")
                     else:
-                        self.append_log(f"[简历评估] ❌ {name}: {result.reason}")
+                        self.append_log(f"[简历评估] ✗ {name}: {result.reason}")
                         messagebox.showwarning("评估失败",
                             f"LLM 返回错误：{result.reason}",
                             parent=_parent)
@@ -15058,7 +15956,7 @@ class BossFilterGUI:
 
             except Exception as exc:
                 def _on_error(error=exc):
-                    self.append_log(f"[简历评估] ❌ {name} 异常：{error}")
+                    self.append_log(f"[简历评估] ✗ {name} 异常：{error}")
                     if _tree_item is not None:
                         try:
                             _tree.set(_tree_item, 'status',
@@ -15192,8 +16090,9 @@ class BossFilterGUI:
             messagebox.showwarning("警告", "请先配置AI模型")
             return
 
-        from security import get_api_key
-        api_key = get_api_key(api_config.get('api_provider', ''), api_config.get('base_url', ''))
+        api_key = self._get_api_key_cached(
+            api_config.get('api_provider', ''), api_config.get('base_url', '')
+        )
         if not api_key:
             messagebox.showwarning("警告", "请先配置API Key")
             return
@@ -15630,7 +16529,7 @@ class BossFilterGUI:
                 self.refresh_results()
                 if on_saved:
                     on_saved()
-                messagebox.showinfo("成功", f"已屏蔽：{name}")
+                self._status_flash(f"已屏蔽：{name}")
             except Exception as exc:
                 messagebox.showerror("错误", f"加入黑名单失败：{exc}")
 
@@ -15680,7 +16579,7 @@ class BossFilterGUI:
             self.refresh_results()
             if on_saved:
                 on_saved()
-            messagebox.showinfo("成功", f"已移出黑名单：{name}")
+            self._status_flash(f"已移出黑名单：{name}")
         except Exception as exc:
             messagebox.showerror("错误", f"移出黑名单失败：{exc}")
 
@@ -15818,8 +16717,7 @@ class BossFilterGUI:
                 candidate.get('geek_id'), candidate.get('job_name', '')
             )
             if not updated:
-                messagebox.showinfo("提示", f"{name} 当前已无需人工确认",
-                                    parent=parent or self.root)
+                self._status_flash(f"{name} 当前已无需人工确认")
                 return
             candidate['manual_review_required'] = False
             candidate['qualification_status'] = 'qualified'
@@ -15830,8 +16728,7 @@ class BossFilterGUI:
             self.refresh_results()
             if on_saved:
                 on_saved()
-            messagebox.showinfo("成功", f"已确认通过：{name}",
-                                parent=parent or self.root)
+            self._status_flash(f"已确认通过：{name}")
         except Exception as exc:
             messagebox.showerror("错误", f"操作失败：{exc}",
                                  parent=parent or self.root)
@@ -15840,8 +16737,7 @@ class BossFilterGUI:
         """批量清除候选人的需人工确认标记。"""
         to_confirm = [c for c in candidates if c.get('manual_review_required')]
         if not to_confirm:
-            messagebox.showinfo("提示", "选中候选人中无需确认的标记",
-                                parent=parent or self.root)
+            self._status_flash("选中候选人中没有需确认的标记")
             return
         names = ", ".join(c.get('name', '?') for c in to_confirm[:5])
         if len(to_confirm) > 5:
@@ -15873,8 +16769,7 @@ class BossFilterGUI:
             self.refresh_home_stats()
             self.refresh_stats()
             self.refresh_results()
-        messagebox.showinfo("完成", f"已确认通过 {confirmed}/{len(to_confirm)} 人",
-                            parent=parent or self.root)
+        self._status_flash(f"已确认通过 {confirmed}/{len(to_confirm)} 人")
 
     def _mark_candidate_followup(self, item, candidate=None, parent=None, on_saved=None):
         """标记候选人的跟进状态和备注。"""
@@ -16685,6 +17580,8 @@ class BossFilterGUI:
                 changed = True
         if changed:
             self._persist_greet_queue()
+        else:
+            self._refresh_nav_badges()
 
     def _persist_greet_queue(self):
         """Persist active queue intent; completed rows remain session-local."""
@@ -16692,6 +17589,7 @@ class BossFilterGUI:
             return
         try:
             save_contact_queue(self.greet_queue_items, CONTACT_QUEUE_PATH)
+            self._refresh_nav_badges()
         except Exception as exc:
             self.append_log(f"[联系候选人] 保存联系清单失败：{exc}")
 
@@ -16875,7 +17773,7 @@ class BossFilterGUI:
         style.configure(
             "GreetQueue.Treeview",
             font=(FONT_FAMILY, int(11 * self.font_scale)),
-            rowheight=int(30 * scale),
+            rowheight=int(UI_CONFIG['treeview_rowheight'] * scale),
         )
         style.configure(
             "GreetQueue.Treeview.Heading",
@@ -18406,21 +19304,21 @@ class BossFilterGUI:
         win.bind('<Right>', lambda _event: self._navigate_candidate_review(1))
 
         try:
-            width = min(1120, max(920, self.root.winfo_width() - 120))
+            self.root.update_idletasks()
+            root_width = self.root.winfo_width()
+            root_height = self.root.winfo_height()
             monitor_area = _get_windows_monitor_area(win, self.root)
-            available_height = (
-                monitor_area[3] if monitor_area is not None
-                else win.winfo_screenheight()
+            area_width = (
+                monitor_area[2] if monitor_area is not None else win.winfo_screenwidth()
             )
-            # 固定双层操作区会多占一行高度，为详情区补回可视空间；
-            # 同时保留少量屏幕边距，避免窗口压到任务栏或显示器边缘。
-            preferred_height = max(960, self.root.winfo_height() + 270)
-            height = min(1120, preferred_height, max(860, int(available_height * 0.98)))
+            area_height = (
+                monitor_area[3] if monitor_area is not None else win.winfo_screenheight()
+            )
+            width = min(880, max(620, int(root_width * 0.55)), int(area_width * 0.9))
+            height = min(root_height, int(area_height * 0.9))
         except tk.TclError:
-            width, height = 1060, 1060
-        _place_window_centered(
-            win, width, height, parent=self.root, max_height_ratio=0.98
-        )
+            width, height = 860, 900
+        _place_window_centered(win, width, height, parent=self.root)
         self._render_candidate_review_workbench()
         win.deiconify()
 
@@ -18887,9 +19785,38 @@ class BossFilterGUI:
                     # 刷新统计
                     self.refresh_results()
 
-                    messagebox.showinfo("成功", f"已移除：{name}")
+                    self._status_flash(f"已移除：{name}")
             except Exception as e:
                 messagebox.showerror("错误", f"移除失败：{e}")
+
+    def _run_export(self, candidates, file_path, preserve_input=False):
+        """后台线程写 Excel，避免大数据量导出冻结界面；完成 toast 反馈，失败弹窗。"""
+        from bossmaster import export_to_excel
+        count = len(candidates)
+        if hasattr(self, 'status_bar_left_var'):
+            self.status_bar_left_var.set(f"正在导出 {count} 名候选人…")
+
+        def worker():
+            try:
+                export_to_excel(candidates, file_path, preserve_input=preserve_input)
+            except Exception as exc:
+                error_message = f"导出失败：{exc}"
+
+                def show_error(message=error_message):
+                    if hasattr(self, 'status_bar_left_var'):
+                        self.status_bar_left_var.set("就绪")
+                    messagebox.showerror("错误", message, parent=self.root)
+                self.root.after(0, show_error)
+                return
+
+            def notify_success():
+                if hasattr(self, 'status_bar_left_var'):
+                    self.status_bar_left_var.set("就绪")
+                self.append_log(f"已导出 {count} 名候选人：{file_path}")
+                self._status_flash(f"已导出 {count} 名候选人")
+            self.root.after(0, notify_success)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _export_selected(self):
         """导出选中的候选人"""
@@ -18909,7 +19836,6 @@ class BossFilterGUI:
             return
 
         # 导出到 Excel
-        from bossmaster import export_to_excel
         if len(selected_data) == 1:
             init_name = f"{selected_data[0].get('name', '候选人')}.xlsx"
         else:
@@ -18922,13 +19848,11 @@ class BossFilterGUI:
         )
 
         if file_path:
-            export_to_excel(selected_data, file_path)
-            messagebox.showinfo("成功", f"已导出 {len(selected_data)} 名候选人到：\n{file_path}")
+            self._run_export(selected_data, file_path)
 
     def export_excel(self):
         """Export the candidates currently visible in the result table."""
         try:
-            from bossmaster import export_to_excel
             self.refresh_results(force=True)
             candidates = []
             for item in self.result_tree.get_children():
@@ -18959,11 +19883,7 @@ class BossFilterGUI:
             )
 
             if file_path:
-                export_to_excel(candidates, file_path, preserve_input=True)
-                messagebox.showinfo(
-                    "成功",
-                    f"已导出当前筛选范围的 {len(candidates)} 名候选人：\n{file_path}",
-                )
+                self._run_export(candidates, file_path, preserve_input=True)
         except Exception as e:
             messagebox.showerror("错误", f"导出失败：{e}")
 
@@ -18977,7 +19897,7 @@ class BossFilterGUI:
     def clear_candidates(self):
         """清空候选人数据"""
         if not CANDIDATES_PATH.exists():
-            messagebox.showinfo("提示", "暂无候选人数据")
+            self._show_inline_banner(self.result_page, 'info', "暂无候选人数据。")
             return
 
         # 读取当前岗位过滤条件
@@ -19070,7 +19990,7 @@ class BossFilterGUI:
         # 提示
         ttk.Label(dialog, text="操作前会自动备份；已屏蔽候选人会保留为黑名单",
                   font=(FONT_FAMILY, int(13 * dialog_fs)),
-                  foreground=self.colors['text_muted'],
+                  foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
                   style='ClearDialog.TLabel').pack(pady=(int(12 * _s), 0))
 
         # 按钮

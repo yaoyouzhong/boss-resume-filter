@@ -88,3 +88,7 @@ skills-lock.json
 wechat/
 .venv/
 .venv-ci/
+
+# UI 验证临时产物（会话截图/日志，勿提交）
+_ui*.png
+_app_*.log

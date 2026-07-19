@@ -241,6 +241,28 @@ def test_kimi_code_base_url_is_normalized_for_openai_compatible_requests():
     assert "max_tokens" not in body
 
 
+def test_kimi_code_disable_thinking_uses_required_temperature_and_switch():
+    config = {
+        "api_provider": "kimi",
+        "base_url": "https://api.kimi.com/coding/v1",
+        "model": "k3",
+    }
+
+    _url, _headers, body, _protocol = build_request(
+        config,
+        "secret",
+        MESSAGES,
+        max_tokens=100,
+        temperature=0,
+        disable_thinking=True,
+    )
+
+    assert body["temperature"] == 0.6
+    assert body["thinking"] == {"type": "disabled"}
+    assert body["max_completion_tokens"] == 100
+    assert "max_tokens" not in body
+
+
 def test_legacy_qwen_token_plan_base_url_is_normalized():
     assert normalize_api_base_url({
         "api_provider": "qwen",

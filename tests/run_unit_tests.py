@@ -4,9 +4,13 @@ Run the stable unit regression suite.
 This entry point intentionally avoids browser automation, real BOSS pages,
 network calls, and the user's live job_config.json.
 """
-from pathlib import Path
+from collections.abc import Callable
+from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
+from io import StringIO
+from pathlib import Path
 import sys
+import time
 import traceback
 
 
@@ -33,8 +37,41 @@ def _load_module(path: Path):
     return module
 
 
+def _run_test(
+    fn: Callable[[], None],
+) -> tuple[Exception | None, str, str, str]:
+    """运行单项测试；成功时静默，失败时保留完整输出和 traceback。"""
+    captured_stdout = StringIO()
+    captured_stderr = StringIO()
+    try:
+        with redirect_stdout(captured_stdout), redirect_stderr(captured_stderr):
+            fn()
+        return None, captured_stdout.getvalue(), captured_stderr.getvalue(), ""
+    except Exception as exc:
+        return (
+            exc,
+            captured_stdout.getvalue(),
+            captured_stderr.getvalue(),
+            traceback.format_exc(),
+        )
+
+
+def _print_failure_output(captured_stdout: str, captured_stderr: str, trace: str) -> None:
+    """失败时回放被捕获的过程输出，避免压缩日志损失诊断信息。"""
+    if captured_stdout:
+        print("--- captured stdout ---")
+        print(captured_stdout.rstrip())
+    if captured_stderr:
+        print("--- captured stderr ---", file=sys.stderr)
+        print(captured_stderr.rstrip(), file=sys.stderr)
+    if trace:
+        print(trace.rstrip(), file=sys.stderr)
+
+
 def main() -> int:
     _configure_output_encoding()
+    suite_started = time.perf_counter()
+    verbose = "--verbose" in sys.argv[1:]
     test_files = sorted(UNIT_DIR.glob("test_*.py"))
     if not test_files:
         print("FAIL no unit test files found")
@@ -44,6 +81,10 @@ def main() -> int:
     failures = 0
 
     for path in test_files:
+        print(f"RUN  {path.name}...", flush=True)
+        module_started = time.perf_counter()
+        module_total = 0
+        module_failures = 0
         module = _load_module(path)
         for name in sorted(dir(module)):
             if not name.startswith("test_"):
@@ -52,19 +93,33 @@ def main() -> int:
             if not callable(fn):
                 continue
             total += 1
-            try:
-                fn()
-                print(f"PASS {path.name}::{name}")
-            except AssertionError as exc:
+            module_total += 1
+            exc, captured_stdout, captured_stderr, trace = _run_test(fn)
+            if exc is None:
+                if verbose:
+                    print(f"PASS {path.name}::{name}")
+            elif isinstance(exc, AssertionError):
                 failures += 1
+                module_failures += 1
                 print(f"FAIL {path.name}::{name}: {exc}")
-                traceback.print_exc()
-            except Exception as exc:
+                _print_failure_output(captured_stdout, captured_stderr, trace)
+            else:
                 failures += 1
+                module_failures += 1
                 print(f"ERROR {path.name}::{name}: {type(exc).__name__}: {exc}")
-                traceback.print_exc()
+                _print_failure_output(captured_stdout, captured_stderr, trace)
 
-    print(f"SUMMARY total={total} failures={failures}")
+        module_elapsed = time.perf_counter() - module_started
+        if module_failures:
+            print(
+                f"FAIL {path.name}: {module_total} tests, "
+                f"{module_failures} failures ({module_elapsed:.2f}s)"
+            )
+        else:
+            print(f"PASS {path.name}: {module_total} tests ({module_elapsed:.2f}s)")
+
+    suite_elapsed = time.perf_counter() - suite_started
+    print(f"SUMMARY total={total} failures={failures} elapsed={suite_elapsed:.2f}s")
     return 1 if failures else 0
 
 

@@ -16,7 +16,8 @@ from typing import Any
 
 import requests
 
-from constants import CHINESE_NUMERALS, MAJOR_CITIES, USER_AGENT
+from ai_adapter import build_request
+from constants import CHINESE_NUMERALS, MAJOR_CITIES
 from doc_parser import skill_identity_key
 
 
@@ -109,7 +110,7 @@ def enhance_config_with_ai(
 
     try:
         messages = _build_messages(requirements_text, base_config)
-        content = _call_chat_completion(base_url, model, api_key, messages)
+        content = _call_chat_completion(api_config, api_key, messages)
         patch = _parse_json_response(content)
         enhanced = _merge_patch(base_config, patch, requirements_text)
         warnings = _normalize_warnings(patch.get("warnings", []))
@@ -194,7 +195,7 @@ def _extract_json_from_reasoning(reasoning: str) -> str:
     return reasoning.strip()
 
 
-def _call_chat_completion(base_url: str, model: str, api_key: str, messages: list[dict[str, str]]) -> str:
+def _call_chat_completion(api_config: dict[str, Any], api_key: str, messages: list[dict[str, str]]) -> str:
     try:
         import certifi
 
@@ -202,24 +203,24 @@ def _call_chat_completion(base_url: str, model: str, api_key: str, messages: lis
     except ImportError:
         verify_path = True
 
+    # 请求构造统一走 ai_adapter.build_request（base_url 归一化 + 端点方言单点维护）。
+    # 结构化 JD 解析关闭推理：实测 k3 推理 54-90 秒且长度不稳定，关闭后约 4 秒返回
+    url, headers, payload, _protocol = build_request(
+        api_config,
+        api_key,
+        messages,
+        max_tokens=AI_PARSE_MAX_TOKENS,
+        temperature=AI_PARSE_TEMPERATURE,
+        disable_thinking=True,
+    )
+
     last_error = ""
     for attempt in range(AI_PARSE_MAX_RETRIES):
         try:
             response = requests.post(
-                f"{base_url}/chat/completions",
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "max_tokens": AI_PARSE_MAX_TOKENS,
-                    "temperature": AI_PARSE_TEMPERATURE,
-                    "stream": False,
-                },
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}",
-                    "User-Agent": USER_AGENT,
-                    "Connection": "close",
-                },
+                url,
+                json=payload,
+                headers=headers,
                 timeout=AI_PARSE_TIMEOUT,
                 verify=verify_path,
             )
