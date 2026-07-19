@@ -76,6 +76,42 @@ def test_execute_rejects_wrong_authorization_before_reading_or_mutating_repo():
     git_text.assert_not_called()
 
 
+def test_gitee_master_push_skips_when_remote_is_already_at_target():
+    merge_sha = "a" * 40
+    with (
+        patch.object(pr_delivery, "_remote_ref", return_value=merge_sha),
+        patch.object(pr_delivery, "_run") as run,
+    ):
+        assert pr_delivery._push_gitee_master(merge_sha) == merge_sha
+
+    run.assert_not_called()
+
+
+def test_gitee_master_same_value_push_race_is_idempotent_success():
+    merge_sha = "a" * 40
+    failed = subprocess.CompletedProcess(
+        ["git", "push"], 1, stdout="", stderr="incorrect old value provided",
+    )
+    with (
+        patch.object(pr_delivery, "_remote_ref", side_effect=["b" * 40, merge_sha]),
+        patch.object(pr_delivery, "_run", return_value=failed),
+    ):
+        assert pr_delivery._push_gitee_master(merge_sha) == merge_sha
+
+
+def test_gitee_master_push_failure_still_blocks_when_remote_differs():
+    merge_sha = "a" * 40
+    failed = subprocess.CompletedProcess(
+        ["git", "push"], 1, stdout="", stderr="incorrect old value provided",
+    )
+    with (
+        patch.object(pr_delivery, "_remote_ref", side_effect=["b" * 40, "b" * 40]),
+        patch.object(pr_delivery, "_run", return_value=failed),
+    ):
+        with _raises(pr_delivery.PRDeliveryError, "incorrect old value provided"):
+            pr_delivery._push_gitee_master(merge_sha)
+
+
 def test_preflight_stops_on_divergence_instead_of_rebasing():
     def fake_git_text(*args, **_kwargs):
         if args == ("rev-parse", "HEAD"):
@@ -206,10 +242,11 @@ def test_finalize_preserves_branches_when_gitee_is_not_synchronized():
     with (
         patch.object(pr_delivery, "_assert_delivery_worktrees_clean"),
         patch.object(pr_delivery, "_run", return_value=_completed()) as run,
+        patch.object(pr_delivery, "_remote_ref", return_value=merge_sha),
         patch.object(
             pr_delivery,
-            "_remote_ref",
-            side_effect=[merge_sha, "b" * 40],
+            "_push_gitee_master",
+            side_effect=pr_delivery.PRDeliveryError("Gitee master 同步失败"),
         ),
         patch.object(
             pr_delivery, "_update_local_master", return_value=True
@@ -217,13 +254,10 @@ def test_finalize_preserves_branches_when_gitee_is_not_synchronized():
         patch.object(pr_delivery, "_remote_branch_exists") as remote_exists,
         patch.object(pr_delivery, "_local_branch_exists") as local_exists,
     ):
-        with _raises(pr_delivery.PRDeliveryError, "拒绝清理分支"):
+        with _raises(pr_delivery.PRDeliveryError, "同步失败"):
             pr_delivery.finalize_delivery("codex/test", merge_sha)
 
-    assert run.call_args_list == [
-        call(["git", "fetch", "origin"]),
-        call(["git", "push", "gitee", "origin/master:master"]),
-    ]
+    assert run.call_args_list == [call(["git", "fetch", "origin"])]
     update_master.assert_not_called()
     remote_exists.assert_not_called()
     local_exists.assert_not_called()
@@ -250,7 +284,8 @@ def test_finalize_cleans_branch_only_after_both_masters_match():
     with (
         patch.object(pr_delivery, "_assert_delivery_worktrees_clean"),
         patch.object(pr_delivery, "_run", return_value=_completed()) as run,
-        patch.object(pr_delivery, "_remote_ref", side_effect=[merge_sha, merge_sha]),
+        patch.object(pr_delivery, "_remote_ref", return_value=merge_sha),
+        patch.object(pr_delivery, "_push_gitee_master", return_value=merge_sha),
         patch.object(pr_delivery, "_update_local_master") as update_master,
         patch.object(pr_delivery, "_remote_branch_exists", side_effect=[True, False]),
         patch.object(pr_delivery, "_current_branch", return_value=branch),
@@ -276,7 +311,8 @@ def test_finalize_preserves_branch_when_worktree_gets_dirty_before_cleanup():
             side_effect=[None, dirty_error],
         ),
         patch.object(pr_delivery, "_run", return_value=_completed()) as run,
-        patch.object(pr_delivery, "_remote_ref", side_effect=[merge_sha, merge_sha]),
+        patch.object(pr_delivery, "_remote_ref", return_value=merge_sha),
+        patch.object(pr_delivery, "_push_gitee_master", return_value=merge_sha) as push_gitee,
         patch.object(pr_delivery, "_update_local_master", return_value=False),
         patch.object(pr_delivery, "_remote_branch_exists") as remote_exists,
         patch.object(pr_delivery, "_local_branch_exists") as local_exists,
@@ -284,7 +320,7 @@ def test_finalize_preserves_branch_when_worktree_gets_dirty_before_cleanup():
         with _raises(pr_delivery.PRDeliveryError, "分支清理前当前工作区"):
             pr_delivery.finalize_delivery("codex/test", merge_sha)
 
-    assert call(["git", "push", "gitee", "origin/master:master"]) in run.call_args_list
+    push_gitee.assert_called_once_with(merge_sha)
     assert not any(
         args.args[0][:3] == ["git", "push", "origin"]
         for args in run.call_args_list
@@ -303,7 +339,8 @@ def test_finalize_returns_primary_worktree_to_master_before_deleting_branch():
     with (
         patch.object(pr_delivery, "_assert_delivery_worktrees_clean"),
         patch.object(pr_delivery, "_run", return_value=_completed()) as run,
-        patch.object(pr_delivery, "_remote_ref", side_effect=[merge_sha, merge_sha]),
+        patch.object(pr_delivery, "_remote_ref", return_value=merge_sha),
+        patch.object(pr_delivery, "_push_gitee_master", return_value=merge_sha),
         patch.object(pr_delivery, "_update_local_master", return_value=False),
         patch.object(pr_delivery, "_remote_branch_exists", side_effect=[False, False]),
         patch.object(pr_delivery, "_current_branch", return_value=branch),

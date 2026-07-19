@@ -109,6 +109,33 @@ def _remote_branch_exists(remote: str, branch: str) -> bool:
     return bool(_remote_ref(remote, f"refs/heads/{branch}"))
 
 
+def _push_gitee_master(expected_sha: str) -> str:
+    """Push master to Gitee and converge a same-value update race."""
+    target_ref = "refs/heads/master"
+    current = _remote_ref("gitee", target_ref)
+    if current == expected_sha:
+        print("  [跳过] Gitee master 已是目标提交")
+        return current
+
+    result = _run(
+        ["git", "push", "gitee", "origin/master:master"],
+        check=False,
+        capture_output=True,
+    )
+    current = _remote_ref("gitee", target_ref)
+    if current == expected_sha:
+        if result.returncode == 0:
+            print("  [OK] Gitee master 已同步")
+        else:
+            print("  [OK] Gitee master 同值竞态已自动收敛")
+        return current
+
+    detail = (result.stderr or result.stdout or "git push failed").strip()
+    if result.returncode != 0:
+        _fail(f"Gitee master 同步失败：{detail}")
+    _fail("Gitee master 推送后校验失败")
+
+
 def _local_branch_exists(branch: str) -> bool:
     result = _run(
         ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
@@ -414,8 +441,7 @@ def finalize_delivery(branch: str, merge_sha: str) -> dict[str, str]:
     if origin_master != merge_sha:
         _fail("GitHub master 与 PR 合并提交不一致，拒绝同步和清理")
 
-    _run(["git", "push", "gitee", "origin/master:master"])
-    gitee_master = _remote_ref("gitee", "refs/heads/master")
+    gitee_master = _push_gitee_master(merge_sha)
     if gitee_master != merge_sha:
         _fail("Gitee master 与 GitHub master 不一致，拒绝清理分支")
 
