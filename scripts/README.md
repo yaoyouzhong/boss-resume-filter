@@ -12,6 +12,7 @@ python tests/test_import.py
 ## 活跃脚本
 
 - `release_ci.py`：正式发布的确定性规则实现；Actions 只调用严格门禁和 GitHub Draft 暂存，本机驱动器调用 Gitee 镜像、公开发布和线上验收；行为测试在 `tests/unit/test_release_ci.py`。
+- `release_content_review.py`：对最终标题和正文做固定用户视角审核，并绑定版本、发布提交和内容凭证。
 - `release_delivery.py`：一次授权组合版本材料准备与发布准备 PR 交付，不触发正式发布；行为测试在 `tests/unit/test_release_delivery.py`。
 - `release_prepare.py`：版本号、CHANGELOG、README 与项目版本注释的本地准备和严格门禁，保留为分阶段执行及故障恢复入口。
 - `release_dispatch.py`：正式发布的唯一用户入口，负责预检、触发或跳过 Actions 暂存、本机 Gitee 镜像、公开发布和最终验收。
@@ -36,7 +37,7 @@ python scripts/release_delivery.py `
   --authorization "一键准备并交付版本 v2.22"
 ```
 
-流程自动完成版本材料同步、严格门禁、本地提交、push、PR、CI 等待、Squash 合并、双远端同步和分支清理。任一阶段失败立即停止；不会创建 tag、安装包或公开 Release。完成后仍需单独准确授权“`正式发布 v2.22`”。
+流程自动完成版本材料同步、严格门禁、本地提交、push、PR、CI 等待、Squash 合并、双远端同步和分支清理。任一阶段失败立即停止；不会创建 tag、安装包或公开 Release。完成后必须先运行 `release_dispatch.py --version X.Y` 展示最终内容，再等待用户确认。
 
 ### 普通 PR 一键交付
 

@@ -1,7 +1,7 @@
 """Local driver for the repository's single formal-release control plane.
 
 The default mode runs a local, mutation-free release preview.  Execution
-requires ``--execute`` plus the exact authorization text ``正式发布 vX.Y``.
+requires ``--execute`` plus the exact authorization text ``确认正式发布 vX.Y``.
 The driver dispatches the GitHub staging workflow, binds to the exact run it
 created (or safely reuses an active matching run), waits for completion, then
 downloads the staged artifacts and mirrors them to Gitee from this machine.
@@ -31,6 +31,7 @@ for import_path in (BASE_DIR, SCRIPTS_DIR):
 
 import build  # noqa: E402
 import release_ci  # noqa: E402
+import release_content_review  # noqa: E402
 import release_prepare  # noqa: E402
 
 
@@ -71,7 +72,7 @@ def _git_text(*args: str) -> str:
 
 
 def expected_authorization(version: str) -> str:
-    return f"正式发布 v{version}"
+    return f"确认正式发布 v{version}"
 
 
 def validate_authorization(version: str, authorization: str) -> None:
@@ -132,7 +133,7 @@ def _working_tree_clean() -> bool:
     return not bool(_git_text("status", "--porcelain"))
 
 
-def preflight(version: str) -> dict[str, Any]:
+def preflight(version: str, *, approved_content_sha: str = "") -> dict[str, Any]:
     """Run the local strict gate and return the immutable release plan."""
     version = release_prepare.normalize_version(version)
     if _git_text("branch", "--show-current") != "master":
@@ -155,9 +156,15 @@ def preflight(version: str) -> dict[str, Any]:
         gate = release_ci.prepare_release(
             version,
             expected_authorization(version),
+            approved_content_sha=approved_content_sha,
             dry_run=True,
+            reuse_reviewed_gate=bool(approved_content_sha),
         )
-    except (release_ci.ReleaseAutomationError, SystemExit) as exc:
+    except (
+        release_ci.ReleaseAutomationError,
+        release_content_review.ReleaseContentReviewError,
+        SystemExit,
+    ) as exc:
         _fail(f"正式发布严格门禁未通过：{exc}")
 
     runs = _matching_runs(_list_release_runs(), version, gate["release_sha"])
@@ -176,6 +183,9 @@ def preflight(version: str) -> dict[str, Any]:
         "resume": gate["resume"],
         "needs_windows": gate["needs_windows"],
         "needs_macos": gate["needs_macos"],
+        "release_title": gate["release_title"],
+        "release_body": gate["release_body"],
+        "content_sha": gate["content_sha"],
         "staged": staged,
         "published": published,
         "runs": runs,
@@ -189,6 +199,11 @@ def _print_plan(plan: dict[str, Any]) -> None:
     print(f"  Windows 构建: {'需要' if plan['needs_windows'] == 'true' else '复用'}")
     print(f"  macOS 构建: {'需要' if plan['needs_macos'] == 'true' else '复用'}")
     print(f"  GitHub 暂存: {'已完成' if plan['staged'] else '待执行'}")
+    print("\n>>> 发布内容审核（必须人工确认）")
+    print(f"  标题: {plan['release_title']}")
+    print(plan["release_body"])
+    print(f"\n  内部凭证: {plan['content_sha'][:12]}")
+    print(f"  RELEASE_CONTENT_SHA={plan['content_sha']}")
     if plan["published"]:
         print("  公开状态: 已完整发布")
     else:
@@ -198,12 +213,17 @@ def _print_plan(plan: dict[str, Any]) -> None:
         print(f"  Actions: 已有运行中的任务 {active.get('url', '')}")
 
 
-def _dispatch_workflow(version: str, authorization: str) -> None:
+def _dispatch_workflow(
+    version: str,
+    authorization: str,
+    approved_content_sha: str,
+) -> None:
     _run([
         "gh", "workflow", "run", "release.yml",
         "--ref", "master",
         "-f", f"version={version}",
         "-f", f"authorization={authorization}",
+        "-f", f"content_sha={approved_content_sha}",
         "-f", "dry_run=false",
     ])
 
@@ -350,6 +370,7 @@ def dispatch_release(
     *,
     execute: bool = False,
     authorization: str = "",
+    approved_content_sha: str = "",
     timeout: int = DEFAULT_RELEASE_TIMEOUT,
     poll_interval: int = DEFAULT_POLL_INTERVAL,
 ) -> dict[str, Any]:
@@ -357,12 +378,20 @@ def dispatch_release(
     version = release_prepare.normalize_version(version)
     if execute:
         validate_authorization(version, authorization)
-    plan = preflight(version)
+    plan = preflight(
+        version,
+        approved_content_sha=approved_content_sha if execute else "",
+    )
     _print_plan(plan)
     if not execute:
         print("\n未触发 GitHub Actions，也未创建标签或 Release。")
         print(f"精确授权：{expected_authorization(version)}")
         return {"mode": "preview", "plan": plan}
+
+    try:
+        release_content_review.require_approved_content(plan, approved_content_sha)
+    except release_content_review.ReleaseContentReviewError as exc:
+        _fail(str(exc))
 
     if plan["published"]:
         return _finish_success(version, None, already_published=True)
@@ -380,7 +409,7 @@ def dispatch_release(
             for item in _list_release_runs()
         }
         print("\n>>> 触发 Build & Stage GitHub Release")
-        _dispatch_workflow(version, authorization)
+        _dispatch_workflow(version, authorization, approved_content_sha)
         run = _discover_new_run(version, plan["release_sha"], previous_ids)
         print(f"  [OK] 已定位 Actions run：{run.get('url', '')}")
     else:
@@ -395,7 +424,9 @@ def dispatch_release(
         )
 
     print("\n>>> 本机镜像 Gitee 并完成正式发布")
-    release_ci.finalize_release_local(version, authorization, plan["release_sha"])
+    release_ci.finalize_release_local(
+        version, authorization, plan["release_sha"], approved_content_sha,
+    )
     return _finish_success(version, completed)
 
 
@@ -404,6 +435,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", required=True, help="正式发布版本，不带 v 前缀")
     parser.add_argument("--execute", action="store_true", help="触发正式发布工作流")
     parser.add_argument("--authorization", default="", help="精确授权文本")
+    parser.add_argument(
+        "--approved-content-sha", default="",
+        help="由预览步骤生成的内部发布内容凭证",
+    )
     parser.add_argument("--timeout", type=int, default=DEFAULT_RELEASE_TIMEOUT)
     parser.add_argument("--poll-interval", type=int, default=DEFAULT_POLL_INTERVAL)
     return parser
@@ -416,6 +451,7 @@ def main() -> int:
             args.version,
             execute=args.execute,
             authorization=args.authorization,
+            approved_content_sha=args.approved_content_sha,
             timeout=args.timeout,
             poll_interval=args.poll_interval,
         )

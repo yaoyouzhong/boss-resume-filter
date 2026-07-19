@@ -4,7 +4,8 @@ The default mode is mutation-free.  Execution requires the exact authorization
 text ``一键准备并交付版本 vX.Y`` and then composes the existing deterministic
 ``release_prepare`` and ``pr_delivery`` transactions.  It does not create a
 tag, build artifacts, or publish a formal release; those actions remain behind
-the separate ``正式发布 vX.Y`` authorization handled by ``release_dispatch``.
+the separate reviewed ``确认正式发布 vX.Y`` authorization handled by
+``release_dispatch``.
 """
 from __future__ import annotations
 
@@ -115,11 +116,12 @@ def deliver_release_preparation(
         execute=True,
         authorization=pr_delivery.expected_authorization(branch),
         title=f"chore: 准备 v{version} 正式发布",
+        run_local_tests=False,
         timeout=timeout,
         poll_interval=poll_interval,
     )
     print(f"\n[OK] v{version} 发布准备与分支交付全部完成")
-    print(f"  下一步（单独授权）: 正式发布 v{version}")
+    print(f"  下一步: 预览并确认 v{version} 最终发布内容")
     return {
         "mode": "delivered",
         "preparation": preparation,

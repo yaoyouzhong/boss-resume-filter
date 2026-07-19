@@ -66,7 +66,9 @@ def test_release_workflow_requires_one_explicit_authorization_and_never_auto_tri
 
     assert "workflow_dispatch:" in workflow
     assert "authorization:" in workflow
-    assert "Exact authorization text: 正式发布 vX.Y" in workflow
+    assert "Exact authorization text: 确认正式发布 vX.Y" in workflow
+    assert "content_sha:" in workflow
+    assert "--approved-content-sha" in workflow
     assert "dry_run:" in workflow
     assert "push:" not in workflow
     assert "pull_request:" not in workflow
@@ -74,6 +76,7 @@ def test_release_workflow_requires_one_explicit_authorization_and_never_auto_tri
     assert "queue: max" in workflow
     assert "python scripts/release_ci.py prepare" in workflow
     assert "python build.py --ci --release --strict-changelog" in workflow
+    assert "--prepared-sha" in workflow
     assert '--authorization "${{ inputs.authorization }}"' not in workflow
     assert '--authorization "$env:RELEASE_AUTHORIZATION"' in workflow
 
