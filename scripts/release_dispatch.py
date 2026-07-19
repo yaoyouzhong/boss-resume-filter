@@ -38,6 +38,8 @@ import release_prepare  # noqa: E402
 DEFAULT_RUN_DISCOVERY_TIMEOUT = 90
 DEFAULT_RELEASE_TIMEOUT = 3 * 60 * 60
 DEFAULT_POLL_INTERVAL = 15
+DEFAULT_ACTION_STALL_TIMEOUT = 30 * 60
+GITHUB_QUERY_ATTEMPTS = 4
 ACTIVE_RUN_STATES = {"queued", "in_progress", "pending", "requested", "waiting"}
 
 
@@ -81,15 +83,30 @@ def validate_authorization(version: str, authorization: str) -> None:
         _fail(f"正式发布授权不匹配：必须准确填写 {expected!r}")
 
 
-def _load_json(result: subprocess.CompletedProcess[str]) -> Any:
-    try:
-        return json.loads(result.stdout or "null")
-    except json.JSONDecodeError as exc:
-        _fail(f"命令返回了无效 JSON：{exc}")
+def _run_github_json_query(args: list[str], label: str) -> Any:
+    """Run one read-only gh query with bounded retries for transient failures."""
+    last_error = "unknown"
+    for attempt in range(1, GITHUB_QUERY_ATTEMPTS + 1):
+        result = _run(args, check=False, capture_output=True)
+        if result.returncode == 0:
+            try:
+                return json.loads(result.stdout or "null")
+            except json.JSONDecodeError as exc:
+                last_error = f"JSONDecodeError: {exc}"
+        else:
+            last_error = (result.stderr or result.stdout or "gh query failed").strip()
+        if attempt < GITHUB_QUERY_ATTEMPTS:
+            delay = 2 * attempt
+            print(
+                f"  [GitHub 重试] {label}失败 "
+                f"({attempt}/{GITHUB_QUERY_ATTEMPTS})，{delay}s 后重试..."
+            )
+            time.sleep(delay)
+    _fail(f"{label}失败：{last_error}")
 
 
 def _list_release_runs() -> list[dict[str, Any]]:
-    result = _run(
+    data = _run_github_json_query(
         [
             "gh", "run", "list",
             "--workflow", "release.yml",
@@ -98,9 +115,8 @@ def _list_release_runs() -> list[dict[str, Any]]:
             "--json",
             "databaseId,displayTitle,headSha,status,conclusion,url,createdAt",
         ],
-        capture_output=True,
+        "读取 GitHub 暂存工作流运行列表",
     )
-    data = _load_json(result)
     if not isinstance(data, list):
         _fail("无法读取 GitHub 暂存工作流运行列表")
     return data
@@ -251,14 +267,13 @@ def _discover_new_run(
 
 
 def _run_view(run_id: int) -> dict[str, Any]:
-    result = _run(
+    data = _run_github_json_query(
         [
             "gh", "run", "view", str(run_id),
             "--json", "databaseId,displayTitle,headSha,status,conclusion,url,jobs",
         ],
-        capture_output=True,
+        f"读取 Actions run #{run_id}",
     )
-    data = _load_json(result)
     if not isinstance(data, dict):
         _fail(f"无法读取 Actions run #{run_id}")
     return data
@@ -270,6 +285,14 @@ def _progress_signature(run: dict[str, Any]) -> tuple[Any, ...]:
             job.get("name"),
             str(job.get("status") or "").lower(),
             str(job.get("conclusion") or "").lower(),
+            tuple(
+                (
+                    step.get("name"),
+                    str(step.get("status") or "").lower(),
+                    str(step.get("conclusion") or "").lower(),
+                )
+                for step in (job.get("steps") or [])
+            ),
         )
         for job in (run.get("jobs") or [])
     )
@@ -295,16 +318,21 @@ def wait_for_run(
     *,
     timeout: int = DEFAULT_RELEASE_TIMEOUT,
     poll_interval: int = DEFAULT_POLL_INTERVAL,
+    stall_timeout: int = DEFAULT_ACTION_STALL_TIMEOUT,
 ) -> dict[str, Any]:
     """Wait for one exact workflow run and stop on any non-success result."""
-    deadline = time.monotonic() + timeout
+    now = time.monotonic()
+    deadline = now + timeout
+    last_progress_at = now
     previous_signature: tuple[Any, ...] | None = None
     while True:
         run = _run_view(run_id)
         signature = _progress_signature(run)
+        now = time.monotonic()
         if signature != previous_signature:
             _print_progress(run)
             previous_signature = signature
+            last_progress_at = now
         status = str(run.get("status") or "").lower()
         if status == "completed":
             if str(run.get("conclusion") or "").lower() != "success":
@@ -313,7 +341,12 @@ def wait_for_run(
                     f"可修复后用同一版本安全续跑：{run.get('url', '')}"
                 )
             return run
-        if time.monotonic() >= deadline:
+        if now - last_progress_at >= stall_timeout:
+            _fail(
+                f"GitHub 暂存工作流超过 {stall_timeout // 60} 分钟无阶段变化；"
+                f"任务仍保留在 GitHub，可检查后安全续跑：{run.get('url', '')}"
+            )
+        if now >= deadline:
             _fail(f"等待 GitHub 暂存超时，工作流仍在运行：{run.get('url', '')}")
         time.sleep(poll_interval)
 
@@ -373,6 +406,7 @@ def dispatch_release(
     approved_content_sha: str = "",
     timeout: int = DEFAULT_RELEASE_TIMEOUT,
     poll_interval: int = DEFAULT_POLL_INTERVAL,
+    stall_timeout: int = DEFAULT_ACTION_STALL_TIMEOUT,
 ) -> dict[str, Any]:
     """Preview, dispatch, monitor, and verify one formal release."""
     version = release_prepare.normalize_version(version)
@@ -421,6 +455,7 @@ def dispatch_release(
             int(run["databaseId"]),
             timeout=timeout,
             poll_interval=poll_interval,
+            stall_timeout=stall_timeout,
         )
 
     print("\n>>> 本机镜像 Gitee 并完成正式发布")
@@ -441,6 +476,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--timeout", type=int, default=DEFAULT_RELEASE_TIMEOUT)
     parser.add_argument("--poll-interval", type=int, default=DEFAULT_POLL_INTERVAL)
+    parser.add_argument(
+        "--stall-timeout",
+        type=int,
+        default=DEFAULT_ACTION_STALL_TIMEOUT,
+        help="Actions 状态无阶段变化的最长秒数",
+    )
     return parser
 
 
@@ -455,6 +496,7 @@ def main() -> int:
             approved_content_sha=args.approved_content_sha,
             timeout=args.timeout,
             poll_interval=args.poll_interval,
+            stall_timeout=args.stall_timeout,
         )
     except (
         ReleaseDispatchError,

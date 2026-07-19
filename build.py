@@ -2133,23 +2133,56 @@ def _remote_ref_commit(remote: str, ref: str) -> str | None:
     return None
 
 
+def _github_release_view_json(
+    tag: str,
+    fields: str,
+    *,
+    attempts: int = 4,
+    base_delay: int = 2,
+) -> dict | None:
+    """Query one GitHub Release with bounded retries for transient CLI failures."""
+    last_error = ""
+    for attempt in range(1, attempts + 1):
+        result = subprocess.run(
+            ["gh", "release", "view", tag, "--json", fields],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=BASE_DIR,
+        )
+        if result.returncode == 0:
+            try:
+                data = json.loads(result.stdout)
+            except json.JSONDecodeError as exc:
+                last_error = f"JSONDecodeError: {exc}"
+            else:
+                return data if isinstance(data, dict) else None
+        else:
+            last_error = (result.stderr or result.stdout or "gh query failed").strip()
+            lowered = last_error.lower()
+            if "release not found" in lowered or "http 404" in lowered:
+                return None
+
+        if attempt < attempts:
+            delay = base_delay * attempt
+            print(
+                f"  [GitHub 重试] 查询 {tag} 失败 "
+                f"({attempt}/{attempts})，{delay}s 后重试..."
+            )
+            time.sleep(delay)
+
+    if last_error:
+        print(f"  [GitHub 警告] 查询 {tag} 失败：{last_error}")
+    return None
+
+
 def _get_github_release_info(tag: str) -> dict | None:
     """Read public GitHub Release metadata without changing the release."""
-    result = subprocess.run(
-        ["gh", "release", "view", tag, "--json",
-         "tagName,name,body,isDraft,isPrerelease"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        cwd=BASE_DIR,
+    return _github_release_view_json(
+        tag,
+        "tagName,name,body,isDraft,isPrerelease",
     )
-    if result.returncode != 0:
-        return None
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return None
 
 
 def _get_gitee_release_read_only(version: str) -> tuple[dict, dict] | None:
@@ -3569,16 +3602,10 @@ def _needs_local_rebuild(pyinstaller_cmd):
 
 def _get_github_release_assets(tag):
     """获取 GitHub Release 上的产物列表。返回按文件名索引的资产元数据。"""
-    r = subprocess.run(
-        ["gh", "release", "view", tag, "--json", "assets"],
-        capture_output=True, text=True, cwd=BASE_DIR,
-    )
-    if r.returncode != 0:
+    data = _github_release_view_json(tag, "assets")
+    if data is None:
         return {}
-    try:
-        assets = json.loads(r.stdout).get("assets", [])
-    except (json.JSONDecodeError, KeyError):
-        return {}
+    assets = data.get("assets", [])
     return {a["name"]: a for a in assets}
 
 

@@ -49,7 +49,7 @@ test_output.txt
 release_notes_cache.json
 .build_progress.json
 .build_state.json
-.release_state.json
+.release_state.json*
 tests/manual/recon_output/
 tests/manual/build_greet_recovery_contract.py
 tests/manual/capture_manual_greet_network.py

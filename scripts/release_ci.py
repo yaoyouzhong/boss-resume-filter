@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -51,6 +52,11 @@ RELEASE_ARTIFACTS = (
 RESUME_ONLY_MASTER_CHANGES = frozenset({"latest.json"})
 GITEE_OWNER = "yaoyouzhong"
 GITEE_REPO = "boss-resume-filter"
+RELEASE_STATE_PATH = BASE_DIR / ".release_state.json"
+DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+DOWNLOAD_CONNECT_TIMEOUT = 15
+DOWNLOAD_STALL_TIMEOUT = 45
+DOWNLOAD_ATTEMPTS = 4
 
 
 class ReleaseAutomationError(RuntimeError):
@@ -59,6 +65,82 @@ class ReleaseAutomationError(RuntimeError):
 
 def _fail(message: str) -> None:
     raise ReleaseAutomationError(message)
+
+
+def _read_release_state() -> dict:
+    try:
+        data = json.loads(RELEASE_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_release_state(
+    version: str,
+    release_sha: str,
+    phase: str,
+    status: str,
+    *,
+    artifact: str = "",
+    artifact_status: str = "",
+    downloaded_bytes: int | None = None,
+    expected_bytes: int | None = None,
+    error_type: str = "",
+) -> None:
+    """Atomically persist safe local checkpoints without credentials or URLs."""
+    previous = _read_release_state()
+    if (
+        previous.get("version") != version
+        or previous.get("release_sha") != release_sha
+    ):
+        previous = {}
+    state = {
+        **previous,
+        "version": version,
+        "tag": f"v{version}",
+        "release_sha": release_sha,
+        "phase": phase,
+        "status": status,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    if error_type:
+        state["error_type"] = error_type
+    else:
+        state.pop("error_type", None)
+    if artifact:
+        artifacts = dict(state.get("artifacts") or {})
+        item = dict(artifacts.get(artifact) or {})
+        if artifact_status:
+            item["status"] = artifact_status
+        if downloaded_bytes is not None:
+            item["downloaded_bytes"] = max(0, int(downloaded_bytes))
+        if expected_bytes is not None:
+            item["expected_bytes"] = max(0, int(expected_bytes))
+        artifacts[artifact] = item
+        state["artifacts"] = artifacts
+
+    temp_path = RELEASE_STATE_PATH.with_suffix(RELEASE_STATE_PATH.suffix + ".tmp")
+    temp_path.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    os.replace(temp_path, RELEASE_STATE_PATH)
+
+
+def _report_previous_release_state(version: str, release_sha: str) -> None:
+    state = _read_release_state()
+    if (
+        state.get("version") == version
+        and state.get("release_sha") == release_sha
+        and not (
+            state.get("phase") == "public_verification"
+            and state.get("status") == "complete"
+        )
+    ):
+        print(
+            "  [续跑] 上次本机发布停在 "
+            f"{state.get('phase', 'unknown')} / {state.get('status', 'unknown')}"
+        )
 
 
 def _run(
@@ -390,7 +472,26 @@ def _ensure_gitee_remote() -> None:
         _fail(f"gitee remote 指向非预期仓库：{url}")
 
 
+def _ensure_local_release_tag(tag: str, release_sha: str) -> None:
+    """Fetch the immutable GitHub tag when the local clone does not have it."""
+    local_sha = _commit_for_ref(tag)
+    if local_sha and local_sha != release_sha:
+        _fail(f"本地 {tag} 指向其他提交，禁止覆盖")
+    if not local_sha:
+        _run([
+            "git",
+            "fetch",
+            "origin",
+            f"refs/tags/{tag}:refs/tags/{tag}",
+        ])
+        local_sha = _commit_for_ref(tag)
+        if local_sha != release_sha:
+            _fail(f"自动拉取 {tag} 后提交校验失败")
+        print(f"  [OK] 已自动拉取 GitHub tag: {tag}")
+
+
 def _ensure_gitee_tag(tag: str, release_sha: str, token: str) -> None:
+    _ensure_local_release_tag(tag, release_sha)
     remote_sha = build._remote_tag_commit("gitee", tag)
     if remote_sha and remote_sha != release_sha:
         _fail(f"gitee/{tag} 指向其他提交，禁止移动公开标签")
@@ -460,10 +561,202 @@ def _ensure_local_artifacts(
     return paths
 
 
+def _github_access_token() -> str:
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        return token
+    result = _run(["gh", "auth", "token"], check=False, capture_output=True)
+    token = result.stdout.strip() if result.returncode == 0 else ""
+    if not token:
+        _fail("无法读取 GitHub 登录凭证，不能下载 Draft Release 附件")
+    return token
+
+
+def _download_github_asset_resumable(
+    remote: dict,
+    destination: Path,
+    *,
+    version: str,
+    release_sha: str,
+    token: str | None = None,
+    session=None,
+    attempts: int = DOWNLOAD_ATTEMPTS,
+    connect_timeout: int = DOWNLOAD_CONNECT_TIMEOUT,
+    stall_timeout: int = DOWNLOAD_STALL_TIMEOUT,
+) -> Path:
+    """Download one GitHub asset with Range resume and inactivity timeout."""
+    name = str(remote.get("name") or destination.name)
+    try:
+        expected_size = int(remote.get("size") or 0)
+    except (TypeError, ValueError):
+        expected_size = 0
+    expected_sha = build._asset_digest_sha256(remote)
+    url = str(remote.get("apiUrl") or remote.get("url") or "")
+    if expected_size <= 0 or not expected_sha or not url:
+        _fail(f"GitHub 附件缺少续传或完整性元数据：{name}")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    partial = destination.with_name(destination.name + ".part")
+    token = token or _github_access_token()
+    session = session or build.requests.Session()
+    last_error = "unknown"
+
+    for attempt in range(1, attempts + 1):
+        offset = partial.stat().st_size if partial.exists() else 0
+        if offset > expected_size:
+            partial.write_bytes(b"")
+            offset = 0
+
+        if offset == expected_size and offset > 0:
+            if build._sha256_file(partial) == expected_sha:
+                os.replace(partial, destination)
+                _write_release_state(
+                    version,
+                    release_sha,
+                    "download_github_artifacts",
+                    "in_progress",
+                    artifact=name,
+                    artifact_status="complete",
+                    downloaded_bytes=expected_size,
+                    expected_bytes=expected_size,
+                )
+                return destination
+            partial.write_bytes(b"")
+            offset = 0
+
+        headers = {
+            "Accept": "application/octet-stream",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "boss-resume-filter-release",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
+            print(f"  [续传] {name}: {_format_bytes(offset)} / {_format_bytes(expected_size)}")
+        else:
+            print(f"  [下载] {name}: {_format_bytes(expected_size)}")
+
+        _write_release_state(
+            version,
+            release_sha,
+            "download_github_artifacts",
+            "in_progress",
+            artifact=name,
+            artifact_status="downloading",
+            downloaded_bytes=offset,
+            expected_bytes=expected_size,
+        )
+        response = None
+        try:
+            response = session.get(
+                url,
+                headers=headers,
+                stream=True,
+                allow_redirects=True,
+                timeout=(connect_timeout, stall_timeout),
+            )
+            if offset and response.status_code == 416 and offset == expected_size:
+                continue
+            response.raise_for_status()
+
+            mode = "ab"
+            if offset:
+                content_range = str(response.headers.get("Content-Range") or "")
+                if response.status_code != 206 or not content_range.startswith(
+                    f"bytes {offset}-"
+                ):
+                    print(f"  [重下] {name}: 下载端不支持当前续传位置")
+                    mode = "wb"
+                    offset = 0
+            else:
+                mode = "wb"
+
+            downloaded = offset
+            last_report = time.monotonic()
+            with open(partial, mode) as output:
+                for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
+                    if not chunk:
+                        continue
+                    output.write(chunk)
+                    downloaded += len(chunk)
+                    now = time.monotonic()
+                    if now - last_report >= 5:
+                        percent = min(100, int(downloaded * 100 / expected_size))
+                        print(
+                            f"    {name}: {percent}% "
+                            f"({_format_bytes(downloaded)}/{_format_bytes(expected_size)})"
+                        )
+                        last_report = now
+
+            actual_size = partial.stat().st_size
+            if actual_size != expected_size:
+                raise RuntimeError(
+                    f"下载大小不完整 ({actual_size}/{expected_size} bytes)"
+                )
+            actual_sha = build._sha256_file(partial)
+            if actual_sha != expected_sha:
+                partial.write_bytes(b"")
+                raise RuntimeError("SHA256 不一致，已清空续传片段")
+
+            os.replace(partial, destination)
+            _write_release_state(
+                version,
+                release_sha,
+                "download_github_artifacts",
+                "in_progress",
+                artifact=name,
+                artifact_status="complete",
+                downloaded_bytes=expected_size,
+                expected_bytes=expected_size,
+            )
+            return destination
+        except (build.requests.exceptions.RequestException, OSError, RuntimeError) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            current_size = partial.stat().st_size if partial.exists() else 0
+            artifact_status = (
+                "stalled"
+                if isinstance(exc, build.requests.exceptions.ReadTimeout)
+                else "interrupted"
+            )
+            _write_release_state(
+                version,
+                release_sha,
+                "download_github_artifacts",
+                "in_progress",
+                artifact=name,
+                artifact_status=artifact_status,
+                downloaded_bytes=current_size,
+                expected_bytes=expected_size,
+            )
+            if attempt < attempts:
+                delay = 3 * attempt
+                print(
+                    f"  [重试] {name} 下载中断 ({attempt}/{attempts})，"
+                    f"保留 {_format_bytes(current_size)}，{delay}s 后续传..."
+                )
+                time.sleep(delay)
+        finally:
+            if response is not None:
+                response.close()
+
+    _fail(f"GitHub 附件下载失败：{name}（{last_error}）")
+
+
+def _format_bytes(size: int) -> str:
+    value = float(max(0, size))
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024 or unit == "GiB":
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GiB"
+
+
 def _download_verified_github_artifacts(
     tag: str,
     github_assets: dict,
     artifact_dir: Path,
+    *,
+    release_sha: str,
 ) -> list[Path]:
     """Download staged assets into the ignored local cache and verify SHA256."""
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -480,7 +773,12 @@ def _download_verified_github_artifacts(
                 paths.append(path)
                 continue
             print(f"  [刷新] 本机镜像缓存不一致: {name} ({reason})")
-        build._download_from_github_release(tag, name, artifact_dir)
+        _download_github_asset_resumable(
+            remote,
+            path,
+            version=tag.removeprefix("v"),
+            release_sha=release_sha,
+        )
         same, reason = build._github_asset_matches_local(tag, path, remote)
         if not same:
             _fail(f"GitHub 附件下载后校验失败：{name}（{reason}）")
@@ -757,57 +1055,94 @@ def finalize_release_local(
     """Mirror staged artifacts from local machine, publish, and verify."""
     version = _normalize_version(version)
     validate_authorization(version, authorization)
-    gitee_token = require_local_gitee_access()
-    _ensure_gitee_remote()
     release_sha = release_sha.strip()
+    phase = "local_preflight"
+    _report_previous_release_state(version, release_sha)
+    _write_release_state(version, release_sha, phase, "in_progress")
+    try:
+        gitee_token = require_local_gitee_access()
+        _ensure_gitee_remote()
 
-    if _git_text("branch", "--show-current") != "master":
-        _fail("本机最终发布只能从 master 执行")
-    if _working_tree_paths():
-        _fail("本机最终发布前工作区必须干净")
-    head_sha = _git_text("rev-parse", "HEAD")
-    _assert_resume_head_compatible(release_sha, head_sha)
-    if _version_at_ref(release_sha) != version:
-        _fail("发布提交版本与请求版本不一致")
-    _fetch_and_assert_current_master_compatible(release_sha)
+        if _git_text("branch", "--show-current") != "master":
+            _fail("本机最终发布只能从 master 执行")
+        if _working_tree_paths():
+            _fail("本机最终发布前工作区必须干净")
+        head_sha = _git_text("rev-parse", "HEAD")
+        _assert_resume_head_compatible(release_sha, head_sha)
+        if _version_at_ref(release_sha) != version:
+            _fail("发布提交版本与请求版本不一致")
+        _fetch_and_assert_current_master_compatible(release_sha)
 
-    review = release_content_review.review_release_content(version, release_sha)
-    release_content_review.require_approved_content(review, approved_content_sha)
-    tag = f"v{version}"
-    if build._remote_tag_commit("origin", tag) != release_sha:
-        _fail("GitHub 暂存未完成：远端 tag 缺失或指向不一致")
-    title = review["release_title"]
-    body = review["release_body"]
-    info = build._get_github_release_info(tag)
-    if info is None:
-        _fail("GitHub 暂存未完成：Draft Release 不存在")
-    github_assets = build._verify_github_release_assets_complete(tag)
-    if github_assets is None:
-        _fail("GitHub 暂存未完成：三个附件不完整")
+        review = release_content_review.review_release_content(version, release_sha)
+        release_content_review.require_approved_content(review, approved_content_sha)
+        tag = f"v{version}"
+        if build._remote_tag_commit("origin", tag) != release_sha:
+            _fail("GitHub 暂存未完成：远端 tag 缺失或指向不一致")
+        title = review["release_title"]
+        body = review["release_body"]
+        info = build._get_github_release_info(tag)
+        if info is None:
+            _fail("GitHub 暂存未完成：Draft Release 不存在")
+        github_assets = build._verify_github_release_assets_complete(tag)
+        if github_assets is None:
+            _fail("GitHub 暂存未完成：三个附件不完整")
+        phase = "github_staged"
+        _write_release_state(version, release_sha, phase, "complete")
 
-    mirror_dir = build.DIST_DIR / "release-mirror" / tag
-    artifacts = _download_verified_github_artifacts(tag, github_assets, mirror_dir)
-    _ensure_gitee_tag(tag, release_sha, gitee_token)
-    downloads_cn = _publish_gitee_artifacts(
-        version, title, body, artifacts, github_assets
-    )
+        phase = "download_github_artifacts"
+        _write_release_state(version, release_sha, phase, "in_progress")
+        mirror_dir = build.DIST_DIR / "release-mirror" / tag
+        artifacts = _download_verified_github_artifacts(
+            tag,
+            github_assets,
+            mirror_dir,
+            release_sha=release_sha,
+        )
+        _write_release_state(version, release_sha, phase, "complete")
 
-    # Publicize only after both release stores have complete artifacts.
-    _fetch_and_assert_current_master_compatible(release_sha)
-    _publish_github_release(tag)
-    _commit_and_sync_manifest(
-        version,
-        body,
-        downloads_cn,
-        github_assets,
-        release_sha,
-        gitee_token,
-    )
+        phase = "gitee_tag"
+        _write_release_state(version, release_sha, phase, "in_progress")
+        _ensure_gitee_tag(tag, release_sha, gitee_token)
+        _write_release_state(version, release_sha, phase, "complete")
 
-    if not build._verify_release_remote_state(version):
-        _fail("双远端发布状态核验失败")
-    verify_public_endpoints(version)
-    print(f"\n[OK] {tag} 正式发布、自动更新清单和线上验收全部完成")
+        phase = "gitee_artifacts"
+        _write_release_state(version, release_sha, phase, "in_progress")
+        downloads_cn = _publish_gitee_artifacts(
+            version, title, body, artifacts, github_assets
+        )
+        _write_release_state(version, release_sha, phase, "complete")
+
+        # Publicize only after both release stores have complete artifacts.
+        phase = "publish_and_manifest"
+        _write_release_state(version, release_sha, phase, "in_progress")
+        _fetch_and_assert_current_master_compatible(release_sha)
+        _publish_github_release(tag)
+        _commit_and_sync_manifest(
+            version,
+            body,
+            downloads_cn,
+            github_assets,
+            release_sha,
+            gitee_token,
+        )
+        _write_release_state(version, release_sha, phase, "complete")
+
+        phase = "public_verification"
+        _write_release_state(version, release_sha, phase, "in_progress")
+        if not build._verify_release_remote_state(version):
+            _fail("双远端发布状态核验失败")
+        verify_public_endpoints(version)
+        _write_release_state(version, release_sha, phase, "complete")
+        print(f"\n[OK] {tag} 正式发布、自动更新清单和线上验收全部完成")
+    except Exception as exc:
+        _write_release_state(
+            version,
+            release_sha,
+            phase,
+            "failed",
+            error_type=type(exc).__name__,
+        )
+        raise
 
 
 def _build_parser() -> argparse.ArgumentParser:

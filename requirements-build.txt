@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# CI 打包工具；dmgbuild 仅在 macOS 安装
+pyinstaller
+dmgbuild; sys_platform == "darwin"

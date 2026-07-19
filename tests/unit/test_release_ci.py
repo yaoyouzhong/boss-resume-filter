@@ -1,4 +1,6 @@
 import importlib.util
+import hashlib
+import json
 from pathlib import Path
 import tempfile
 from contextlib import contextmanager
@@ -87,6 +89,130 @@ def test_working_tree_paths_preserves_first_path_character():
         ["git", "status", "--porcelain"],
         capture_output=True,
     )
+
+
+def test_local_release_tag_is_fetched_when_missing():
+    calls: list[list[str]] = []
+    release_sha = "a" * 40
+    with (
+        patch.object(release_ci, "_commit_for_ref", side_effect=[None, release_sha]),
+        patch.object(
+            release_ci,
+            "_run",
+            side_effect=lambda args, **_kwargs: calls.append(args),
+        ),
+    ):
+        release_ci._ensure_local_release_tag("v2.21", release_sha)
+
+    assert calls == [[
+        "git", "fetch", "origin", "refs/tags/v2.21:refs/tags/v2.21",
+    ]]
+
+
+def test_release_state_is_atomic_and_contains_no_credentials():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_path = Path(temp_dir) / ".release_state.json"
+        with patch.object(release_ci, "RELEASE_STATE_PATH", state_path):
+            release_ci._write_release_state(
+                "2.21",
+                "a" * 40,
+                "download_github_artifacts",
+                "in_progress",
+                artifact="BOSS_ResumeFilter.exe",
+                artifact_status="downloading",
+                downloaded_bytes=10,
+                expected_bytes=20,
+            )
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+
+    assert state["phase"] == "download_github_artifacts"
+    assert state["artifacts"]["BOSS_ResumeFilter.exe"]["downloaded_bytes"] == 10
+    assert "token" not in json.dumps(state).lower()
+
+
+def test_github_release_query_retries_transient_cli_failure():
+    failed = release_ci.subprocess.CompletedProcess(
+        ["gh"], 1, stdout="", stderr="temporary network failure",
+    )
+    succeeded = release_ci.subprocess.CompletedProcess(
+        ["gh"], 0, stdout=json.dumps({"assets": []}), stderr="",
+    )
+    with (
+        patch.object(release_ci.build.subprocess, "run", side_effect=[failed, succeeded]) as run,
+        patch.object(release_ci.build.time, "sleep") as sleep,
+    ):
+        result = release_ci.build._github_release_view_json("v2.21", "assets")
+
+    assert result == {"assets": []}
+    assert run.call_count == 2
+    sleep.assert_called_once_with(2)
+
+
+def test_github_asset_download_resumes_after_stall_and_verifies_sha256():
+    payload = b"abcdef"
+    remote = {
+        "name": "BOSS_ResumeFilter.exe",
+        "size": len(payload),
+        "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+        "apiUrl": "https://api.github.invalid/assets/1",
+    }
+
+    class FakeResponse:
+        def __init__(self, chunks, *, status_code=200, headers=None, fail=False):
+            self.chunks = chunks
+            self.status_code = status_code
+            self.headers = headers or {}
+            self.fail = fail
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size):
+            del chunk_size
+            yield from self.chunks
+            if self.fail:
+                raise release_ci.build.requests.exceptions.ReadTimeout("stalled")
+
+        def close(self):
+            return None
+
+    class FakeSession:
+        def __init__(self):
+            self.headers = []
+            self.responses = [
+                FakeResponse([payload[:3]], fail=True),
+                FakeResponse(
+                    [payload[3:]],
+                    status_code=206,
+                    headers={"Content-Range": "bytes 3-5/6"},
+                ),
+            ]
+
+        def get(self, _url, *, headers, **_kwargs):
+            self.headers.append(dict(headers))
+            return self.responses.pop(0)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        directory = Path(temp_dir)
+        destination = directory / remote["name"]
+        session = FakeSession()
+        with (
+            patch.object(release_ci, "RELEASE_STATE_PATH", directory / "state.json"),
+            patch.object(release_ci.time, "sleep"),
+        ):
+            result = release_ci._download_github_asset_resumable(
+                remote,
+                destination,
+                version="2.21",
+                release_sha="a" * 40,
+                token="secret",
+                session=session,
+            )
+
+        assert result.read_bytes() == payload
+        assert "Range" not in session.headers[0]
+        assert session.headers[1]["Range"] == "bytes=3-"
+        assert not destination.with_name(destination.name + ".part").exists()
 
 
 def test_resume_rejects_new_business_changes_after_the_release_commit():
@@ -271,6 +397,7 @@ def test_finalize_local_exposes_release_only_after_gitee_is_complete():
             raise AssertionError(args)
 
         with (
+            patch.object(release_ci, "RELEASE_STATE_PATH", temp_path / "state.json"),
             patch.object(release_ci, "require_local_gitee_access", return_value="token"),
             patch.object(release_ci, "_ensure_gitee_remote"),
             patch.object(release_ci, "_working_tree_paths", return_value=set()),
@@ -296,7 +423,7 @@ def test_finalize_local_exposes_release_only_after_gitee_is_complete():
             patch.object(
                 release_ci,
                 "_download_verified_github_artifacts",
-                side_effect=lambda *_: events.append("download_verify") or artifacts,
+                side_effect=lambda *_args, **_kwargs: events.append("download_verify") or artifacts,
             ),
             patch.object(release_ci, "_ensure_gitee_tag", side_effect=lambda *_: events.append("gitee_tag")),
             patch.object(

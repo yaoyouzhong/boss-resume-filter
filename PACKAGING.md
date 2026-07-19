@@ -41,7 +41,9 @@ python scripts/release_dispatch.py --version 2.22 \
 7. 本机生成 `latest.json` 的双源下载地址和 SHA256，提交并推送到 GitHub/Gitee `master`。
 8. 只读核验双远端分支/tag/Release/附件/清单，并实际请求六个公开下载地址和两份在线清单。
 
-**断点续跑：**流程按“版本 + 发布提交”恢复。GitHub Draft 的三个附件已经完整时，再次执行同一正式发布命令会跳过 Actions，直接从本机 Gitee 镜像阶段继续；已存在的同提交 tag 不重建，已一致的 Gitee 附件不重传。同名 tag 指向其他提交、或发布期间 `master` 出现非 `latest.json` 业务变更时立即中止，绝不移动 tag 或强制推送。
+**断点续跑：**流程按“版本 + 发布提交”恢复。GitHub Draft 的三个附件已经完整时，再次执行同一正式发布命令会跳过 Actions，直接从本机 Gitee 镜像阶段继续；本机下载使用 `.part` 文件续传，45 秒没有收到新数据即中断当前请求并保留已下载字节。`.release_state.json` 记录当前阶段和各附件字节数，不保存 Token 或下载 URL。已存在的同提交 tag 不重建，本地缺少 tag 时自动从 GitHub 精确拉取；已一致的 Gitee 附件不重传。同名 tag 指向其他提交、或发布期间 `master` 出现非 `latest.json` 业务变更时立即中止，绝不移动 tag 或强制推送。
+
+**停滞与重试：**GitHub Release 和 Actions 状态查询遇到瞬态网络失败会按上限重试。Actions 连续 30 分钟没有 job/step 阶段变化时，本机停止等待并保留远端任务，排查后可用同一版本安全续跑。发布暂存 job 只安装 `requirements-release.txt`，双平台构建使用 `requirements-build.txt` 作为独立 pip 缓存键，避免每次重新下载完整发布依赖。
 
 **Dry Run：**将 `dry_run` 设为 `true` 时只执行授权校验和严格门禁，不构建、不创建 tag、不推送、不发布。
 

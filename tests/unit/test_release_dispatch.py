@@ -75,6 +75,7 @@ def test_main_switches_to_pack_venv_before_formal_release():
         approved_content_sha="",
         timeout=30,
         poll_interval=2,
+        stall_timeout=10,
     )
     with (
         patch.object(
@@ -228,7 +229,12 @@ def test_execute_reuses_active_matching_run_instead_of_dispatching_duplicate():
 
     assert result["mode"] == "published"
     dispatch.assert_not_called()
-    wait.assert_called_once_with(101, timeout=release_dispatch.DEFAULT_RELEASE_TIMEOUT, poll_interval=15)
+    wait.assert_called_once_with(
+        101,
+        timeout=release_dispatch.DEFAULT_RELEASE_TIMEOUT,
+        poll_interval=15,
+        stall_timeout=release_dispatch.DEFAULT_ACTION_STALL_TIMEOUT,
+    )
     finalize.assert_called_once_with(
         "2.22", "确认正式发布 v2.22", "a" * 40, "c" * 64,
     )
@@ -344,3 +350,37 @@ def test_wait_for_run_reports_progress_then_accepts_only_success():
     with patch.object(release_dispatch, "_run_view", return_value=failed):
         with _raises(release_dispatch.ReleaseDispatchError, "同一版本安全续跑"):
             release_dispatch.wait_for_run(100)
+
+
+def test_github_run_query_retries_transient_failure():
+    failed = release_dispatch.subprocess.CompletedProcess(
+        ["gh"], 1, stdout="", stderr="temporary network failure",
+    )
+    succeeded = release_dispatch.subprocess.CompletedProcess(
+        ["gh"], 0, stdout="[]", stderr="",
+    )
+    with (
+        patch.object(release_dispatch, "_run", side_effect=[failed, succeeded]) as run,
+        patch.object(release_dispatch.time, "sleep") as sleep,
+    ):
+        assert release_dispatch._list_release_runs() == []
+
+    assert run.call_count == 2
+    sleep.assert_called_once_with(2)
+
+
+def test_wait_for_run_stops_after_no_stage_progress():
+    queued = _run(100, status="in_progress")
+    with (
+        patch.object(release_dispatch, "_run_view", return_value=queued),
+        patch.object(release_dispatch.time, "monotonic", side_effect=[0, 0, 6]),
+        patch.object(release_dispatch.time, "sleep"),
+        patch.object(release_dispatch, "_print_progress"),
+        _raises(release_dispatch.ReleaseDispatchError, "无阶段变化"),
+    ):
+        release_dispatch.wait_for_run(
+            100,
+            timeout=100,
+            poll_interval=1,
+            stall_timeout=5,
+        )

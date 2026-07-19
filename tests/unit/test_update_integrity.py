@@ -331,6 +331,12 @@ def test_release_workflow_only_runs_when_explicitly_dispatched():
     assert "authorization:" in workflow
     assert "scripts/release_ci.py stage-github" in workflow
     assert "GITEE_TOKEN" not in workflow
+    assert "requirements-build.txt" in workflow
+    assert "cache-dependency-path: requirements-release.txt" in workflow
+    assert "-r requirements-release.txt" in workflow
+    assert not (
+        build.BASE_DIR / ".github" / "workflows" / "gitee-upload-probe.yml"
+    ).exists()
 
 
 def test_gitee_sync_never_force_pushes_master():
