@@ -23,6 +23,7 @@ class FakeWindow:
         screen_height=1080,
         root_x=0,
         root_y=0,
+        x=None,
         y=None,
     ):
         self._width = width
@@ -33,6 +34,7 @@ class FakeWindow:
         self._screen_height = screen_height
         self._root_x = root_x
         self._root_y = root_y
+        self._x = root_x if x is None else x
         self._y = root_y if y is None else y
         self.geometry_value = None
         self.alpha_values = []
@@ -65,6 +67,9 @@ class FakeWindow:
 
     def winfo_rooty(self):
         return self._root_y
+
+    def winfo_x(self):
+        return self._x
 
     def winfo_y(self):
         return self._y
@@ -112,7 +117,7 @@ def test_place_window_centered_keeps_parent_center_inside_visible_screen():
     assert dialog.geometry_value == "400x300+0+0"
 
 
-def test_place_window_centered_compensates_parent_titlebar_on_y_only():
+def test_place_window_centered_uses_parent_outer_window_origin():
     parent = FakeWindow(width=1200, height=800, root_x=100, root_y=50, y=0)
     dialog = FakeWindow()
 
@@ -126,8 +131,8 @@ def test_place_window_centered_compensates_parent_titlebar_on_y_only():
     )
 
     assert (width, height) == (940, 620)
-    assert (x, y) == (230, 115)
-    assert dialog.geometry_value == "940x620+230+115"
+    assert (x, y) == (230, 90)
+    assert dialog.geometry_value == "940x620+230+90"
 
 
 def test_place_window_centered_uses_requested_size_when_hidden_window_reports_one_pixel():
@@ -162,6 +167,23 @@ def test_place_window_centered_uses_non_zero_screen_origin():
     assert (width, height) == (1200, 800)
     assert (x, y) == (2600, 320)
     assert window.geometry_value == "1200x800+2600+320"
+
+
+def test_place_window_centered_formats_negative_secondary_monitor_origin():
+    window = FakeWindow()
+
+    width, height, x, y = _place_window_centered(
+        window,
+        1000,
+        700,
+        screen_left=-1920,
+        screen_top=-120,
+        screen_width=1920,
+        screen_height=1080,
+    )
+
+    assert (width, height, x, y) == (1000, 700, -1460, 70)
+    assert window.geometry_value == "1000x700-1460+70"
 
 
 def test_place_main_window_uses_fixed_startup_monitor_area():

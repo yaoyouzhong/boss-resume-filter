@@ -72,6 +72,32 @@ def save_contact_queue(items: list[dict[str, Any]], path: str | Path) -> None:
         os.replace(tmp_path, queue_path)
 
 
+def count_pending_contact_queue(items: list[dict[str, Any]]) -> int:
+    """Count items that require manual send-result verification."""
+    pending = 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        candidate = item.get("candidate") or {}
+        status = _normalize_status(item.get("status"))
+        if candidate.get("greet_confirmation_pending") or status in {"待核实", "发送中"}:
+            pending += 1
+    return pending
+
+
+def load_pending_contact_queue_count(path: str | Path) -> int:
+    """Read the startup badge count through the queue module's file parser."""
+    queue_path = Path(path)
+    backup_path = Path(str(queue_path) + ".bak")
+    with _QUEUE_FILE_LOCK:
+        payload = _load_payload(queue_path)
+        if payload is None:
+            payload = _load_payload(backup_path)
+    if payload is None:
+        return 0
+    return count_pending_contact_queue(payload.get("items", []))
+
+
 def load_contact_queue(
     candidates: list[dict[str, Any]],
     path: str | Path,

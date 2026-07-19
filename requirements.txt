@@ -12,6 +12,7 @@ python-dotenv>=1.0.0
 
 # 安全存储（Windows DPAPI / macOS Keychain / Linux Secret Service）
 keyring>=25.0.0
+pywin32-ctypes>=0.2.3; sys_platform == "win32"
 
 # 图标渲染（抗锯齿矢量图标）
 Pillow>=10.0.0

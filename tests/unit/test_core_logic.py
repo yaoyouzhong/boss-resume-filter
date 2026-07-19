@@ -1591,7 +1591,8 @@ def test_auto_greet_skips_manual_review_candidates():
          patch.object(bossmaster, "send_greeting_on_list_page") as mock_greet, \
          patch.object(bossmaster, "save_candidates_all"), \
          patch.object(bossmaster, "merge_candidates_all"), \
-         patch.object(bossmaster, "persist_candidate_greeted"):
+         patch.object(bossmaster, "persist_candidate_greeted"), \
+         patch.object(bossmaster.time, "sleep"):
         result = bossmaster.smart_scan_candidates(
             FakePage(),
             job_info,
@@ -1912,7 +1913,8 @@ def test_auto_greet_confirmation_cancel_skips_sending_but_keeps_results():
          patch.object(bossmaster, "get_iframe", return_value=None), \
          patch.object(bossmaster, "send_greeting_on_list_page") as mock_greet, \
          patch.object(bossmaster, "save_candidates_all"), \
-         patch.object(bossmaster, "merge_candidates_all") as mock_merge:
+         patch.object(bossmaster, "merge_candidates_all") as mock_merge, \
+         patch.object(bossmaster.time, "sleep"):
         result = bossmaster.smart_scan_candidates(
             FakePage(),
             job_info,
@@ -2238,7 +2240,8 @@ def test_extract_stops_and_notifies_when_page_leaves_recommend_page():
     with patch.object(bossmaster, "get_iframe", return_value=None), \
          patch.object(bossmaster, "_build_recommend_api_pagination_from_page", return_value=None), \
          patch.object(bossmaster, "_detect_captcha") as mock_captcha, \
-         patch.object(bossmaster, "_extract_cards_batch") as mock_dom:
+         patch.object(bossmaster, "_extract_cards_batch") as mock_dom, \
+         patch.object(bossmaster.time, "sleep"):
         result = bossmaster.extract_candidates_by_comprehensive_analysis(
             FakePage(),
             max_rounds=1,

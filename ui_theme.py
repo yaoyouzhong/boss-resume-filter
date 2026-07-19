@@ -18,6 +18,7 @@ WARNING = "#FB8C00"          # 警告橙（仅图标/色块，不做正文文字
 WARNING_TEXT = "#C2410C"     # 警告文字（白底对比度达标）
 DANGER = "#E53935"           # 危险红（仅图标/色块）
 DANGER_TEXT = "#C62828"      # 危险文字（白底对比度达标）
+DANGER_DEEP = "#B71C1C"      # 危险按钮 pressed
 PURPLE = "#8E24AA"           # 强烈推荐
 PENDING = "#546E7A"          # 待定蓝灰
 
@@ -102,6 +103,7 @@ def build_palette():
         "warning_text": WARNING_TEXT,
         "danger": DANGER,
         "danger_text": DANGER_TEXT,
+        "danger_deep": DANGER_DEEP,
         "purple": PURPLE,
         "pending": PENDING,
         "bg_main": BG_MAIN,

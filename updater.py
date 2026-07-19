@@ -48,6 +48,15 @@ _FONT_FAMILY = _get_font_family()
 
 def _place_dialog_centered(dialog, parent, width, height):
     """将更新弹窗相对父窗口居中，并限制在屏幕可见范围内。"""
+    if hasattr(dialog, "winfo_id"):
+        try:
+            from gui_main import _place_window_centered
+
+            _place_window_centered(dialog, width, height, parent=parent)
+            return
+        except ImportError:
+            pass
+
     parent.update_idletasks()
     dialog.update_idletasks()
 
@@ -68,7 +77,7 @@ def _place_dialog_centered(dialog, parent, width, height):
     y -= _get_parent_titlebar_center_offset(parent)
     x = min(max(0, x), max(0, screen_width - width))
     y = min(max(0, y), max(0, screen_height - height))
-    dialog.geometry(f"{width}x{height}+{x}+{y}")
+    dialog.geometry(f"{width}x{height}{x:+d}{y:+d}")
     _bind_parent_center_correction(dialog, parent, width, height, 0, 0, screen_width, screen_height)
 
 

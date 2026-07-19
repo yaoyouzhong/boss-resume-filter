@@ -6,7 +6,9 @@ from pathlib import Path
 from contact_queue import (
     build_contact_queue_item,
     candidate_identity,
+    count_pending_contact_queue,
     load_contact_queue,
+    load_pending_contact_queue_count,
     save_contact_queue,
 )
 
@@ -27,6 +29,33 @@ def test_candidate_identity_normalizes_job_spaces():
         "g1",
         "JavaEngineer",
     )
+
+
+def test_pending_count_normalizes_runtime_and_legacy_verification_states():
+    items = [
+        {"status": "待核实"},
+        {"status": "待确认"},
+        {"status": "发送中"},
+        {"status": "待发送"},
+        {
+            "status": "发送失败",
+            "candidate": {"greet_confirmation_pending": True},
+        },
+    ]
+
+    assert count_pending_contact_queue(items) == 4
+
+
+def test_startup_pending_count_uses_queue_parser_and_backup():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "contact_queue.json"
+        path.write_text("{broken", encoding="utf-8")
+        Path(str(path) + ".bak").write_text(
+            json.dumps({"version": 1, "items": [{"status": "发送中"}]}),
+            encoding="utf-8",
+        )
+
+        assert load_pending_contact_queue_count(path) == 1
 
 
 def test_queue_persists_intent_without_candidate_profile():
