@@ -20,8 +20,12 @@ concurrency:
 jobs:
   probe:
     name: Upload real-sized artifacts from GitHub to Gitee
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout probe branch
@@ -67,3 +71,4 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
           compression-level: 0
+          include-hidden-files: true

@@ -34,6 +34,7 @@ GITEE_REPO = "boss-resume-filter"
 GITEE_API = f"https://gitee.com/api/v5/repos/{GITEE_OWNER}/{GITEE_REPO}"
 UPLOAD_ATTEMPTS = 3
 UPLOAD_STALL_TIMEOUT = 180
+UPLOAD_TOTAL_TIMEOUT = 300
 PROGRESS_BYTES = 5 * 1024 * 1024
 ARTIFACT_NAMES = (
     "BOSS_ResumeFilter.exe",
@@ -94,11 +95,15 @@ def _session() -> requests.Session:
     return session
 
 
+def _auth_headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"token {token}"}
+
+
 def _create_tag(session: requests.Session, tag: str, token: str) -> None:
     """Create the temporary tag through Gitee API, avoiding hosted Git pushes."""
     response = session.post(
         f"{GITEE_API}/tags",
-        params={"access_token": token},
+        headers=_auth_headers(token),
         json={
             "tag_name": tag,
             "refs": "master",
@@ -125,7 +130,7 @@ def _create_tag(session: requests.Session, tag: str, token: str) -> None:
 def _create_release(session: requests.Session, tag: str, token: str) -> int:
     response = session.post(
         f"{GITEE_API}/releases",
-        params={"access_token": token},
+        headers=_auth_headers(token),
         json={
             "tag_name": tag,
             "name": f"GitHub Actions upload probe {tag}",
@@ -178,6 +183,10 @@ class _UploadProgress:
 
     def __call__(self, monitor: MultipartEncoderMonitor) -> None:
         now = time.monotonic()
+        if now - self.started > UPLOAD_TOTAL_TIMEOUT:
+            raise ProbeError(
+                f"{self.path.name} exceeded the {UPLOAD_TOTAL_TIMEOUT}s total upload limit"
+            )
         if (
             monitor.bytes_read - self.last_reported_bytes < PROGRESS_BYTES
             and now - self.last_reported_at < 15
@@ -215,9 +224,11 @@ def _upload_one(
                 )
                 response = session.post(
                     f"{GITEE_API}/releases/{release_id}/attach_files",
-                    params={"access_token": token},
                     data=monitor,
-                    headers={"Content-Type": monitor.content_type},
+                    headers={
+                        **_auth_headers(token),
+                        "Content-Type": monitor.content_type,
+                    },
                     timeout=(20, UPLOAD_STALL_TIMEOUT),
                 )
             if 400 <= response.status_code < 500:
@@ -257,7 +268,7 @@ def _upload_one(
 def _delete_release(session: requests.Session, release_id: int, token: str) -> None:
     response = session.delete(
         f"{GITEE_API}/releases/{release_id}",
-        params={"access_token": token},
+        headers=_auth_headers(token),
         timeout=(20, 30),
     )
     if response.status_code not in {204, 404}:

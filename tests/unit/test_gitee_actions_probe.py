@@ -24,6 +24,22 @@ class _Session:
         return _Response()
 
 
+def test_upload_progress_enforces_total_file_deadline():
+    progress = probe._UploadProgress(Path("slow.exe"), 100)
+    progress.started = 0
+
+    class _Monitor:
+        bytes_read = 50
+
+    with patch.object(probe.time, "monotonic", return_value=probe.UPLOAD_TOTAL_TIMEOUT + 1):
+        try:
+            progress(_Monitor())
+        except probe.ProbeError as exc:
+            assert "total upload limit" in str(exc)
+        else:
+            raise AssertionError("slow upload should be stopped by the total deadline")
+
+
 def _artifacts(directory: Path) -> list[Path]:
     paths = [directory / name for name in probe.ARTIFACT_NAMES]
     for index, path in enumerate(paths, start=1):
