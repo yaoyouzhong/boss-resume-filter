@@ -1,6 +1,7 @@
 import importlib.util
 import subprocess
 import tempfile
+from argparse import Namespace
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import call, patch
@@ -228,6 +229,34 @@ def test_execute_rejects_wrong_authorization_before_inspection():
                 authorization="正式发布 v2.22",
             )
     inspect.assert_not_called()
+
+
+def test_main_switches_to_pack_venv_before_preparing_release():
+    events = []
+    args = Namespace(
+        version="2.22",
+        notes_file=None,
+        execute=False,
+        authorization="",
+    )
+    with (
+        patch.object(
+            release_prepare.build,
+            "run_in_venv",
+            side_effect=lambda *_: events.append("venv"),
+        ) as run_in_venv,
+        patch.object(release_prepare, "_build_parser") as build_parser,
+        patch.object(
+            release_prepare,
+            "prepare_release",
+            side_effect=lambda *_args, **_kwargs: events.append("prepare"),
+        ),
+    ):
+        build_parser.return_value.parse_args.return_value = args
+        assert release_prepare.main() == 0
+
+    run_in_venv.assert_called_once_with(release_prepare.__file__)
+    assert events == ["venv", "prepare"]
 
 
 def test_release_notes_input_must_stay_outside_the_repository():

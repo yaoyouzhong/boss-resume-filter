@@ -1,4 +1,5 @@
 import importlib.util
+from argparse import Namespace
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -63,6 +64,36 @@ def test_formal_release_authorization_must_match_before_preflight():
                 authorization="继续",
             )
     preflight.assert_not_called()
+
+
+def test_main_switches_to_pack_venv_before_formal_release():
+    events = []
+    args = Namespace(
+        version="2.22",
+        execute=False,
+        authorization="",
+        approved_content_sha="",
+        timeout=30,
+        poll_interval=2,
+    )
+    with (
+        patch.object(
+            release_dispatch.release_prepare.build,
+            "run_in_venv",
+            side_effect=lambda *_: events.append("venv"),
+        ) as run_in_venv,
+        patch.object(release_dispatch, "_build_parser") as build_parser,
+        patch.object(
+            release_dispatch,
+            "dispatch_release",
+            side_effect=lambda *_args, **_kwargs: events.append("dispatch"),
+        ),
+    ):
+        build_parser.return_value.parse_args.return_value = args
+        assert release_dispatch.main() == 0
+
+    run_in_venv.assert_called_once_with(release_dispatch.__file__)
+    assert events == ["venv", "dispatch"]
 
 
 def test_matching_runs_requires_both_version_and_immutable_sha():
