@@ -241,6 +241,16 @@ def test_integration_cli_greet_without_ai_eval():
 
 # ========== 超时诊断测试 ==========
 
+def test_job_ai_parser_reuses_shared_adapter_with_thinking_disabled():
+    """job_ai_parser 必须复用 ai_adapter.build_request 并关闭推理，不再自带端点方言"""
+    from pathlib import Path
+    source = Path("job_ai_parser.py").read_text(encoding="utf-8")
+    assert "build_request(" in source, "应复用 ai_adapter.build_request 构造请求"
+    assert "disable_thinking=True" in source, "结构化 JD 解析应关闭推理"
+    assert "api.kimi.com/coding" not in source, "端点方言应单点维护在 ai_adapter"
+    assert "max_completion_tokens" not in source, "端点方言应单点维护在 ai_adapter"
+
+
 def test_connect_timeout_error_message():
     """job_ai_parser：ConnectTimeout 应产生包含'连接超时'的错误信息"""
     from job_ai_parser import AI_PARSE_TIMEOUT

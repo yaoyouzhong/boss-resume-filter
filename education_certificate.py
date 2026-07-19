@@ -335,6 +335,8 @@ def _invoke_model(
 
     max_tokens 是上限不是目标：普通模型输出约 200 tokens 即停止；
     推理模型（kimi k3/k2.6 等）的 reasoning tokens 也计入该预算，需要更大余量。
+    故意不传 disable_thinking：证书与验证码是视觉识别任务，保留推理换识别质量
+    （AI 评估、JD 解析等结构化任务已在各自调用方关闭推理）。
     """
     if not api_key:
         raise ValueError("当前模型未配置 API Key")
