@@ -96,6 +96,59 @@ def test_preflight_stops_on_divergence_instead_of_rebasing():
             pr_delivery.preflight("codex/test", run_tests=False)
 
 
+def test_preflight_rechecks_worktrees_after_local_gate():
+    def fake_git_text(*args, **_kwargs):
+        if args == ("rev-parse", "HEAD"):
+            return "b" * 40
+        if args == ("rev-parse", "origin/master"):
+            return "a" * 40
+        raise AssertionError(args)
+
+    dirty_error = pr_delivery.PRDeliveryError("本地门禁后当前工作区存在未提交修改")
+    with (
+        patch.object(pr_delivery, "_current_branch", return_value="codex/test"),
+        patch.object(
+            pr_delivery,
+            "_assert_delivery_worktrees_clean",
+            side_effect=[None, dirty_error],
+        ) as assert_clean,
+        patch.object(pr_delivery, "_run", return_value=_completed()),
+        patch.object(pr_delivery, "_git_text", side_effect=fake_git_text),
+        patch.object(pr_delivery, "_is_ancestor", return_value=True),
+        patch.object(pr_delivery, "_run_local_gate") as local_gate,
+    ):
+        with _raises(pr_delivery.PRDeliveryError, "本地门禁后当前工作区"):
+            pr_delivery.preflight("codex/test")
+
+    local_gate.assert_called_once_with()
+    assert_clean.assert_has_calls([
+        call("当前工作区"),
+        call("本地门禁后当前工作区"),
+    ])
+
+
+def test_execute_stops_before_push_when_local_gate_dirties_worktree():
+    branch = "codex/test"
+    with (
+        patch.object(pr_delivery, "_git_text", return_value="a" * 40),
+        patch.object(pr_delivery, "_find_delivery_pr", return_value=None),
+        patch.object(
+            pr_delivery,
+            "preflight",
+            side_effect=pr_delivery.PRDeliveryError("本地门禁后当前工作区存在未提交修改"),
+        ),
+        patch.object(pr_delivery, "_push_and_create_pr") as push,
+    ):
+        with _raises(pr_delivery.PRDeliveryError, "本地门禁后当前工作区"):
+            pr_delivery.deliver(
+                branch,
+                execute=True,
+                authorization=f"一键交付分支 {branch}",
+            )
+
+    push.assert_not_called()
+
+
 def test_wait_for_pr_checks_waits_then_accepts_clean_success():
     pending = {
         "number": 8,
@@ -151,6 +204,7 @@ def test_wait_for_pr_checks_stops_before_merge_on_failure():
 def test_finalize_preserves_branches_when_gitee_is_not_synchronized():
     merge_sha = "a" * 40
     with (
+        patch.object(pr_delivery, "_assert_delivery_worktrees_clean"),
         patch.object(pr_delivery, "_run", return_value=_completed()) as run,
         patch.object(
             pr_delivery,
@@ -175,10 +229,26 @@ def test_finalize_preserves_branches_when_gitee_is_not_synchronized():
     local_exists.assert_not_called()
 
 
+def test_finalize_stops_before_sync_when_worktree_is_already_dirty():
+    with (
+        patch.object(
+            pr_delivery,
+            "_assert_delivery_worktrees_clean",
+            side_effect=pr_delivery.PRDeliveryError("PR 合并后当前工作区存在未提交修改"),
+        ),
+        patch.object(pr_delivery, "_run") as run,
+    ):
+        with _raises(pr_delivery.PRDeliveryError, "PR 合并后当前工作区"):
+            pr_delivery.finalize_delivery("codex/test", "a" * 40)
+
+    run.assert_not_called()
+
+
 def test_finalize_cleans_branch_only_after_both_masters_match():
     merge_sha = "a" * 40
     branch = "codex/test"
     with (
+        patch.object(pr_delivery, "_assert_delivery_worktrees_clean"),
         patch.object(pr_delivery, "_run", return_value=_completed()) as run,
         patch.object(pr_delivery, "_remote_ref", side_effect=[merge_sha, merge_sha]),
         patch.object(pr_delivery, "_update_local_master") as update_master,
@@ -196,10 +266,42 @@ def test_finalize_cleans_branch_only_after_both_masters_match():
     assert call(["git", "branch", "-D", branch]) in run.call_args_list
 
 
+def test_finalize_preserves_branch_when_worktree_gets_dirty_before_cleanup():
+    merge_sha = "a" * 40
+    dirty_error = pr_delivery.PRDeliveryError("分支清理前当前工作区存在未提交修改")
+    with (
+        patch.object(
+            pr_delivery,
+            "_assert_delivery_worktrees_clean",
+            side_effect=[None, dirty_error],
+        ),
+        patch.object(pr_delivery, "_run", return_value=_completed()) as run,
+        patch.object(pr_delivery, "_remote_ref", side_effect=[merge_sha, merge_sha]),
+        patch.object(pr_delivery, "_update_local_master", return_value=False),
+        patch.object(pr_delivery, "_remote_branch_exists") as remote_exists,
+        patch.object(pr_delivery, "_local_branch_exists") as local_exists,
+    ):
+        with _raises(pr_delivery.PRDeliveryError, "分支清理前当前工作区"):
+            pr_delivery.finalize_delivery("codex/test", merge_sha)
+
+    assert call(["git", "push", "gitee", "origin/master:master"]) in run.call_args_list
+    assert not any(
+        args.args[0][:3] == ["git", "push", "origin"]
+        for args in run.call_args_list
+    )
+    assert not any(
+        args.args[0][:2] == ["git", "switch"]
+        for args in run.call_args_list
+    )
+    remote_exists.assert_not_called()
+    local_exists.assert_not_called()
+
+
 def test_finalize_returns_primary_worktree_to_master_before_deleting_branch():
     merge_sha = "a" * 40
     branch = "codex/test"
     with (
+        patch.object(pr_delivery, "_assert_delivery_worktrees_clean"),
         patch.object(pr_delivery, "_run", return_value=_completed()) as run,
         patch.object(pr_delivery, "_remote_ref", side_effect=[merge_sha, merge_sha]),
         patch.object(pr_delivery, "_update_local_master", return_value=False),
