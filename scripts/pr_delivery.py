@@ -145,6 +145,12 @@ def _assert_master_worktree_safe() -> None:
         _assert_clean_worktree(master_worktree, "本地 master 工作区")
 
 
+def _assert_delivery_worktrees_clean(label: str) -> None:
+    """Reject delivery when either the active or master worktree is dirty."""
+    _assert_clean_worktree(BASE_DIR, label)
+    _assert_master_worktree_safe()
+
+
 def _run_local_gate() -> None:
     print("\n>>> 本地交付门禁")
     _run([sys.executable, "tests/run_unit_tests.py"])
@@ -157,8 +163,7 @@ def preflight(branch: str, *, run_tests: bool = True) -> dict[str, str]:
     branch = validate_branch_name(branch)
     if _current_branch() != branch:
         _fail(f"当前检出分支不是 {branch!r}")
-    _assert_clean_worktree(BASE_DIR, "当前工作区")
-    _assert_master_worktree_safe()
+    _assert_delivery_worktrees_clean("当前工作区")
 
     _run(["gh", "auth", "status", "--hostname", "github.com"])
     _run(["git", "fetch", "origin"])
@@ -181,6 +186,7 @@ def preflight(branch: str, *, run_tests: bool = True) -> dict[str, str]:
 
     if run_tests:
         _run_local_gate()
+    _assert_delivery_worktrees_clean("本地门禁后当前工作区")
 
     commit_count = _git_text("rev-list", "--count", "origin/master..HEAD")
     return {
@@ -402,6 +408,7 @@ def _update_local_master(expected_sha: str) -> bool:
 
 def finalize_delivery(branch: str, merge_sha: str) -> dict[str, str]:
     """Sync both masters, then remove only the delivered topic branch."""
+    _assert_delivery_worktrees_clean("PR 合并后当前工作区")
     _run(["git", "fetch", "origin"])
     origin_master = _remote_ref("origin", "refs/heads/master")
     if origin_master != merge_sha:
@@ -413,6 +420,7 @@ def finalize_delivery(branch: str, merge_sha: str) -> dict[str, str]:
         _fail("Gitee master 与 GitHub master 不一致，拒绝清理分支")
 
     master_checked_out_elsewhere = _update_local_master(merge_sha)
+    _assert_delivery_worktrees_clean("分支清理前当前工作区")
 
     if _remote_branch_exists("origin", branch):
         _run(["git", "push", "origin", "--delete", branch])
