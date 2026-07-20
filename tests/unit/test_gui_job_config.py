@@ -234,9 +234,10 @@ def test_job_config_primary_actions_are_lowered_without_moving_quality_row():
     block = block[:block.index("# 存储技能数据的列表")]
 
     assert "pady=(int(6 * self.dpi_scale * self.zoom_factor), 0)" in block
-    assert "int(4 * self.dpi_scale * self.zoom_factor)" in source[
+    footer_block = source[
         source.index("# 底部按钮固定在页面底部"):source.index("# 在所有控件创建完毕后绑定滚轮事件")
     ]
+    assert "int(10 * self.dpi_scale * self.zoom_factor),\n                0," in footer_block
 
 
 class _FakeVar:
@@ -395,6 +396,49 @@ def test_job_config_page_uses_business_sections_and_one_low_frequency_menu():
     assert 'label=" 导出配置"' in block
     assert 'label=" 删除当前岗位"' in block
     assert "_start_breathing" not in block
+
+
+def test_job_config_basic_filters_use_compact_grouped_rows_and_keep_alignment():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("# 岗位名称"):]
+    block = block[:block.index("# 技能关键词区域")]
+
+    assert "self.job_name_entry = ttk.Entry(row1, textvariable=self.job_name_var, width=22" in block
+    assert "basic_filter_input_width = 6" in block
+    assert "secondary_filter_gap = int(30 * self.dpi_scale * self.zoom_factor)" in block
+    assert block.count("padx=(secondary_filter_gap, 0)") == 2
+    assert block.count("width=basic_filter_input_width") == 3
+    assert block.count("style='CompactFilter.TSpinbox'") == 2
+    assert block.count("style='CompactFilter.TCombobox'") == 1
+    assert "row_education_salary = ttk.Frame" in block
+    education_pos = block.index('text="最低学历:"')
+    salary_pos = block.index('text="薪资范围:"')
+    assert education_pos < salary_pos
+    assert block.count('text="年"') == 2
+    assert "foreground=self.colors['bg_card']" in block
+    assert 'filter_unit_width = font.Font(font=self.font_label).measure("年")' not in block
+    assert "row_experience_age = ttk.Frame" in block
+    assert 'text="最低经验:"' in block
+    assert 'text="最大年龄:"' in block
+    assert 'ttk.Label(row_experience_age, text="岁"' in block
+    assert "row_salary =" not in block
+    assert "row_age" not in block
+    assert "salary_max_entry = ttk.Entry(" in block
+    assert "row_education_salary," in block
+    assert "width=8," in block
+    assert "work_location_entry = ttk.Entry(row3, textvariable=self.work_location_var, width=22" in block
+
+
+def test_compact_filter_spinbox_matches_combobox_pixel_width_contract():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    styles_block = source[source.index("def setup_styles"):]
+    styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
+
+    assert '_filter_char_width = font.Font(font=self.font_label).measure("0")' in styles_block
+    assert "'CompactFilter.TCombobox'" in styles_block
+    assert "padding=(max(0, _filter_char_width - 6), 0)" in styles_block
+    assert "'CompactFilter.TSpinbox'" in styles_block
+    assert "padding=(max(0, _filter_char_width - 4), 0)" in styles_block
 
 
 def test_skill_score_table_uses_shared_font_and_wider_key_columns():
@@ -1503,6 +1547,22 @@ def test_result_page_keeps_workflow_actions_visible_and_groups_utilities():
     assert 'text=" 状态体检"' not in result_block
     assert 'text=" 导出 Excel"' not in result_block
     assert 'text=" 清空候选人"' not in result_block
+    assert "pady=(int(20 * self.dpi_scale * self.zoom_factor), 0)" in result_block
+
+
+def test_system_settings_model_name_matches_provider_control_width():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    settings_block = source[source.index("# 模型接入配置"):]
+    settings_block = settings_block[:settings_block.index("# 第三行：API Key")]
+    styles_block = source[source.index("def setup_styles"):]
+    styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
+
+    assert "self.api_provider_combo = ttk.Combobox" in settings_block
+    assert "width=18, font=self.font_label" in settings_block
+    assert "model_entry = ttk.Entry(" in settings_block
+    assert "width=18," in settings_block
+    assert "style='SettingsModel.TEntry'" in settings_block
+    assert "style.configure('SettingsModel.TEntry', padding=(8, 0))" in styles_block
 
 
 def test_more_action_menubuttons_share_centered_overlay_arrow_style():
@@ -1519,6 +1579,16 @@ def test_more_action_menubuttons_share_centered_overlay_arrow_style():
     assert source.count("style='CenteredActions.TMenubutton'") == 2
     assert "ConfigActions.TMenubutton" not in source
     assert "ResultActions.TMenubutton" not in source
+
+    config_block = source[source.index("def create_config_page"):]
+    config_block = config_block[:config_block.index("\n    def create_api_config_page")]
+    result_block = source[source.index("def create_result_page"):]
+    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    assert "tk.Menu(select_frame, tearoff=0, font=self.font_label)" in config_block
+    assert "font=self.font_label," in result_block[result_block.index("more_menu = tk.Menu("):]
+    assert "menu=more_menu,\n            width=9," in config_block
+    assert "menu=more_menu,\n            width=9," in result_block
+    assert "self.icons.button('trash', self.colors['danger'])" in config_block
 
 
 def test_combobox_style_keeps_readonly_text_visible_and_clears_inactive_highlight():
@@ -2143,6 +2213,53 @@ def test_ctrl_f_waits_for_result_page_before_focusing_search():
     gui.result_search_entry.select_range.assert_called_once_with(0, 'end')
 
 
+def test_global_click_moves_focus_out_of_single_line_input_controls():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.result_search_entry = Mock()
+    other_widget = Mock()
+    other_widget.winfo_class.return_value = "TLabel"
+
+    gui.root.tk.call.side_effect = lambda *args: (
+        str(gui.result_search_entry) if args == ('focus',) else 'TEntry'
+    )
+    gui._on_global_left_click(types.SimpleNamespace(widget=other_widget))
+    gui.root.focus_set.assert_called_once_with()
+
+    gui.root.focus_set.reset_mock()
+    gui._on_global_left_click(types.SimpleNamespace(widget=gui.result_search_entry))
+    gui.root.focus_set.assert_not_called()
+
+    gui.root.tk.call.side_effect = lambda *args: (
+        ".!combobox.popdown.f.l" if args == ('focus',) else 'Listbox'
+    )
+    gui._on_global_left_click(types.SimpleNamespace(widget=Mock()))
+    gui.root.focus_set.assert_not_called()
+
+    for focus_path, widget_class in (
+        (".!combobox", "TCombobox"),
+        (".!spinbox", "TSpinbox"),
+        (".!spinbox2", "Spinbox"),
+        (".!entry", "TEntry"),
+        (".!entry2", "Entry"),
+    ):
+        gui.root.tk.call.side_effect = lambda *args, path=focus_path, cls=widget_class: (
+            path if args == ('focus',) else cls
+        )
+        gui._on_global_left_click(types.SimpleNamespace(widget=other_widget))
+
+    assert gui.root.focus_set.call_count == 5
+
+    input_widget = Mock()
+    input_widget.winfo_class.return_value = "TEntry"
+    gui.root.focus_set.reset_mock()
+    gui.root.tk.call.side_effect = lambda *args: (
+        ".!combobox" if args == ('focus',) else 'TCombobox'
+    )
+    gui._on_global_left_click(types.SimpleNamespace(widget=input_widget))
+    gui.root.focus_set.assert_not_called()
+
+
 @patch("gui_main.load_pending_contact_queue_count", return_value=3)
 def test_nav_badge_uses_queue_module_before_runtime_queue_is_loaded(mock_load_count):
     gui = BossFilterGUI.__new__(BossFilterGUI)
@@ -2234,6 +2351,12 @@ def test_result_search_replaces_query_against_full_original_rows():
     assert gui.result_tree.get_children() == ("row-a", "row-b")
     assert gui.result_count_var.get() == "2 / 共 2 人"
 
+    gui._result_search_placeholder_active = True
+    gui.result_search_var.set("姓名/匹配分/推荐指数/状态")
+    gui._filter_result_tree()
+    assert gui.result_tree.get_children() == ("row-a", "row-b")
+    assert gui.result_count_var.get() == "2 / 共 2 人"
+
 
 def test_result_tree_sorting_handles_text_numeric_ranges_and_missing_values():
     rows = {
@@ -2258,6 +2381,28 @@ def test_result_tree_sorting_handles_text_numeric_ranges_and_missing_values():
 
     gui._sort_treeview("salary")
     assert gui.result_tree.get_children() == ("row-a", "row-z", "row-empty")
+
+
+def test_manual_result_refresh_restores_default_sort_and_keeps_active_search():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._sort_col = "name"
+    gui._sort_reverse = True
+    gui._tree_original_order = ["row-b", "row-a"]
+    gui._column_headers = {"name": "姓名"}
+    gui.result_search_var = _FakeVar("张")
+    gui._result_search_placeholder_active = False
+    gui.refresh_results = Mock()
+    gui._update_sort_indicators = Mock()
+    gui._filter_result_tree = Mock()
+
+    gui._refresh_results_and_reset_sort()
+
+    assert gui._sort_col is None
+    assert gui._sort_reverse is False
+    assert gui._tree_original_order is None
+    gui.refresh_results.assert_called_once_with(force=True)
+    gui._update_sort_indicators.assert_called_once_with()
+    gui._filter_result_tree.assert_called_once_with()
 
 
 def test_status_reset_does_not_overwrite_newer_operation_status():
@@ -2315,6 +2460,29 @@ def test_stats_page_uses_full_width_policy():
     assert gui.pages_frame.pack_configure.call_args.kwargs["padx"] == int(
         gui_main.UI_CONFIG["page_padding_x"]
     )
+
+
+def test_job_config_page_releases_bottom_padding_but_preserves_header_position():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.pages_frame = Mock()
+    gui.main_frame = Mock()
+    gui.main_frame.winfo_width.return_value = 1400
+    gui.dpi_scale = 1.0
+    gui.zoom_factor = 1.0
+    gui.current_page_index = PageIndex.CONFIG
+    gui._last_page_pack_padx = None
+    gui._last_page_pack_pady = None
+    gui._update_config_page_dynamic_heights = Mock()
+
+    gui._apply_page_width_policy()
+
+    assert gui.pages_frame.pack_configure.call_args.kwargs["pady"] == (
+        gui_main.UI_CONFIG["page_padding_y"] - 15
+    )
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    config_block = source[source.index("def create_config_page"):]
+    config_block = config_block[:config_block.index("\n    def create_api_config_page")]
+    assert 'self._create_page_header(self.config_page, "岗位配置", top_padding=15)' in config_block
 
 
 def test_api_key_is_visible_only_while_eye_button_is_pressed():
@@ -4839,8 +5007,8 @@ def test_run_page_describes_actual_ai_score_adjustment_range():
     run_page_block = source[source.index("def create_run_page"):]
     run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
 
-    assert '_note_suffix = "15分调整)"' in run_page_block
-    assert '_note_suffix = "10分调整)"' not in run_page_block
+    assert '_note_suffix = "15 分调整"' in run_page_block
+    assert '_note_suffix = "10 分调整"' not in run_page_block
 
 
 def test_result_tree_ctrl_a_selects_all_visible_candidates():
@@ -5138,6 +5306,42 @@ def test_run_control_buttons_keep_icons_visible_while_disabled():
     assert "icon_stop_disabled = self.icons.button('stop', self.colors['text_muted'])" in create_block
     assert "image=(icon_stop, 'disabled', icon_stop_disabled)" in create_block
     assert "self.stop_btn._icon_refs = (icon_stop, icon_stop_disabled)" in create_block
+
+
+def test_run_control_uses_compact_rounds_input_and_matching_button_fonts():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    styles_block = source[source.index("def setup_styles"):]
+    styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
+    create_block = source[source.index("def create_run_page"):]
+    create_block = create_block[:create_block.index("\n    def create_result_page")]
+
+    assert "increment=10, textvariable=self.rounds_var,\n                                       width=8" in create_block
+    assert "'RunControl.Danger.TButton'" in styles_block
+    assert "font=(FONT_FAMILY_SEMIBOLD, int(13 * page_fs))" in styles_block
+    assert "style='Accent.TButton'" in create_block
+    assert "style='RunControl.Danger.TButton'" in create_block
+
+
+def test_inline_form_notes_use_flat_copy_without_outer_parentheses():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    run_block = source[source.index("def create_run_page"):]
+    run_block = run_block[:run_block.index("\n    def create_result_page")]
+    result_block = source[source.index("def create_result_page"):]
+    result_block = result_block[:result_block.index("\n    def create_education_page")]
+
+    assert 'text="推荐 50-200 轮次"' in run_block
+    assert '_note_prefix = "对通过筛选的候选人进行 LLM 二次评估，"' in run_block
+    assert '_note_suffix = "15 分调整"' in run_block
+    assert '(推荐 50-200 轮次)' not in run_block
+    assert 'self._result_search_placeholder = "姓名/匹配分/推荐指数/状态"' in result_block
+    assert "textvariable=self.result_search_var, width=28" in result_block
+    assert "bind('<FocusIn>', _hide_result_search_placeholder)" in result_block
+    assert "bind('<FocusOut>', _show_result_search_placeholder)" in result_block
+    assert 'text="Esc 清空"' in result_block
+    assert 'text="姓名/匹配分/推荐指数/状态，Esc 清空"' not in result_block
+    assert 'bind_all("<Button-1>", self._on_global_left_click, add="+")' in source
+    assert 'lambda _event: self._refresh_results_and_reset_sort()' in result_block
+    assert '"刷新结果并恢复默认排序"' in result_block
 
 
 def test_run_log_and_shared_dialogs_use_the_larger_font():
