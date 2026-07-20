@@ -1083,6 +1083,8 @@ class BossFilterGUI:
 
         # 统一绑定滚轮事件 - 根据当前页面分发到对应的 Canvas
         self.root.bind_all("<MouseWheel>", self._on_mousewheel)
+        # 普通 Frame/Label 不会主动获取焦点；全局点击用于收起结果页搜索框占位状态。
+        self.root.bind_all("<Button-1>", self._on_global_left_click, add="+")
         # macOS/Linux 触控板可能生成 Button-4/5 事件
         if sys.platform != 'win32':
             self.root.bind_all("<Button-4>", self._on_mousewheel)
@@ -1129,6 +1131,38 @@ class BossFilterGUI:
                 f'<Control-Key-{key_number}>',
                 lambda _event, index=page_index: self._request_sidebar_page(index),
             )
+
+    def _on_global_left_click(self, event) -> None:
+        """点击输入控件外的界面区域时，清除单行输入框、下拉框和 Spinbox 焦点。"""
+        search_entry = getattr(self, 'result_search_entry', None)
+        target_widget = getattr(event, 'widget', None)
+        if target_widget is None or target_widget is search_entry:
+            return
+        try:
+            # focus_get() 会尝试解析 ttk.Combobox 的原生 popdown 路径，
+            # Windows 上该路径不在 Tkinter 控件树中，会触发 KeyError。
+            focused_path = str(self.root.tk.call('focus'))
+            target_path = str(target_widget)
+            if (
+                not focused_path
+                or focused_path == target_path
+                or '.popdown' in focused_path
+                or '.popdown' in target_path
+            ):
+                return
+
+            input_classes = {'TCombobox', 'TSpinbox', 'Spinbox', 'TEntry', 'Entry', 'Text'}
+            if str(target_widget.winfo_class()) in input_classes:
+                return
+
+            search_path = str(search_entry) if search_entry is not None else ''
+            focused_class = str(self.root.tk.call('winfo', 'class', focused_path))
+            if focused_path == search_path or focused_class in {
+                'TCombobox', 'TSpinbox', 'Spinbox', 'TEntry', 'Entry'
+            }:
+                self.root.focus_set()
+        except (tk.TclError, KeyError):
+            return
 
     def _shortcut_refresh(self):
         """F5：只刷新当前页面拥有的本地数据视图。"""
@@ -1392,6 +1426,11 @@ class BossFilterGUI:
                               ('disabled', c['bg_input'])],
                   foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
                   bordercolor=[('disabled', c['border'])])
+        # 运行控制的开始/停止按钮使用同一字体，仅保留颜色语义差异。
+        style.configure(
+            'RunControl.Danger.TButton',
+            font=(FONT_FAMILY_SEMIBOLD, int(13 * page_fs)),
+        )
 
         style.configure('Card.TFrame', background=c['bg_card'], relief='solid', borderwidth=1)
         style.configure('WelcomeCard.TFrame', background=self.colors['bg_card'],
@@ -1446,9 +1485,23 @@ class BossFilterGUI:
         style.map('TSpinbox',
                   fieldbackground=[('!disabled', self.colors['bg_card']),
                                    ('disabled', self.colors['bg_input'])])
+        # 基础筛选的下拉框和 Spinbox 都带箭头区；按当前字体字符宽补偿，
+        # 使 width=6 的两类控件与 width=8 的薪资 Entry 保持相同像素宽度。
+        _filter_char_width = font.Font(font=self.font_label).measure("0")
+        style.configure(
+            'CompactFilter.TCombobox',
+            padding=(max(0, _filter_char_width - 6), 0),
+        )
+        style.configure(
+            'CompactFilter.TSpinbox',
+            padding=(max(0, _filter_char_width - 4), 0),
+        )
         style.map('TEntry',
                   fieldbackground=[('!disabled', self.colors['bg_card']),
                                    ('disabled', self.colors['bg_input'])])
+        # 模型名称 Entry 没有 Combobox 的下拉箭头区，补足固定边框差值，
+        # 使同为 width=18 时两者的视觉外宽一致。
+        style.configure('SettingsModel.TEntry', padding=(8, 0))
 
         # ---------------- 表格 / 表头 / 滚动条 / 输入控件（clam 扁平化） ----------------
         style.configure('Treeview',
@@ -1734,6 +1787,7 @@ class BossFilterGUI:
         self.main_frame = ttk.Frame(self.root, style='Page.TFrame')
         self.main_frame.pack(side="left", fill="both", expand=True)
         self._last_page_pack_padx = None
+        self._last_page_pack_pady = None
 
         # 创建页面容器
         self.pages_frame = ttk.Frame(self.main_frame, style='Page.TFrame')
@@ -2007,11 +2061,20 @@ class BossFilterGUI:
             extra_pad = max(0, (available_width - max_content_width) // 2)
             target_pad_x = max(base_pad_x, extra_pad)
 
-        if self._last_page_pack_padx != target_pad_x:
+        target_pad_y = (
+            max(0, base_pad_y - int(15 * scale))
+            if current_page == PageIndex.CONFIG
+            else base_pad_y
+        )
+        if (
+            self._last_page_pack_padx != target_pad_x
+            or getattr(self, '_last_page_pack_pady', None) != target_pad_y
+        ):
             self._last_page_pack_padx = target_pad_x
+            self._last_page_pack_pady = target_pad_y
             self.pages_frame.pack_configure(
                 padx=target_pad_x,
-                pady=base_pad_y,
+                pady=target_pad_y,
             )
 
         if current_page == 6:
@@ -2136,13 +2199,19 @@ class BossFilterGUI:
         except tk.TclError:
             return
 
-    def _create_page_header(self, parent, title, subtitle=None):
+    def _create_page_header(self, parent, title, subtitle=None, top_padding=0):
         """创建页面标题区域：白色背景 + 左侧蓝色竖线，无灰色底色"""
         _pad = int(16 * self.dpi_scale * self.zoom_factor)
         _bar_w = int(4 * self.dpi_scale * self.zoom_factor)
 
         card = ttk.Frame(parent, style='PageHeader.TFrame')
-        card.pack(fill="x", pady=(0, int(25 * self.dpi_scale * self.zoom_factor)))
+        card.pack(
+            fill="x",
+            pady=(
+                int(top_padding * self.dpi_scale * self.zoom_factor),
+                int(25 * self.dpi_scale * self.zoom_factor),
+            ),
+        )
 
         accent_bar = tk.Frame(card, width=_bar_w, bg=self.colors['primary'])
         accent_bar.pack(side="left", fill="y")
@@ -2356,7 +2425,7 @@ class BossFilterGUI:
         self._ai_enhance_pending = False
 
         # 页面标题
-        self._create_page_header(self.config_page, "岗位配置")
+        self._create_page_header(self.config_page, "岗位配置", top_padding=15)
 
         # 配置容器 - 支持垂直滚动（macOS Tk 9.0+ 用 Text，其他用 Canvas）
         scroll_frame = ttk.Frame(self.config_page, style='Card.TFrame')
@@ -2381,7 +2450,7 @@ class BossFilterGUI:
         more_menu = tk.Menu(select_frame, tearoff=0, font=self.font_label)
         icon_import_cfg = self.icons.button('import', self.colors['text_primary'])
         icon_export_cfg = self.icons.button('export', self.colors['text_primary'])
-        icon_trash_small = self.icons.button('trash', self.colors['text_primary'])
+        icon_trash_small = self.icons.button('trash', self.colors['danger'])
         more_menu._icon_refs = [icon_import_cfg, icon_export_cfg, icon_trash_small]
         more_menu.add_command(
             label=" 导入配置", image=icon_import_cfg, compound=tk.LEFT,
@@ -2605,72 +2674,143 @@ class BossFilterGUI:
         ttk.Label(row1, text="岗位名称:", font=self.font_label, width=UI_CONFIG['entry_width_job'],
                  background=self.colors['bg_card']).pack(side="left")
         self.job_name_var = tk.StringVar()
-        self.job_name_entry = ttk.Entry(row1, textvariable=self.job_name_var, width=50, font=self.font_label)
+        self.job_name_entry = ttk.Entry(row1, textvariable=self.job_name_var, width=22, font=self.font_label)
         self.job_name_entry.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
         self.bind_entry_context_menu(self.job_name_entry)
 
-        # 学历和经验
-        row2 = ttk.Frame(basic_frame, style='TFrame')
-        row2.pack(fill="x", pady=int(10 * self.dpi_scale * self.zoom_factor))
-        ttk.Label(row2, text="最低学历:", font=self.font_label, width=UI_CONFIG['entry_width_job'],
-                 background=self.colors['bg_card']).pack(side="left")
-        self.edu_var = tk.StringVar(value="不限")
-        edu_combo = ttk.Combobox(row2, textvariable=self.edu_var,
-                                 values=["不限", "高中", "中专", "大专", "本科", "硕士", "博士"],
-                                 width=UI_CONFIG['combobox_width_edu'], font=self.font_label)
-        edu_combo.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
-        # 禁用滚轮切换，防止误操作
-        edu_combo.bind('<Enter>', lambda e: edu_combo.bind('<MouseWheel>', lambda ev: 'break'))
-        edu_combo.bind('<Leave>', lambda e: edu_combo.unbind('<MouseWheel>'))
+        basic_filter_input_width = 6
+        secondary_filter_gap = int(30 * self.dpi_scale * self.zoom_factor)
 
-        ttk.Label(row2, text="最低经验:", font=self.font_label, width=UI_CONFIG['entry_width_label'],
-                 background=self.colors['bg_card']).pack(side="left", padx=(int(30 * self.dpi_scale * self.zoom_factor), 0))
-        self.min_exp_var = tk.StringVar(value="0")
-        min_exp_spin = ttk.Spinbox(row2, from_=UI_CONFIG['spinbox_exp_min'], to=UI_CONFIG['spinbox_exp_max'], textvariable=self.min_exp_var, width=15, font=self.font_label)
-        min_exp_spin.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
-        # 禁用滚轮切换，防止误操作
-        min_exp_spin.bind('<Enter>', lambda e: min_exp_spin.bind('<MouseWheel>', lambda ev: 'break'))
-        min_exp_spin.bind('<Leave>', lambda e: min_exp_spin.unbind('<MouseWheel>'))
-        ttk.Label(row2, text="年", font=self.font_label, background=self.colors['bg_card']).pack(side="left")
-
-        # 最大年龄
-        self.max_age_var = tk.StringVar(value="")
-        row_age = ttk.Frame(basic_frame, style='TFrame')
-        row_age.pack(fill="x", pady=int(10 * self.dpi_scale * self.zoom_factor))
-        ttk.Label(row_age, text="最大年龄:", font=self.font_label, width=UI_CONFIG['entry_width_job'],
-                 background=self.colors['bg_card']).pack(side="left")
-        max_age_spin = ttk.Spinbox(row_age, from_=0, to=99, textvariable=self.max_age_var, width=15, font=self.font_label)
-        max_age_spin.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
-        max_age_spin.bind('<Enter>', lambda e: max_age_spin.bind('<MouseWheel>', lambda ev: 'break'))
-        max_age_spin.bind('<Leave>', lambda e: max_age_spin.unbind('<MouseWheel>'))
-        ttk.Label(row_age, text="岁", font=self.font_label, background=self.colors['bg_card']).pack(side="left")
-        ttk.Label(row_age, text="留空表示不限制",
-                 font=(FONT_FAMILY, int(10 * self.font_scale)),
-                 foreground=self.colors['text_secondary'],
-                 background=self.colors['bg_card']).pack(side="left", padx=(self.inline_note_gap, 0))
-
-        # 薪资范围
+        # 学历与薪资同一行，按筛选条件的阅读顺序从左到右排列。
         self.salary_min_var = tk.StringVar()
         self.salary_max_var = tk.StringVar()
         self.salary_min_var.trace_add('write', self._validate_salary_input)
         self.salary_max_var.trace_add('write', self._validate_salary_input)
-        row_salary = ttk.Frame(basic_frame, style='TFrame')
-        row_salary.pack(fill="x", pady=int(10 * self.dpi_scale * self.zoom_factor))
-        ttk.Label(row_salary, text="薪资范围:", font=self.font_label, width=UI_CONFIG['entry_width_job'],
-                 background=self.colors['bg_card']).pack(side="left")
-        salary_min_entry = ttk.Entry(row_salary, textvariable=self.salary_min_var, width=8, font=self.font_label)
+        row_education_salary = ttk.Frame(basic_frame, style='TFrame')
+        row_education_salary.pack(fill="x", pady=int(10 * self.dpi_scale * self.zoom_factor))
+        ttk.Label(
+            row_education_salary,
+            text="最低学历:",
+            font=self.font_label,
+            width=UI_CONFIG['entry_width_job'],
+            background=self.colors['bg_card'],
+        ).pack(side="left")
+        self.edu_var = tk.StringVar(value="不限")
+        edu_combo = ttk.Combobox(
+            row_education_salary,
+            textvariable=self.edu_var,
+            values=["不限", "高中", "中专", "大专", "本科", "硕士", "博士"],
+            width=basic_filter_input_width,
+            font=self.font_label,
+            style='CompactFilter.TCombobox',
+        )
+        edu_combo.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
+        # 禁用滚轮切换，防止误操作
+        edu_combo.bind('<Enter>', lambda e: edu_combo.bind('<MouseWheel>', lambda ev: 'break'))
+        edu_combo.bind('<Leave>', lambda e: edu_combo.unbind('<MouseWheel>'))
+        # 使用与下一行完全相同的“年”标签作透明占位，避免主题内边距造成偏差。
+        ttk.Label(
+            row_education_salary,
+            text="年",
+            font=self.font_label,
+            foreground=self.colors['bg_card'],
+            background=self.colors['bg_card'],
+        ).pack(side="left")
+        ttk.Label(
+            row_education_salary,
+            text="薪资范围:",
+            font=self.font_label,
+            width=UI_CONFIG['entry_width_label'],
+            background=self.colors['bg_card'],
+        ).pack(side="left", padx=(secondary_filter_gap, 0))
+        salary_min_entry = ttk.Entry(
+            row_education_salary,
+            textvariable=self.salary_min_var,
+            width=8,
+            font=self.font_label,
+        )
         salary_min_entry.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
         self.bind_entry_context_menu(salary_min_entry)
         self.salary_min_entry = salary_min_entry
-        ttk.Label(row_salary, text="K  ~", font=self.font_label,
-                 background=self.colors['bg_card']).pack(side="left")
-        salary_max_entry = ttk.Entry(row_salary, textvariable=self.salary_max_var, width=8, font=self.font_label)
+        ttk.Label(
+            row_education_salary,
+            text="K  ~",
+            font=self.font_label,
+            background=self.colors['bg_card'],
+        ).pack(side="left")
+        salary_max_entry = ttk.Entry(
+            row_education_salary,
+            textvariable=self.salary_max_var,
+            width=8,
+            font=self.font_label,
+        )
         salary_max_entry.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
         self.bind_entry_context_menu(salary_max_entry)
         self.salary_max_entry = salary_max_entry
-        ttk.Label(row_salary, text="K", font=self.font_label,
-                 background=self.colors['bg_card']).pack(side="left")
-        ttk.Label(row_salary, text="留空表示不限制薪资",
+        ttk.Label(
+            row_education_salary,
+            text="K",
+            font=self.font_label,
+            background=self.colors['bg_card'],
+        ).pack(side="left")
+        ttk.Label(
+            row_education_salary,
+            text="留空表示不限制薪资",
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+        ).pack(side="left", padx=(self.inline_note_gap, 0))
+
+        # 经验和年龄保持同一行、同一输入宽度。
+        row_experience_age = ttk.Frame(basic_frame, style='TFrame')
+        row_experience_age.pack(fill="x", pady=int(10 * self.dpi_scale * self.zoom_factor))
+        ttk.Label(
+            row_experience_age,
+            text="最低经验:",
+            font=self.font_label,
+            width=UI_CONFIG['entry_width_job'],
+            background=self.colors['bg_card'],
+        ).pack(side="left")
+        self.min_exp_var = tk.StringVar(value="0")
+        min_exp_spin = ttk.Spinbox(
+            row_experience_age,
+            from_=UI_CONFIG['spinbox_exp_min'],
+            to=UI_CONFIG['spinbox_exp_max'],
+            textvariable=self.min_exp_var,
+            width=basic_filter_input_width,
+            font=self.font_label,
+            style='CompactFilter.TSpinbox',
+        )
+        min_exp_spin.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
+        # 禁用滚轮切换，防止误操作
+        min_exp_spin.bind('<Enter>', lambda e: min_exp_spin.bind('<MouseWheel>', lambda ev: 'break'))
+        min_exp_spin.bind('<Leave>', lambda e: min_exp_spin.unbind('<MouseWheel>'))
+        ttk.Label(row_experience_age, text="年", font=self.font_label,
+                  background=self.colors['bg_card']).pack(side="left")
+
+        self.max_age_var = tk.StringVar(value="")
+        ttk.Label(
+            row_experience_age,
+            text="最大年龄:",
+            font=self.font_label,
+            width=UI_CONFIG['entry_width_label'],
+            background=self.colors['bg_card'],
+        ).pack(side="left", padx=(secondary_filter_gap, 0))
+        max_age_spin = ttk.Spinbox(
+            row_experience_age,
+            from_=0,
+            to=99,
+            textvariable=self.max_age_var,
+            width=basic_filter_input_width,
+            font=self.font_label,
+            style='CompactFilter.TSpinbox',
+        )
+        max_age_spin.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
+        max_age_spin.bind('<Enter>', lambda e: max_age_spin.bind('<MouseWheel>', lambda ev: 'break'))
+        max_age_spin.bind('<Leave>', lambda e: max_age_spin.unbind('<MouseWheel>'))
+        ttk.Label(row_experience_age, text="岁", font=self.font_label,
+                  background=self.colors['bg_card']).pack(side="left")
+        ttk.Label(row_experience_age, text="留空表示不限制",
                  font=(FONT_FAMILY, int(10 * self.font_scale)),
                  foreground=self.colors['text_secondary'],
                  background=self.colors['bg_card']).pack(side="left", padx=(self.inline_note_gap, 0))
@@ -2681,7 +2821,7 @@ class BossFilterGUI:
         ttk.Label(row3, text="工作地点:", font=self.font_label, width=UI_CONFIG['entry_width_job'],
                  background=self.colors['bg_card']).pack(side="left")
         self.work_location_var = tk.StringVar()
-        work_location_entry = ttk.Entry(row3, textvariable=self.work_location_var, width=25, font=self.font_label)
+        work_location_entry = ttk.Entry(row3, textvariable=self.work_location_var, width=22, font=self.font_label)
         work_location_entry.pack(
             side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0)
         )
@@ -3058,7 +3198,7 @@ class BossFilterGUI:
             side="bottom",
             pady=(
                 int(10 * self.dpi_scale * self.zoom_factor),
-                int(4 * self.dpi_scale * self.zoom_factor),
+                0,
             ),
         )
 
@@ -3635,7 +3775,13 @@ class BossFilterGUI:
 
         ttk.Label(row2, text="模型名称:", font=self.font_label, width=UI_CONFIG['label_width_model']).pack(side="left")
         self.api_model_var = tk.StringVar()
-        model_entry = ttk.Entry(row2, textvariable=self.api_model_var, width=30, font=self.font_label)
+        model_entry = ttk.Entry(
+            row2,
+            textvariable=self.api_model_var,
+            width=18,
+            font=self.font_label,
+            style='SettingsModel.TEntry',
+        )
         model_entry.pack(side="left", padx=(int(5 * self.dpi_scale * self.zoom_factor), int(10 * self.dpi_scale * self.zoom_factor)))
         self.bind_entry_context_menu(model_entry)
 
@@ -4461,7 +4607,7 @@ class BossFilterGUI:
         self.rounds_spin = ttk.Spinbox(row1, from_=UI_CONFIG['spinbox_rounds_min'],
                                        to=UI_CONFIG['spinbox_rounds_max'],
                                        increment=10, textvariable=self.rounds_var,
-                                       width=15, font=self.font_label)
+                                       width=8, font=self.font_label)
         self.rounds_spin.pack(
             side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0)
         )
@@ -4470,7 +4616,7 @@ class BossFilterGUI:
             lambda e: self.rounds_spin.bind('<MouseWheel>', self._on_rounds_mousewheel))
         self.rounds_spin.bind('<Leave>',
             lambda e: self.rounds_spin.unbind('<MouseWheel>'))
-        self.rounds_hint_label = ttk.Label(row1, text="(推荐 50-200 轮次)", font=(FONT_FAMILY, int(11 * self.font_scale)),
+        self.rounds_hint_label = ttk.Label(row1, text="推荐 50-200 轮次", font=(FONT_FAMILY, int(11 * self.font_scale)),
                  foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card'])
         self.rounds_hint_label.pack(side="left", padx=(self.inline_note_gap, 0))
 
@@ -4596,8 +4742,8 @@ class BossFilterGUI:
             _start_run_page_key_check,
         )
         # 备注：+- 分色显示
-        _note_prefix = "(对通过筛选的候选人进行 LLM 二次评分，"
-        _note_suffix = "15分调整)"
+        _note_prefix = "对通过筛选的候选人进行 LLM 二次评估，"
+        _note_suffix = "15 分调整"
         _note_font = (FONT_FAMILY, int(11 * self.font_scale))
         _sign_font = (FONT_FAMILY, int(14 * self.font_scale))  # +/- 显式加大
         tk.Label(row_ai, text=_note_prefix, font=_note_font,
@@ -4774,7 +4920,7 @@ class BossFilterGUI:
             text=" 停止",
             compound=tk.LEFT,
             command=self.stop_run,
-            style='Danger.TButton',
+            style='RunControl.Danger.TButton',
             state="disabled",
         )
         self.stop_btn._icon_refs = (icon_stop, icon_stop_disabled)
@@ -4932,18 +5078,46 @@ class BossFilterGUI:
         search_frame.pack(fill="x", pady=(int(12 * self.dpi_scale * self.zoom_factor), int(6 * self.dpi_scale * self.zoom_factor)))
         ttk.Label(search_frame, text="搜索:", font=self.font_label,
                  background=self.colors['bg_main']).pack(side="left")
-        self.result_search_var = tk.StringVar()
-        self.result_search_var.trace_add('write', lambda *_: self._filter_result_tree())
+        self._result_search_placeholder = "姓名/匹配分/推荐指数/状态"
+        self._result_search_placeholder_active = True
+        self.result_search_var = tk.StringVar(value=self._result_search_placeholder)
         self.result_search_entry = ttk.Entry(
-            search_frame, textvariable=self.result_search_var, width=18, font=self.font_label)
+            search_frame, textvariable=self.result_search_var, width=28, font=self.font_label)
+        self.result_search_entry.configure(
+            foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED)
+        )
         self.result_search_entry.pack(
             side="left", padx=(int(6 * self.dpi_scale * self.zoom_factor), 0)
         )
-        ttk.Label(search_frame, text="（姓名/匹配分/推荐指数/状态，Esc 清空）",
+
+        def _hide_result_search_placeholder(_event=None):
+            if self._result_search_placeholder_active:
+                self._result_search_placeholder_active = False
+                self.result_search_var.set("")
+                self.result_search_entry.configure(foreground=self.colors['text_primary'])
+
+        def _show_result_search_placeholder(_event=None):
+            if not self.result_search_var.get():
+                self._result_search_placeholder_active = True
+                self.result_search_var.set(self._result_search_placeholder)
+                self.result_search_entry.configure(
+                    foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED)
+                )
+
+        def _clear_result_search(_event=None):
+            self._result_search_placeholder_active = False
+            self.result_search_var.set("")
+            self.result_search_entry.configure(foreground=self.colors['text_primary'])
+            return "break"
+
+        self.result_search_var.trace_add('write', lambda *_: self._filter_result_tree())
+        self.result_search_entry.bind('<FocusIn>', _hide_result_search_placeholder)
+        self.result_search_entry.bind('<FocusOut>', _show_result_search_placeholder)
+        self.result_search_entry.bind('<Escape>', _clear_result_search)
+        ttk.Label(search_frame, text="Esc 清空",
                  font=(FONT_FAMILY, int(10 * self.font_scale)),
                  foreground=self.colors['text_secondary'],
                  background=self.colors['bg_main']).pack(side="left", padx=(self.inline_note_gap, 0))
-        self.result_search_entry.bind('<Escape>', lambda e: self.result_search_var.set(''))
 
         ttk.Label(search_frame, text="结果范围:", font=self.font_label,
                  background=self.colors['bg_main']).pack(
@@ -5000,11 +5174,11 @@ class BossFilterGUI:
             background=self.colors['bg_main'],
         )
         refresh_icon._icon_ref = icon_refresh_result
-        refresh_icon.bind("<Button-1>", lambda _event: self.refresh_results())
+        refresh_icon.bind("<Button-1>", lambda _event: self._refresh_results_and_reset_sort())
         refresh_icon.bind(
             "<Enter>",
             lambda event: self._show_tooltip(
-                "刷新结果",
+                "刷新结果并恢复默认排序",
                 event.x_root + int(12 * self.dpi_scale * self.zoom_factor),
                 event.y_root + int(12 * self.dpi_scale * self.zoom_factor),
                 ("result_refresh",),
@@ -5102,7 +5276,11 @@ class BossFilterGUI:
 
         # 操作按钮 - 放在表格下方
         btn_frame = ttk.Frame(self.result_page, style='Page.TFrame')
-        btn_frame.pack(fill="x", padx=int(20 * self.dpi_scale * self.zoom_factor), pady=(int(8 * self.dpi_scale * self.zoom_factor), int(12 * self.dpi_scale * self.zoom_factor)))
+        btn_frame.pack(
+            fill="x",
+            padx=int(20 * self.dpi_scale * self.zoom_factor),
+            pady=(int(20 * self.dpi_scale * self.zoom_factor), 0),
+        )
         btn_inner = ttk.Frame(btn_frame, style='Page.TFrame')
         btn_inner.pack(anchor="center")
 
@@ -5146,9 +5324,9 @@ class BossFilterGUI:
         icon_chart_excel = self.icons.button('export', self.colors['text_primary'])
         icon_clear = self.icons.button('trash', self.colors['danger'])
         more_menu = tk.Menu(
-            self.result_page,
+            btn_inner,
             tearoff=0,
-            font=(FONT_FAMILY, int(11 * self.font_scale)),
+            font=self.font_label,
         )
         more_menu._icon_refs = [
             icon_state_check,
@@ -5179,6 +5357,7 @@ class BossFilterGUI:
             btn_inner,
             text="更多操作",
             menu=more_menu,
+            width=9,
             style='CenteredActions.TMenubutton',
         )
         self.result_more_menu_button.pack(
@@ -14140,6 +14319,24 @@ class BossFilterGUI:
             self._bind_treeview_context_menu()
             self._sort_bound = True
 
+    def _refresh_results_and_reset_sort(self) -> None:
+        """手动刷新结果，并恢复默认的候选人排序。"""
+        self._sort_col = None
+        self._sort_reverse = False
+        self._tree_original_order = None
+        self.refresh_results(force=True)
+        if hasattr(self, '_column_headers'):
+            self._update_sort_indicators()
+
+        search_query = ""
+        if (
+            hasattr(self, 'result_search_var')
+            and not getattr(self, '_result_search_placeholder_active', False)
+        ):
+            search_query = self.result_search_var.get().strip()
+        if search_query:
+            self._filter_result_tree()
+
     def _load_candidates_for_state_diagnostics(self):
         """Load candidates for result-page state diagnostics using the job filter only."""
         if not CANDIDATES_PATH.exists():
@@ -15217,7 +15414,11 @@ class BossFilterGUI:
         匹配项高亮并按优先级排序（完全匹配姓名 > 部分匹配 > 分数 > 等级 > 状态），
         清空搜索时恢复全部行和原始排序。
         """
-        query = self.result_search_var.get().strip().lower()
+        query = (
+            ""
+            if getattr(self, '_result_search_placeholder_active', False)
+            else self.result_search_var.get().strip().lower()
+        )
         visible_items = list(self.result_tree.get_children())
 
         # 保存原始顺序（首次过滤时）
