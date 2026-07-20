@@ -7,6 +7,7 @@ argument, repository, and non-fast-forward failures from retrying.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 from collections.abc import Callable, Sequence
@@ -57,15 +58,37 @@ TRANSIENT_MARKERS = (
     "http 504",
     "head sha can't be blank",
 )
+SENSITIVE_QUERY_PATTERN = re.compile(
+    r"(?i)(access_token|api[_-]?key|apikey|token|secret|password)="
+    r"([^&\s\"'<>\)\[\]\}]+)"
+)
+BEARER_PATTERN = re.compile(r"(?i)\bbearer\s+([^\s,;\"'<>\)\[\]\}]+)")
+REDACTED = "[REDACTED]"
 
 
 class RetryExhausted(RuntimeError):
     """A retryable release I/O operation did not converge."""
 
 
+def redact_sensitive_text(value: object, secrets: Sequence[str] = ()) -> str:
+    """Return diagnostic text with credentials removed before logging."""
+    text = str(value)
+    text = SENSITIVE_QUERY_PATTERN.sub(
+        lambda match: f"{match.group(1)}={REDACTED}",
+        text,
+    )
+    text = BEARER_PATTERN.sub(f"Bearer {REDACTED}", text)
+    for secret in secrets:
+        if secret:
+            text = text.replace(str(secret), REDACTED)
+    return text
+
+
 def command_detail(result: subprocess.CompletedProcess[str]) -> str:
     """Return a compact error message from a completed CLI process."""
-    return str(result.stderr or result.stdout or "command failed").strip()
+    return redact_sensitive_text(
+        result.stderr or result.stdout or "command failed"
+    ).strip()
 
 
 def is_retryable_cli_failure(result: subprocess.CompletedProcess[str]) -> bool:

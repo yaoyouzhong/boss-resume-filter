@@ -2054,7 +2054,8 @@ def _verify_gitee_release_assets_complete(tag, github_assets, release_cache,
         gitee_assets = _gitee_fetch_assets(api_base, token, release_id)
         release_cache["existing"] = gitee_assets
     except requests.exceptions.RequestException as e:
-        report(f"[错误] Gitee Release 附件列表读取失败: {e}")
+        detail = release_retry.redact_sensitive_text(e, (token,))
+        report(f"[错误] Gitee Release 附件列表读取失败: {detail}")
         return False
 
     required = _required_release_asset_names()
@@ -2087,7 +2088,8 @@ def _verify_gitee_release_assets_complete(tag, github_assets, release_cache,
                     token=token,
                 )
             except requests.exceptions.RequestException as e:
-                report(f"[错误] Gitee {name} SHA256 校验失败: {e}")
+                detail = release_retry.redact_sensitive_text(e, (token,))
+                report(f"[错误] Gitee {name} SHA256 校验失败: {detail}")
                 return False
             if gitee_sha != expected_sha:
                 report(f"[错误] Gitee {name} SHA256 不一致")
@@ -2380,7 +2382,8 @@ def _gitee_asset_matches_local(local_path, remote_asset, owner, repo, tag, token
     try:
         remote_sha = _remote_file_sha256(url, token=token)
     except requests.exceptions.RequestException as e:
-        return False, f"远端校验失败 ({e})"
+        detail = release_retry.redact_sensitive_text(e, (token or "",))
+        return False, f"远端校验失败 ({detail})"
     if remote_sha == local_sha:
         return True, f"SHA256 一致 ({local_size} bytes)"
     return False, "SHA256 不一致"
@@ -2655,7 +2658,8 @@ def _sync_release_notes():
             timeout=15,
         )
     except requests.exceptions.RequestException as e:
-        print(f"错误: Gitee Release 预检失败: {e}")
+        detail = release_retry.redact_sensitive_text(e, (token,))
+        print(f"错误: Gitee Release 预检失败: {detail}")
         sys.exit(1)
     if gitee_release.status_code != 200:
         print(f"错误: Gitee Release {tag} 不存在或查询失败 ({gitee_release.status_code})")
@@ -2711,7 +2715,7 @@ def _sync_release_notes():
             print(f"  [OK] Gitee Release {tag} 说明已更新")
             break
         except requests.exceptions.RequestException as exc:
-            last_error = str(exc)
+            last_error = release_retry.redact_sensitive_text(exc, (token,))
             try:
                 current = session.get(
                     f"{api_base}/releases/tags/{tag}",
@@ -3413,7 +3417,11 @@ def _gh_release(version, release_title, release_notes, progress=None,
                     downloads_cn_partial = _gitee_upload_local(
                         version, release_title, release_notes, release_cache)
                 except Exception as e:
-                    _sub(f'[Gitee] [警告] 本地产物上传失败: {e}')
+                    detail = release_retry.redact_sensitive_text(
+                        e,
+                        (os.environ.get("GITEE_TOKEN", ""),),
+                    )
+                    _sub(f'[Gitee] [警告] 本地产物上传失败: {detail}')
         else:
             _sub('[Gitee] 跳过：--no-gitee')
 
@@ -4106,14 +4114,22 @@ def _gitee_upload_single(filepath, api_base, token, release_id, max_retries=3):
                 return filepath.name, remote
             status = getattr(getattr(e, "response", None), "status_code", None)
             # 参数、认证等确定性 4xx 不重试；408/429 属于瞬时失败。
+            detail = (
+                f"{type(e).__name__}: "
+                f"{release_retry.redact_sensitive_text(e, (token,))}"
+            )
+            sanitized = requests.exceptions.RequestException(
+                detail,
+                response=getattr(e, "response", None),
+            )
             if status is not None and 400 <= status < 500 and status not in {408, 429}:
-                raise
+                raise sanitized from None
             if attempt < total_attempts - 1:
                 delay = 2 * (attempt + 1)
-                print(f"  [Gitee] {filepath.name} 上传失败 ({e})，{delay}s 后重试 ({attempt+1}/{max_retries})")
+                print(f"  [Gitee] {filepath.name} 上传失败 ({detail})，{delay}s 后重试 ({attempt+1}/{max_retries})")
                 time.sleep(delay)
             else:
-                raise
+                raise sanitized from None
 
 
 def _gitee_asset_url(owner, repo, tag, filename):
@@ -4150,14 +4166,22 @@ def _gitee_delete_asset(api_base, token, release_id, asset_id, filename):
                 print(f"  删除旧附件: {filename}（远端已不存在）")
                 return
             status = getattr(getattr(e, "response", None), "status_code", None)
+            detail = (
+                f"{type(e).__name__}: "
+                f"{release_retry.redact_sensitive_text(e, (token,))}"
+            )
+            sanitized = requests.exceptions.RequestException(
+                detail,
+                response=getattr(e, "response", None),
+            )
             if status is not None and 400 <= status < 500 and status not in {408, 429}:
-                raise
+                raise sanitized from None
             if attempt < 3:
                 delay = 2 * (attempt + 1)
-                print(f"  [Gitee] 删除附件 {filename} 失败 ({e})，{delay}s 后重试 ({attempt+1}/3)")
+                print(f"  [Gitee] 删除附件 {filename} 失败 ({detail})，{delay}s 后重试 ({attempt+1}/3)")
                 time.sleep(delay)
             else:
-                raise
+                raise sanitized from None
 
 
 def _gitee_get_release_cache(version, release_title, release_notes):
@@ -4265,9 +4289,15 @@ def _gitee_upload_artifacts(version, release_title, release_notes, artifact_path
                 print(f"  [OK] Gitee 已上传: {name}")
 
             def _upload_failure(f, error):
-                print(f"  [失败] Gitee 上传失败: {f.name} ({error})")
+                detail = release_retry.redact_sensitive_text(error, (token,))
+                print(f"  [失败] Gitee 上传失败: {f.name} ({detail})")
                 failed.append(f.name)
                 if fail_fast:
+                    if isinstance(error, requests.exceptions.RequestException):
+                        raise requests.exceptions.RequestException(
+                            detail,
+                            response=getattr(error, "response", None),
+                        ) from None
                     raise error
 
             if fail_fast:
@@ -4303,7 +4333,8 @@ def _gitee_upload_artifacts(version, release_title, release_notes, artifact_path
 
     except requests.exceptions.RequestException as e:
         print(f"\n{'!'*60}")
-        print(f"  [!!]  Gitee Release 整体失败: {e}")
+        detail = release_retry.redact_sensitive_text(e, (token,))
+        print(f"  [!!]  Gitee Release 整体失败: {detail}")
         print(f"  手动补传: python build.py --gitee-upload {version}")
         print(f"{'!'*60}\n")
         return None
@@ -4469,7 +4500,8 @@ def _sync_gitee_from_github(version, release_title, release_notes, need_wait=Fal
         existing = _gitee_fetch_assets(api_base, token, release_id)
         release_cache['existing'] = existing
     except requests.exceptions.RequestException as e:
-        print(f"  [Gitee] 刷新附件列表失败，继续使用缓存: {e}")
+        detail = release_retry.redact_sensitive_text(e, (token,))
+        print(f"  [Gitee] 刷新附件列表失败，继续使用缓存: {detail}")
 
     # 对端产物列表
     if IS_MAC:
@@ -4569,7 +4601,8 @@ def _sync_gitee_from_github(version, release_title, release_notes, need_wait=Fal
             downloads_cn[_downloads_cn_key(asset_name)] = url
 
         def _sync_failure(name, error):
-            print(f"  [失败] {name}: {error}")
+            detail = release_retry.redact_sensitive_text(error, (token,))
+            print(f"  [失败] {name}: {detail}")
             failed.append(name)
 
         _run_transfer_batch(
@@ -4592,7 +4625,8 @@ def _sync_gitee_from_github(version, release_title, release_notes, need_wait=Fal
 
     except requests.exceptions.RequestException as e:
         print(f"\n{'!'*60}")
-        print(f"  [!!]  Gitee Release 同步失败: {e}")
+        detail = release_retry.redact_sensitive_text(e, (token,))
+        print(f"  [!!]  Gitee Release 同步失败: {detail}")
         print(f"  手动补传: python build.py --gitee-upload {version}")
         print(f"{'!'*60}\n")
         return None
