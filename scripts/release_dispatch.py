@@ -488,7 +488,7 @@ def dispatch_release(
             stall_timeout=stall_timeout,
         )
 
-    print("\n>>> 本机镜像 Gitee 并完成正式发布")
+    print("\n>>> 本机校验并公开 GitHub 主源，随后镜像 Gitee")
     release_ci.finalize_release_local(
         version, authorization, plan["release_sha"], approved_content_sha,
     )

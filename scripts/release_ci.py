@@ -1120,7 +1120,10 @@ def stage_github_release(
     _ensure_github_release(tag, title, body)
     artifacts = _ensure_local_artifacts(tag)
     _upload_github_artifacts(tag, artifacts)
-    print(f"\n[OK] {tag} GitHub Draft 和三个附件已暂存，等待本机完成 Gitee 镜像")
+    print(
+        f"\n[OK] {tag} GitHub Draft 和三个附件已暂存，"
+        "等待本机校验并公开主源后镜像 Gitee"
+    )
 
 
 def finalize_release_local(
@@ -1177,6 +1180,15 @@ def finalize_release_local(
         )
         _write_release_state(version, release_sha, phase, "complete")
 
+        # GitHub is the primary release source. Publish it as soon as its staged
+        # artifacts have passed local SHA256 verification; Gitee remains an
+        # idempotent secondary mirror that can be resumed independently.
+        phase = "github_public"
+        _write_release_state(version, release_sha, phase, "in_progress")
+        _fetch_and_assert_current_master_compatible(release_sha)
+        _publish_github_release(tag)
+        _write_release_state(version, release_sha, phase, "complete")
+
         phase = "gitee_tag"
         _write_release_state(version, release_sha, phase, "in_progress")
         _ensure_gitee_tag(tag, release_sha, gitee_token)
@@ -1189,11 +1201,8 @@ def finalize_release_local(
         )
         _write_release_state(version, release_sha, phase, "complete")
 
-        # Publicize only after both release stores have complete artifacts.
-        phase = "publish_and_manifest"
+        phase = "manifest_sync"
         _write_release_state(version, release_sha, phase, "in_progress")
-        _fetch_and_assert_current_master_compatible(release_sha)
-        _publish_github_release(tag)
         _commit_and_sync_manifest(
             version,
             body,

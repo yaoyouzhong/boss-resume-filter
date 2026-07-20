@@ -435,7 +435,7 @@ def test_confirmed_local_preview_reuses_gate_only_for_the_same_content():
         )
     preflight.assert_not_called()
 
-def test_finalize_local_exposes_release_only_after_gitee_is_complete():
+def test_finalize_local_publishes_github_before_gitee_mirror():
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         artifacts = [temp_path / name for name in release_ci.RELEASE_ARTIFACTS]
@@ -513,9 +513,10 @@ def test_finalize_local_exposes_release_only_after_gitee_is_complete():
             )
 
         assert events.count("master_safe") == 2
-        assert events.index("download_verify") < events.index("gitee_assets")
-        assert events.index("gitee_assets") < events.index("github_public")
-        assert events.index("github_public") < events.index("manifest")
+        assert events.index("download_verify") < events.index("github_public")
+        assert events.index("github_public") < events.index("gitee_tag")
+        assert events.index("gitee_tag") < events.index("gitee_assets")
+        assert events.index("gitee_assets") < events.index("manifest")
         assert events[-2:] == ["remote_verify", "public_verify"]
 
 
