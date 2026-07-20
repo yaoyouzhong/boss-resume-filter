@@ -914,6 +914,49 @@ def test_gitee_upload_accepts_lost_response_when_asset_is_complete():
     assert session.post_count == 1
 
 
+def test_gitee_upload_retry_and_final_error_never_log_access_token():
+    secret = "gitee-secret-token"
+    raw_error = build.requests.exceptions.ProxyError(
+        "upload failed: /attach_files?access_token="
+        f"{secret} (connection reset)"
+    )
+
+    class FakeSession:
+        def post(self, _url, **_kwargs):
+            raise raw_error
+
+        def get(self, _url, **_kwargs):
+            raise raw_error
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        artifact = Path(temp_dir) / "artifact.bin"
+        artifact.write_bytes(b"data")
+        output = io.StringIO()
+        with (
+            patch.object(build, "_gitee_session", return_value=FakeSession()),
+            patch.object(build.time, "sleep"),
+            contextlib.redirect_stdout(output),
+        ):
+            try:
+                build._gitee_upload_single(
+                    artifact,
+                    "https://gitee.com/api/v5/repos/owner/repo",
+                    secret,
+                    7,
+                    max_retries=1,
+                )
+            except build.requests.exceptions.RequestException as exc:
+                final_error = str(exc)
+            else:
+                raise AssertionError("the failed upload must raise")
+
+    combined = output.getvalue() + final_error
+    assert secret not in combined
+    assert "access_token=[REDACTED]" in combined
+    assert "ProxyError" in combined
+    assert "connection reset" in combined
+
+
 def test_remote_ref_query_retries_three_transient_failures():
     failed = build.subprocess.CompletedProcess(
         ["git"], 1, stdout="", stderr="temporary network failure"

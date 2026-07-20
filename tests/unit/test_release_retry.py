@@ -33,6 +33,34 @@ def test_cli_retry_uses_one_initial_attempt_plus_three_retries():
     assert sleep.call_args_list == [call(2), call(4), call(6)]
 
 
+def test_sensitive_diagnostics_are_redacted_before_logging():
+    secret = "gitee-secret-token"
+    detail = release_retry.redact_sensitive_text(
+        "ProxyError(url=/attach_files?access_token="
+        f"{secret}&page=1, Authorization: Bearer bearer-secret)",
+        (secret,),
+    )
+
+    assert secret not in detail
+    assert "bearer-secret" not in detail
+    assert "access_token=[REDACTED]" in detail
+    assert "Bearer [REDACTED]" in detail
+
+
+def test_command_detail_never_returns_sensitive_query_parameters():
+    result = subprocess.CompletedProcess(
+        ["gh"],
+        1,
+        stdout="",
+        stderr="request failed: https://example.invalid/?api_key=top-secret",
+    )
+
+    detail = release_retry.command_detail(result)
+
+    assert "top-secret" not in detail
+    assert "api_key=[REDACTED]" in detail
+
+
 def test_cli_retry_stops_immediately_on_deterministic_failure():
     run = Mock(return_value=_completed(1, stderr="HTTP 403 permission denied"))
     with patch.object(release_retry.time, "sleep") as sleep:
