@@ -36,9 +36,9 @@ python scripts/release_dispatch.py --version 2.22 \
 2. 锁定不可变的发布提交，执行 `build.py --check --strict-changelog` 等价的完整严格门禁。
 3. Windows 和 macOS 独立并行构建，任一构建失败都不进入发布任务。
 4. 两端产物齐全后创建不可移动的 GitHub tag，建立 GitHub Draft Release，上传并校验 EXE、ZIP 和 DMG；Actions 到此结束。
-5. 本机下载三个 GitHub 附件并逐个核对 size 和 SHA256，再按 EXE→ZIP→DMG 串行镜像到 Gitee。GitHub Actions 禁止上传 Gitee 大文件。
-6. Gitee Release 附件齐全且 size 与 GitHub 一致后，将 GitHub Draft Release 转为正式版本。
-7. 本机生成 `latest.json` 的双源下载地址和 SHA256，提交并推送到 GitHub/Gitee `master`。
+5. 本机下载三个 GitHub 附件并逐个核对 size 和 SHA256，确认主源产物完整后立即将 GitHub Draft Release 转为正式版本。
+6. 按 EXE→ZIP→DMG 串行镜像到 Gitee；GitHub Actions 禁止上传 Gitee 大文件。Gitee 中断不回退已经公开的 GitHub 主发布，同一命令重跑时幂等补齐镜像。
+7. Gitee Release 附件齐全且 size 与 GitHub 一致后，本机生成 `latest.json` 的双源下载地址和 SHA256，提交并推送到 GitHub/Gitee `master`。
 8. 只读核验双远端分支/tag/Release/附件/清单，并实际请求六个公开下载地址和两份在线清单。
 
 **断点续跑：**流程按“版本 + 发布提交”恢复。GitHub Draft 的三个附件已经完整时，再次执行同一正式发布命令会跳过 Actions，直接从本机 Gitee 镜像阶段继续；本机下载使用 `.part` 文件续传，45 秒没有收到新数据即中断当前请求并保留已下载字节。`.release_state.json` 记录当前阶段和各附件字节数，不保存 Token 或下载 URL。已存在的同提交 tag 不重建，本地缺少 tag 时自动从 GitHub 精确拉取；已一致的 Gitee 附件不重传。同名 tag 指向其他提交、或发布期间 `master` 出现非 `latest.json` 业务变更时立即中止，绝不移动 tag 或强制推送。
