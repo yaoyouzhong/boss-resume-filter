@@ -1,29 +1,29 @@
 {
-  "version": "2.23.1",
-  "release_date": "2026-07-19",
+  "version": "2.23.2",
+  "release_date": "2026-07-20",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.1/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.1/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.1/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.2/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.2/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.2/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "macos_dmg": {
-      "size": 33542969,
-      "sha256": "7eb4d4bee97ca3098fd88911b6b84124d079a6a78cd80d2f3129f913d6c16e71"
+      "size": 33543829,
+      "sha256": "b11c6171626d3f5cf499e1bb2c508dc3e69b5168f9692a7afcff41980812fa58"
     },
     "windows": {
-      "size": 35744847,
-      "sha256": "f3da23b089af8e7eab6ec187bf0f004c90132b8fef739bc5f1ea541983a8589e"
+      "size": 35751330,
+      "sha256": "12e2afe340026a64cb1de883f619bdb169c69de6048b5bbd8bdb37d34ffaac4e"
     },
     "macos": {
-      "size": 34292915,
-      "sha256": "83f58d0a162913035e29e828eed301b8c0576502cc78fafe2cfe33664012e1d4"
+      "size": 34298507,
+      "sha256": "8e41d522f841560fdaecb974fac655a877e10e9b53875baba893b50cfb3593dc"
     }
   },
-  "release_notes": "### 体验优化\n\n- **岗位复盘指标升级**：岗位复盘集中展示数据范围、复盘样本、通过筛选、已打招呼、已回复、已约面、平均分和筛选转化，关键结果及转化比例更加直观\n- **岗位反馈洞察升级**：按反馈覆盖、反馈分布、高频原因、误推原因、误杀原因和 AI 偏差整理反馈质量，明确区分暂无反馈、样本不足和可生成趋势，并集中呈现问题洞察、建议调整、反馈候选人及岗位配置入口，建议标题与明细说明分开显示\n- **候选人复核切换优化**：决策摘要与完整资料采用更清晰的切换样式，筛选结论、复核状态、沟通状态、建议下一步和其他操作更易识别\n- **界面文字可读性提升**：提高运行日志、确认联系、发送结果、AI 解析提醒、岗位配置辅助信息等区域的字号，减少高分辨率屏幕下的阅读负担\n\n### 问题修复\n\n- **运行控制图标修复**：修复开始运行和停止按钮在禁用状态下图标不可见的问题\n- **运行日志内容修复**：运行日志集中显示浏览器检测与连接、Chrome 启动、残留进程清理及失败提示、选择器检查、扫描候选人、AI 评估、岗位切换、开始运行和停止等过程信息，其他页面的恢复提示、警告和错误不再混入\n- **联系按钮显示修复**：修复联系候选人数量较多时“联系待发送”按钮文字显示不完整的问题",
+  "release_notes": "### 体验优化\n\n- **界面控件统一**：优化复选框、按钮和下拉框的显示与交互状态，使勾选、选中和焦点反馈更加清晰自然。\n- **信息展示一致性**：统一技能评分列表字体与列宽，并优化结果页计数和辅助说明布局。\n- **AI 模型信息**：统一月之暗面（Kimi）的中英文命名顺序，并将官方服务和中转服务的模型名称、默认超时改为更清晰的单层备注格式。\n\n### 问题修复\n\n- **高分辨率显示适配**：修复候选人查看与复核窗口在部分外接高分辨率显示器上，上一位、下一位按钮显示不全或遮挡标题的问题。\n- **下拉框状态显示**：修复部分下拉框反复点击后列表为空，以及失去焦点后选中内容背景异常的问题。\n- **结果页布局**：修复“显示已屏蔽”和人数信息在有限宽度下显示不完整的问题。\n- **控件焦点显示**：修复按钮和复选框点击后出现不必要虚线框的问题。",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.1/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.1/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.1/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.2/BOSS_ResumeFilter.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.2/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.2/BOSS_ResumeFilter.dmg"
   }
 }
