@@ -31,6 +31,11 @@ import requests
 
 from release_user_audit import audit_user_facing_release, summarize_release_user_audit
 
+_BUILD_SCRIPTS_DIR = Path(__file__).resolve().parent / "scripts"
+if str(_BUILD_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_BUILD_SCRIPTS_DIR))
+import release_retry  # noqa: E402
+
 # Windows 终端默认 GBK 编码导致中文乱码和 Unicode 字符崩溃，强制 UTF-8
 if sys.platform == 'win32':
     try:
@@ -1924,7 +1929,7 @@ def _github_asset_matches_local(tag, local_path, remote_asset):
 def _upload_github_release_asset(tag, path, report=None):
     """Upload one asset to GitHub Release with retry and timeout."""
     report = report or (lambda msg: print(f"  {msg}"))
-    for attempt in range(3):
+    for attempt in range(4):
         try:
             subprocess.run(
                 ["gh", "release", "upload", tag, str(path), "--clobber"],
@@ -1934,8 +1939,8 @@ def _upload_github_release_asset(tag, path, report=None):
             )
             return path.name
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            if attempt < 2:
-                wait = 10 * (attempt + 1)
+            if attempt < 3:
+                wait = 2 * (attempt + 1)
                 report(f"[重试] {path.name} 上传失败 (attempt {attempt+1}/3), {wait}s 后重试...")
                 time.sleep(wait)
             else:
@@ -2115,21 +2120,39 @@ def _verify_release_assets_complete(tag, release_cache=None, report=None,
 
 
 def _remote_ref_commit(remote: str, ref: str) -> str | None:
-    """Return the commit advertised for one remote ref, without fetching it."""
-    result = subprocess.run(
-        ["git", "ls-remote", remote, ref],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        cwd=BASE_DIR,
-    )
-    if result.returncode != 0:
-        return None
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[1] == ref:
-            return parts[0]
+    """Return one advertised remote ref, retrying three transient failures."""
+    for attempt in range(4):
+        result = subprocess.run(
+            ["git", "ls-remote", remote, ref],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=BASE_DIR,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                if len(parts) == 2 and parts[1] == ref:
+                    return parts[0]
+            return None
+        detail = str(result.stderr or result.stdout or "git ls-remote failed").lower()
+        deterministic = any(
+            marker in detail
+            for marker in (
+                "authentication failed",
+                "permission denied",
+                "repository not found",
+            )
+        )
+        if deterministic or attempt >= 3:
+            return None
+        delay = 2 * (attempt + 1)
+        print(
+            f"  [重试] 读取 {remote}/{ref} 瞬时失败，准备第 "
+            f"{attempt + 1}/3 次重试（{delay}s 后）"
+        )
+        time.sleep(delay)
     return None
 
 
@@ -2568,6 +2591,25 @@ def _extract_changelog_release(version):
 
 def _sync_release_notes():
     """从已推送的 CHANGELOG 恢复同步 GitHub/Gitee Release 说明。"""
+    def _run_external(args, label, postcondition=None):
+        result = release_retry.run_cli_with_retries(
+            lambda command, **kwargs: subprocess.run(
+                command,
+                cwd=BASE_DIR,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                **kwargs,
+            ),
+            args,
+            label,
+            postcondition=postcondition,
+        )
+        if result.returncode != 0:
+            print(f"错误: {label}失败：{release_retry.command_detail(result)}")
+            sys.exit(1)
+        return result
+
     version = _read_version()
     tag = f"v{version}"
     release_title, release_notes = _extract_changelog_release(version)
@@ -2582,8 +2624,8 @@ def _sync_release_notes():
         if status_text:
             print(status_text)
         sys.exit(1)
-    subprocess.run(["git", "fetch", "origin", "master"], cwd=BASE_DIR, check=True)
-    subprocess.run(["git", "fetch", "gitee", "master"], cwd=BASE_DIR, check=True)
+    _run_external(["git", "fetch", "origin", "master"], "拉取 GitHub master")
+    _run_external(["git", "fetch", "gitee", "master"], "拉取 Gitee master")
     head = _local_ref_commit("HEAD")
     origin_master = _remote_ref_commit("origin", "refs/heads/master")
     gitee_master = _remote_ref_commit("gitee", "refs/heads/master")
@@ -2607,7 +2649,7 @@ def _sync_release_notes():
     repo = "boss-resume-filter"
     api_base = f"https://gitee.com/api/v5/repos/{owner}/{repo}"
     try:
-        gitee_release = requests.get(
+        gitee_release = _gitee_session().get(
             f"{api_base}/releases/tags/{tag}",
             params={"access_token": token},
             timeout=15,
@@ -2630,47 +2672,80 @@ def _sync_release_notes():
 
     # 1. GitHub Release
     try:
-        r = subprocess.run(
-            ["gh", "release", "view", tag],
-            capture_output=True, cwd=BASE_DIR,
-        )
-        if r.returncode != 0:
+        if _get_github_release_info(tag) is None:
             print(f"[错误] GitHub Release {tag} 不存在，请先完成正式发布")
             sys.exit(1)
 
-        subprocess.run(
+        _run_external(
             ["gh", "release", "edit", tag,
              "--title", release_title,
              "--notes-file", str(_notes_file)],
-            cwd=BASE_DIR, check=True,
+            f"更新 GitHub Release {tag}",
+            postcondition=lambda: (
+                (current := _get_github_release_info(tag)) is not None
+                and current.get("name") == release_title
+                and _normalize_markdown(current.get("body", ""))
+                == _normalize_markdown(release_notes)
+            ),
         )
         print(f"  [OK] GitHub Release {tag} 说明已更新")
-    except subprocess.CalledProcessError as e:
-        print(f"  [错误] GitHub Release 更新失败: {e}")
-        sys.exit(1)
     finally:
         _notes_file.unlink(missing_ok=True)
 
     # 2. Gitee Release
-    try:
-        resp = requests.patch(
-            f"{api_base}/releases/{release_id}",
-            params={"access_token": token},
-            json={
-                "tag_name": tag,
-                "name": release_title,
-                "body": release_notes,
-            },
-            timeout=30,
-        )
-        if resp.status_code == 200:
+    session = _gitee_session(retries=0)
+    last_error = "unknown"
+    for attempt in range(4):
+        try:
+            resp = session.patch(
+                f"{api_base}/releases/{release_id}",
+                params={"access_token": token},
+                json={
+                    "tag_name": tag,
+                    "name": release_title,
+                    "body": release_notes,
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
             print(f"  [OK] Gitee Release {tag} 说明已更新")
-        else:
-            print(f"  [错误] Gitee Release 更新失败: {resp.status_code} {resp.text[:200]}")
-            sys.exit(1)
-    except requests.exceptions.RequestException as e:
-        print(f"  [错误] Gitee API 请求失败: {e}")
-        sys.exit(1)
+            break
+        except requests.exceptions.RequestException as exc:
+            last_error = str(exc)
+            try:
+                current = session.get(
+                    f"{api_base}/releases/tags/{tag}",
+                    params={"access_token": token},
+                    timeout=15,
+                )
+                current.raise_for_status()
+                data = current.json()
+                if (
+                    data.get("name") == release_title
+                    and _normalize_markdown(data.get("body", ""))
+                    == _normalize_markdown(release_notes)
+                ):
+                    print(f"  [OK] Gitee 已更新 {tag}，忽略丢失的 API 响应")
+                    break
+            except requests.exceptions.RequestException:
+                pass
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if (
+                status is not None
+                and 400 <= status < 500
+                and status not in {408, 429}
+            ):
+                print(f"  [错误] Gitee Release 更新失败: HTTP {status}")
+                sys.exit(1)
+            if attempt >= 3:
+                print(f"  [错误] Gitee API 请求失败: {last_error}")
+                sys.exit(1)
+            delay = 2 * (attempt + 1)
+            print(
+                f"  [重试] Gitee Release 更新瞬时失败，准备第 "
+                f"{attempt + 1}/3 次重试（{delay}s 后）"
+            )
+            time.sleep(delay)
 
     if not _verify_release_remote_state(version):
         print("  [错误] Release 说明同步后验收未通过")
@@ -3717,14 +3792,14 @@ def _trigger_cross_platform_ci(tag, old_tag_commit=None):
     return True, old_assets_info
 
 
-def _gitee_session():
+def _gitee_session(retries=3):
     """创建带自动重试的 requests Session，用于 Gitee API 调用。
 
     自动重试 5xx/429/连接错误（3 次），减少 Gitee 服务不稳定导致的失败。
     """
     session = requests.Session()
     retry = Retry(
-        total=3,
+        total=retries,
         backoff_factor=1,        # 1s, 2s, 4s
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["GET", "POST", "PATCH", "DELETE", "HEAD"],
@@ -3736,9 +3811,9 @@ def _gitee_session():
 
 
 def _gitee_ping(token, timeout=15):
-    """预检 Gitee API 连通性，最多重试 3 次。返回 True/False。"""
-    session = _gitee_session()
-    for attempt in range(3):
+    """预检 Gitee API 连通性，失败后立即重试 3 次。"""
+    session = _gitee_session(retries=0)
+    for attempt in range(4):
         try:
             resp = session.head(
                 "https://gitee.com/api/v5/user",
@@ -3749,8 +3824,8 @@ def _gitee_ping(token, timeout=15):
                 return True
         except requests.exceptions.RequestException:
             pass
-        if attempt < 2:
-            delay = 3 * (attempt + 1)
+        if attempt < 3:
+            delay = 2 * (attempt + 1)
             print(f"  [Gitee] API 预检失败，{delay}s 后重试 ({attempt+1}/3)")
             time.sleep(delay)
     return False
@@ -3762,10 +3837,25 @@ def _gitee_find_or_create_release(api_base, token, tag, release_title, release_n
     existing_assets: {文件名: {"id": 附件ID, "size": 文件大小}}，用于增量上传。
     内置重试：每次 API 调用最多重试 3 次（间隔 5s），应对 Gitee 服务不稳定。
     """
-    session = _gitee_session()
-    max_attempts = 3
+    session = _gitee_session(retries=0)
+    max_attempts = 4
 
-    def _retry_request(method, url, **kwargs):
+    def _find_release_once():
+        try:
+            current = session.get(
+                f"{api_base}/releases",
+                params={"access_token": token, "page": 1, "per_page": 100},
+                timeout=30,
+            )
+            current.raise_for_status()
+            return next(
+                (item for item in current.json() if item.get("tag_name") == tag),
+                None,
+            )
+        except requests.exceptions.RequestException:
+            return None
+
+    def _retry_request(method, url, *, accepted=None, **kwargs):
         """带手动重试的请求包装器，应对非 5xx 的瞬态失败。"""
         for attempt in range(max_attempts):
             try:
@@ -3773,11 +3863,19 @@ def _gitee_find_or_create_release(api_base, token, tag, release_title, release_n
                 resp.raise_for_status()
                 return resp
             except requests.exceptions.RequestException as e:
+                if accepted is not None and accepted():
+                    return None
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                if status is not None and 400 <= status < 500 and status not in {
+                    408,
+                    409,
+                    429,
+                }:
+                    raise
                 if attempt < max_attempts - 1:
-                    delay = 5 * (attempt + 1)
-                    status = getattr(getattr(e, "response", None), "status_code", None)
+                    delay = 2 * (attempt + 1)
                     detail = f"HTTP {status}" if status else type(e).__name__
-                    print(f"  [Gitee] API 请求失败 ({detail})，{delay}s 后重试 ({attempt+1}/{max_attempts})")
+                    print(f"  [Gitee] API 请求失败 ({detail})，{delay}s 后重试 ({attempt+1}/3)")
                     time.sleep(delay)
                 else:
                     raise
@@ -3799,6 +3897,11 @@ def _gitee_find_or_create_release(api_base, token, tag, release_title, release_n
         if old_name != new_name or old_body != new_body:
             _retry_request("patch",
                 f"{api_base}/releases/{release_id}",
+                accepted=lambda: (
+                    (current := _find_release_once()) is not None
+                    and current.get("name", "") == new_name
+                    and current.get("body", "") == new_body
+                ),
                 params={"access_token": token},
                 json={
                     "tag_name": tag,
@@ -3812,8 +3915,18 @@ def _gitee_find_or_create_release(api_base, token, tag, release_title, release_n
                 print(f"  [OK] Gitee Release 正文已同步 ({len(new_body)} 字符)")
         return release_id, existing_assets
 
+    recovered_release = {}
+
+    def _created_after_lost_response():
+        current = _find_release_once()
+        if current is None:
+            return False
+        recovered_release.update(current)
+        return True
+
     resp = _retry_request("post",
         f"{api_base}/releases",
+        accepted=_created_after_lost_response,
         params={"access_token": token},
         json={
             "tag_name": tag,
@@ -3823,7 +3936,8 @@ def _gitee_find_or_create_release(api_base, token, tag, release_title, release_n
         },
         timeout=30)
     print(f"  [OK] Gitee Release 已创建: {tag}")
-    return resp.json()["id"], {}
+    created = recovered_release or resp.json()
+    return created["id"], {}
 
 
 def _gitee_fetch_assets(api_base, token, release_id, retry_fn=None):
@@ -3847,6 +3961,13 @@ def _gitee_fetch_assets(api_base, token, release_id, retry_fn=None):
         }
         for a in resp.json()
     }
+
+
+def _gitee_request_once(session, method, url, **kwargs):
+    """Issue one Gitee request for mutation postcondition verification."""
+    response = getattr(session, method)(url, **kwargs)
+    response.raise_for_status()
+    return response
 
 
 def _format_size(size_bytes):
@@ -3941,13 +4062,14 @@ def _gitee_clean_old_assets(keep_version, apply=False):
     return True
 
 
-def _gitee_upload_single(filepath, api_base, token, release_id, max_retries=5):
+def _gitee_upload_single(filepath, api_base, token, release_id, max_retries=3):
     """上传单个文件到 Gitee Release，带重试。返回 (文件名, 响应JSON)。
 
     只重试 5xx / 连接错误 / 超时。4xx 客户端错误直接抛出，不做无效重试。
     """
-    session = _gitee_session()
-    for attempt in range(max_retries):
+    session = _gitee_session(retries=0)
+    total_attempts = max_retries + 1
+    for attempt in range(total_attempts):
         try:
             with open(filepath, "rb") as fh:
                 resp = session.post(
@@ -3967,11 +4089,27 @@ def _gitee_upload_single(filepath, api_base, token, release_id, max_retries=5):
             resp.raise_for_status()
             return filepath.name, resp.json()
         except requests.exceptions.RequestException as e:
-            # 4xx 客户端错误不重试（参数错误、认证失败等）
-            if hasattr(e, 'response') and e.response is not None and 400 <= e.response.status_code < 500:
+            try:
+                current = _gitee_fetch_assets(
+                    api_base,
+                    token,
+                    release_id,
+                    lambda method, url, **kwargs: _gitee_request_once(
+                        session, method, url, **kwargs
+                    ),
+                )
+            except requests.exceptions.RequestException:
+                current = {}
+            remote = current.get(filepath.name)
+            if remote and int(remote.get("size") or 0) == filepath.stat().st_size:
+                print(f"  [OK] Gitee 已收到 {filepath.name}，忽略丢失的上传响应")
+                return filepath.name, remote
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            # 参数、认证等确定性 4xx 不重试；408/429 属于瞬时失败。
+            if status is not None and 400 <= status < 500 and status not in {408, 429}:
                 raise
-            if attempt < max_retries - 1:
-                delay = 5 * (2 ** attempt)  # 5, 10, 20, 40
+            if attempt < total_attempts - 1:
+                delay = 2 * (attempt + 1)
                 print(f"  [Gitee] {filepath.name} 上传失败 ({e})，{delay}s 后重试 ({attempt+1}/{max_retries})")
                 time.sleep(delay)
             else:
@@ -3985,8 +4123,8 @@ def _gitee_asset_url(owner, repo, tag, filename):
 
 def _gitee_delete_asset(api_base, token, release_id, asset_id, filename):
     """删除 Gitee Release 上的旧附件，带 3 次重试。"""
-    session = _gitee_session()
-    for attempt in range(3):
+    session = _gitee_session(retries=0)
+    for attempt in range(4):
         try:
             resp = session.delete(
                 f"{api_base}/releases/{release_id}/attach_files/{asset_id}",
@@ -3997,8 +4135,25 @@ def _gitee_delete_asset(api_base, token, release_id, asset_id, filename):
             print(f"  删除旧附件: {filename}")
             return
         except requests.exceptions.RequestException as e:
-            if attempt < 2:
-                delay = 5 * (attempt + 1)
+            try:
+                current = _gitee_fetch_assets(
+                    api_base,
+                    token,
+                    release_id,
+                    lambda method, url, **kwargs: _gitee_request_once(
+                        session, method, url, **kwargs
+                    ),
+                )
+            except requests.exceptions.RequestException:
+                current = {filename: {}}
+            if filename not in current:
+                print(f"  删除旧附件: {filename}（远端已不存在）")
+                return
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status is not None and 400 <= status < 500 and status not in {408, 429}:
+                raise
+            if attempt < 3:
+                delay = 2 * (attempt + 1)
                 print(f"  [Gitee] 删除附件 {filename} 失败 ({e})，{delay}s 后重试 ({attempt+1}/3)")
                 time.sleep(delay)
             else:
@@ -4196,8 +4351,8 @@ def _download_from_github_release(tag, asset_name, dest_dir):
     # 使用 gh CLI 下载更可靠（自动认证）
     dest = Path(dest_dir) / asset_name
 
-    # 重试机制：下载失败时等待 5s 后重试，最多 3 次
-    for attempt in range(3):
+    # 首次失败后立即重试 3 次。
+    for attempt in range(4):
         try:
             r = subprocess.run(
                 ["gh", "release", "download", tag, "-p", asset_name, "-D", str(dest_dir), "--clobber"],
@@ -4208,12 +4363,12 @@ def _download_from_github_release(tag, asset_name, dest_dir):
             error = r.stderr.strip()
         except subprocess.TimeoutExpired as e:
             error = f"下载超时 ({TRANSFER_TIMEOUT_SECONDS}s)"
-        if attempt < 2:
-            delay = 10 * (attempt + 1)
+        if attempt < 3:
+            delay = 2 * (attempt + 1)
             print(f"  [重试] 下载 {asset_name} 失败: {error} (attempt {attempt+1}/3), {delay}s 后重试...")
             time.sleep(delay)
 
-    raise RuntimeError(f"gh download 失败 (3 次重试后): {error}")
+    raise RuntimeError(f"gh download 失败（已重试 3 次）：{error}")
 
 
 def _wait_for_github_release_assets(tag, asset_names, max_wait=600, poll_interval=30):

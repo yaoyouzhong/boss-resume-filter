@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -42,6 +43,7 @@ for import_path in (BASE_DIR, SCRIPTS_DIR):
 
 import build  # noqa: E402
 import release_content_review  # noqa: E402
+import release_retry  # noqa: E402
 
 
 RELEASE_ARTIFACTS = (
@@ -124,7 +126,21 @@ def _write_release_state(
         json.dumps(state, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    os.replace(temp_path, RELEASE_STATE_PATH)
+    for attempt in range(len(release_retry.FILE_RETRY_DELAYS) + 1):
+        try:
+            os.replace(temp_path, RELEASE_STATE_PATH)
+            break
+        except OSError as exc:
+            transient = getattr(exc, "winerror", None) in {5, 32, 33}
+            if not transient or attempt >= len(release_retry.FILE_RETRY_DELAYS):
+                raise
+            delay = release_retry.FILE_RETRY_DELAYS[attempt]
+            print(
+                "  [重试] 写入本机发布状态时文件被临时占用，准备第 "
+                f"{attempt + 1}/{len(release_retry.FILE_RETRY_DELAYS)} 次重试"
+                f"（{delay:g}s 后）"
+            )
+            release_retry.time.sleep(delay)
 
 
 def _report_previous_release_state(version: str, release_sha: str) -> None:
@@ -165,6 +181,23 @@ def _run(
 def _git_text(*args: str) -> str:
     result = _run(["git", *args], capture_output=True)
     return result.stdout.strip()
+
+
+def _run_external(
+    args: list[str],
+    label: str,
+    *,
+    postcondition: Callable[[], bool] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    result = release_retry.run_cli_with_retries(
+        _run,
+        args,
+        label,
+        postcondition=postcondition,
+    )
+    if result.returncode != 0:
+        _fail(f"{label}失败：{release_retry.command_detail(result)}")
+    return result
 
 
 def _configure_git_identity() -> None:
@@ -398,7 +431,12 @@ def _ensure_origin_tag(tag: str, release_sha: str, notes_path: Path) -> None:
         print(f"  [OK] 已创建 annotated tag: {tag}")
 
     if not remote_sha:
-        _run(["git", "push", "origin", f"refs/tags/{tag}"])
+        _run_external(
+            ["git", "push", "origin", f"refs/tags/{tag}"],
+            f"推送 GitHub tag {tag}",
+            postcondition=lambda: build._remote_tag_commit("origin", tag)
+            == release_sha,
+        )
         print(f"  [OK] 已推送 GitHub tag: {tag}")
     else:
         print(f"  [跳过] GitHub tag 已存在且提交一致: {tag}")
@@ -433,10 +471,16 @@ def _sanitized_git_push(
         if build._remote_ref_commit("gitee", remote_ref) == expected_commit:
             print(f"  [跳过] Gitee {remote_ref} 已是目标提交")
             return
-    result = _run(
+    result = release_retry.run_cli_with_retries(
+        _run,
         ["git", "push", url, refspec],
-        check=False,
-        capture_output=True,
+        "同步 Gitee 引用",
+        postcondition=(
+            lambda: build._remote_ref_commit("gitee", remote_ref)
+            == expected_commit
+        )
+        if remote_ref and expected_commit
+        else None,
     )
     if result.returncode == 0:
         return
@@ -478,12 +522,15 @@ def _ensure_local_release_tag(tag: str, release_sha: str) -> None:
     if local_sha and local_sha != release_sha:
         _fail(f"本地 {tag} 指向其他提交，禁止覆盖")
     if not local_sha:
-        _run([
-            "git",
-            "fetch",
-            "origin",
-            f"refs/tags/{tag}:refs/tags/{tag}",
-        ])
+        _run_external(
+            [
+                "git",
+                "fetch",
+                "origin",
+                f"refs/tags/{tag}:refs/tags/{tag}",
+            ],
+            f"拉取 GitHub tag {tag}",
+        )
         local_sha = _commit_for_ref(tag)
         if local_sha != release_sha:
             _fail(f"自动拉取 {tag} 后提交校验失败")
@@ -518,23 +565,36 @@ def _ensure_github_release(tag: str, title: str, body: str) -> dict | None:
     try:
         info = build._get_github_release_info(tag)
         if info is None:
-            _run([
-                "gh", "release", "create", tag,
-                "--draft",
-                "--verify-tag",
-                "--title", title,
-                "--notes-file", str(body_path),
-            ])
+            _run_external(
+                [
+                    "gh", "release", "create", tag,
+                    "--draft",
+                    "--verify-tag",
+                    "--title", title,
+                    "--notes-file", str(body_path),
+                ],
+                f"创建 GitHub Draft Release {tag}",
+                postcondition=lambda: build._get_github_release_info(tag)
+                is not None,
+            )
             print(f"  [OK] 已创建 GitHub Draft Release: {tag}")
             return build._get_github_release_info(tag)
 
         if info.get("tagName") != tag:
             _fail("GitHub Release 的标签与请求不一致")
-        _run([
-            "gh", "release", "edit", tag,
-            "--title", title,
-            "--notes-file", str(body_path),
-        ])
+        _run_external(
+            [
+                "gh", "release", "edit", tag,
+                "--title", title,
+                "--notes-file", str(body_path),
+            ],
+            f"更新 GitHub Release {tag}",
+            postcondition=lambda: (
+                (current := build._get_github_release_info(tag)) is not None
+                and current.get("name") == title
+                and str(current.get("body") or "").strip() == body.strip()
+            ),
+        )
         print(f"  [跳过] GitHub Release 已存在，已同步标题和说明: {tag}")
         return build._get_github_release_info(tag)
     finally:
@@ -879,7 +939,14 @@ def _publish_github_release(tag: str) -> None:
     if info is None:
         _fail("GitHub Release 不存在")
     if info.get("isDraft"):
-        _run(["gh", "release", "edit", tag, "--draft=false"])
+        _run_external(
+            ["gh", "release", "edit", tag, "--draft=false"],
+            f"发布 GitHub Release {tag}",
+            postcondition=lambda: (
+                (current := build._get_github_release_info(tag)) is not None
+                and not current.get("isDraft")
+            ),
+        )
         print(f"  [OK] GitHub Release 已正式发布: {tag}")
     else:
         print(f"  [跳过] GitHub Release 已是正式版本: {tag}")
@@ -887,7 +954,10 @@ def _publish_github_release(tag: str) -> None:
 
 def _fetch_and_assert_current_master_compatible(release_sha: str) -> str:
     """Re-read origin/master and reject an unsafe release/resume race."""
-    _run(["git", "fetch", "origin", "master"])
+    _run_external(
+        ["git", "fetch", "origin", "master"],
+        "拉取最新 GitHub master",
+    )
     master_sha = build._remote_ref_commit("origin", "refs/heads/master")
     if not master_sha:
         _fail("无法读取最新 origin/master")
@@ -928,7 +998,14 @@ def _commit_and_sync_manifest(
             )
         _run(["git", "add", "latest.json"])
         _run(["git", "commit", "-m", "chore: 更新自动更新清单"])
-        _run(["git", "push", "origin", "master"])
+        current_master = _git_text("rev-parse", "HEAD")
+        _run_external(
+            ["git", "push", "origin", "master"],
+            "推送 latest.json 到 GitHub master",
+            postcondition=lambda: build._remote_ref_commit(
+                "origin", "refs/heads/master"
+            ) == current_master,
+        )
         print("  [OK] latest.json 已提交并推送到 GitHub master")
     else:
         print("  [跳过] latest.json 已一致")

@@ -12,16 +12,23 @@ deletes worktrees, or starts the formal release workflow.
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import release_retry  # noqa: E402
+
+
 DEFAULT_CHECK_TIMEOUT = 30 * 60
 DEFAULT_POLL_INTERVAL = 10
 SUCCESS_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
@@ -66,6 +73,24 @@ def _git_text(*args: str, cwd: Path | None = None) -> str:
     return result.stdout.strip()
 
 
+def _run_external(
+    args: list[str],
+    label: str,
+    *,
+    postcondition: Callable[[], bool] | None = None,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    result = release_retry.run_cli_with_retries(
+        lambda command, **kwargs: _run(command, cwd=cwd, **kwargs),
+        args,
+        label,
+        postcondition=postcondition,
+    )
+    if result.returncode != 0:
+        _fail(f"{label}失败：{release_retry.command_detail(result)}")
+    return result
+
+
 def expected_authorization(branch: str) -> str:
     return f"一键交付分支 {branch}"
 
@@ -99,7 +124,10 @@ def _is_ancestor(ancestor: str, descendant: str) -> bool:
 
 
 def _remote_ref(remote: str, ref: str) -> str:
-    output = _git_text("ls-remote", remote, ref)
+    output = _run_external(
+        ["git", "ls-remote", remote, ref],
+        f"读取 {remote}/{ref}",
+    ).stdout.strip()
     if not output:
         return ""
     return output.split()[0]
@@ -117,10 +145,11 @@ def _push_gitee_master(expected_sha: str) -> str:
         print("  [跳过] Gitee master 已是目标提交")
         return current
 
-    result = _run(
+    result = release_retry.run_cli_with_retries(
+        _run,
         ["git", "push", "gitee", "origin/master:master"],
-        check=False,
-        capture_output=True,
+        "同步 Gitee master",
+        postcondition=lambda: _remote_ref("gitee", target_ref) == expected_sha,
     )
     current = _remote_ref("gitee", target_ref)
     if current == expected_sha:
@@ -192,9 +221,12 @@ def preflight(branch: str, *, run_tests: bool = True) -> dict[str, str]:
         _fail(f"当前检出分支不是 {branch!r}")
     _assert_delivery_worktrees_clean("当前工作区")
 
-    _run(["gh", "auth", "status", "--hostname", "github.com"])
-    _run(["git", "fetch", "origin"])
-    _run(["git", "fetch", "gitee"])
+    _run_external(
+        ["gh", "auth", "status", "--hostname", "github.com"],
+        "检查 GitHub 登录状态",
+    )
+    _run_external(["git", "fetch", "origin"], "拉取 GitHub 更新")
+    _run_external(["git", "fetch", "gitee"], "拉取 Gitee 更新")
 
     head_sha = _git_text("rev-parse", "HEAD")
     master_sha = _git_text("rev-parse", "origin/master")
@@ -224,26 +256,22 @@ def preflight(branch: str, *, run_tests: bool = True) -> dict[str, str]:
     }
 
 
-def _load_json(result: subprocess.CompletedProcess[str]) -> Any:
-    try:
-        return json.loads(result.stdout or "null")
-    except json.JSONDecodeError as error:
-        _fail(f"命令返回了无效 JSON：{error}")
-
-
 def _find_delivery_pr(branch: str, head_sha: str) -> dict[str, Any] | None:
-    result = _run(
-        [
+    try:
+        candidates = release_retry.run_json_query_with_retries(
+            _run,
+            [
             "gh", "pr", "list",
             "--head", branch,
             "--base", "master",
             "--state", "all",
             "--limit", "20",
             "--json", "number,state,isDraft,url,headRefOid,mergeCommit",
-        ],
-        capture_output=True,
-    )
-    candidates = _load_json(result) or []
+            ],
+            "读取交付 PR 列表",
+        ) or []
+    except release_retry.RetryExhausted as exc:
+        _fail(str(exc))
     matching = [pr for pr in candidates if pr.get("headRefOid") == head_sha]
     open_prs = [pr for pr in matching if pr.get("state") == "OPEN"]
     if open_prs:
@@ -284,7 +312,13 @@ def _push_and_create_pr(
     *,
     title: str | None = None,
 ) -> dict[str, Any]:
-    _run(["git", "push", "-u", "origin", branch])
+    _run_external(
+        ["git", "push", "-u", "origin", branch],
+        f"推送分支 {branch}",
+        postcondition=lambda: _remote_ref(
+            "origin", f"refs/heads/{branch}"
+        ) == head_sha,
+    )
     pr = _find_delivery_pr(branch, head_sha)
     if pr is not None:
         print(f"  [复用] PR #{pr['number']}: {pr['url']}")
@@ -298,7 +332,8 @@ def _push_and_create_pr(
         "--body", _default_pr_body(),
     ]
     create_result: subprocess.CompletedProcess[str] | None = None
-    for attempt in range(1, 4):
+    total_attempts = len(release_retry.RETRY_DELAYS) + 1
+    for attempt in range(1, total_attempts + 1):
         create_result = _run(
             create_args,
             check=False,
@@ -309,9 +344,19 @@ def _push_and_create_pr(
         existing = _find_delivery_pr(branch, head_sha)
         if existing is not None:
             return existing
-        if attempt < 3:
-            print(f"  [重试] GitHub 暂未接受新分支，稍后重试创建 PR（{attempt + 1}/3）")
-            time.sleep(attempt * 2)
+        if (
+            attempt < total_attempts
+            and release_retry.is_retryable_cli_failure(create_result)
+        ):
+            delay = release_retry.RETRY_DELAYS[attempt - 1]
+            print(
+                "  [重试] GitHub 暂未接受创建 PR 请求，准备第 "
+                f"{attempt}/{len(release_retry.RETRY_DELAYS)} 次重试"
+                f"（{delay}s 后）"
+            )
+            time.sleep(delay)
+            continue
+        break
     if create_result is None or create_result.returncode != 0:
         detail = str((create_result.stderr or create_result.stdout or "未知错误")).strip()
         _fail(f"PR 创建失败：{detail}")
@@ -323,15 +368,19 @@ def _push_and_create_pr(
 
 
 def _pr_view(number: int) -> dict[str, Any]:
-    result = _run(
-        [
+    try:
+        data = release_retry.run_json_query_with_retries(
+            _run,
+            [
             "gh", "pr", "view", str(number),
             "--json",
             "number,state,isDraft,url,mergeable,mergeStateStatus,statusCheckRollup,mergeCommit",
-        ],
-        capture_output=True,
-    )
-    return _load_json(result) or {}
+            ],
+            f"读取 PR #{number} 状态",
+        )
+    except release_retry.RetryExhausted as exc:
+        _fail(str(exc))
+    return data or {}
 
 
 def _check_rollup_state(rollup: list[dict[str, Any]]) -> tuple[str, str]:
@@ -406,7 +455,11 @@ def _merge_pr(pr: dict[str, Any]) -> dict[str, Any]:
     number = int(pr["number"])
     current = _pr_view(number)
     if current.get("state") != "MERGED":
-        _run(["gh", "pr", "merge", str(number), "--squash"])
+        _run_external(
+            ["gh", "pr", "merge", str(number), "--squash"],
+            f"合并 PR #{number}",
+            postcondition=lambda: _pr_view(number).get("state") == "MERGED",
+        )
         current = _pr_view(number)
     if current.get("state") != "MERGED":
         _fail(f"PR #{number} 合并命令完成后状态仍不是 MERGED")
@@ -422,8 +475,9 @@ def _update_local_master(expected_sha: str) -> bool:
     master_worktree = _worktree_for_branch("master")
     if master_worktree is not None:
         _assert_clean_worktree(master_worktree, "本地 master 工作区")
-        _run(
+        _run_external(
             ["git", "pull", "--ff-only", "origin", "master"],
+            "快进本地 master",
             cwd=master_worktree,
         )
     else:
@@ -436,7 +490,7 @@ def _update_local_master(expected_sha: str) -> bool:
 def finalize_delivery(branch: str, merge_sha: str) -> dict[str, str]:
     """Sync both masters, then remove only the delivered topic branch."""
     _assert_delivery_worktrees_clean("PR 合并后当前工作区")
-    _run(["git", "fetch", "origin"])
+    _run_external(["git", "fetch", "origin"], "拉取 GitHub 合并结果")
     origin_master = _remote_ref("origin", "refs/heads/master")
     if origin_master != merge_sha:
         _fail("GitHub master 与 PR 合并提交不一致，拒绝同步和清理")
@@ -449,7 +503,11 @@ def finalize_delivery(branch: str, merge_sha: str) -> dict[str, str]:
     _assert_delivery_worktrees_clean("分支清理前当前工作区")
 
     if _remote_branch_exists("origin", branch):
-        _run(["git", "push", "origin", "--delete", branch])
+        _run_external(
+            ["git", "push", "origin", "--delete", branch],
+            f"删除 GitHub 分支 {branch}",
+            postcondition=lambda: not _remote_branch_exists("origin", branch),
+        )
     if _current_branch() == branch:
         if master_checked_out_elsewhere:
             _run(["git", "switch", "--detach", "origin/master"])

@@ -20,10 +20,13 @@ from typing import Any
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
+SCRIPTS_DIR = Path(__file__).resolve().parent
+for import_path in (BASE_DIR, SCRIPTS_DIR):
+    if str(import_path) not in sys.path:
+        sys.path.insert(0, str(import_path))
 
 import build  # noqa: E402
+import release_retry  # noqa: E402
 
 
 RELEASE_FILES = frozenset({
@@ -90,6 +93,13 @@ def _run(
 def _git_text(*args: str) -> str:
     result = _run(["git", *args], capture_output=True)
     return result.stdout.strip()
+
+
+def _run_external(args: list[str], label: str) -> subprocess.CompletedProcess[str]:
+    result = release_retry.run_cli_with_retries(_run, args, label)
+    if result.returncode != 0:
+        _fail(f"{label}失败：{release_retry.command_detail(result)}")
+    return result
 
 
 def normalize_version(value: str) -> str:
@@ -161,9 +171,15 @@ def _local_branch_exists(branch: str) -> bool:
 
 
 def _remote_tag_commit(remote: str, tag: str) -> str:
-    output = _git_text("ls-remote", remote, f"refs/tags/{tag}^{{}}")
+    output = _run_external(
+        ["git", "ls-remote", remote, f"refs/tags/{tag}^{{}}"],
+        f"读取 {remote}/{tag}",
+    ).stdout.strip()
     if not output:
-        output = _git_text("ls-remote", remote, f"refs/tags/{tag}")
+        output = _run_external(
+            ["git", "ls-remote", remote, f"refs/tags/{tag}"],
+            f"读取 {remote}/{tag}",
+        ).stdout.strip()
     return output.split()[0] if output else ""
 
 
@@ -220,8 +236,8 @@ def inspect_repository(version: str) -> dict[str, Any]:
     if unexpected:
         _fail("发布准备分支包含非发布材料修改：" + ", ".join(sorted(unexpected)))
 
-    _run(["git", "fetch", "origin"])
-    _run(["git", "fetch", "gitee"])
+    _run_external(["git", "fetch", "origin"], "拉取 GitHub 更新")
+    _run_external(["git", "fetch", "gitee"], "拉取 Gitee 更新")
     head_sha = _git_text("rev-parse", "HEAD")
     origin_master = _git_text("rev-parse", "origin/master")
     gitee_master = _git_text("rev-parse", "gitee/master")

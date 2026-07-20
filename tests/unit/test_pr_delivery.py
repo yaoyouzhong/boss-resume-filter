@@ -93,7 +93,11 @@ def test_gitee_master_same_value_push_race_is_idempotent_success():
         ["git", "push"], 1, stdout="", stderr="incorrect old value provided",
     )
     with (
-        patch.object(pr_delivery, "_remote_ref", side_effect=["b" * 40, merge_sha]),
+        patch.object(
+            pr_delivery,
+            "_remote_ref",
+            side_effect=["b" * 40, merge_sha, merge_sha],
+        ),
         patch.object(pr_delivery, "_run", return_value=failed),
     ):
         assert pr_delivery._push_gitee_master(merge_sha) == merge_sha
@@ -105,8 +109,9 @@ def test_gitee_master_push_failure_still_blocks_when_remote_differs():
         ["git", "push"], 1, stdout="", stderr="incorrect old value provided",
     )
     with (
-        patch.object(pr_delivery, "_remote_ref", side_effect=["b" * 40, "b" * 40]),
+        patch.object(pr_delivery, "_remote_ref", return_value="b" * 40),
         patch.object(pr_delivery, "_run", return_value=failed),
+        patch.object(pr_delivery.release_retry.time, "sleep"),
     ):
         with _raises(pr_delivery.PRDeliveryError, "incorrect old value provided"):
             pr_delivery._push_gitee_master(merge_sha)
@@ -257,7 +262,9 @@ def test_finalize_preserves_branches_when_gitee_is_not_synchronized():
         with _raises(pr_delivery.PRDeliveryError, "同步失败"):
             pr_delivery.finalize_delivery("codex/test", merge_sha)
 
-    assert run.call_args_list == [call(["git", "fetch", "origin"])]
+    assert [item.args[0] for item in run.call_args_list] == [
+        ["git", "fetch", "origin"]
+    ]
     update_master.assert_not_called()
     remote_exists.assert_not_called()
     local_exists.assert_not_called()
@@ -296,7 +303,9 @@ def test_finalize_cleans_branch_only_after_both_masters_match():
     assert result["origin_master"] == merge_sha
     assert result["gitee_master"] == merge_sha
     update_master.assert_called_once_with(merge_sha)
-    assert call(["git", "push", "origin", "--delete", branch]) in run.call_args_list
+    assert ["git", "push", "origin", "--delete", branch] in [
+        item.args[0] for item in run.call_args_list
+    ]
     assert call(["git", "switch", "--detach", "origin/master"]) in run.call_args_list
     assert call(["git", "branch", "-D", branch]) in run.call_args_list
 
@@ -482,12 +491,13 @@ def test_pr_creation_retries_transient_new_branch_propagation_failure():
     sleep.assert_called_once_with(2)
 
 
-def test_pr_creation_reports_final_github_error_after_three_attempts():
+def test_pr_creation_reports_final_github_error_after_three_retries():
     branch = "codex/test"
     failures = [
         _completed(),
         subprocess.CompletedProcess([], 1, "", "temporary error 1"),
         subprocess.CompletedProcess([], 1, "", "temporary error 2"),
+        subprocess.CompletedProcess([], 1, "", "temporary error 3"),
         subprocess.CompletedProcess([], 1, "", "final GitHub error"),
     ]
     with (
@@ -499,3 +509,20 @@ def test_pr_creation_reports_final_github_error_after_three_attempts():
     ):
         with _raises(pr_delivery.PRDeliveryError, "final GitHub error"):
             pr_delivery._push_and_create_pr(branch, "a" * 40)
+
+
+def test_pr_view_retries_three_transient_failures_then_recovers():
+    failures = [
+        subprocess.CompletedProcess([], 1, "", f"temporary error {index}")
+        for index in range(1, 4)
+    ]
+    success = _completed('{"number":28,"state":"OPEN"}')
+    with (
+        patch.object(pr_delivery, "_run", side_effect=[*failures, success]) as run,
+        patch.object(pr_delivery.release_retry.time, "sleep") as sleep,
+    ):
+        result = pr_delivery._pr_view(28)
+
+    assert result == {"number": 28, "state": "OPEN"}
+    assert run.call_count == 4
+    assert sleep.call_args_list == [call(2), call(4), call(6)]

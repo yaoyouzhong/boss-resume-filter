@@ -15,7 +15,6 @@ needed for an idempotent resume.
 from __future__ import annotations
 
 import argparse
-import json
 import subprocess
 import sys
 import time
@@ -33,13 +32,13 @@ import build  # noqa: E402
 import release_ci  # noqa: E402
 import release_content_review  # noqa: E402
 import release_prepare  # noqa: E402
+import release_retry  # noqa: E402
 
 
 DEFAULT_RUN_DISCOVERY_TIMEOUT = 90
 DEFAULT_RELEASE_TIMEOUT = 3 * 60 * 60
 DEFAULT_POLL_INTERVAL = 15
 DEFAULT_ACTION_STALL_TIMEOUT = 30 * 60
-GITHUB_QUERY_ATTEMPTS = 4
 ACTIVE_RUN_STATES = {"queued", "in_progress", "pending", "requested", "waiting"}
 
 
@@ -73,6 +72,13 @@ def _git_text(*args: str) -> str:
     return result.stdout.strip()
 
 
+def _run_external(args: list[str], label: str) -> subprocess.CompletedProcess[str]:
+    result = release_retry.run_cli_with_retries(_run, args, label)
+    if result.returncode != 0:
+        _fail(f"{label}失败：{release_retry.command_detail(result)}")
+    return result
+
+
 def expected_authorization(version: str) -> str:
     return f"确认正式发布 v{version}"
 
@@ -85,24 +91,10 @@ def validate_authorization(version: str, authorization: str) -> None:
 
 def _run_github_json_query(args: list[str], label: str) -> Any:
     """Run one read-only gh query with bounded retries for transient failures."""
-    last_error = "unknown"
-    for attempt in range(1, GITHUB_QUERY_ATTEMPTS + 1):
-        result = _run(args, check=False, capture_output=True)
-        if result.returncode == 0:
-            try:
-                return json.loads(result.stdout or "null")
-            except json.JSONDecodeError as exc:
-                last_error = f"JSONDecodeError: {exc}"
-        else:
-            last_error = (result.stderr or result.stdout or "gh query failed").strip()
-        if attempt < GITHUB_QUERY_ATTEMPTS:
-            delay = 2 * attempt
-            print(
-                f"  [GitHub 重试] {label}失败 "
-                f"({attempt}/{GITHUB_QUERY_ATTEMPTS})，{delay}s 后重试..."
-            )
-            time.sleep(delay)
-    _fail(f"{label}失败：{last_error}")
+    try:
+        return release_retry.run_json_query_with_retries(_run, args, label)
+    except release_retry.RetryExhausted as exc:
+        _fail(str(exc))
 
 
 def _list_release_runs() -> list[dict[str, Any]]:
@@ -157,9 +149,12 @@ def preflight(version: str, *, approved_content_sha: str = "") -> dict[str, Any]
     if not _working_tree_clean():
         _fail("正式发布前工作区必须干净")
 
-    _run(["gh", "auth", "status", "--hostname", "github.com"])
-    _run(["git", "fetch", "origin"])
-    _run(["git", "fetch", "gitee"])
+    _run_external(
+        ["gh", "auth", "status", "--hostname", "github.com"],
+        "检查 GitHub 登录状态",
+    )
+    _run_external(["git", "fetch", "origin"], "拉取 GitHub 更新")
+    _run_external(["git", "fetch", "gitee"], "拉取 Gitee 更新")
     head_sha = _git_text("rev-parse", "HEAD")
     origin_master = _git_text("rev-parse", "origin/master")
     gitee_master = _git_text("rev-parse", "gitee/master")
@@ -234,14 +229,49 @@ def _dispatch_workflow(
     authorization: str,
     approved_content_sha: str,
 ) -> None:
-    _run([
+    release_sha = _git_text("rev-parse", "origin/master")
+    previous_ids = {
+        int(run.get("databaseId") or 0)
+        for run in _matching_runs(_list_release_runs(), version, release_sha)
+    }
+    args = [
         "gh", "workflow", "run", "release.yml",
         "--ref", "master",
         "-f", f"version={version}",
         "-f", f"authorization={authorization}",
         "-f", f"content_sha={approved_content_sha}",
         "-f", "dry_run=false",
-    ])
+    ]
+    last_result: subprocess.CompletedProcess[str] | None = None
+    for attempt in range(len(release_retry.RETRY_DELAYS) + 1):
+        last_result = _run(args, check=False, capture_output=True)
+        if last_result.returncode == 0:
+            return
+        new_runs = [
+            run
+            for run in _matching_runs(_list_release_runs(), version, release_sha)
+            if int(run.get("databaseId") or 0) not in previous_ids
+        ]
+        if new_runs:
+            print("  [OK] GitHub 已接受工作流触发请求，忽略丢失的 CLI 响应")
+            return
+        if (
+            attempt >= len(release_retry.RETRY_DELAYS)
+            or not release_retry.is_retryable_cli_failure(last_result)
+        ):
+            break
+        delay = release_retry.RETRY_DELAYS[attempt]
+        print(
+            "  [重试] 触发 GitHub 暂存工作流瞬时失败，准备第 "
+            f"{attempt + 1}/{len(release_retry.RETRY_DELAYS)} 次重试"
+            f"（{delay}s 后）"
+        )
+        time.sleep(delay)
+    assert last_result is not None
+    _fail(
+        "触发 GitHub 暂存工作流失败："
+        + release_retry.command_detail(last_result)
+    )
 
 
 def _discover_new_run(
@@ -355,8 +385,8 @@ def _synchronize_local_master() -> str:
     """Fast-forward local master only after both remote masters agree."""
     if _git_text("branch", "--show-current") != "master" or not _working_tree_clean():
         _fail("正式发布已完成，但本地 master 无法安全自动同步")
-    _run(["git", "fetch", "origin"])
-    _run(["git", "fetch", "gitee"])
+    _run_external(["git", "fetch", "origin"], "拉取 GitHub 发布结果")
+    _run_external(["git", "fetch", "gitee"], "拉取 Gitee 发布结果")
     local_sha = _git_text("rev-parse", "HEAD")
     origin_master = _git_text("rev-parse", "origin/master")
     gitee_master = _git_text("rev-parse", "gitee/master")
