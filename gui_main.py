@@ -199,7 +199,7 @@ PRIMARY_NAV_PAGES = tuple(page for page in PageIndex if page is not PageIndex.SE
 PROVIDER_DISPLAY = {
     "qwen": "通义千问 (Qwen)",
     "deepseek": "DeepSeek",
-    "kimi": "Kimi (月之暗面)",
+    "kimi": "月之暗面 (Kimi)",
     "zhipu": "智谱 (Zhipu)",
     "minimax": "MiniMax",
     "xiaomi": "小米 (Xiaomi)",
@@ -211,13 +211,24 @@ PROVIDER_DISPLAY = {
 DISPLAY_TO_KEY = {v: k for k, v in PROVIDER_DISPLAY.items()}
 
 
-def _api_service_display_name(api_config: dict) -> str:
-    """Return the user-facing service channel for the active API endpoint."""
-    endpoint = classify_api_endpoint(api_config)
-    if endpoint["is_official"]:
-        return str(endpoint["service_name"])
+def _api_provider_display_name(api_config: dict) -> str:
+    """Return the provider name used consistently across model settings and run control."""
     provider = str(api_config.get("api_provider") or "")
     return PROVIDER_DISPLAY.get(provider, provider)
+
+
+def _api_timeout_hint_text(api_config: dict) -> str:
+    """Return a flat timeout note without nesting the provider's English-name brackets."""
+    is_relay = bool(classify_api_endpoint(api_config)["is_relay"])
+    model_name = str(api_config.get("model") or "")
+    if is_relay:
+        label = f"中转服务 / {model_name}" if model_name else "中转服务"
+        default_timeout = 120
+    else:
+        provider_name = _api_provider_display_name(api_config)
+        label = f"{provider_name} / {model_name}" if model_name else provider_name
+        default_timeout = 60
+    return f"{label} · 默认 {default_timeout} 秒"
 
 
 # 首次运行时确保配置文件存在
@@ -915,6 +926,8 @@ class BossFilterGUI:
             self.font_boost = 1.0
         # font_scale 仅用于字体大小，布局/间距/图标/窗口/rowheight 仍用 dpi_scale × zoom_factor
         self.font_scale = self.dpi_scale * self.zoom_factor * self.font_boost
+        # 同行备注与其直接关联控件之间的统一视觉间距。
+        self.inline_note_gap = max(8, int(10 * self.dpi_scale * self.zoom_factor))
 
         # 初始化图标缓存（DPI 感知的高清图标）
         self.icons = icons.init(effective_scale)
@@ -1170,7 +1183,7 @@ class BossFilterGUI:
         def _reset_status():
             self._status_flash_after_id = None
             if self.status_bar_left_var.get() == expected_text:
-                self.status_bar_left_var.set("就绪")
+                self.status_bar_left_var.set("")
 
         self._status_flash_after_id = self.root.after(duration_ms, _reset_status)
 
@@ -1313,6 +1326,21 @@ class BossFilterGUI:
                         background=c['bg_card'], foreground=c['text_primary'],
                         bordercolor=c.get('border_strong', ui_theme.BORDER_STRONG),
                         focuscolor=c['primary'], lightcolor=c['bg_card'], darkcolor=c['bg_card'])
+        style.layout(
+            'TButton',
+            [
+                ('Button.border', {
+                    'sticky': 'nswe',
+                    'border': '1',
+                    'children': [
+                        ('Button.padding', {
+                            'sticky': 'nswe',
+                            'children': [('Button.label', {'sticky': 'nswe'})],
+                        }),
+                    ],
+                }),
+            ],
+        )
         style.map('TButton',
                   background=[('pressed', c['bg_hover']), ('active', c['bg_hover']),
                               ('disabled', c['bg_input'])],
@@ -1390,10 +1418,31 @@ class BossFilterGUI:
         style.configure('TCombobox', font=self.font_label)
         style.configure('TCombobox', rowheight=int(combo_font_size * 1.8))
         # macOS aqua 下 fieldbackground 只能通过 map 设置，configure 被原生渲染忽略
-        style.map('TCombobox',
-                  fieldbackground=[('readonly', self.colors['bg_card']),
-                                   ('disabled', self.colors['bg_input']),
-                                   ('!disabled', self.colors['bg_card'])])
+        style.map(
+            'TCombobox',
+            fieldbackground=[
+                ('disabled', c['bg_input']),
+                ('readonly', c['bg_card']),
+                ('!disabled', c['bg_card']),
+            ],
+            foreground=[
+                ('disabled', c['text_muted']),
+                ('readonly', c['text_primary']),
+                ('!disabled', c['text_primary']),
+            ],
+            selectbackground=[
+                ('disabled', c['bg_input']),
+                ('readonly', c['bg_card']),
+                ('!focus', c['bg_card']),
+                ('focus', c['primary']),
+            ],
+            selectforeground=[
+                ('disabled', c['text_muted']),
+                ('readonly', c['text_primary']),
+                ('!focus', c['text_primary']),
+                ('focus', '#FFFFFF'),
+            ],
+        )
         style.map('TSpinbox',
                   fieldbackground=[('!disabled', self.colors['bg_card']),
                                    ('disabled', self.colors['bg_input'])])
@@ -1434,7 +1483,55 @@ class BossFilterGUI:
                       bordercolor=[('focus', c['primary'])],
                       lightcolor=[('focus', c['primary'])],
                       darkcolor=[('focus', c['primary'])])
-        style.configure('TCheckbutton', background=c['bg_card'], foreground=c['text_primary'])
+        checkbox_size = max(24, int(round(24 * fs)))
+        checkbox_off = self.icons.get(
+            'checkbox_off', checkbox_size, c.get('border_strong', ui_theme.BORDER_STRONG)
+        )
+        checkbox_on = self.icons.get('checkbox_on', checkbox_size, c['primary'])
+        checkbox_disabled_off = self.icons.get(
+            'checkbox_off', checkbox_size, c['text_muted']
+        )
+        checkbox_disabled_on = self.icons.get(
+            'checkbox_on', checkbox_size, c['text_muted']
+        )
+        self._checkbox_style_images = (
+            checkbox_off,
+            checkbox_on,
+            checkbox_disabled_off,
+            checkbox_disabled_on,
+        )
+        checkbox_indicator = 'App.Checkbutton.indicator'
+        if checkbox_indicator not in style.element_names():
+            style.element_create(
+                checkbox_indicator,
+                'image',
+                checkbox_off,
+                ('disabled', 'selected', checkbox_disabled_on),
+                ('disabled', checkbox_disabled_off),
+                ('selected', checkbox_on),
+                sticky='w',
+            )
+        style.layout(
+            'TCheckbutton',
+            [
+                ('Checkbutton.padding', {
+                    'sticky': 'nswe',
+                    'children': [
+                        (checkbox_indicator, {'side': 'left', 'sticky': ''}),
+                        ('Checkbutton.label', {
+                            'side': 'left',
+                            'sticky': 'nswe',
+                        }),
+                    ],
+                }),
+            ],
+        )
+        style.configure(
+            'TCheckbutton',
+            background=c['bg_card'],
+            foreground=c['text_primary'],
+            padding=(2, 2),
+        )
         style.configure('TRadiobutton', background=c['bg_card'], foreground=c['text_primary'])
         style.configure('Horizontal.TProgressbar',
                         troughcolor=c['bg_main'], background=c['primary'],
@@ -1686,7 +1783,7 @@ class BossFilterGUI:
         )
         status_bar.pack(side="bottom", fill="x")
         status_font = (FONT_FAMILY, int(10 * self.font_scale))
-        self.status_bar_left_var = tk.StringVar(value="就绪")
+        self.status_bar_left_var = tk.StringVar(value="")
         tk.Label(
             status_bar, textvariable=self.status_bar_left_var, font=status_font,
             foreground=self.colors['text_secondary'], background=footer_bg,
@@ -2318,7 +2415,9 @@ class BossFilterGUI:
         self.btn_add_hint = None
         # 下拉框
         self.config_job_combo = ttk.Combobox(select_frame, values=list(self.job_rules.keys()), width=28, font=self.font_label)
-        self.config_job_combo.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
+        self.config_job_combo.pack(
+            side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0)
+        )
         self.config_job_combo.bind("<<ComboboxSelected>>", self.on_job_selected)
         self.job_form_status_var = tk.StringVar(value="未选择岗位")
         self.job_form_status_label = ttk.Label(
@@ -2330,7 +2429,7 @@ class BossFilterGUI:
         )
         self.job_form_status_label.pack(
             side="left",
-            padx=(0, int(8 * self.dpi_scale * self.zoom_factor)),
+            padx=(self.inline_note_gap, int(8 * self.dpi_scale * self.zoom_factor)),
         )
 
         # ===== 新建岗位步骤引导条 =====
@@ -2545,10 +2644,10 @@ class BossFilterGUI:
         max_age_spin.bind('<Enter>', lambda e: max_age_spin.bind('<MouseWheel>', lambda ev: 'break'))
         max_age_spin.bind('<Leave>', lambda e: max_age_spin.unbind('<MouseWheel>'))
         ttk.Label(row_age, text="岁", font=self.font_label, background=self.colors['bg_card']).pack(side="left")
-        ttk.Label(row_age, text="  留空表示不限制",
+        ttk.Label(row_age, text="留空表示不限制",
                  font=(FONT_FAMILY, int(10 * self.font_scale)),
                  foreground=self.colors['text_secondary'],
-                 background=self.colors['bg_card']).pack(side="left", padx=(int(10 * self.dpi_scale * self.zoom_factor), 0))
+                 background=self.colors['bg_card']).pack(side="left", padx=(self.inline_note_gap, 0))
 
         # 薪资范围
         self.salary_min_var = tk.StringVar()
@@ -2571,10 +2670,10 @@ class BossFilterGUI:
         self.salary_max_entry = salary_max_entry
         ttk.Label(row_salary, text="K", font=self.font_label,
                  background=self.colors['bg_card']).pack(side="left")
-        ttk.Label(row_salary, text="  留空表示不限制薪资",
+        ttk.Label(row_salary, text="留空表示不限制薪资",
                  font=(FONT_FAMILY, int(10 * self.font_scale)),
                  foreground=self.colors['text_secondary'],
-                 background=self.colors['bg_card']).pack(side="left", padx=(int(10 * self.dpi_scale * self.zoom_factor), 0))
+                 background=self.colors['bg_card']).pack(side="left", padx=(self.inline_note_gap, 0))
 
         # 工作地点
         row3 = ttk.Frame(basic_frame, style='TFrame')
@@ -2583,11 +2682,13 @@ class BossFilterGUI:
                  background=self.colors['bg_card']).pack(side="left")
         self.work_location_var = tk.StringVar()
         work_location_entry = ttk.Entry(row3, textvariable=self.work_location_var, width=25, font=self.font_label)
-        work_location_entry.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
+        work_location_entry.pack(
+            side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0)
+        )
         self.bind_entry_context_menu(work_location_entry)
         ttk.Label(row3, text="留空表示不限   多地点用 / 分隔，如：南京/上海",
-                 font=(FONT_FAMILY, int(10 * self.font_scale)),
-                 foreground=self.colors['text_secondary'], background=self.colors['bg_card']).pack(side="left", padx=(int(10 * self.dpi_scale * self.zoom_factor), 0))
+                  font=(FONT_FAMILY, int(10 * self.font_scale)),
+                  foreground=self.colors['text_secondary'], background=self.colors['bg_card']).pack(side="left", padx=(self.inline_note_gap, 0))
 
         yield
 
@@ -2614,17 +2715,23 @@ class BossFilterGUI:
 
         # 使用 Treeview 显示技能列表
         columns = ("name", "weight", "source", "evidence")
-        tree_font = (FONT_FAMILY, int(12 * self.font_scale))
+        tree_font = self.font_table
 
-        self.skills_tree = ttk.Treeview(list_container, columns=columns, show="headings", height=UI_CONFIG['treeview_height'])
+        self.skills_tree = ttk.Treeview(
+            list_container,
+            columns=columns,
+            show="headings",
+            height=UI_CONFIG['treeview_height'],
+            style='Skills.Treeview',
+        )
         self.skills_tree.heading("name", text="技能名称")
         self.skills_tree.heading("weight", text="权重")
         self.skills_tree.heading("source", text="来源")
         self.skills_tree.heading("evidence", text="原文出处")
         # 设置列 - 全部居中
-        self.skills_tree.column("name", width=160, minwidth=120, stretch=False, anchor='center')
-        self.skills_tree.column("weight", width=60, minwidth=55, stretch=False, anchor='center')
-        self.skills_tree.column("source", width=70, minwidth=60, stretch=False, anchor='center')
+        self.skills_tree.column("name", width=190, minwidth=150, stretch=False, anchor='center')
+        self.skills_tree.column("weight", width=80, minwidth=70, stretch=False, anchor='center')
+        self.skills_tree.column("source", width=90, minwidth=75, stretch=False, anchor='center')
         self.skills_tree.column("evidence", width=320, minwidth=220, stretch=True, anchor='w')
         # 设置颜色标记（带字体）- 覆盖所有情况
         self.skills_tree.tag_configure('high_weight', font=tree_font, background=self.colors['bg_tree_tag_high'])
@@ -2633,8 +2740,12 @@ class BossFilterGUI:
 
         # 设置 Treeview 默认字体和行高
         _style = ttk.Style()
-        _style.configure('Treeview', font=tree_font, rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor))
-        _style.configure('Treeview.Heading', font=(FONT_FAMILY, int(12 * self.font_scale), 'bold'))
+        _style.configure(
+            'Skills.Treeview',
+            font=tree_font,
+            rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor),
+        )
+        _style.configure('Skills.Treeview.Heading', font=(*self.font_table, 'bold'))
 
         skills_scroll = ttk.Scrollbar(list_container, orient="vertical", command=self.skills_tree.yview)
         self.skills_tree.configure(yscrollcommand=skills_scroll.set)
@@ -3767,14 +3878,7 @@ class BossFilterGUI:
             self.llm_read_timeout_var.set(self.api_config.get("llm_read_timeout") or _default_read)
             # 刷新提示文案
             if hasattr(self, '_timeout_hint_label'):
-                _pn = _api_service_display_name(self.api_config)
-                _mn = self.api_config.get("model", "")
-                if _is_relay:
-                    _label = f"中转服务/{_mn}" if _mn else "中转服务"
-                    _hint = f"（{_label}，默认 120 秒）"
-                else:
-                    _label = f"{_pn}/{_mn}" if _mn else _pn
-                    _hint = f"（{_label}，默认 60 秒）"
+                _hint = _api_timeout_hint_text(self.api_config)
                 self._timeout_hint_label.config(text=_hint)
 
         # 更新当前使用模型显示
@@ -4332,13 +4436,15 @@ class BossFilterGUI:
         icon_browser = self.icons.button('search', self.colors['text_primary'])
         btn_browser = ttk.Button(browser_status_row, image=icon_browser, text=" 检测/连接浏览器", compound=tk.LEFT, command=self.check_browser_connection)
         btn_browser._icon_ref = icon_browser
-        btn_browser.pack(side="left", padx=int(20 * self.dpi_scale * self.zoom_factor))
+        btn_browser.pack(
+            side="left", padx=(int(20 * self.dpi_scale * self.zoom_factor), 0)
+        )
 
         # 状态说明
         self.browser_status_help = ttk.Label(browser_status_row, text="请点击按钮连接 BOSS 直聘页面",
                                              font=(FONT_FAMILY, int(11 * self.font_scale)),
                                              foreground=self.colors['text_secondary'])
-        self.browser_status_help.pack(side="left", padx=int(20 * self.dpi_scale * self.zoom_factor))
+        self.browser_status_help.pack(side="left", padx=(self.inline_note_gap, 0))
 
         yield
 
@@ -4356,7 +4462,9 @@ class BossFilterGUI:
                                        to=UI_CONFIG['spinbox_rounds_max'],
                                        increment=10, textvariable=self.rounds_var,
                                        width=15, font=self.font_label)
-        self.rounds_spin.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
+        self.rounds_spin.pack(
+            side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0)
+        )
         # 鼠标滚轮绑定
         self.rounds_spin.bind('<Enter>',
             lambda e: self.rounds_spin.bind('<MouseWheel>', self._on_rounds_mousewheel))
@@ -4364,7 +4472,7 @@ class BossFilterGUI:
             lambda e: self.rounds_spin.unbind('<MouseWheel>'))
         self.rounds_hint_label = ttk.Label(row1, text="(推荐 50-200 轮次)", font=(FONT_FAMILY, int(11 * self.font_scale)),
                  foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card'])
-        self.rounds_hint_label.pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
+        self.rounds_hint_label.pack(side="left", padx=(self.inline_note_gap, 0))
 
         # 选择岗位（多岗位运行时指定处理哪个岗位）
         row_job = ttk.Frame(param_frame, style='TFrame')
@@ -4375,12 +4483,14 @@ class BossFilterGUI:
         self.job_combo = ttk.Combobox(row_job, textvariable=self.job_select_var,
                                        values=["全部岗位"], width=28, state="readonly",
                                        font=self.font_label)
-        self.job_combo.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
+        self.job_combo.pack(
+            side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0)
+        )
         self.job_combo.bind("<<ComboboxSelected>>", self.on_run_job_selected)
         ttk.Label(row_job, text="建议每次选择一个岗位，\"全部岗位\"将依次处理",
                  font=(FONT_FAMILY, int(11 * self.font_scale)),
                  foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
-                 background=self.colors['bg_card']).pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
+                 background=self.colors['bg_card']).pack(side="left", padx=(self.inline_note_gap, 0))
 
         yield
 
@@ -4402,11 +4512,13 @@ class BossFilterGUI:
             state="readonly",
             font=self.font_label,
         )
-        contact_combo.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
+        contact_combo.pack(
+            side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0)
+        )
         self._contact_after_scan_note_label = ttk.Label(row2, text="",
                  font=(FONT_FAMILY, int(11 * self.font_scale)),
                  foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card'])
-        self._contact_after_scan_note_label.pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
+        self._contact_after_scan_note_label.pack(side="left", padx=(self.inline_note_gap, 0))
 
         def _update_contact_after_scan_note(*_):
             policy = self.contact_after_scan_var.get()
@@ -4444,7 +4556,9 @@ class BossFilterGUI:
         self.ai_status_label = tk.Label(row_ai, text="检测中…", font=_status_font,
                                         foreground=self.colors['text_secondary'],
                                         background=self.colors['bg_card'])
-        self.ai_status_label.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
+        self.ai_status_label.pack(
+            side="left", padx=(int(5 * self.dpi_scale * self.zoom_factor), 0)
+        )
         target_ai_status_label = self.ai_status_label
 
         yield
@@ -4487,7 +4601,7 @@ class BossFilterGUI:
         _note_font = (FONT_FAMILY, int(11 * self.font_scale))
         _sign_font = (FONT_FAMILY, int(14 * self.font_scale))  # +/- 显式加大
         tk.Label(row_ai, text=_note_prefix, font=_note_font,
-                 foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card']).pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
+                 foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card']).pack(side="left", padx=(self.inline_note_gap, 0))
         tk.Label(row_ai, text="+", font=_sign_font,
                  foreground=self.colors['success'], background=self.colors['bg_card']).pack(side="left")
         tk.Label(row_ai, text="-", font=_sign_font,
@@ -4520,19 +4634,12 @@ class BossFilterGUI:
                     font=_spin_font).pack(side="left", padx=(_spin_pad, 0))
         ttk.Label(row_ai_timeout, text="秒", font=_sub_font,
                  background=self.colors['bg_card'],
-                 foreground=self.colors['text_secondary']).pack(side="left", padx=(_spin_pad, int(10 * self.dpi_scale * self.zoom_factor)))
-        _provider_name = _api_service_display_name(self.api_config)
-        _model_name = self.api_config.get("model", "")
-        if _is_relay:
-            _label = f"中转服务/{_model_name}" if _model_name else "中转服务"
-            _hint = f"（{_label}，默认 120 秒）"
-        else:
-            _label = f"{_provider_name}/{_model_name}" if _model_name else _provider_name
-            _hint = f"（{_label}，默认 60 秒）"
+                 foreground=self.colors['text_secondary']).pack(side="left", padx=(_spin_pad, 0))
+        _hint = _api_timeout_hint_text(self.api_config)
         self._timeout_hint_label = ttk.Label(row_ai_timeout, text=_hint, font=_sub_font,
                  background=self.colors['bg_card'],
                  foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
-        self._timeout_hint_label.pack(side="left")
+        self._timeout_hint_label.pack(side="left", padx=(self.inline_note_gap, 0))
 
         yield
 
@@ -4828,12 +4935,14 @@ class BossFilterGUI:
         self.result_search_var = tk.StringVar()
         self.result_search_var.trace_add('write', lambda *_: self._filter_result_tree())
         self.result_search_entry = ttk.Entry(
-            search_frame, textvariable=self.result_search_var, width=22, font=self.font_label)
-        self.result_search_entry.pack(side="left", padx=int(6 * self.dpi_scale * self.zoom_factor))
+            search_frame, textvariable=self.result_search_var, width=18, font=self.font_label)
+        self.result_search_entry.pack(
+            side="left", padx=(int(6 * self.dpi_scale * self.zoom_factor), 0)
+        )
         ttk.Label(search_frame, text="（姓名/匹配分/推荐指数/状态，Esc 清空）",
                  font=(FONT_FAMILY, int(10 * self.font_scale)),
                  foreground=self.colors['text_secondary'],
-                 background=self.colors['bg_main']).pack(side="left", padx=int(4 * self.dpi_scale * self.zoom_factor))
+                 background=self.colors['bg_main']).pack(side="left", padx=(self.inline_note_gap, 0))
         self.result_search_entry.bind('<Escape>', lambda e: self.result_search_var.set(''))
 
         ttk.Label(search_frame, text="结果范围:", font=self.font_label,
@@ -4850,7 +4959,7 @@ class BossFilterGUI:
         )
         self.result_view_combo.pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
         self.result_view_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_results())
-        self.result_count_var = tk.StringVar(value="显示 0 人")
+        self.result_count_var = tk.StringVar(value="0 / 共 0 人")
         ttk.Label(
             search_frame,
             textvariable=self.result_count_var,
@@ -13991,7 +14100,7 @@ class BossFilterGUI:
                 # 存储原始数据用于排序和详情展示
                 self.result_tree_data = sorted_candidates
                 if hasattr(self, 'result_count_var'):
-                    self.result_count_var.set(f"显示 {visible_count} / 共 {len(candidates)} 人")
+                    self.result_count_var.set(f"{visible_count} / 共 {len(candidates)} 人")
                 self._toggle_result_empty_state(visible_count == 0)
                 self._tree_original_order = None  # 搜索排序缓存失效，下次搜索时重建
                 self._update_result_review_button_state()
@@ -14011,7 +14120,7 @@ class BossFilterGUI:
                 self.result_tree_data = []
                 self.all_candidates = []
                 if hasattr(self, 'result_count_var'):
-                    self.result_count_var.set("显示 0 / 共 0 人")
+                    self.result_count_var.set("0 / 共 0 人")
                 if hasattr(self, 'result_stats_vars'):
                     for stat_var in self.result_stats_vars.values():
                         stat_var.set('0')
@@ -15137,7 +15246,7 @@ class BossFilterGUI:
             # 恢复默认计数文案
             if hasattr(self, 'result_count_var'):
                 total = len(getattr(self, 'result_tree_data', []) or [])
-                self.result_count_var.set(f"显示 {len(all_items)} / 共 {total} 人")
+                self.result_count_var.set(f"{len(all_items)} / 共 {total} 人")
             return
 
         # 解析数字比较查询（>=60 / >60 / =60 / 60）
@@ -19579,8 +19688,9 @@ class BossFilterGUI:
 
         header = ttk.Frame(body, style='Page.TFrame')
         header.pack(fill='x', pady=(0, int(10 * scale)))
+        header.grid_columnconfigure(0, weight=1)
         title_area = ttk.Frame(header, style='Page.TFrame')
-        title_area.pack(side='left', fill='x', expand=True)
+        title_area.grid(row=0, column=0, sticky='ew')
         self.candidate_review_title_var = tk.StringVar()
         self.candidate_review_meta_var = tk.StringVar()
         ttk.Label(
@@ -19599,7 +19709,7 @@ class BossFilterGUI:
         ).pack(anchor='w', pady=(int(2 * scale), 0))
 
         nav = ttk.Frame(header, style='Page.TFrame')
-        nav.pack(side='right')
+        nav.grid(row=0, column=1, sticky='e')
         self.candidate_review_position_var = tk.StringVar()
         self.candidate_review_prev_button = ttk.Button(
             nav, text="上一位", width=8,
@@ -19795,10 +19905,15 @@ class BossFilterGUI:
             area_height = (
                 monitor_area[3] if monitor_area is not None else win.winfo_screenheight()
             )
-            width = min(880, max(620, int(root_width * 0.55)), int(area_width * 0.9))
+            preferred_width = max(700, int(root_width * 0.62))
+            width = min(
+                preferred_width,
+                int(1040 * max(1.0, scale)),
+                int(area_width * 0.9),
+            )
             height = min(root_height, int(area_height * 0.9))
         except tk.TclError:
-            width, height = 860, 900
+            width, height = 980, 900
         _place_window_centered(win, width, height, parent=self.root)
         self._render_candidate_review_workbench()
         win.deiconify()
@@ -20316,14 +20431,14 @@ class BossFilterGUI:
 
                 def show_error(message=error_message):
                     if hasattr(self, 'status_bar_left_var'):
-                        self.status_bar_left_var.set("就绪")
+                        self.status_bar_left_var.set("")
                     messagebox.showerror("错误", message, parent=self.root)
                 self.root.after(0, show_error)
                 return
 
             def notify_success():
                 if hasattr(self, 'status_bar_left_var'):
-                    self.status_bar_left_var.set("就绪")
+                    self.status_bar_left_var.set("")
                 self.append_log(f"已导出 {count} 名候选人：{file_path}")
                 self._status_flash(f"已导出 {count} 名候选人")
             self.root.after(0, notify_success)

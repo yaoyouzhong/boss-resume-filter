@@ -268,7 +268,7 @@ boss-resume-filter/
 
 ### 支持的服务商
 
-通义千问 (Qwen)、DeepSeek、Kimi (月之暗面)、智谱 (Zhipu)、MiniMax、小米 (Xiaomi)、阶跃星辰 (StepFun)、OpenAI、Anthropic (Claude)、自定义 (Custom)
+通义千问 (Qwen)、DeepSeek、月之暗面 (Kimi)、智谱 (Zhipu)、MiniMax、小米 (Xiaomi)、阶跃星辰 (StepFun)、OpenAI、Anthropic (Claude)、自定义 (Custom)
 
 ### 配置管理
 
