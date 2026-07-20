@@ -1,29 +1,29 @@
 {
-  "version": "2.23.2",
+  "version": "2.23.3",
   "release_date": "2026-07-20",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.2/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.2/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.2/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.3/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.3/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.3/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "macos_dmg": {
-      "size": 33543829,
-      "sha256": "b11c6171626d3f5cf499e1bb2c508dc3e69b5168f9692a7afcff41980812fa58"
+      "size": 33544220,
+      "sha256": "780a92dea937f5f57fa20787df0b866ec478f9678ed8b0978c5d04b61d9c4872"
     },
     "windows": {
-      "size": 35751330,
-      "sha256": "12e2afe340026a64cb1de883f619bdb169c69de6048b5bbd8bdb37d34ffaac4e"
+      "size": 35756812,
+      "sha256": "c492c82c022d26b828e9f913d6d8277cb8fbc56a311e3c6f1a34c9d4f96cf06c"
     },
     "macos": {
-      "size": 34298507,
-      "sha256": "8e41d522f841560fdaecb974fac655a877e10e9b53875baba893b50cfb3593dc"
+      "size": 34302810,
+      "sha256": "ce1ff5049a2453fc3a0dde74bc9561bde1fa9f85af2e8b18a91dbd4cc220d0f7"
     }
   },
-  "release_notes": "### 体验优化\n\n- **界面控件统一**：优化复选框、按钮和下拉框的显示与交互状态，使勾选、选中和焦点反馈更加清晰自然。\n- **信息展示一致性**：统一技能评分列表字体与列宽，并优化结果页计数和辅助说明布局。\n- **AI 模型信息**：统一月之暗面（Kimi）的中英文命名顺序，并将官方服务和中转服务的模型名称、默认超时改为更清晰的单层备注格式。\n\n### 问题修复\n\n- **高分辨率显示适配**：修复候选人查看与复核窗口在部分外接高分辨率显示器上，上一位、下一位按钮显示不全或遮挡标题的问题。\n- **下拉框状态显示**：修复部分下拉框反复点击后列表为空，以及失去焦点后选中内容背景异常的问题。\n- **结果页布局**：修复“显示已屏蔽”和人数信息在有限宽度下显示不完整的问题。\n- **控件焦点显示**：修复按钮和复选框点击后出现不必要虚线框的问题。",
+  "release_notes": "### 体验优化\n\n- **岗位配置布局**：重新整理基础筛选条件的行列关系，统一岗位名称、学历、经验、年龄、薪资和工作地点等输入区域的宽度与对齐，保留“留空表示不限制”的年龄提示，并调整底部操作按钮的位置。\n- **筛选结果操作**：优化底部操作按钮和“更多操作”菜单的布局；搜索框以“姓名/匹配分/推荐指数/状态”提示可查询字段并保留 Esc 清空说明，点击刷新后可恢复候选人的初始排序。\n- **运行参数显示**：缩短滚动轮次输入框，统一开始与停止按钮字体，并将 AI 评估等参数说明调整为一致的无括号样式。\n- **系统设置布局**：统一服务商与模型名称输入区域的显示长度，使模型配置表单更加整齐。\n\n### 问题修复\n\n- **控件焦点处理**：修复普通输入框、下拉框和数字输入框在点击页面空白区域后仍保持焦点的问题，同时确保搜索框失去焦点后恢复查询提示。\n- **操作菜单一致性**：修复岗位配置页与筛选结果页“更多操作”菜单样式不一致的问题。",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.2/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.2/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.2/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.3/BOSS_ResumeFilter.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.3/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.3/BOSS_ResumeFilter.dmg"
   }
 }
