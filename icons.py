@@ -824,6 +824,39 @@ def _check(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     return img
 
 
+def _checkbox_off(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
+    """未勾选复选框 — 白底圆角方框。"""
+    img = Image.new('RGBA', (size_px, size_px), bg)
+    d = ImageDraw.Draw(img)
+    S = size_px
+    d.rounded_rectangle(
+        [_s(1.5, S), _s(2.5, S), _s(19.5, S), _s(20.5, S)],
+        radius=max(2, int(round(_s(3, S)))),
+        fill=ui_theme.BG_CARD,
+        outline=fill,
+        width=max(sw, int(round(_s(2, S)))),
+    )
+    return img
+
+
+def _checkbox_on(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
+    """已勾选复选框 — 品牌色方框内显示白色对勾。"""
+    img = Image.new('RGBA', (size_px, size_px), bg)
+    d = ImageDraw.Draw(img)
+    S = size_px
+    d.rounded_rectangle(
+        [_s(1.5, S), _s(2.5, S), _s(19.5, S), _s(20.5, S)],
+        radius=max(2, int(round(_s(3, S)))),
+        fill=fill,
+        outline=fill,
+        width=max(sw, int(round(_s(2, S)))),
+    )
+    check_width = max(sw + 1, int(round(_s(2.4, S))))
+    d.line([_s(6.5, S), _s(12, S), _s(10.5, S), _s(16, S)], fill='white', width=check_width)
+    d.line([_s(10.5, S), _s(16, S), _s(18, S), _s(7.5, S)], fill='white', width=check_width)
+    return img
+
+
 def _passed_filter(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     """放大双人图案 — 通过筛选，沿用原候选人图标。"""
     img = Image.new('RGBA', (size_px, size_px), bg)
@@ -944,6 +977,8 @@ ICON_REGISTRY: Dict[str, Callable] = {
     'chat':         _chat,
     'download':     _download,
     'check':        _check,
+    'checkbox_off': _checkbox_off,
+    'checkbox_on':  _checkbox_on,
     'passed_filter': _passed_filter,
     'close':        _close,
     'document':     _document,

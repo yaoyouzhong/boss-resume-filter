@@ -17,7 +17,8 @@ from gui_main import (
     BossFilterGUI,
     PAGE_SPECS,
     PageIndex,
-    _api_service_display_name,
+    _api_provider_display_name,
+    _api_timeout_hint_text,
     _optional_int_to_entry,
     _parse_optional_int_entry,
     _candidate_has_ai_eval,
@@ -31,14 +32,25 @@ def test_optional_max_age_none_displays_as_blank():
     assert _optional_int_to_entry(None) == ""
 
 
-def test_token_plan_uses_official_alibaba_cloud_display_name():
+def test_run_control_uses_same_provider_name_as_model_settings():
     config = {
-        "api_provider": "qwen",
-        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-        "model": "kimi-k2.6",
+        "api_provider": "kimi",
+        "base_url": "https://api.kimi.com/coding/v1",
+        "model": "k3",
     }
 
-    assert _api_service_display_name(config) == "阿里云百炼 Token Plan"
+    assert _api_provider_display_name(config) == "月之暗面 (Kimi)"
+    assert _api_timeout_hint_text(config) == "月之暗面 (Kimi) / k3 · 默认 60 秒"
+
+
+def test_relay_timeout_hint_uses_flat_note_format():
+    config = {
+        "api_provider": "kimi",
+        "base_url": "https://relay.example.com/v1",
+        "model": "k3",
+    }
+
+    assert _api_timeout_hint_text(config) == "中转服务 / k3 · 默认 120 秒"
 
 
 def test_gui_timeout_policy_recognizes_token_plan_as_official_service():
@@ -385,14 +397,17 @@ def test_job_config_page_uses_business_sections_and_one_low_frequency_menu():
     assert "_start_breathing" not in block
 
 
-def test_skill_score_table_keeps_name_compact_and_gives_evidence_the_spare_width():
+def test_skill_score_table_uses_shared_font_and_wider_key_columns():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    block = source[source.index('self.skills_tree.heading("name"'):]
-    block = block[:block.index("# 设置颜色标记")]
+    block = source[source.index("# 使用 Treeview 显示技能列表"):]
+    block = block[:block.index("skills_scroll = ttk.Scrollbar")]
 
-    assert 'column("name", width=160, minwidth=120, stretch=False' in block
-    assert 'column("weight", width=60, minwidth=55, stretch=False' in block
-    assert 'column("source", width=70, minwidth=60, stretch=False' in block
+    assert "tree_font = self.font_table" in block
+    assert "style='Skills.Treeview'" in block
+    assert "_style.configure('Skills.Treeview.Heading', font=(*self.font_table, 'bold'))" in block
+    assert 'column("name", width=190, minwidth=150, stretch=False' in block
+    assert 'column("weight", width=80, minwidth=70, stretch=False' in block
+    assert 'column("source", width=90, minwidth=75, stretch=False' in block
     assert 'column("evidence", width=320, minwidth=220, stretch=True' in block
 
 
@@ -685,6 +700,24 @@ def test_disclosure_chevrons_are_registered_as_line_icons():
                 size, "#2563EB", (0, 0, 0, 0), 4
             )
             assert image.getbbox() is not None
+
+
+def test_checkbox_icons_are_registered_as_box_and_checkmark_states():
+    assert "checkbox_off" in icons.ICON_REGISTRY
+    assert "checkbox_on" in icons.ICON_REGISTRY
+    off = icons.ICON_REGISTRY["checkbox_off"](
+        48, "#CBD5E1", (0, 0, 0, 0), 4
+    )
+    on = icons.ICON_REGISTRY["checkbox_on"](
+        48, "#1E88E5", (0, 0, 0, 0), 4
+    )
+
+    assert off.getbbox() is not None
+    assert on.getbbox() is not None
+    assert off.tobytes() != on.tobytes()
+    colors = on.getcolors(maxcolors=on.width * on.height)
+    assert colors is not None
+    assert any(pixel[:3] == (255, 255, 255) and pixel[3] for _, pixel in colors)
 
 
 def test_reset_job_form_uses_unrestricted_new_job_values():
@@ -1488,6 +1521,51 @@ def test_more_action_menubuttons_share_centered_overlay_arrow_style():
     assert "ResultActions.TMenubutton" not in source
 
 
+def test_combobox_style_keeps_readonly_text_visible_and_clears_inactive_highlight():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    setup_block = source[source.index("def setup_styles"):]
+    setup_block = setup_block[:setup_block.index("\n    def create_sidebar")]
+    combo_map = setup_block[setup_block.index("style.map(\n            'TCombobox'"):]
+    combo_map = combo_map[:combo_map.index("\n        style.map('TSpinbox'")]
+
+    assert "('readonly', c['text_primary'])" in combo_map
+    assert "('readonly', c['bg_card'])" in combo_map
+    assert "('!focus', c['bg_card'])" in combo_map
+    assert "('!focus', c['text_primary'])" in combo_map
+
+
+def test_checkbutton_style_uses_large_checkmark_indicator_but_ai_keeps_switch():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    setup_block = source[source.index("def setup_styles"):]
+    setup_block = setup_block[:setup_block.index("\n    def create_sidebar")]
+    run_block = source[source.index("# AI 辅助评估开关"):]
+    run_block = run_block[:run_block.index("\n        yield")]
+
+    assert "checkbox_size = max(24, int(round(24 * fs)))" in setup_block
+    assert "checkbox_indicator = 'App.Checkbutton.indicator'" in setup_block
+    assert "('selected', checkbox_on)" in setup_block
+    assert "style.layout(\n            'TCheckbutton'" in setup_block
+    check_layout = setup_block[setup_block.index("style.layout(\n            'TCheckbutton'"):]
+    check_layout = check_layout[:check_layout.index("\n        style.configure(")]
+    assert "Checkbutton.focus" not in check_layout
+    assert "('Checkbutton.label', {" in check_layout
+    assert "ai_switch = self._create_switch(row_ai, self.ai_eval_var)" in run_block
+
+
+def test_button_style_removes_inner_focus_ring_and_keeps_outer_focus_border():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    setup_block = source[source.index("def setup_styles"):]
+    setup_block = setup_block[:setup_block.index("\n    def create_sidebar")]
+    button_layout = setup_block[setup_block.index("style.layout(\n            'TButton'"):]
+    button_layout = button_layout[:button_layout.index("\n        style.map('TButton'")]
+
+    assert "Button.focus" not in button_layout
+    assert "('Button.border', {" in button_layout
+    assert "('Button.padding', {" in button_layout
+    assert "('Button.label', {'sticky': 'nswe'})" in button_layout
+    assert "bordercolor=[('focus', c['primary'])]" in setup_block
+
+
 def test_more_menu_excel_export_uses_exact_visible_result_candidates():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     visible = [
@@ -1558,7 +1636,7 @@ def test_background_export_reports_worker_failure_on_ui_thread():
     ):
         gui._run_export([{"geek_id": "candidate-1"}], "failed.xlsx")
 
-    assert gui.status_bar_left_var.get() == "就绪"
+    assert gui.status_bar_left_var.get() == ""
     assert "disk full" in showerror.call_args.args[1]
     assert showerror.call_args.kwargs["parent"] is gui.root
 
@@ -2154,7 +2232,7 @@ def test_result_search_replaces_query_against_full_original_rows():
     gui.result_search_var.set("")
     gui._filter_result_tree()
     assert gui.result_tree.get_children() == ("row-a", "row-b")
-    assert gui.result_count_var.get() == "显示 2 / 共 2 人"
+    assert gui.result_count_var.get() == "2 / 共 2 人"
 
 
 def test_result_tree_sorting_handles_text_numeric_ranges_and_missing_values():
@@ -2209,6 +2287,11 @@ def test_status_reset_does_not_overwrite_newer_operation_status():
     gui.status_bar_left_var.set("正在导出 2 名候选人…")
     first_callback()
     assert gui.status_bar_left_var.get() == "正在导出 2 名候选人…"
+
+    gui.status_bar_left_var.set("已刷新")
+    gui._schedule_status_bar_reset("已刷新", 100)
+    gui.root.callbacks[gui._status_flash_after_id]()
+    assert gui.status_bar_left_var.get() == ""
 
     gui._schedule_status_bar_reset("第二条提示", 100)
     second_after_id = gui._status_flash_after_id
@@ -3240,9 +3323,16 @@ def test_candidate_review_workbench_exposes_flat_switch_and_direct_actions():
     assert "'<Control-Tab>'" in block
     assert 'text="上一位"' in block
     assert 'text="下一位"' in block
+    assert "header.grid_columnconfigure(0, weight=1)" in block
+    assert "title_area.grid(row=0, column=0, sticky='ew')" in block
+    assert "nav.grid(row=0, column=1, sticky='e')" in block
+    assert 'text="上一位", width=8' in block
+    assert 'text="下一位", width=8' in block
+    assert "width=9," in block
     assert '("summary", "决策摘要")' in block
     assert '("detail", "完整资料")' in block
-    assert "width = min(880, max(620, int(root_width * 0.55))" in block
+    assert "preferred_width = max(700, int(root_width * 0.62))" in block
+    assert "int(1040 * max(1.0, scale))" in block
     assert "height = min(root_height, int(area_height * 0.9))" in block
     assert "_place_window_centered(win, width, height, parent=self.root)" in block
     assert 'win.geometry(f"{width}x{height}+{x}+{y}")' not in block
