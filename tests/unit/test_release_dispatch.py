@@ -133,7 +133,11 @@ def test_preflight_reuses_hosted_prepare_contract_after_local_remote_checks():
     }
     with (
         patch.object(release_dispatch, "_git_text", side_effect=fake_git_text),
-        patch.object(release_dispatch, "_run") as run,
+        patch.object(
+            release_dispatch,
+            "_run",
+            return_value=release_dispatch.subprocess.CompletedProcess([], 0, "", ""),
+        ) as run,
         patch.object(
             release_dispatch.release_ci,
             "prepare_release",
@@ -367,6 +371,33 @@ def test_github_run_query_retries_transient_failure():
 
     assert run.call_count == 2
     sleep.assert_called_once_with(2)
+
+
+def test_workflow_dispatch_accepts_lost_response_when_run_was_created():
+    created = _run(123)
+    failed = release_dispatch.subprocess.CompletedProcess(
+        ["gh"], 1, stdout="", stderr="connection reset"
+    )
+    with (
+        patch.object(
+            release_dispatch,
+            "_git_text",
+            return_value="a" * 40,
+        ),
+        patch.object(
+            release_dispatch,
+            "_list_release_runs",
+            side_effect=[[], [created]],
+        ),
+        patch.object(release_dispatch, "_run", return_value=failed) as run,
+        patch.object(release_dispatch.time, "sleep") as sleep,
+    ):
+        release_dispatch._dispatch_workflow(
+            "2.22", "确认正式发布 v2.22", "c" * 64
+        )
+
+    run.assert_called_once()
+    sleep.assert_not_called()
 
 
 def test_wait_for_run_stops_after_no_stage_progress():

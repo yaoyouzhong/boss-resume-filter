@@ -4,7 +4,7 @@ import io
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import build
 import updater
@@ -811,7 +811,7 @@ def test_gitee_release_lookup_uses_explicit_pagination():
     original_session = build._gitee_session
     original_fetch_assets = build._gitee_fetch_assets
     try:
-        build._gitee_session = lambda: session
+        build._gitee_session = lambda **_kwargs: session
         build._gitee_fetch_assets = lambda *_args, **_kwargs: {}
         release_id, assets = build._gitee_find_or_create_release(
             "https://gitee.com/api/v5/repos/owner/repo",
@@ -831,6 +831,112 @@ def test_gitee_release_lookup_uses_explicit_pagination():
         "page": 1,
         "per_page": 100,
     }
+
+
+def test_gitee_release_create_accepts_lost_response_when_release_exists():
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class FakeSession:
+        def __init__(self):
+            self.get_count = 0
+            self.post_count = 0
+
+        def get(self, _url, **_kwargs):
+            self.get_count += 1
+            payload = [] if self.get_count == 1 else [{
+                "id": 7,
+                "tag_name": "v9.9.9",
+                "name": "v9.9.9",
+                "body": "notes",
+            }]
+            return FakeResponse(payload)
+
+        def post(self, _url, **_kwargs):
+            self.post_count += 1
+            raise build.requests.exceptions.ConnectionError("lost response")
+
+    session = FakeSession()
+    with patch.object(build, "_gitee_session", return_value=session):
+        release_id, assets = build._gitee_find_or_create_release(
+            "https://gitee.com/api/v5/repos/owner/repo",
+            "secret-token",
+            "v9.9.9",
+            "v9.9.9",
+            "notes",
+        )
+
+    assert release_id == 7
+    assert assets == {}
+    assert session.post_count == 1
+
+
+def test_gitee_upload_accepts_lost_response_when_asset_is_complete():
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [{"id": 9, "name": "artifact.bin", "size": 4}]
+
+    class FakeSession:
+        def __init__(self):
+            self.post_count = 0
+
+        def post(self, _url, **_kwargs):
+            self.post_count += 1
+            raise build.requests.exceptions.ConnectionError("lost response")
+
+        def get(self, _url, **_kwargs):
+            return FakeResponse()
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        artifact = Path(temp_dir) / "artifact.bin"
+        artifact.write_bytes(b"data")
+        session = FakeSession()
+        with patch.object(build, "_gitee_session", return_value=session):
+            name, remote = build._gitee_upload_single(
+                artifact,
+                "https://gitee.com/api/v5/repos/owner/repo",
+                "secret-token",
+                7,
+            )
+
+    assert name == "artifact.bin"
+    assert remote["size"] == 4
+    assert session.post_count == 1
+
+
+def test_remote_ref_query_retries_three_transient_failures():
+    failed = build.subprocess.CompletedProcess(
+        ["git"], 1, stdout="", stderr="temporary network failure"
+    )
+    success = build.subprocess.CompletedProcess(
+        ["git"],
+        0,
+        stdout=f"{'a' * 40}\trefs/heads/master\n",
+        stderr="",
+    )
+    with (
+        patch.object(
+            build.subprocess,
+            "run",
+            side_effect=[failed, failed, failed, success],
+        ) as run,
+        patch.object(build.time, "sleep") as sleep,
+    ):
+        result = build._remote_ref_commit("origin", "refs/heads/master")
+
+    assert result == "a" * 40
+    assert run.call_count == 4
+    assert sleep.call_args_list == [call(2), call(4), call(6)]
 
 
 def test_gitee_clean_old_assets_apply_deletes_only_non_current_assets():

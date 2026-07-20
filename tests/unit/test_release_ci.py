@@ -54,7 +54,10 @@ def test_origin_tag_configures_git_identity_before_creating_annotated_tag():
         patch.object(
             release_ci,
             "_run",
-            side_effect=lambda args, **_kwargs: calls.append(args),
+            side_effect=lambda args, **_kwargs: (
+                calls.append(args)
+                or release_ci.subprocess.CompletedProcess(args, 0, "", "")
+            ),
         ),
     ):
         release_ci._ensure_origin_tag(
@@ -99,7 +102,10 @@ def test_local_release_tag_is_fetched_when_missing():
         patch.object(
             release_ci,
             "_run",
-            side_effect=lambda args, **_kwargs: calls.append(args),
+            side_effect=lambda args, **_kwargs: (
+                calls.append(args)
+                or release_ci.subprocess.CompletedProcess(args, 0, "", "")
+            ),
         ),
     ):
         release_ci._ensure_local_release_tag("v2.21", release_sha)
@@ -128,6 +134,55 @@ def test_release_state_is_atomic_and_contains_no_credentials():
     assert state["phase"] == "download_github_artifacts"
     assert state["artifacts"]["BOSS_ResumeFilter.exe"]["downloaded_bytes"] == 10
     assert "token" not in json.dumps(state).lower()
+
+
+def test_release_state_retries_three_windows_sharing_violations():
+    busy = OSError("file busy")
+    busy.winerror = 32
+    replace_calls = 0
+    real_replace = release_ci.os.replace
+
+    def flaky_replace(source, destination):
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls <= 3:
+            raise busy
+        return real_replace(source, destination)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_path = Path(temp_dir) / ".release_state.json"
+        with (
+            patch.object(release_ci, "RELEASE_STATE_PATH", state_path),
+            patch.object(release_ci.os, "replace", side_effect=flaky_replace),
+            patch.object(release_ci.release_retry.time, "sleep") as sleep,
+        ):
+            release_ci._write_release_state(
+                "2.21", "a" * 40, "public_verification", "in_progress"
+            )
+
+        assert state_path.exists()
+
+    assert replace_calls == 4
+    assert [item.args[0] for item in sleep.call_args_list] == [0.2, 0.5, 1.0]
+
+
+def test_publish_github_release_accepts_lost_response_when_state_changed():
+    failed = release_ci.subprocess.CompletedProcess(
+        ["gh"], 1, stdout="", stderr="connection reset"
+    )
+    with (
+        patch.object(
+            release_ci.build,
+            "_get_github_release_info",
+            side_effect=[{"isDraft": True}, {"isDraft": False}],
+        ),
+        patch.object(release_ci, "_run", return_value=failed) as run,
+        patch.object(release_ci.release_retry.time, "sleep") as sleep,
+    ):
+        release_ci._publish_github_release("v2.21")
+
+    run.assert_called_once()
+    sleep.assert_not_called()
 
 
 def test_github_release_query_retries_transient_cli_failure():
