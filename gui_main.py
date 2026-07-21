@@ -310,26 +310,13 @@ def _filter_candidates_by_result_view(candidates, view):
 
 
 def get_font_family():
-    """获取字体 - 支持跨平台降级"""
-    # 优先使用微软雅黑，macOS/Linux 降级到系统字体
-    import sys
-    if sys.platform == 'win32':
-        return 'Microsoft YaHei UI'
-    elif sys.platform == 'darwin':
-        return 'PingFang SC'
-    else:
-        return 'Helvetica'
+    """获取字体 - 支持跨平台降级（实现已收口到 ui_theme）"""
+    return ui_theme.FONT_FAMILY
 
 
 def get_font_family_semibold():
-    """获取 Semibold 字体变体 - 支持跨平台降级"""
-    import sys
-    if sys.platform == 'win32':
-        return 'Microsoft YaHei UI Semibold'
-    elif sys.platform == 'darwin':
-        return 'PingFang SC'  # macOS 无独立 Semibold 变体，配合 'bold' 使用
-    else:
-        return 'Helvetica'
+    """获取 Semibold 字体变体 - 支持跨平台降级（实现已收口到 ui_theme）"""
+    return ui_theme.FONT_FAMILY_SEMIBOLD
 
 
 FONT_FAMILY = get_font_family()
@@ -2088,10 +2075,52 @@ class BossFilterGUI:
             self._update_model_list_columns()
         elif current_page == 1:
             self._update_config_page_dynamic_heights()
+        elif current_page == 2:
+            self._update_run_page_dynamic_heights()
         elif current_page == 3:
             self._update_result_tree_columns()
+            self._update_result_stats_compact()
         elif current_page == 4:
             self._update_education_queue_columns()
+
+    def _update_run_page_dynamic_heights(self):
+        """高窗口下让运行日志区域利用多余高度。"""
+        log_text = getattr(self, 'log_text', None)
+        if log_text is None:
+            return
+        extra_rows = self._get_tall_window_extra_rows()
+        try:
+            log_text.configure(height=min(40, 20 + extra_rows))
+        except tk.TclError:
+            return
+
+    def _update_result_stats_compact(self):
+        """矮窗口下隐藏结果页统计卡片的圆形图标，把纵向空间还给候选人表格。"""
+        cards = getattr(self, '_result_stat_icon_canvases', None)
+        if not cards:
+            return
+        try:
+            window_height = int(self.root.winfo_height())
+        except (tk.TclError, ValueError):
+            return
+        if window_height <= 0:
+            return
+        compact = window_height < 820
+        if compact == getattr(self, '_result_stats_compact', False):
+            return
+        self._result_stats_compact = compact
+        icon_pady = (
+            int(12 * self.dpi_scale * self.zoom_factor),
+            int(4 * self.dpi_scale * self.zoom_factor),
+        )
+        for icon_canvas, value_label in cards:
+            try:
+                if compact:
+                    icon_canvas.pack_forget()
+                else:
+                    icon_canvas.pack(anchor="center", pady=icon_pady, before=value_label)
+            except tk.TclError:
+                pass
 
     def _is_window_maximized(self) -> bool:
         """Return True when the main window is maximized or effectively fullscreen."""
@@ -2384,10 +2413,10 @@ class BossFilterGUI:
                                   background=self.colors['bg_card'])
             text_label.pack(anchor="center", pady=(0, int(20 * self.dpi_scale * self.zoom_factor)))
 
-        # 快速操作区
+        # 快速操作区（纵向吸收多余高度，避免高窗口下页面底部大片空白）
         quick_frame = self._create_card(self.home_page, "快速操作",
             padding=int(UI_CONFIG['card_padding'] * self.dpi_scale * self.zoom_factor),
-            fill="x", pady=int(30 * self.dpi_scale * self.zoom_factor))
+            fill="both", expand=True, pady=int(30 * self.dpi_scale * self.zoom_factor))
 
         quick_buttons = ttk.Frame(quick_frame, style='TFrame')
         quick_buttons.pack(fill="x")
@@ -4580,10 +4609,11 @@ class BossFilterGUI:
         browser_status_row = ttk.Frame(browser_frame, style='TFrame')
         browser_status_row.pack(fill="x")
 
-        # 状态指示灯
-        self.browser_status_indicator = ttk.Label(browser_status_row, text="● 未连接",
+        # 状态指示灯（交通灯图标 + 文本，由 _apply_lamp_status 统一渲染）
+        self.browser_status_indicator = ttk.Label(browser_status_row,
                                                   font=(FONT_FAMILY, int(11 * self.font_scale)),
                                                   foreground=self.colors['danger'])
+        self._apply_lamp_status(self.browser_status_indicator, "● 未连接", self.colors['danger'])
         self.browser_status_indicator.pack(side="left")
 
         # 检测按钮
@@ -4934,9 +4964,10 @@ class BossFilterGUI:
         self.stop_btn._icon_refs = (icon_stop, icon_stop_disabled)
         self.stop_btn.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
 
-        # 状态指示器
-        self.status_label = ttk.Label(btn_container, text="● 就绪",
+        # 状态指示器（交通灯图标 + 文本，由 _apply_lamp_status 统一渲染）
+        self.status_label = ttk.Label(btn_container,
                                       font=(FONT_FAMILY, int(13 * self.font_scale)), foreground=self.colors['success'])
+        self._apply_lamp_status(self.status_label, "● 就绪", self.colors['success'])
         self.status_label.pack(side="left", padx=int(50 * self.dpi_scale * self.zoom_factor))
 
         yield
@@ -5037,6 +5068,7 @@ class BossFilterGUI:
         ]
 
         card_gap = int(12 * self.dpi_scale * self.zoom_factor)
+        self._result_stat_icon_canvases = []
         for idx, (icon_name, label_text, var_name, color) in enumerate(stats_data):
             card_frame = ttk.Frame(stats_container, style='Card.TFrame')
             card_padx = (0, card_gap) if idx < len(stats_data) - 1 else 0
@@ -5062,6 +5094,7 @@ class BossFilterGUI:
                                    foreground=color, background=self.colors['bg_card'],
                                    cursor="hand2")
             value_label.pack(anchor="center", pady=(0, int(2 * self.dpi_scale * self.zoom_factor)))
+            self._result_stat_icon_canvases.append((icon_canvas, value_label))
 
             # 已打招呼
             greeted_var = tk.StringVar(
@@ -9291,7 +9324,7 @@ class BossFilterGUI:
         self._update_api_status(text=status_text, foreground=self.colors['success'])
 
     def _update_api_status(self, text, foreground=None):
-        """更新 API 状态标签，同时清理之前的可点击标签"""
+        """更新 API 状态标签，同时清理之前的可点击标签；⏳ 进行状态期间显示忙碌光标。"""
         # 清理之前的可点击标签
         for lbl in self._status_clickable_labels:
             lbl.destroy()
@@ -9301,6 +9334,13 @@ class BossFilterGUI:
         if foreground is not None:
             config["foreground"] = foreground
         self.api_status_label.config(**config)
+        # ⏳ 是测试连接 / 获取模型列表等耗时操作的统一进行标记，终态文案到达时恢复光标
+        root = getattr(self, 'root', None)
+        if root is not None:
+            try:
+                root.config(cursor='watch' if str(text).startswith("⏳") else '')
+            except tk.TclError:
+                pass
 
     def _is_relay_endpoint_for_timeout(self) -> bool:
         """判断当前 API 配置是否为中转服务（用于读取超时默认值）"""
@@ -12886,6 +12926,40 @@ class BossFilterGUI:
             pass
         self.root.after(50, self._process_ui_queue)
 
+    def _get_lamp_icon(self, color):
+        """按状态颜色取交通灯图标（带缓存），统一替代文本状态圆点。"""
+        cache = getattr(self, '_lamp_icon_cache', None)
+        if cache is None:
+            cache = self._lamp_icon_cache = {}
+        if color == self.colors.get('success'):
+            kind = 'success'
+        elif color == self.colors.get('danger'):
+            kind = 'error'
+        else:
+            kind = 'pending'
+        if kind not in cache:
+            size = int(16 * getattr(self, 'dpi_scale', 1.0) * getattr(self, 'zoom_factor', 1.0))
+            cache[kind] = self.icons.get(
+                f'traffic_light_{kind}', size, self.colors.get('text_primary', ui_theme.TEXT_PRIMARY))
+        return cache[kind]
+
+    def _apply_lamp_status(self, label, status_text, color):
+        """把 "● 文本" 形式的状态渲染为交通灯图标 + 文本，颜色语义保持不变；图标不可用时保留原文本。"""
+        display_text = status_text
+        image = ""
+        if status_text.startswith("● "):
+            try:
+                image = self._get_lamp_icon(color)
+            except Exception:
+                image = ""
+            if image:
+                display_text = " " + status_text[2:]
+        label.config(
+            text=display_text, foreground=color,
+            image=image, compound='left' if image else 'none',
+        )
+        label._icon_ref = image
+
     def set_browser_ui(self, indicator_text=None, indicator_color=None, help_text=None, start_state=None):
         """线程安全更新浏览器状态控件，并缓存状态文本供后台线程判断。"""
         if indicator_text is not None:
@@ -12895,7 +12969,7 @@ class BossFilterGUI:
 
         def apply_update():
             if indicator_text is not None:
-                self.browser_status_indicator.config(text=indicator_text, foreground=indicator_color)
+                self._apply_lamp_status(self.browser_status_indicator, indicator_text, indicator_color)
             if help_text is not None:
                 self.browser_status_help.config(text=help_text)
             # 运行中不覆盖按钮状态，防止轮询覆盖 start_run 的 disabled
@@ -13748,7 +13822,7 @@ class BossFilterGUI:
 
         self.is_running = True
         self.stop_event.clear()
-        self.status_label.config(text="● 运行中...", foreground=self.colors['warning'])
+        self._apply_lamp_status(self.status_label, "● 运行中...", self.colors['warning'])
         self.stop_btn.config(state="normal")
 
         # 重置进度显示
@@ -13766,7 +13840,7 @@ class BossFilterGUI:
         """停止运行"""
         self.is_running = False
         self.stop_event.set()
-        self.status_label.config(text="● 已停止", foreground=self.colors['danger'])
+        self._apply_lamp_status(self.status_label, "● 已停止", self.colors['danger'])
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.append_run_log(f"[{datetime.now().strftime('%H:%M:%S')}] ⏹ 已停止")
@@ -14055,7 +14129,7 @@ class BossFilterGUI:
             )
 
             def finish_ui():
-                self.status_label.config(text=status_text, foreground=status_color)
+                self._apply_lamp_status(self.status_label, status_text, status_color)
                 self.start_btn.config(state="normal")
                 self.stop_btn.config(state="disabled")
                 self.progress_var.set(100)
@@ -15748,6 +15822,11 @@ class BossFilterGUI:
         )
 
         def _draw():
+            try:
+                if not canvas.winfo_exists():
+                    return
+            except tk.TclError:
+                return
             canvas.delete('all')
             on = bool(variable.get())
             track = (self.colors['primary'] if on

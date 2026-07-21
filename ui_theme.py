@@ -11,6 +11,7 @@ PRIMARY = "#1E88E5"          # 主蓝（品牌色）
 PRIMARY_DARK = "#1565C0"     # 主蓝 hover
 PRIMARY_DEEP = "#0D47A1"     # 主蓝 pressed
 PRIMARY_LIGHT = "#64B5F6"    # 主蓝浅色（图表/强调）
+PRIMARY_PALE = "#BBDEFB"     # 主蓝极浅（图标镜片等内部层次色）
 
 SUCCESS = "#43A047"          # 成功绿
 SUCCESS_LIGHT = "#81C784"
@@ -30,6 +31,7 @@ BG_CARD = "#FFFFFF"          # 卡片背景
 BG_INPUT = "#FAFAFA"         # 输入框背景
 BG_SIDEBAR = "#2D3748"       # 侧边栏背景
 BG_SIDEBAR_PILL = "#3D4C63"  # 侧边栏选中 pill 背景
+BG_SIDEBAR_ZEBRA = "#243041" # 深色侧边栏斑马行（版本历史列表等）
 BG_HOVER = "#EDF2F7"         # 悬停背景
 BG_ZEBRA = "#F8FAFC"         # 表格斑马纹
 BG_FOOTER = "#F7F8FA"        # 弹窗底栏
@@ -75,6 +77,33 @@ LAMP_ERROR = DANGER
 LAMP_OFF = "#C8CDD5"
 
 # ---------------------------------------------------------------------------
+# 字体（跨平台降级）
+# ---------------------------------------------------------------------------
+def get_font_family():
+    """正文字体：Windows 用微软雅黑，macOS/Linux 降级到系统字体。"""
+    import sys
+    if sys.platform == 'win32':
+        return 'Microsoft YaHei UI'
+    elif sys.platform == 'darwin':
+        return 'PingFang SC'
+    return 'Helvetica'
+
+
+def get_font_family_semibold():
+    """Semibold 字体变体：macOS 无独立变体，配合 'bold' 字重使用。"""
+    import sys
+    if sys.platform == 'win32':
+        return 'Microsoft YaHei UI Semibold'
+    elif sys.platform == 'darwin':
+        return 'PingFang SC'
+    return 'Helvetica'
+
+
+FONT_FAMILY = get_font_family()
+FONT_FAMILY_SEMIBOLD = get_font_family_semibold()
+
+
+# ---------------------------------------------------------------------------
 # 间距阶梯（8pt 网格）
 # ---------------------------------------------------------------------------
 SPACE_XS = 4
@@ -111,6 +140,7 @@ def build_palette():
         "bg_input": BG_INPUT,
         "bg_sidebar": BG_SIDEBAR,
         "bg_sidebar_pill": BG_SIDEBAR_PILL,
+        "bg_sidebar_zebra": BG_SIDEBAR_ZEBRA,
         "bg_tree_tag_high": BG_TREE_HIGH,
         "bg_tree_tag_mid": BG_TREE_MID,
         "bg_tree_tag_low": BG_TREE_LOW,

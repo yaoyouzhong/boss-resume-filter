@@ -35,16 +35,7 @@ from paths import get_base_dir
 logger = logging.getLogger(__name__)
 
 
-def _get_font_family():
-    """获取字体 - 与 gui_main.py 保持一致"""
-    if sys.platform == 'win32':
-        return 'Microsoft YaHei UI'
-    elif sys.platform == 'darwin':
-        return 'PingFang SC'
-    return 'Helvetica'
-
-
-_FONT_FAMILY = _get_font_family()
+_FONT_FAMILY = ui_theme.FONT_FAMILY
 
 
 def _place_dialog_centered(dialog, parent, width, height):
