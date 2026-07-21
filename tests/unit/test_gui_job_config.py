@@ -1281,6 +1281,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     assert gui.result_tree.column_options["level"]["width"] < 110
     assert gui.result_tree.column_options["education"]["width"] == 140
     assert gui.result_tree.column_options["age"]["width"] == 110
+    assert gui.result_tree.column_options["job_status"]["width"] > 120
     assert gui.result_tree.column_options["skills"]["width"] < 140
     assert gui.result_tree.column_options["name"]["stretch"] is False
     assert gui.result_tree.column_options["education"]["stretch"] is False
@@ -1290,6 +1291,14 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
     ) == 1698
+
+    gui.result_tree = _FakeTree(0)
+    gui._apply_result_tree_column_widths((
+        "name", "exp", "salary", "skills", "score", "ai_eval", "level", "status",
+        "education", "age", "job_status", "school", "company",
+    ))
+    assert gui.result_tree.column_options["job_status"]["width"] == 130
+    assert gui.result_tree.column_options["company"]["width"] == 160
 
 
 def test_stats_tree_columns_expand_with_available_width():
@@ -2176,7 +2185,8 @@ def test_global_shortcuts_do_not_bind_unsafe_candidate_snapshot_save():
 
 def test_page_specs_cover_each_sidebar_identity_once():
     assert tuple(PAGE_SPECS) == tuple(PageIndex)
-    assert PAGE_SPECS[PageIndex.RESULTS].full_width is True
+    assert PAGE_SPECS[PageIndex.RESULTS].full_width is False
+    assert PAGE_SPECS[PageIndex.STATS].full_width is False
     assert PAGE_SPECS[PageIndex.SETTINGS].page_attr == "api_config_page"
 
 
@@ -2476,7 +2486,7 @@ def test_status_reset_does_not_overwrite_newer_operation_status():
     assert second_after_id in gui.root.cancelled
 
 
-def test_stats_page_uses_full_width_policy():
+def test_stats_page_uses_centered_width_policy():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.pages_frame = Mock()
     gui.main_frame = Mock()
@@ -2488,9 +2498,20 @@ def test_stats_page_uses_full_width_policy():
 
     gui._apply_page_width_policy()
 
-    assert gui.pages_frame.pack_configure.call_args.kwargs["padx"] == int(
-        gui_main.UI_CONFIG["page_padding_x"]
+    assert gui.pages_frame.pack_configure.call_args.kwargs["padx"] == max(
+        int(gui_main.UI_CONFIG["page_padding_x"]),
+        (2400 - int(gui_main.UI_CONFIG["content_max_width"])) // 2,
     )
+
+
+def test_stats_tree_reflows_after_its_rendered_width_changes():
+    """统计表监听自身最终宽度，确保最大化和恢复窗口都能重新分配列宽。"""
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    stats_block = source[source.index("def create_stats_page"):]
+    stats_block = stats_block[:stats_block.index("\n    def _load_stats_candidates")]
+
+    assert 'self.stats_tree.bind(\n            "<Configure>",' in stats_block
+    assert "lambda _event: self._schedule_page_width_policy()" in stats_block
 
 
 def test_job_config_page_releases_bottom_padding_but_preserves_header_position():
@@ -3117,6 +3138,48 @@ def test_result_status_tooltip_shows_hidden_review_reason():
         210,
         ("row-1", "status"),
     )
+
+
+def test_result_job_status_tooltip_only_shows_when_text_is_clipped():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidate = {
+        "_extra_fields": ("本科", "30岁", "正在考虑机会，合适的话可以到岗", "", ""),
+    }
+    gui.result_tree = Mock()
+    gui.result_tree.identify_row.return_value = "row-1"
+    gui.result_tree.identify_column.return_value = "#11"
+    gui.result_tree.cget.return_value = (
+        "name", "exp", "salary", "skills", "score", "ai_eval", "level", "status",
+        "education", "age", "job_status",
+    )
+    gui.result_tree.bbox.return_value = (0, 0, 100, 24)
+    gui._item_to_candidate = {"row-1": candidate}
+    gui._result_tree_font = Mock()
+    gui._tooltip = None
+    gui._tooltip_item = None
+    gui._tooltip_after_id = None
+    gui.root = Mock()
+    gui.root.winfo_pointerx.return_value = 100
+    gui.root.winfo_pointery.return_value = 200
+    gui._hide_tooltip = Mock()
+    gui._show_tooltip = Mock()
+
+    gui._result_tree_font.measure.return_value = 120
+    gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
+    callback = gui.root.after.call_args.args[1]
+    callback()
+    gui._show_tooltip.assert_called_once_with(
+        "正在考虑机会，合适的话可以到岗", 115, 210, ("row-1", "job_status")
+    )
+
+    gui.root.after.reset_mock()
+    gui._show_tooltip.reset_mock()
+    gui._tooltip = None
+    gui._tooltip_item = None
+    gui._result_tree_font.measure.return_value = 80
+    gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
+    gui.root.after.assert_not_called()
+    gui._show_tooltip.assert_not_called()
 
 
 def test_refresh_results_force_rebuilds_for_transient_ai_status():

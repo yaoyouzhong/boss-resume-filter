@@ -181,13 +181,13 @@ PAGE_SPECS = {
     ),
     PageIndex.RUN: PageSpec("play", "运行控制", "run_page", "_create_run_page_steps", "show_page_run"),
     PageIndex.RESULTS: PageSpec(
-        "filter", "筛选结果", "result_page", "create_result_page", "show_page_result", True
+        "filter", "筛选结果", "result_page", "create_result_page", "show_page_result"
     ),
     PageIndex.EDUCATION: PageSpec(
         "document", "学历核验", "education_page", "create_education_page", "show_page_education"
     ),
     PageIndex.STATS: PageSpec(
-        "chart", "数据统计", "stats_page", "create_stats_page", "show_page_stats", True
+        "chart", "数据统计", "stats_page", "create_stats_page", "show_page_stats"
     ),
     PageIndex.SETTINGS: PageSpec(
         "gear", "系统设置", "api_config_page", "_create_api_config_page_steps", "show_page_api"
@@ -2029,7 +2029,7 @@ class BossFilterGUI:
         self._page_width_policy_after_id = self.root.after(60, _run)
 
     def _apply_page_width_policy(self):
-        """Limit form-like pages on wide screens while keeping data tables wide."""
+        """Center page content on wide screens unless a page explicitly opts out."""
         if not hasattr(self, 'pages_frame') or not hasattr(self, 'main_frame'):
             return
 
@@ -2038,8 +2038,8 @@ class BossFilterGUI:
         base_pad_y = int(UI_CONFIG['page_padding_y'] * scale)
         current_page = getattr(self, 'current_page_index', PageIndex.HOME)
 
-        # Result and stats pages are table-first surfaces; they should use the
-        # available width. Other pages read better when the content stays bounded.
+        # Pages read more consistently when content stays bounded; exceptional
+        # surfaces can still opt into the full available width through PAGE_SPECS.
         full_width_pages = {
             page for page, page_spec in PAGE_SPECS.items() if page_spec.full_width
         }
@@ -2212,14 +2212,14 @@ class BossFilterGUI:
         base_widths = {
             "name": 80, "exp": 85, "salary": 85, "skills": 85,
             "score": 70, "ai_eval": 70, "level": 80, "status": 180,
-            "education": 140, "age": 110, "job_status": 120,
-            "school": 150, "company": 170,
+            "education": 140, "age": 110, "job_status": 130,
+            "school": 150, "company": 160,
         }
         min_widths = {
             "name": 60, "exp": 70, "salary": 70, "skills": 70,
             "score": 60, "ai_eval": 60, "level": 70, "status": 150,
-            "education": 115, "age": 90, "job_status": 80,
-            "school": 120, "company": 130,
+            "education": 115, "age": 90, "job_status": 90,
+            "school": 120, "company": 125,
         }
 
         wide_mode = "company" in display_columns
@@ -2243,8 +2243,8 @@ class BossFilterGUI:
             growth_caps = {
                 "name": 130, "exp": 115, "salary": 120, "skills": 130,
                 "score": 95, "ai_eval": 95, "level": 120, "status": 260,
-                "education": 160, "age": 120, "job_status": 160,
-                "school": 280, "company": 340,
+                "education": 160, "age": 120, "job_status": 170,
+                "school": 280, "company": 320,
             }
             widths.update(floors)
             self._distribute_tree_surplus(
@@ -5385,15 +5385,16 @@ class BossFilterGUI:
         self.result_tree.column("status", width=180, minwidth=150, anchor='center')
         self.result_tree.column("education", width=140, minwidth=115, anchor='center')
         self.result_tree.column("age", width=110, minwidth=90, anchor='center')
-        self.result_tree.column("job_status", width=120, minwidth=80, anchor='center')
+        self.result_tree.column("job_status", width=130, minwidth=90, anchor='center')
         self.result_tree.column("school", width=150, minwidth=120, anchor='center')
-        self.result_tree.column("company", width=170, minwidth=130, anchor='center')
+        self.result_tree.column("company", width=160, minwidth=125, anchor='center')
 
         # 设置表格字体和样式
         style = ttk.Style()
         style.configure("Result.Treeview", font=self.font_table, rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor))
         style.configure("Result.Treeview.Heading", font=(FONT_FAMILY, int(12 * self.font_scale), 'bold'))
         self.result_tree.configure(style="Result.Treeview")
+        self._result_tree_font = font.Font(font=self.font_table)
 
         self._update_result_tree_columns()
 
@@ -7064,6 +7065,11 @@ class BossFilterGUI:
         table_container.grid_columnconfigure(0, weight=1)
         self.stats_tree.bind("<Double-Button-1>", lambda e: self._show_selected_job_review())
         self.stats_tree.bind("<Button-3>", self._show_stats_context_menu)
+        self.stats_tree.bind(
+            "<Configure>",
+            lambda _event: self._schedule_page_width_policy(),
+            add="+",
+        )
 
     def _load_stats_candidates(self, job_name=None):
         """Load candidates with the current stats filters applied.
@@ -15757,7 +15763,7 @@ class BossFilterGUI:
         self.result_tree.bind('<Double-Button-1>', self._on_tree_double_click)
         self.result_tree.bind('<Control-a>', self._select_all_result_rows, add='+')
         self.result_tree.bind('<Control-A>', self._select_all_result_rows, add='+')
-        # 状态列 tooltip（截断时显示完整状态）
+        # 状态、求职状态及经历列 tooltip（截断时显示完整内容）
         self._tooltip = None
         self._tooltip_after_id = None
         self._tooltip_item = None
@@ -15774,7 +15780,7 @@ class BossFilterGUI:
         return "break"
 
     def _on_tree_motion(self, event):
-        """Treeview 鼠标移动：长状态、学校和公司显示完整 tooltip。"""
+        """Treeview 鼠标移动：被截断的状态和经历信息显示完整 tooltip。"""
         item = self.result_tree.identify_row(event.y)
         column_id = self.result_tree.identify_column(event.x)
         if not item or not column_id:
@@ -15795,6 +15801,18 @@ class BossFilterGUI:
             full = cand.get('_full_status', '')
             display = cand.get('_display_status', '')
             show_tooltip = bool(full and full != display)
+        elif cand and column_name == 'job_status':
+            extra = cand.get('_extra_fields') or ('', '', '', '', '')
+            full = str(extra[2] or '')
+            try:
+                cell_bbox = self.result_tree.bbox(item, column_id)
+                show_tooltip = bool(
+                    full
+                    and cell_bbox
+                    and self._result_tree_font.measure(full) > max(0, cell_bbox[2] - 12)
+                )
+            except (tk.TclError, TypeError, ValueError):
+                show_tooltip = False
         elif cand and column_name in ('school', 'company'):
             extra = cand.get('_extra_fields') or ('', '', '', '', '')
             school, company = extra[3], extra[4]
