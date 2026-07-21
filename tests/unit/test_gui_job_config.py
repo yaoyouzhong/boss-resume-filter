@@ -1243,16 +1243,34 @@ class _FakeResultTree:
 
 
 def test_result_tree_columns_expand_only_when_space_is_available():
-    """列数只由表格实际可用宽度驱动：<1250px 8 列，≥1250px 11 列，≥1700px 13 列。"""
+    """列数只由表格实际可用宽度驱动：<1250px 8 列，≥1250px 11 列，≥1700px 13 列；
+    富余宽度显式分配给各列（ttk stretch 只会收缩不会放大，否则会右侧留白且表头截断）。"""
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot()
+
+    # 窄窗口（小于 8 列基础宽度合计 735）：保持基础宽度并允许收缩
+    gui.result_tree = _FakeTree(700)
+    gui._update_result_tree_columns()
+    assert len(gui.result_tree.displaycolumns) == 8
+    assert gui.result_tree.column_options["skills"]["width"] == 85
+    assert gui.result_tree.column_options["skills"]["stretch"] is True
+
+    # 富余宽度按比例放大填满表格
     gui.result_tree = _FakeTree(1200)
     gui._update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 8
+    assert gui.result_tree.column_options["skills"]["width"] > 85
+    assert gui.result_tree.column_options["skills"]["stretch"] is False
+    assert sum(
+        options["width"] for options in gui.result_tree.column_options.values()
+    ) == 1198
 
     gui.result_tree = _FakeTree(1400)
     gui._update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 11
+    assert sum(
+        options["width"] for options in gui.result_tree.column_options.values()
+    ) == 1398
 
     gui.result_tree = _FakeTree(1700)
     gui._update_result_tree_columns()
@@ -1272,14 +1290,6 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
     ) == 1698
-
-    gui.result_tree = _FakeTree(1200)
-    gui._update_result_tree_columns()
-    assert all(
-        options["stretch"] is True
-        for options in gui.result_tree.column_options.values()
-    )
-    assert gui.result_tree.column_options["skills"]["width"] == 85
 
 
 def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():

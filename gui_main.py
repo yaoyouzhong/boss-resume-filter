@@ -2172,11 +2172,13 @@ class BossFilterGUI:
 
         wide_mode = "company" in display_columns
         widths = {column: base_widths[column] for column in display_columns}
+        try:
+            available_width = max(0, int(self.result_tree.winfo_width()) - 2)
+        except (tk.TclError, ValueError):
+            available_width = 0
+
+        stretch = not wide_mode
         if wide_mode:
-            try:
-                available_width = max(0, int(self.result_tree.winfo_width()) - 2)
-            except (tk.TclError, ValueError):
-                available_width = 0
             compact_columns = {"education", "age"}
             flexible_columns = [
                 column for column in display_columns
@@ -2191,13 +2193,22 @@ class BossFilterGUI:
                     widths[column] = int(widths[column] * scale)
                 rounding_gap = available_width - sum(widths.values())
                 widths["company"] += rounding_gap
+        elif available_width > sum(widths.values()):
+            # ttk 的 stretch 只会收缩不会放大，富余宽度必须显式按比例分配，
+            # 否则列保持基础宽度、右侧留白且表头被截断
+            scale = available_width / sum(widths.values())
+            for column in display_columns:
+                widths[column] = int(widths[column] * scale)
+            rounding_gap = available_width - sum(widths.values())
+            widths[display_columns[-1]] += rounding_gap
+            stretch = False
 
         for column in display_columns:
             self.result_tree.column(
                 column,
                 width=widths[column],
                 minwidth=min_widths[column],
-                stretch=not wide_mode,
+                stretch=stretch,
             )
 
     def _is_tall_window(self) -> bool:
