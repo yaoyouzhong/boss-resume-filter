@@ -1539,11 +1539,6 @@ def _check_code_to_changelog_coverage(strict=False):
 
     changelog_text = _normalize_markdown(body).lower()
     sections = _parse_changelog_sections(body)
-    missing_sections = sorted(
-        {required for *_rest, required in signals if required not in sections},
-        key=lambda name: CHANGELOG_REQUIRED_SECTIONS.index(name)
-        if name in CHANGELOG_REQUIRED_SECTIONS else 99,
-    )
     uncovered = []
     for category, summary, keywords, required_section in signals:
         useful_keywords = [kw for kw in keywords if len(kw) >= 2]
@@ -1552,6 +1547,11 @@ def _check_code_to_changelog_coverage(strict=False):
             continue
         if not any(kw.lower() in changelog_text for kw in useful_keywords):
             uncovered.append((category, summary, required_section))
+    missing_sections = sorted(
+        {required for *_rest, required in uncovered if required not in sections},
+        key=lambda name: CHANGELOG_REQUIRED_SECTIONS.index(name)
+        if name in CHANGELOG_REQUIRED_SECTIONS else 99,
+    )
 
     if missing_sections or uncovered:
         level = "错误" if strict else "警告"
