@@ -2205,19 +2205,42 @@ class BossFilterGUI:
         floor_total = sum(floors.values())
         base_flex_total = sum(base_widths[c] for c in flexible_columns)
         if flexible_available > max(base_flex_total, floor_total):
-            # ttk 的 stretch 只会收缩不会放大，富余宽度必须显式按比例分配，
+            # ttk 的 stretch 只会收缩不会放大，富余宽度必须显式分配，
             # 否则列保持基础宽度、右侧留白且表头被截断；
-            # 每列先满足表头实测下限，再按基础宽度权重分配剩余空间
+            # 每列先满足表头实测下限，再按基础宽度权重分配剩余空间，
+            # 但数值/短文本列设增长上限，避免宽屏下状态列被拉成空阔巨列、
+            # 学校/公司等长文本列反而截断；全部触顶后的余量再按比例摊开
+            growth_caps = {
+                "name": 130, "exp": 115, "salary": 120, "skills": 130,
+                "score": 95, "ai_eval": 95, "level": 120, "status": 260,
+                "education": 160, "age": 120, "job_status": 160,
+                "school": 280, "company": 340,
+            }
+            widths.update(floors)
             extra = flexible_available - floor_total
-            weights = {c: max(base_widths[c] - floors[c], 0) for c in flexible_columns}
-            total_weight = sum(weights.values())
-            if total_weight <= 0:
-                weights = {c: base_widths[c] for c in flexible_columns}
-                total_weight = sum(weights.values())
-            for column in flexible_columns:
-                widths[column] = floors[column] + int(extra * weights[column] / total_weight)
-            rounding_gap = available_width - sum(widths.values())
-            widths[flexible_columns[-1]] += rounding_gap
+            while extra > 0:
+                eligible = [c for c in flexible_columns
+                            if widths[c] < max(growth_caps[c], floors[c])]
+                if not eligible:
+                    break
+                total_weight = sum(base_widths[c] for c in eligible)
+                allocated = 0
+                for column in eligible:
+                    share = min(extra * base_widths[column] // total_weight,
+                                max(growth_caps[column], floors[column]) - widths[column])
+                    widths[column] += share
+                    allocated += share
+                if allocated <= 0:
+                    break
+                extra -= allocated
+            if extra > 0:
+                total_weight = sum(base_widths[c] for c in flexible_columns)
+                allocated = 0
+                for column in flexible_columns[:-1]:
+                    share = extra * base_widths[column] // total_weight
+                    widths[column] += share
+                    allocated += share
+                widths[flexible_columns[-1]] += extra - allocated
             stretch = False
 
         for column in display_columns:
