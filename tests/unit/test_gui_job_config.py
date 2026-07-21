@@ -1243,7 +1243,7 @@ class _FakeResultTree:
 
 
 def test_result_tree_columns_expand_only_when_space_is_available():
-    """列数只由表格实际可用宽度驱动：<1300px 8 列，≥1300px 11 列，≥1500px 13 列。"""
+    """列数只由表格实际可用宽度驱动：<1250px 8 列，≥1250px 11 列，≥1700px 13 列。"""
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot()
     gui.result_tree = _FakeTree(1200)
@@ -1254,7 +1254,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     gui._update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 11
 
-    gui.result_tree = _FakeTree(1500)
+    gui.result_tree = _FakeTree(1700)
     gui._update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 13
     assert gui.result_tree.displaycolumns[-2:] == ("school", "company")
@@ -1271,7 +1271,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     assert gui.result_tree.column_options["company"]["stretch"] is False
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
-    ) == 1498
+    ) == 1698
 
     gui.result_tree = _FakeTree(1200)
     gui._update_result_tree_columns()
