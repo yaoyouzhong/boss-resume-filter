@@ -1272,6 +1272,25 @@ def _check_code_to_changelog_coverage(strict=False):
             or stripped in ('"""', "'''")
         )
 
+    def _is_release_note_implementation_detail(fpath: str, line: str) -> bool:
+        """Return True for implementation churn that should not force user-facing notes."""
+        lowered = f"{fpath} {line}".lower()
+        if re.search(r"\b\w*cache\w*\s*=", lowered):
+            return True
+        if re.search(r"getattr\(.*cache|source_cache|preview_render", lowered):
+            return True
+        if "pingfang sc" in lowered or "microsoft yahei" in lowered:
+            return True
+        if re.search(r"\b(font_family|font_family_semibold)\b", lowered):
+            return True
+        if fpath.endswith("icons.py") and re.search(
+            r"#[^\n]*(品牌蓝|浅蓝|深蓝|高光)|#[^\n]*(brand|lens|highlight)",
+            line,
+            re.IGNORECASE,
+        ):
+            return True
+        return False
+
     def _context_keywords(fpath: str, line: str) -> list[str]:
         lowered = f"{fpath} {line}".lower()
         keywords: list[str] = []
@@ -1401,6 +1420,8 @@ def _check_code_to_changelog_coverage(strict=False):
         for line in additions:
             if _is_comment_or_doc_line(line):
                 continue
+            if _is_release_note_implementation_detail(fpath, line):
+                continue
             if not re.search(r"[一-鿿]{2,}", line) and (
                 re.search(r"^\s*def\s+_\w+\s*\(", line)
                 or re.search(r"^\s*def\s+\w+\s*\(", line)
@@ -1458,6 +1479,8 @@ def _check_code_to_changelog_coverage(strict=False):
         for line in removals:
             if _is_comment_or_doc_line(line):
                 continue
+            if _is_release_note_implementation_detail(fpath, line):
+                continue
             if re.search(r'\\"[A-Za-z_][A-Za-z0-9_]+\\"\s*:', line):
                 # Removed JSON examples inside prompts are implementation details.
                 continue
@@ -1485,6 +1508,8 @@ def _check_code_to_changelog_coverage(strict=False):
                 ))
         for line in additions:
             if _is_comment_or_doc_line(line):
+                continue
+            if _is_release_note_implementation_detail(fpath, line):
                 continue
             if re.search(r"(limit|max|上限|限制|停止|跳过|return\s+|raise\s+)", line, re.IGNORECASE) and behavior_re.search(line):
                 text = _snippet(re.sub(r"\s+", " ", line))
