@@ -1243,13 +1243,13 @@ class _FakeResultTree:
 
 
 def test_result_tree_columns_expand_only_when_space_is_available():
+    """列数只由表格实际可用宽度驱动：<1300px 8 列，≥1300px 11 列，≥1500px 13 列。"""
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot()
-    gui.result_tree = _FakeTree(1600)
+    gui.result_tree = _FakeTree(1200)
     gui._update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 8
 
-    gui.root = _FakeRoot(state="zoomed", width=1920, height=1040)
     gui.result_tree = _FakeTree(1400)
     gui._update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 11
@@ -1273,8 +1273,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
         options["width"] for options in gui.result_tree.column_options.values()
     ) == 1498
 
-    gui.root = _FakeRoot()
-    gui.result_tree = _FakeTree(1500)
+    gui.result_tree = _FakeTree(1200)
     gui._update_result_tree_columns()
     assert all(
         options["stretch"] is True
@@ -3843,7 +3842,7 @@ def test_result_page_stats_show_greeted_after_pending():
     """结果页依次展示强烈推荐、推荐、待定、已打招呼。"""
     source = Path("gui_main.py").read_text(encoding="utf-8")
     stats_block = source[source.index("stats_data = [", source.index("def create_result_page")):]
-    stats_block = stats_block[:stats_block.index("\n\n        for icon_name")]
+    stats_block = stats_block[:stats_block.index("\n\n        card_gap")]
 
     assert '"通过筛选"' not in stats_block
     assert (
@@ -5491,7 +5490,7 @@ def test_stats_page_strong_recommendation_uses_emphasized_thumb_icon():
     """数据统计页与其他页面统一使用点赞加光芒表达强烈推荐。"""
     source = Path("gui_main.py").read_text(encoding="utf-8")
     stats_block = source[source.index("summary_items = [", source.index("def create_stats_page")):]
-    stats_block = stats_block[:stats_block.index("\n\n        for icon_name")]
+    stats_block = stats_block[:stats_block.index("\n\n        card_gap")]
 
     assert '("strong_recommend", "强烈推荐"' in stats_block
     assert '("star", "强烈推荐"' not in stats_block
@@ -5501,7 +5500,7 @@ def test_stats_page_renames_total_candidates_to_passed_filter():
     """数据统计页第一张卡片展示通过筛选，并使用放大的原双人图案。"""
     source = Path("gui_main.py").read_text(encoding="utf-8")
     stats_block = source[source.index("summary_items = [", source.index("def create_stats_page")):]
-    stats_block = stats_block[:stats_block.index("\n\n        for icon_name")]
+    stats_block = stats_block[:stats_block.index("\n\n        card_gap")]
 
     assert '("passed_filter", "通过筛选", "total"' in stats_block
     assert '"总候选人"' not in stats_block
@@ -5511,7 +5510,7 @@ def test_stats_page_greeted_uses_chat_icon_consistently():
     """数据统计页与首页、筛选结果页统一使用聊天气泡表示已打招呼。"""
     source = Path("gui_main.py").read_text(encoding="utf-8")
     stats_block = source[source.index("summary_items = [", source.index("def create_stats_page")):]
-    stats_block = stats_block[:stats_block.index("\n\n        for icon_name")]
+    stats_block = stats_block[:stats_block.index("\n\n        card_gap")]
 
     assert '("chat", "已打招呼", "greeted"' in stats_block
     assert '("mail", "已打招呼", "greeted"' not in stats_block

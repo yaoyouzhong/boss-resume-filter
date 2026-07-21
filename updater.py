@@ -15,6 +15,7 @@ import threading
 import time
 from pathlib import Path
 from ui_messagebox import messagebox
+import ui_theme
 
 import requests
 import tkinter as tk
@@ -1114,12 +1115,7 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
                     * getattr(gui, 'zoom_factor', 1.0))
     font_family = getattr(gui, 'FONT_FAMILY', _FONT_FAMILY)
     font_family_bold = getattr(gui, 'FONT_FAMILY_SEMIBOLD', _FONT_FAMILY)
-    colors = getattr(gui, 'colors', None) or {
-        'bg_card': '#FFFFFF', 'bg_main': '#F7F8FA', 'bg_hover': '#EDF2F7',
-        'text_primary': '#1A202C', 'text_secondary': '#4A5568',
-        'text_muted': '#A0AEC0', 'border': '#E2E8F0',
-        'primary': '#3182CE',
-    }
+    colors = getattr(gui, 'colors', None) or ui_theme.build_palette()
 
     dialog = tk.Toplevel(root)
     dialog.title("发现新版本")
@@ -1324,37 +1320,23 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
 
         threading.Thread(target=do_update, daemon=True).start()
 
-    # 按钮（用 tk.Button 原生控件，渲染质量比 Frame+Label 好）
-    btn_font = (font_family, fs(10))
-
-    cancel_btn = tk.Button(
+    # 按钮（复用主应用 ttk 按钮体系，与全局样式一致）
+    cancel_btn = ttk.Button(
         button_frame,
         text="稍后更新",
         command=on_cancel,
-        font=btn_font,
+        style='TButton',
         width=12,
-        bg=colors['bg_card'],
-        fg=colors['text_primary'],
-        activebackground=colors['bg_hover'],
-        activeforeground=colors['text_primary'],
-        relief='solid',
-        borderwidth=1,
         cursor='hand2'
     )
     cancel_btn.pack(side="left", padx=pad(6))
 
-    update_btn = tk.Button(
+    update_btn = ttk.Button(
         button_frame,
         text="立即更新",
         command=on_update,
-        font=btn_font,
+        style='Accent.TButton',
         width=12,
-        bg=colors['primary'],
-        fg='#FFFFFF',
-        activebackground='#2B6CB0',
-        activeforeground='#FFFFFF',
-        relief='solid',
-        borderwidth=1,
         cursor='hand2'
     )
     update_btn.pack(side="left", padx=pad(6))

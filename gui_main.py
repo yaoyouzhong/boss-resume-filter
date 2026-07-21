@@ -1952,6 +1952,12 @@ class BossFilterGUI:
             _paint_loading_frame()
             return
         if getattr(self, page_attr, None) is not None:
+            # 已在当前页且无就绪回调时直接短路，避免重复 hide+pack+刷新
+            if (
+                getattr(self, 'current_page_index', None) == page_index
+                and on_ready is None
+            ):
+                return
             show_page()
             _run_ready_callbacks()
             return
@@ -2100,22 +2106,22 @@ class BossFilterGUI:
             return False
 
     def _update_result_tree_columns(self):
-        """Show 8, 11, or 13 columns according to maximized state and table width."""
+        """Show 8, 11, or 13 columns according to available table width."""
         if not hasattr(self, 'result_tree'):
             return
 
         base_columns = ("name", "exp", "salary", "skills", "score", "ai_eval", "level", "status")
         extra_columns = ("education", "age", "job_status")
         wide_columns = ("school", "company")
+        try:
+            tree_width = int(self.result_tree.winfo_width())
+        except (tk.TclError, ValueError):
+            tree_width = 0
         display_columns = base_columns
-        if self._is_window_maximized():
+        if tree_width >= 1300:
             display_columns += extra_columns
-            try:
-                tree_width = int(self.result_tree.winfo_width())
-            except (tk.TclError, ValueError):
-                tree_width = 0
-            if tree_width >= 1500:
-                display_columns += wide_columns
+        if tree_width >= 1500:
+            display_columns += wide_columns
         self._apply_result_tree_column_widths(display_columns)
         if tuple(self.result_tree.cget("displaycolumns")) != display_columns:
             self.result_tree.configure(displaycolumns=display_columns)
@@ -2336,9 +2342,11 @@ class BossFilterGUI:
 
         self.home_stats_vars = {}
         self.home_stats_labels = {}  # 保存标签引用用于绑定事件
-        for icon_name, label_text, var_name, color in cards_data:
+        card_gap = int(15 * self.dpi_scale * self.zoom_factor)
+        for idx, (icon_name, label_text, var_name, color) in enumerate(cards_data):
             card_frame = ttk.Frame(stats_container, style='Card.TFrame')
-            card_frame.pack(side="left", fill="x", expand=True, padx=int(15 * self.dpi_scale * self.zoom_factor), pady=int(12 * self.dpi_scale * self.zoom_factor))
+            card_padx = (0, card_gap) if idx < len(cards_data) - 1 else 0
+            card_frame.pack(side="left", fill="x", expand=True, padx=card_padx, pady=int(12 * self.dpi_scale * self.zoom_factor))
 
             # 图标容器 - 彩色圆形背景
             icon_size = int(UI_CONFIG['stat_icon_size'] * self.dpi_scale * self.zoom_factor)
@@ -5028,9 +5036,11 @@ class BossFilterGUI:
             ("chat", "已打招呼", "greeted", self.colors['warning']),
         ]
 
-        for icon_name, label_text, var_name, color in stats_data:
+        card_gap = int(12 * self.dpi_scale * self.zoom_factor)
+        for idx, (icon_name, label_text, var_name, color) in enumerate(stats_data):
             card_frame = ttk.Frame(stats_container, style='Card.TFrame')
-            card_frame.pack(side="left", fill="x", expand=True, padx=int(12 * self.dpi_scale * self.zoom_factor))
+            card_padx = (0, card_gap) if idx < len(stats_data) - 1 else 0
+            card_frame.pack(side="left", fill="x", expand=True, padx=card_padx)
 
             # 彩色圆形图标（大号）
             icon_size = int(UI_CONFIG['stat_icon_size'] * self.dpi_scale * self.zoom_factor)
@@ -5222,7 +5232,7 @@ class BossFilterGUI:
         self.result_tree.heading("school", text="毕业学校")
         self.result_tree.heading("company", text="最近公司")
 
-        # 普通窗口 8 列；最大化显示 11 列；表格足够宽时再显示学校和公司。
+        # 表格宽度 <1300px 显示 8 列；≥1300px 显示 11 列；≥1500px 再显示学校和公司。
         self.result_tree.column("name", width=80, minwidth=60, anchor='center')
         self.result_tree.column("exp", width=85, minwidth=70, anchor='center')
         self.result_tree.column("salary", width=85, minwidth=70, anchor='center')
@@ -5510,7 +5520,7 @@ class BossFilterGUI:
             font=self.font_label, justify="center",
         )
         self.education_preview_label.bind(
-            "<Configure>", lambda _event: self._render_education_preview()
+            "<Configure>", lambda _event: self._schedule_education_preview_render()
         )
         self.education_preview_label.pack(fill="both", expand=True)
 
@@ -5859,6 +5869,38 @@ class BossFilterGUI:
             self.education_preview_label._image_ref = None
             self._refresh_education_queue_summary()
 
+    def _schedule_education_preview_render(self):
+        """预览区尺寸变化时防抖重绘，避免拖动窗口边框期间连续读盘解码。"""
+        pending = getattr(self, '_education_preview_render_timer', None)
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except Exception:
+                pass
+        self._education_preview_render_timer = self.root.after(
+            120, self._render_education_preview
+        )
+
+    def _get_education_source_image(self, path, item_id, display_angle):
+        """读取并校正方向的源图，按 (路径, 角度) 缓存，避免每次重绘重复解码大图。"""
+        from PIL import Image, ImageOps
+        cache = getattr(self, '_education_source_cache', None)
+        if cache is None:
+            cache = self._education_source_cache = {}
+        key = (str(path), display_angle)
+        if key not in cache:
+            with Image.open(path) as source:
+                image = ImageOps.exif_transpose(source).convert("RGB")
+            if display_angle:
+                image = image.rotate(
+                    -display_angle, expand=True, resample=Image.Resampling.BICUBIC
+                )
+            cache[key] = image
+            # 只保留最近几张，防止长会话内存膨胀
+            while len(cache) > 4:
+                cache.pop(next(iter(cache)))
+        return cache[key]
+
     def _render_education_preview(self):
         """按当前预览区域尺寸显示证书图片，依次应用 EXIF 与自动/人工方向。"""
         path = getattr(self, 'education_image_path', None)
@@ -5875,22 +5917,18 @@ class BossFilterGUI:
             label._image_ref = None
             return
         try:
-            from PIL import Image, ImageOps, ImageTk
+            from PIL import Image, ImageTk
             rotation_locked = getattr(self, "education_rotation_locked", set())
             if item_id in rotation_locked:
                 display_angle = self.education_manual_rotation.get(item_id, 0)
             else:
                 display_angle = int((item or {}).get("auto_rotation", 0) or 0)
-            with Image.open(path) as source:
-                image = ImageOps.exif_transpose(source).convert("RGB")
-                if display_angle:
-                    image = image.rotate(
-                        -display_angle, expand=True, resample=Image.Resampling.BICUBIC
-                    )
-                width = max(320, label.winfo_width() - 20)
-                height = max(320, label.winfo_height() - 20)
-                image.thumbnail((width, height), Image.Resampling.LANCZOS)
-                photo = ImageTk.PhotoImage(image)
+            image = self._get_education_source_image(path, item_id, display_angle)
+            width = max(320, label.winfo_width() - 20)
+            height = max(320, label.winfo_height() - 20)
+            image = image.copy()
+            image.thumbnail((width, height), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(image)
             label.configure(image=photo, text="")
             label._image_ref = photo
         except Exception as error:
@@ -6793,9 +6831,11 @@ class BossFilterGUI:
             ("chat", "已打招呼", "greeted", self.colors['warning']),
         ]
 
-        for icon_name, label_text, var_name, color in summary_items:
+        card_gap = int(10 * self.dpi_scale * self.zoom_factor)
+        for idx, (icon_name, label_text, var_name, color) in enumerate(summary_items):
             card = ttk.Frame(summary_container, style='Card.TFrame')
-            card.pack(side="left", fill="x", expand=True, padx=int(10 * self.dpi_scale * self.zoom_factor),
+            card_padx = (0, card_gap) if idx < len(summary_items) - 1 else 0
+            card.pack(side="left", fill="x", expand=True, padx=card_padx,
                      pady=int(10 * self.dpi_scale * self.zoom_factor))
 
             # 图标容器
@@ -7873,9 +7913,6 @@ class BossFilterGUI:
         self.current_page_index = PageIndex.SETTINGS
         self._schedule_page_width_policy()
         self.update_nav_highlight()
-        # 重置滚动条位置到顶部
-        if hasattr(self, 'api_canvas'):
-            self.api_canvas.yview_moveto(0.0)
         # 重新绑定滚轮事件（覆盖动态创建的控件）
         self._bind_mousewheel(self.api_canvas, self.api_scrollable_frame)
         self._schedule_api_key_resolution()
@@ -17036,9 +17073,9 @@ class BossFilterGUI:
             self.root.after(0, self._on_ai_eval_complete)
 
     def _refresh_ai_eval_status(self):
-        """定时刷新AI评估状态"""
+        """定时刷新AI评估状态；每组评估完成都会落盘，指纹变化时 refresh_results 自动全量刷新，未变时是廉价空操作。"""
         if self._ai_eval_in_progress:
-            self.refresh_results(force=True)
+            self.refresh_results()
             self._ai_eval_refresh_timer = self.root.after(1000, self._refresh_ai_eval_status)
 
     def _on_ai_eval_complete(self):
