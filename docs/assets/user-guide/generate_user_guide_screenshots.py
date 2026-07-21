@@ -8,10 +8,11 @@ from __future__ import annotations
 import json
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import tkinter as tk
-from PIL import ImageGrab
+from PIL import Image, ImageGrab
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -87,11 +88,13 @@ DEMO_JOB_RULE = {
 def _candidate(index: int, score: int, *, job: str = DEMO_JOB, greeted: bool = False, followup: str = "未沟通") -> dict:
     level = "强烈推荐" if score >= 75 else ("推荐" if score >= 65 else "待定")
     name = f"候选人{chr(64 + index)}"
+    today = datetime.now().date()
     return {
         "geek_id": f"DEMO-{index:03d}",
         "name": name,
         "job_name": job,
-        "batch_timestamp": f"202606{28 + index % 3:02d}_100000",
+        "batch_timestamp": f"{today:%Y%m%d}_100000",
+        "first_seen_at": f"{today:%Y%m%d}_100000",
         "summary": (
             f"{name}  {28 + index}岁  {4 + index % 5}年经验  本科  南京  期望薪资20-25K\n"
             "教育经历：某高校 软件工程 本科 2014.09 2018.06\n"
@@ -138,7 +141,24 @@ def _candidate(index: int, score: int, *, job: str = DEMO_JOB, greeted: bool = F
         "manual_review_required": False,
         "greet_sent": greeted,
         "followup_status": followup,
+        "next_followup_at": (
+            f"{today:%Y-%m-%d}"
+            if followup == "已回复"
+            else (f"{today + timedelta(days=1):%Y-%m-%d}" if followup == "待约面" else "")
+        ),
         "feedback_status": "合适" if followup in {"已回复", "待约面", "已约面"} else "",
+        "greet_context": (
+            {
+                "chat_start": {
+                    "jid": "demo-jid",
+                    "lid": "demo-lid",
+                    "securityId": "demo-security",
+                    "expectId": "demo-expect",
+                }
+            }
+            if index == 5
+            else {}
+        ),
     }
 
 
@@ -163,14 +183,59 @@ def capture_widget(widget: tk.Widget, filename: str) -> None:
         widget.attributes("-topmost", True)
     except tk.TclError:
         pass
-    widget.update_idletasks()
-    widget.update()
-    time.sleep(0.35)
-    x = widget.winfo_rootx()
-    y = widget.winfo_rooty()
-    w = widget.winfo_width()
-    h = widget.winfo_height()
-    ImageGrab.grab(bbox=(x, y, x + w, y + h)).save(OUT_DIR / filename)
+    # v2.23 uses short after() callbacks for the initial reveal, page-width
+    # adjustment, and deferred data refresh.  Keep pumping Tk while the page
+    # settles; a plain sleep blocks those callbacks and captures the blue
+    # startup curtain instead of the requested page.
+    deadline = time.monotonic() + 0.8
+    while time.monotonic() < deadline:
+        widget.update_idletasks()
+        widget.update()
+        time.sleep(0.05)
+    if sys.platform == "win32":
+        # Screen capture can return only the desktop when this script is run
+        # from a background terminal.  PrintWindow renders the actual Tk
+        # window and is independent of desktop focus or overlap.
+        import ctypes
+        import win32con
+        import win32gui
+        import win32ui
+
+        hwnd = widget.winfo_id()
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        width = right - left
+        height = bottom - top
+        window_dc = win32gui.GetWindowDC(hwnd)
+        source_dc = win32ui.CreateDCFromHandle(window_dc)
+        memory_dc = source_dc.CreateCompatibleDC()
+        bitmap = win32ui.CreateBitmap()
+        bitmap.CreateCompatibleBitmap(source_dc, width, height)
+        memory_dc.SelectObject(bitmap)
+        try:
+            ctypes.windll.user32.PrintWindow(hwnd, memory_dc.GetSafeHdc(), 2)
+            info = bitmap.GetInfo()
+            bits = bitmap.GetBitmapBits(True)
+            image = Image.frombuffer(
+                "RGB",
+                (info["bmWidth"], info["bmHeight"]),
+                bits,
+                "raw",
+                "BGRX",
+                0,
+                1,
+            )
+            image.save(OUT_DIR / filename)
+        finally:
+            win32gui.DeleteObject(bitmap.GetHandle())
+            memory_dc.DeleteDC()
+            source_dc.DeleteDC()
+            win32gui.ReleaseDC(hwnd, window_dc)
+    else:
+        x = widget.winfo_rootx()
+        y = widget.winfo_rooty()
+        w = widget.winfo_width()
+        h = widget.winfo_height()
+        ImageGrab.grab(bbox=(x, y, x + w, y + h)).save(OUT_DIR / filename)
     try:
         widget.attributes("-topmost", False)
     except tk.TclError:
@@ -220,7 +285,7 @@ def main() -> None:
     app.on_job_selected(None)
     app.config_canvas.yview_moveto(0.18)
     capture_widget(root, "02-job-config-full.png")
-    app.config_canvas.yview_moveto(0.58)
+    app.config_canvas.yview_moveto(0.42)
     capture_widget(root, "02-job-config-skills.png")
 
     app.show_page_api()
@@ -236,6 +301,27 @@ def main() -> None:
     app.refresh_results()
     capture_widget(root, "05-results.png")
 
+    app.show_daily_candidate_actions()
+    capture_dialog(root, "今日待办", "10-today-tasks.png")
+
+    app._open_candidate_review_workbench(app.result_tree_data[0], candidates=app.result_tree_data)
+    capture_dialog(root, "候选人查看与复核", "11-review-workbench.png")
+    app.candidate_review_window = None
+
+    queue_candidates = build_demo_candidates()[4:6]
+    queue_candidates[1]["greet_confirmation_pending"] = True
+    queue_candidates[1]["greet_confirmation_reason"] = "上次发送结果需要人工核实"
+    app._greet_queue_loaded = True
+    app.greet_queue_items = [
+        app._build_greet_queue_item(queue_candidates[0], source="user_guide"),
+        app._build_greet_queue_item(queue_candidates[1], source="user_guide"),
+    ]
+    app.greet_queue_items[1]["status"] = "待核实"
+    app.greet_queue_items[1]["message"] = "上次发送结果需要人工核实"
+    app._show_greet_queue_dialog()
+    capture_dialog(root, "联系候选人", "12-contact-workbench.png")
+    app.greet_queue_window = None
+
     app.show_page_stats()
     app.refresh_stats()
     capture_widget(root, "06-stats.png")
@@ -245,6 +331,27 @@ def main() -> None:
 
     app.show_changelog()
     capture_dialog(root, "更新日志", "07-changelog-dialog.png")
+
+    import updater
+
+    updater.show_update_dialog(
+        root,
+        {
+            "current": gui_main.__version__,
+            "latest": "2.24",
+            "update_type": "version",
+            "changelog_body": (
+                "### 新增功能\n\n"
+                "- 演示新版功能说明。\n\n"
+                "### 体验优化\n\n"
+                "- 优化候选人处理流程和界面提示。"
+            ),
+            "release_info": {"body": ""},
+            "download_url": "https://example.invalid/BOSS_ResumeFilter.exe",
+        },
+        gui=app,
+    )
+    capture_dialog(root, "发现新版本", "08-update-dialog.png")
 
     root.destroy()
 

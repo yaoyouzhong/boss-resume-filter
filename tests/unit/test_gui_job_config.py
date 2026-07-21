@@ -1243,18 +1243,36 @@ class _FakeResultTree:
 
 
 def test_result_tree_columns_expand_only_when_space_is_available():
+    """列数只由表格实际可用宽度驱动：<1250px 8 列，≥1250px 11 列，≥1700px 13 列；
+    富余宽度显式分配给各列（ttk stretch 只会收缩不会放大，否则会右侧留白且表头截断）。"""
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot()
-    gui.result_tree = _FakeTree(1600)
+
+    # 窄窗口（小于 8 列基础宽度合计 735）：保持基础宽度并允许收缩
+    gui.result_tree = _FakeTree(700)
     gui._update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 8
+    assert gui.result_tree.column_options["skills"]["width"] == 85
+    assert gui.result_tree.column_options["skills"]["stretch"] is True
 
-    gui.root = _FakeRoot(state="zoomed", width=1920, height=1040)
+    # 富余宽度按比例放大填满表格
+    gui.result_tree = _FakeTree(1200)
+    gui._update_result_tree_columns()
+    assert len(gui.result_tree.displaycolumns) == 8
+    assert gui.result_tree.column_options["skills"]["width"] > 85
+    assert gui.result_tree.column_options["skills"]["stretch"] is False
+    assert sum(
+        options["width"] for options in gui.result_tree.column_options.values()
+    ) == 1198
+
     gui.result_tree = _FakeTree(1400)
     gui._update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 11
+    assert sum(
+        options["width"] for options in gui.result_tree.column_options.values()
+    ) == 1398
 
-    gui.result_tree = _FakeTree(1500)
+    gui.result_tree = _FakeTree(1700)
     gui._update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 13
     assert gui.result_tree.displaycolumns[-2:] == ("school", "company")
@@ -1263,6 +1281,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     assert gui.result_tree.column_options["level"]["width"] < 110
     assert gui.result_tree.column_options["education"]["width"] == 140
     assert gui.result_tree.column_options["age"]["width"] == 110
+    assert gui.result_tree.column_options["job_status"]["width"] > 120
     assert gui.result_tree.column_options["skills"]["width"] < 140
     assert gui.result_tree.column_options["name"]["stretch"] is False
     assert gui.result_tree.column_options["education"]["stretch"] is False
@@ -1271,16 +1290,37 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     assert gui.result_tree.column_options["company"]["stretch"] is False
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
-    ) == 1498
+    ) == 1698
 
+    gui.result_tree = _FakeTree(0)
+    gui._apply_result_tree_column_widths((
+        "name", "exp", "salary", "skills", "score", "ai_eval", "level", "status",
+        "education", "age", "job_status", "school", "company",
+    ))
+    assert gui.result_tree.column_options["job_status"]["width"] == 130
+    assert gui.result_tree.column_options["company"]["width"] == 160
+
+
+def test_stats_tree_columns_expand_with_available_width():
+    """统计明细表与结果表同一套列宽逻辑：窄窗口保持基础宽度可收缩，
+    宽窗口显式分配富余填满表格（ttk stretch 只会收缩不会放大）。"""
+    gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot()
-    gui.result_tree = _FakeTree(1500)
-    gui._update_result_tree_columns()
-    assert all(
-        options["stretch"] is True
-        for options in gui.result_tree.column_options.values()
-    )
-    assert gui.result_tree.column_options["skills"]["width"] == 85
+
+    gui.stats_tree = _FakeTree(900)
+    gui._update_stats_tree_columns()
+    assert gui.stats_tree.column_options["job"]["width"] == 200
+    assert gui.stats_tree.column_options["job"]["stretch"] is True
+
+    gui.stats_tree = _FakeTree(1400)
+    gui._update_stats_tree_columns()
+    assert gui.stats_tree.column_options["job"]["width"] > 200
+    assert gui.stats_tree.column_options["job"]["width"] <= 340
+    assert gui.stats_tree.column_options["avg_score"]["width"] <= 105
+    assert gui.stats_tree.column_options["job"]["stretch"] is False
+    assert sum(
+        options["width"] for options in gui.stats_tree.column_options.values()
+    ) == 1398
 
 
 def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
@@ -2145,7 +2185,8 @@ def test_global_shortcuts_do_not_bind_unsafe_candidate_snapshot_save():
 
 def test_page_specs_cover_each_sidebar_identity_once():
     assert tuple(PAGE_SPECS) == tuple(PageIndex)
-    assert PAGE_SPECS[PageIndex.RESULTS].full_width is True
+    assert PAGE_SPECS[PageIndex.RESULTS].full_width is False
+    assert PAGE_SPECS[PageIndex.STATS].full_width is False
     assert PAGE_SPECS[PageIndex.SETTINGS].page_attr == "api_config_page"
 
 
@@ -2445,7 +2486,7 @@ def test_status_reset_does_not_overwrite_newer_operation_status():
     assert second_after_id in gui.root.cancelled
 
 
-def test_stats_page_uses_full_width_policy():
+def test_stats_page_uses_centered_width_policy():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.pages_frame = Mock()
     gui.main_frame = Mock()
@@ -2457,9 +2498,20 @@ def test_stats_page_uses_full_width_policy():
 
     gui._apply_page_width_policy()
 
-    assert gui.pages_frame.pack_configure.call_args.kwargs["padx"] == int(
-        gui_main.UI_CONFIG["page_padding_x"]
+    assert gui.pages_frame.pack_configure.call_args.kwargs["padx"] == max(
+        int(gui_main.UI_CONFIG["page_padding_x"]),
+        (2400 - int(gui_main.UI_CONFIG["content_max_width"])) // 2,
     )
+
+
+def test_stats_tree_reflows_after_its_rendered_width_changes():
+    """统计表监听自身最终宽度，确保最大化和恢复窗口都能重新分配列宽。"""
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    stats_block = source[source.index("def create_stats_page"):]
+    stats_block = stats_block[:stats_block.index("\n    def _load_stats_candidates")]
+
+    assert 'self.stats_tree.bind(\n            "<Configure>",' in stats_block
+    assert "lambda _event: self._schedule_page_width_policy()" in stats_block
 
 
 def test_job_config_page_releases_bottom_padding_but_preserves_header_position():
@@ -3086,6 +3138,48 @@ def test_result_status_tooltip_shows_hidden_review_reason():
         210,
         ("row-1", "status"),
     )
+
+
+def test_result_job_status_tooltip_only_shows_when_text_is_clipped():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidate = {
+        "_extra_fields": ("本科", "30岁", "正在考虑机会，合适的话可以到岗", "", ""),
+    }
+    gui.result_tree = Mock()
+    gui.result_tree.identify_row.return_value = "row-1"
+    gui.result_tree.identify_column.return_value = "#11"
+    gui.result_tree.cget.return_value = (
+        "name", "exp", "salary", "skills", "score", "ai_eval", "level", "status",
+        "education", "age", "job_status",
+    )
+    gui.result_tree.bbox.return_value = (0, 0, 100, 24)
+    gui._item_to_candidate = {"row-1": candidate}
+    gui._result_tree_font = Mock()
+    gui._tooltip = None
+    gui._tooltip_item = None
+    gui._tooltip_after_id = None
+    gui.root = Mock()
+    gui.root.winfo_pointerx.return_value = 100
+    gui.root.winfo_pointery.return_value = 200
+    gui._hide_tooltip = Mock()
+    gui._show_tooltip = Mock()
+
+    gui._result_tree_font.measure.return_value = 120
+    gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
+    callback = gui.root.after.call_args.args[1]
+    callback()
+    gui._show_tooltip.assert_called_once_with(
+        "正在考虑机会，合适的话可以到岗", 115, 210, ("row-1", "job_status")
+    )
+
+    gui.root.after.reset_mock()
+    gui._show_tooltip.reset_mock()
+    gui._tooltip = None
+    gui._tooltip_item = None
+    gui._result_tree_font.measure.return_value = 80
+    gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
+    gui.root.after.assert_not_called()
+    gui._show_tooltip.assert_not_called()
 
 
 def test_refresh_results_force_rebuilds_for_transient_ai_status():
@@ -3843,7 +3937,7 @@ def test_result_page_stats_show_greeted_after_pending():
     """结果页依次展示强烈推荐、推荐、待定、已打招呼。"""
     source = Path("gui_main.py").read_text(encoding="utf-8")
     stats_block = source[source.index("stats_data = [", source.index("def create_result_page")):]
-    stats_block = stats_block[:stats_block.index("\n\n        for icon_name")]
+    stats_block = stats_block[:stats_block.index("\n\n        card_gap")]
 
     assert '"通过筛选"' not in stats_block
     assert (
@@ -5491,7 +5585,7 @@ def test_stats_page_strong_recommendation_uses_emphasized_thumb_icon():
     """数据统计页与其他页面统一使用点赞加光芒表达强烈推荐。"""
     source = Path("gui_main.py").read_text(encoding="utf-8")
     stats_block = source[source.index("summary_items = [", source.index("def create_stats_page")):]
-    stats_block = stats_block[:stats_block.index("\n\n        for icon_name")]
+    stats_block = stats_block[:stats_block.index("\n\n        card_gap")]
 
     assert '("strong_recommend", "强烈推荐"' in stats_block
     assert '("star", "强烈推荐"' not in stats_block
@@ -5501,7 +5595,7 @@ def test_stats_page_renames_total_candidates_to_passed_filter():
     """数据统计页第一张卡片展示通过筛选，并使用放大的原双人图案。"""
     source = Path("gui_main.py").read_text(encoding="utf-8")
     stats_block = source[source.index("summary_items = [", source.index("def create_stats_page")):]
-    stats_block = stats_block[:stats_block.index("\n\n        for icon_name")]
+    stats_block = stats_block[:stats_block.index("\n\n        card_gap")]
 
     assert '("passed_filter", "通过筛选", "total"' in stats_block
     assert '"总候选人"' not in stats_block
@@ -5511,7 +5605,7 @@ def test_stats_page_greeted_uses_chat_icon_consistently():
     """数据统计页与首页、筛选结果页统一使用聊天气泡表示已打招呼。"""
     source = Path("gui_main.py").read_text(encoding="utf-8")
     stats_block = source[source.index("summary_items = [", source.index("def create_stats_page")):]
-    stats_block = stats_block[:stats_block.index("\n\n        for icon_name")]
+    stats_block = stats_block[:stats_block.index("\n\n        card_gap")]
 
     assert '("chat", "已打招呼", "greeted"' in stats_block
     assert '("mail", "已打招呼", "greeted"' not in stats_block

@@ -270,7 +270,7 @@ def show_changelog_dialog(gui):
     _place_window_centered(dialog, dw, dh, parent=gui.root)
 
     # ---- 左侧版本列表（深色侧边栏风格）----
-    sidebar_bg = '#2D3748'
+    sidebar_bg = ui_theme.BG_SIDEBAR
     left_frame = tk.Frame(dialog, bg=sidebar_bg, width=int(190 * fs))
     left_frame.pack(side="left", fill="y")
     left_frame.pack_propagate(False)
@@ -278,12 +278,12 @@ def show_changelog_dialog(gui):
     # 标题
     title_frame = tk.Frame(left_frame, bg=sidebar_bg)
     title_frame.pack(fill="x", padx=int(16 * fs), pady=(int(18 * fs), int(8 * fs)))
-    tk.Label(title_frame, text="版本历史", bg=sidebar_bg, fg='#E2E8F0',
+    tk.Label(title_frame, text="版本历史", bg=sidebar_bg, fg=ui_theme.BORDER,
              font=(FONT_FAMILY, int(14 * changelog_fs), 'bold')).pack(anchor="center")
-    tk.Label(title_frame, text=f"共 {len(versions)} 个版本", bg=sidebar_bg, fg='#A0AEC0',
+    tk.Label(title_frame, text=f"共 {len(versions)} 个版本", bg=sidebar_bg, fg=ui_theme.TEXT_SIDEBAR,
              font=(FONT_FAMILY, int(11 * changelog_fs))).pack(anchor="center", pady=(int(2 * fs), 0))
     if len(versions) > 20:
-        tk.Label(title_frame, text="可滚动查看", bg=sidebar_bg, fg='#718096',
+        tk.Label(title_frame, text="可滚动查看", bg=sidebar_bg, fg=ui_theme.TEXT_SECONDARY,
                  font=(FONT_FAMILY, int(9 * changelog_fs))).pack(anchor="center")
 
     # 版本列表
@@ -304,9 +304,9 @@ def show_changelog_dialog(gui):
     list_scrollbar = tk.Scrollbar(list_wrapper, orient="vertical",
                                   command=list_canvas.yview,
                                   width=max(8, int(8 * fs)),
-                                  bg='#718096',
-                                  activebackground='#CBD5E0',
-                                  troughcolor='#1F2937',
+                                  bg=ui_theme.TEXT_SECONDARY,
+                                  activebackground=ui_theme.BORDER_STRONG,
+                                  troughcolor=ui_theme.TOOLTIP_BG,
                                   borderwidth=0, highlightthickness=0, relief='flat')
     list_canvas.configure(yscrollcommand=list_scrollbar.set)
     list_scrollbar.pack(side="right", fill="y")
@@ -344,8 +344,8 @@ def show_changelog_dialog(gui):
     for idx, (tag, title_line, _) in enumerate(versions):
         is_patch = tag.count('.') >= 2  # X.Y.Z 是补丁版本
         font_size = int(10 * changelog_fs) if is_patch else int(12 * changelog_fs)
-        row_bg = '#243041' if idx % 2 == 0 else sidebar_bg
-        row_fg = '#718096' if is_patch else ('#F8FAFC' if idx == 0 else '#E2E8F0')
+        row_bg = ui_theme.BG_SIDEBAR_ZEBRA if idx % 2 == 0 else sidebar_bg
+        row_fg = ui_theme.TEXT_SECONDARY if is_patch else (ui_theme.BG_ZEBRA if idx == 0 else ui_theme.BORDER)
 
         row_frame = tk.Frame(list_inner, bg=row_bg)
         row_frame.pack(fill='x', pady=0)
@@ -361,7 +361,7 @@ def show_changelog_dialog(gui):
         def _enter(e, rf=row_frame, lb=lbl):
             if selected_row_idx[0] != rf._idx:
                 rf.config(bg=gui.colors['primary'])
-                lb.config(bg=gui.colors['primary'], fg='#FFFFFF')
+                lb.config(bg=gui.colors['primary'], fg=ui_theme.TEXT_SIDEBAR_ACTIVE)
         def _leave(e, rf=row_frame, lb=lbl, rb=row_bg, rfg=row_fg):
             if selected_row_idx[0] != rf._idx:
                 rf.config(bg=rb)
@@ -381,7 +381,7 @@ def show_changelog_dialog(gui):
         for rf, lb, orig_bg, orig_fg, i in row_frames:
             if i == idx:
                 rf.config(bg=gui.colors['primary'])
-                lb.config(bg=gui.colors['primary'], fg='#FFFFFF')
+                lb.config(bg=gui.colors['primary'], fg=ui_theme.TEXT_SIDEBAR_ACTIVE)
             else:
                 rf.config(bg=orig_bg)
                 lb.config(bg=orig_bg, fg=orig_fg)
@@ -389,7 +389,7 @@ def show_changelog_dialog(gui):
 
     # 左侧边栏底部：关于链接
     about_label = tk.Label(left_frame, text="关于",
-                           bg=sidebar_bg, fg='#A0AEC0',
+                           bg=sidebar_bg, fg=ui_theme.TEXT_SIDEBAR,
                            font=(FONT_FAMILY, int(12 * changelog_fs)),
                            cursor="hand2")
     about_label.pack(padx=int(12 * fs), pady=(int(8 * fs), int(12 * fs)))

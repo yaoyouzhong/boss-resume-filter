@@ -286,10 +286,10 @@ def _search_color(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     img = Image.new('RGBA', (size_px, size_px), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
-    brand = '#1E88E5'       # 品牌蓝
-    brand_dark = '#0D47A1'  # 深蓝（手柄）
-    lens = '#BBDEFB'        # 浅蓝镜片
-    highlight = '#E3F2FD'   # 高光
+    brand = ui_theme.PRIMARY        # 品牌蓝
+    brand_dark = ui_theme.PRIMARY_DEEP  # 深蓝（手柄）
+    lens = ui_theme.PRIMARY_PALE    # 浅蓝镜片
+    highlight = ui_theme.BANNER_INFO_BG  # 高光
 
     S = size_px
     # 镜片中心 & 半径
@@ -487,32 +487,6 @@ def _trophy(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     d.line([_s(7, S), _s(19, S), _s(17, S), _s(19, S)], fill=fill, width=sw + 1)
     d.rectangle([_s(8, S), _s(19, S), _s(16, S), _s(21, S)],
                 outline=fill, width=sw)
-    return img
-
-
-def _arrow_up(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
-    """↑ 上升箭头图标 — 24×24"""
-    img = Image.new('RGBA', (size_px, size_px), bg)
-    d = ImageDraw.Draw(img)
-    S = size_px
-    # 箭头三角形（顶部）
-    triangle = [(_s(12, S), _s(3, S)), (_s(5, S), _s(11, S)), (_s(19, S), _s(11, S))]
-    d.polygon(triangle, outline=fill, fill=fill, width=sw)
-    # 箭杆
-    d.rectangle([_s(10, S), _s(10, S), _s(14, S), _s(21, S)], fill=fill)
-    return img
-
-
-def _arrow_down(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
-    """↓ 下降箭头图标 — 24×24"""
-    img = Image.new('RGBA', (size_px, size_px), bg)
-    d = ImageDraw.Draw(img)
-    S = size_px
-    # 箭头三角形（底部）
-    triangle = [(_s(12, S), _s(21, S)), (_s(5, S), _s(13, S)), (_s(19, S), _s(13, S))]
-    d.polygon(triangle, outline=fill, fill=fill, width=sw)
-    # 箭杆
-    d.rectangle([_s(10, S), _s(3, S), _s(14, S), _s(14, S)], fill=fill)
     return img
 
 
@@ -778,9 +752,9 @@ def _shield_check(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     img = Image.new('RGBA', (size_px, size_px), bg)
     d = ImageDraw.Draw(img)
     S = size_px
-    # 品牌色（硬编码，不受 fill 参数影响）
-    brand_blue = '#1E88E5'
-    brand_dark = '#1565C0'
+    # 品牌色（固定取令牌，不受 fill 参数影响）
+    brand_blue = ui_theme.PRIMARY
+    brand_dark = ui_theme.PRIMARY_DARK
     # 盾牌轮廓：填充品牌蓝
     shield = [
         (_s(12, S), _s(2, S)),    # 顶部中心
@@ -965,8 +939,6 @@ ICON_REGISTRY: Dict[str, Callable] = {
     'trophy':       _trophy,
     'thumbs_up':    _thumbs_up,
     'strong_recommend': _strong_recommend,
-    'arrow_up':     _arrow_up,
-    'arrow_down':   _arrow_down,
     'chevron_up':   _chevron_up,
     'chevron_down': _chevron_down,
     'mail':         _mail,

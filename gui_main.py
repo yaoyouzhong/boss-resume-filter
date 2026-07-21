@@ -181,13 +181,13 @@ PAGE_SPECS = {
     ),
     PageIndex.RUN: PageSpec("play", "运行控制", "run_page", "_create_run_page_steps", "show_page_run"),
     PageIndex.RESULTS: PageSpec(
-        "filter", "筛选结果", "result_page", "create_result_page", "show_page_result", True
+        "filter", "筛选结果", "result_page", "create_result_page", "show_page_result"
     ),
     PageIndex.EDUCATION: PageSpec(
         "document", "学历核验", "education_page", "create_education_page", "show_page_education"
     ),
     PageIndex.STATS: PageSpec(
-        "chart", "数据统计", "stats_page", "create_stats_page", "show_page_stats", True
+        "chart", "数据统计", "stats_page", "create_stats_page", "show_page_stats"
     ),
     PageIndex.SETTINGS: PageSpec(
         "gear", "系统设置", "api_config_page", "_create_api_config_page_steps", "show_page_api"
@@ -310,26 +310,13 @@ def _filter_candidates_by_result_view(candidates, view):
 
 
 def get_font_family():
-    """获取字体 - 支持跨平台降级"""
-    # 优先使用微软雅黑，macOS/Linux 降级到系统字体
-    import sys
-    if sys.platform == 'win32':
-        return 'Microsoft YaHei UI'
-    elif sys.platform == 'darwin':
-        return 'PingFang SC'
-    else:
-        return 'Helvetica'
+    """获取字体 - 支持跨平台降级（实现已收口到 ui_theme）"""
+    return ui_theme.FONT_FAMILY
 
 
 def get_font_family_semibold():
-    """获取 Semibold 字体变体 - 支持跨平台降级"""
-    import sys
-    if sys.platform == 'win32':
-        return 'Microsoft YaHei UI Semibold'
-    elif sys.platform == 'darwin':
-        return 'PingFang SC'  # macOS 无独立 Semibold 变体，配合 'bold' 使用
-    else:
-        return 'Helvetica'
+    """获取 Semibold 字体变体 - 支持跨平台降级（实现已收口到 ui_theme）"""
+    return ui_theme.FONT_FAMILY_SEMIBOLD
 
 
 FONT_FAMILY = get_font_family()
@@ -1952,6 +1939,12 @@ class BossFilterGUI:
             _paint_loading_frame()
             return
         if getattr(self, page_attr, None) is not None:
+            # 已在当前页且无就绪回调时直接短路，避免重复 hide+pack+刷新
+            if (
+                getattr(self, 'current_page_index', None) == page_index
+                and on_ready is None
+            ):
+                return
             show_page()
             _run_ready_callbacks()
             return
@@ -2036,7 +2029,7 @@ class BossFilterGUI:
         self._page_width_policy_after_id = self.root.after(60, _run)
 
     def _apply_page_width_policy(self):
-        """Limit form-like pages on wide screens while keeping data tables wide."""
+        """Center page content on wide screens unless a page explicitly opts out."""
         if not hasattr(self, 'pages_frame') or not hasattr(self, 'main_frame'):
             return
 
@@ -2045,8 +2038,8 @@ class BossFilterGUI:
         base_pad_y = int(UI_CONFIG['page_padding_y'] * scale)
         current_page = getattr(self, 'current_page_index', PageIndex.HOME)
 
-        # Result and stats pages are table-first surfaces; they should use the
-        # available width. Other pages read better when the content stays bounded.
+        # Pages read more consistently when content stays bounded; exceptional
+        # surfaces can still opt into the full available width through PAGE_SPECS.
         full_width_pages = {
             page for page, page_spec in PAGE_SPECS.items() if page_spec.full_width
         }
@@ -2082,10 +2075,54 @@ class BossFilterGUI:
             self._update_model_list_columns()
         elif current_page == 1:
             self._update_config_page_dynamic_heights()
+        elif current_page == 2:
+            self._update_run_page_dynamic_heights()
         elif current_page == 3:
             self._update_result_tree_columns()
+            self._update_result_stats_compact()
         elif current_page == 4:
             self._update_education_queue_columns()
+        elif current_page == 5:
+            self._update_stats_tree_columns()
+
+    def _update_run_page_dynamic_heights(self):
+        """高窗口下让运行日志区域利用多余高度。"""
+        log_text = getattr(self, 'log_text', None)
+        if log_text is None:
+            return
+        extra_rows = self._get_tall_window_extra_rows()
+        try:
+            log_text.configure(height=min(40, 20 + extra_rows))
+        except tk.TclError:
+            return
+
+    def _update_result_stats_compact(self):
+        """矮窗口下隐藏结果页统计卡片的圆形图标，把纵向空间还给候选人表格。"""
+        cards = getattr(self, '_result_stat_icon_canvases', None)
+        if not cards:
+            return
+        try:
+            window_height = int(self.root.winfo_height())
+        except (tk.TclError, ValueError):
+            return
+        if window_height <= 0:
+            return
+        compact = window_height < 820
+        if compact == getattr(self, '_result_stats_compact', False):
+            return
+        self._result_stats_compact = compact
+        icon_pady = (
+            int(12 * self.dpi_scale * self.zoom_factor),
+            int(4 * self.dpi_scale * self.zoom_factor),
+        )
+        for icon_canvas, value_label in cards:
+            try:
+                if compact:
+                    icon_canvas.pack_forget()
+                else:
+                    icon_canvas.pack(anchor="center", pady=icon_pady, before=value_label)
+            except tk.TclError:
+                pass
 
     def _is_window_maximized(self) -> bool:
         """Return True when the main window is maximized or effectively fullscreen."""
@@ -2100,69 +2137,176 @@ class BossFilterGUI:
             return False
 
     def _update_result_tree_columns(self):
-        """Show 8, 11, or 13 columns according to maximized state and table width."""
+        """Show 8, 11, or 13 columns according to available table width."""
         if not hasattr(self, 'result_tree'):
             return
 
         base_columns = ("name", "exp", "salary", "skills", "score", "ai_eval", "level", "status")
         extra_columns = ("education", "age", "job_status")
         wide_columns = ("school", "company")
+        try:
+            tree_width = int(self.result_tree.winfo_width())
+        except (tk.TclError, ValueError):
+            tree_width = 0
         display_columns = base_columns
-        if self._is_window_maximized():
+        if tree_width >= 1250:
             display_columns += extra_columns
-            try:
-                tree_width = int(self.result_tree.winfo_width())
-            except (tk.TclError, ValueError):
-                tree_width = 0
-            if tree_width >= 1500:
-                display_columns += wide_columns
+        if tree_width >= 1700:
+            display_columns += wide_columns
         self._apply_result_tree_column_widths(display_columns)
         if tuple(self.result_tree.cget("displaycolumns")) != display_columns:
             self.result_tree.configure(displaycolumns=display_columns)
+
+    def _tree_header_floors(self, tree, display_columns, min_widths):
+        """每列不被截断的宽度下限：表头文字实测宽度 + 排序/内边距余量，与 minwidth 取大。"""
+        import tkinter.font as tkfont
+        scale = getattr(self, 'dpi_scale', 1.0) * getattr(self, 'zoom_factor', 1.0)
+        overhead = int(30 * scale)
+        try:
+            measure_font = tkfont.Font(
+                font=(FONT_FAMILY, int(12 * getattr(self, 'font_scale', 1.0)), 'bold'))
+            floors = {}
+            for column in display_columns:
+                text = str(tree.heading(column).get('text', '') or '')
+                floors[column] = max(
+                    min_widths[column], measure_font.measure(text) + overhead)
+            return floors
+        except (tk.TclError, RuntimeError, AttributeError):
+            return {column: min_widths[column] for column in display_columns}
+
+    @staticmethod
+    def _distribute_tree_surplus(widths, flexible_columns, floors, base_widths,
+                                 growth_caps, extra):
+        """富余宽度分配：增长上限内按基础宽度权重灌水，全部触顶后余量再按比例摊开。
+
+        ttk 的 stretch 只会收缩不会放大，富余宽度必须显式分配；
+        数值/短文本列设增长上限，避免宽屏下短内容列被拉成空阔巨列、
+        长文本列反而截断。
+        """
+        while extra > 0:
+            eligible = [c for c in flexible_columns
+                        if widths[c] < max(growth_caps[c], floors[c])]
+            if not eligible:
+                break
+            total_weight = sum(base_widths[c] for c in eligible)
+            allocated = 0
+            for column in eligible:
+                share = min(extra * base_widths[column] // total_weight,
+                            max(growth_caps[column], floors[column]) - widths[column])
+                widths[column] += share
+                allocated += share
+            if allocated <= 0:
+                break
+            extra -= allocated
+        if extra > 0:
+            total_weight = sum(base_widths[c] for c in flexible_columns)
+            allocated = 0
+            for column in flexible_columns[:-1]:
+                share = extra * base_widths[column] // total_weight
+                widths[column] += share
+                allocated += share
+            widths[flexible_columns[-1]] += extra - allocated
 
     def _apply_result_tree_column_widths(self, display_columns):
         """Balance visible columns while keeping education and age readable."""
         base_widths = {
             "name": 80, "exp": 85, "salary": 85, "skills": 85,
             "score": 70, "ai_eval": 70, "level": 80, "status": 180,
-            "education": 140, "age": 110, "job_status": 120,
-            "school": 150, "company": 170,
+            "education": 140, "age": 110, "job_status": 130,
+            "school": 150, "company": 160,
         }
         min_widths = {
             "name": 60, "exp": 70, "salary": 70, "skills": 70,
             "score": 60, "ai_eval": 60, "level": 70, "status": 150,
-            "education": 115, "age": 90, "job_status": 80,
-            "school": 120, "company": 130,
+            "education": 115, "age": 90, "job_status": 90,
+            "school": 120, "company": 125,
         }
 
         wide_mode = "company" in display_columns
-        widths = {column: base_widths[column] for column in display_columns}
-        if wide_mode:
-            try:
-                available_width = max(0, int(self.result_tree.winfo_width()) - 2)
-            except (tk.TclError, ValueError):
-                available_width = 0
-            compact_columns = {"education", "age"}
-            flexible_columns = [
-                column for column in display_columns
-                if column not in compact_columns
-            ]
-            compact_width = sum(widths[column] for column in compact_columns)
-            flexible_base_width = sum(widths[column] for column in flexible_columns)
-            flexible_available = max(0, available_width - compact_width)
-            if flexible_available > flexible_base_width:
-                scale = flexible_available / flexible_base_width
-                for column in flexible_columns:
-                    widths[column] = int(widths[column] * scale)
-                rounding_gap = available_width - sum(widths.values())
-                widths["company"] += rounding_gap
+        try:
+            available_width = max(0, int(self.result_tree.winfo_width()) - 2)
+        except (tk.TclError, ValueError):
+            available_width = 0
+
+        # education/age 在 13 列模式下保持紧凑固定宽，其余列参与富余分配
+        fixed_columns = {"education", "age"} if wide_mode else set()
+        flexible_columns = [c for c in display_columns if c not in fixed_columns]
+        floors = self._tree_header_floors(self.result_tree, flexible_columns, min_widths)
+        fixed_width = sum(base_widths[c] for c in fixed_columns)
+        flexible_available = max(0, available_width - fixed_width)
+
+        widths = {c: base_widths[c] for c in display_columns}
+        stretch = not wide_mode
+        floor_total = sum(floors.values())
+        base_flex_total = sum(base_widths[c] for c in flexible_columns)
+        if flexible_available > max(base_flex_total, floor_total):
+            growth_caps = {
+                "name": 130, "exp": 115, "salary": 120, "skills": 130,
+                "score": 95, "ai_eval": 95, "level": 120, "status": 260,
+                "education": 160, "age": 120, "job_status": 170,
+                "school": 280, "company": 320,
+            }
+            widths.update(floors)
+            self._distribute_tree_surplus(
+                widths, flexible_columns, floors, base_widths, growth_caps,
+                flexible_available - floor_total)
+            stretch = False
 
         for column in display_columns:
             self.result_tree.column(
                 column,
                 width=widths[column],
                 minwidth=min_widths[column],
-                stretch=not wide_mode,
+                stretch=stretch,
+            )
+
+    def _update_stats_tree_columns(self):
+        """Rebalance stats detail columns so wide windows fill the table.
+
+        与结果表同一套逻辑：表头实测宽度为下限，富余在增长上限内按
+        基础宽度分配，避免右侧留白或岗位名称等长文本列截断。
+        """
+        tree = getattr(self, 'stats_tree', None)
+        if tree is None:
+            return
+        base_widths = {
+            "job": 200, "filter_dist": 175, "greeted": 100, "feedback": 80,
+            "suitable_rate": 75, "false_positive_rate": 75,
+            "replied": 100, "interviewed": 100, "avg_score": 65,
+        }
+        min_widths = {
+            "job": 150, "filter_dist": 140, "greeted": 80, "feedback": 65,
+            "suitable_rate": 60, "false_positive_rate": 60,
+            "replied": 80, "interviewed": 80, "avg_score": 55,
+        }
+        growth_caps = {
+            "job": 340, "filter_dist": 260, "greeted": 150, "feedback": 120,
+            "suitable_rate": 110, "false_positive_rate": 110,
+            "replied": 150, "interviewed": 150, "avg_score": 100,
+        }
+        columns = list(base_widths)
+        try:
+            available_width = max(0, int(tree.winfo_width()) - 2)
+        except (tk.TclError, ValueError):
+            available_width = 0
+
+        floors = self._tree_header_floors(tree, columns, min_widths)
+        widths = dict(base_widths)
+        stretch = True
+        floor_total = sum(floors.values())
+        if available_width > max(sum(base_widths.values()), floor_total):
+            widths.update(floors)
+            self._distribute_tree_surplus(
+                widths, columns, floors, base_widths, growth_caps,
+                available_width - floor_total)
+            stretch = False
+
+        for column in columns:
+            tree.column(
+                column,
+                width=widths[column],
+                minwidth=min_widths[column],
+                stretch=stretch,
             )
 
     def _is_tall_window(self) -> bool:
@@ -2336,9 +2480,11 @@ class BossFilterGUI:
 
         self.home_stats_vars = {}
         self.home_stats_labels = {}  # 保存标签引用用于绑定事件
-        for icon_name, label_text, var_name, color in cards_data:
+        card_gap = int(15 * self.dpi_scale * self.zoom_factor)
+        for idx, (icon_name, label_text, var_name, color) in enumerate(cards_data):
             card_frame = ttk.Frame(stats_container, style='Card.TFrame')
-            card_frame.pack(side="left", fill="x", expand=True, padx=int(15 * self.dpi_scale * self.zoom_factor), pady=int(12 * self.dpi_scale * self.zoom_factor))
+            card_padx = (0, card_gap) if idx < len(cards_data) - 1 else 0
+            card_frame.pack(side="left", fill="x", expand=True, padx=card_padx, pady=int(12 * self.dpi_scale * self.zoom_factor))
 
             # 图标容器 - 彩色圆形背景
             icon_size = int(UI_CONFIG['stat_icon_size'] * self.dpi_scale * self.zoom_factor)
@@ -2376,10 +2522,10 @@ class BossFilterGUI:
                                   background=self.colors['bg_card'])
             text_label.pack(anchor="center", pady=(0, int(20 * self.dpi_scale * self.zoom_factor)))
 
-        # 快速操作区
+        # 快速操作区（纵向吸收多余高度，避免高窗口下页面底部大片空白）
         quick_frame = self._create_card(self.home_page, "快速操作",
             padding=int(UI_CONFIG['card_padding'] * self.dpi_scale * self.zoom_factor),
-            fill="x", pady=int(30 * self.dpi_scale * self.zoom_factor))
+            fill="both", expand=True, pady=int(30 * self.dpi_scale * self.zoom_factor))
 
         quick_buttons = ttk.Frame(quick_frame, style='TFrame')
         quick_buttons.pack(fill="x")
@@ -4572,10 +4718,11 @@ class BossFilterGUI:
         browser_status_row = ttk.Frame(browser_frame, style='TFrame')
         browser_status_row.pack(fill="x")
 
-        # 状态指示灯
-        self.browser_status_indicator = ttk.Label(browser_status_row, text="● 未连接",
+        # 状态指示灯（交通灯图标 + 文本，由 _apply_lamp_status 统一渲染）
+        self.browser_status_indicator = ttk.Label(browser_status_row,
                                                   font=(FONT_FAMILY, int(11 * self.font_scale)),
                                                   foreground=self.colors['danger'])
+        self._apply_lamp_status(self.browser_status_indicator, "● 未连接", self.colors['danger'])
         self.browser_status_indicator.pack(side="left")
 
         # 检测按钮
@@ -4926,9 +5073,10 @@ class BossFilterGUI:
         self.stop_btn._icon_refs = (icon_stop, icon_stop_disabled)
         self.stop_btn.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
 
-        # 状态指示器
-        self.status_label = ttk.Label(btn_container, text="● 就绪",
+        # 状态指示器（交通灯图标 + 文本，由 _apply_lamp_status 统一渲染）
+        self.status_label = ttk.Label(btn_container,
                                       font=(FONT_FAMILY, int(13 * self.font_scale)), foreground=self.colors['success'])
+        self._apply_lamp_status(self.status_label, "● 就绪", self.colors['success'])
         self.status_label.pack(side="left", padx=int(50 * self.dpi_scale * self.zoom_factor))
 
         yield
@@ -5028,9 +5176,12 @@ class BossFilterGUI:
             ("chat", "已打招呼", "greeted", self.colors['warning']),
         ]
 
-        for icon_name, label_text, var_name, color in stats_data:
+        card_gap = int(12 * self.dpi_scale * self.zoom_factor)
+        self._result_stat_icon_canvases = []
+        for idx, (icon_name, label_text, var_name, color) in enumerate(stats_data):
             card_frame = ttk.Frame(stats_container, style='Card.TFrame')
-            card_frame.pack(side="left", fill="x", expand=True, padx=int(12 * self.dpi_scale * self.zoom_factor))
+            card_padx = (0, card_gap) if idx < len(stats_data) - 1 else 0
+            card_frame.pack(side="left", fill="x", expand=True, padx=card_padx)
 
             # 彩色圆形图标（大号）
             icon_size = int(UI_CONFIG['stat_icon_size'] * self.dpi_scale * self.zoom_factor)
@@ -5052,6 +5203,7 @@ class BossFilterGUI:
                                    foreground=color, background=self.colors['bg_card'],
                                    cursor="hand2")
             value_label.pack(anchor="center", pady=(0, int(2 * self.dpi_scale * self.zoom_factor)))
+            self._result_stat_icon_canvases.append((icon_canvas, value_label))
 
             # 已打招呼
             greeted_var = tk.StringVar(
@@ -5222,7 +5374,7 @@ class BossFilterGUI:
         self.result_tree.heading("school", text="毕业学校")
         self.result_tree.heading("company", text="最近公司")
 
-        # 普通窗口 8 列；最大化显示 11 列；表格足够宽时再显示学校和公司。
+        # 表格宽度 <1250px 显示 8 列；≥1250px 显示 11 列；≥1700px 再显示学校和公司。
         self.result_tree.column("name", width=80, minwidth=60, anchor='center')
         self.result_tree.column("exp", width=85, minwidth=70, anchor='center')
         self.result_tree.column("salary", width=85, minwidth=70, anchor='center')
@@ -5233,15 +5385,16 @@ class BossFilterGUI:
         self.result_tree.column("status", width=180, minwidth=150, anchor='center')
         self.result_tree.column("education", width=140, minwidth=115, anchor='center')
         self.result_tree.column("age", width=110, minwidth=90, anchor='center')
-        self.result_tree.column("job_status", width=120, minwidth=80, anchor='center')
+        self.result_tree.column("job_status", width=130, minwidth=90, anchor='center')
         self.result_tree.column("school", width=150, minwidth=120, anchor='center')
-        self.result_tree.column("company", width=170, minwidth=130, anchor='center')
+        self.result_tree.column("company", width=160, minwidth=125, anchor='center')
 
         # 设置表格字体和样式
         style = ttk.Style()
         style.configure("Result.Treeview", font=self.font_table, rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor))
         style.configure("Result.Treeview.Heading", font=(FONT_FAMILY, int(12 * self.font_scale), 'bold'))
         self.result_tree.configure(style="Result.Treeview")
+        self._result_tree_font = font.Font(font=self.font_table)
 
         self._update_result_tree_columns()
 
@@ -5510,7 +5663,7 @@ class BossFilterGUI:
             font=self.font_label, justify="center",
         )
         self.education_preview_label.bind(
-            "<Configure>", lambda _event: self._render_education_preview()
+            "<Configure>", lambda _event: self._schedule_education_preview_render()
         )
         self.education_preview_label.pack(fill="both", expand=True)
 
@@ -5859,6 +6012,38 @@ class BossFilterGUI:
             self.education_preview_label._image_ref = None
             self._refresh_education_queue_summary()
 
+    def _schedule_education_preview_render(self):
+        """预览区尺寸变化时防抖重绘，避免拖动窗口边框期间连续读盘解码。"""
+        pending = getattr(self, '_education_preview_render_timer', None)
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except Exception:
+                pass
+        self._education_preview_render_timer = self.root.after(
+            120, self._render_education_preview
+        )
+
+    def _get_education_source_image(self, path, item_id, display_angle):
+        """读取并校正方向的源图，按 (路径, 角度) 缓存，避免每次重绘重复解码大图。"""
+        from PIL import Image, ImageOps
+        cache = getattr(self, '_education_source_cache', None)
+        if cache is None:
+            cache = self._education_source_cache = {}
+        key = (str(path), display_angle)
+        if key not in cache:
+            with Image.open(path) as source:
+                image = ImageOps.exif_transpose(source).convert("RGB")
+            if display_angle:
+                image = image.rotate(
+                    -display_angle, expand=True, resample=Image.Resampling.BICUBIC
+                )
+            cache[key] = image
+            # 只保留最近几张，防止长会话内存膨胀
+            while len(cache) > 4:
+                cache.pop(next(iter(cache)))
+        return cache[key]
+
     def _render_education_preview(self):
         """按当前预览区域尺寸显示证书图片，依次应用 EXIF 与自动/人工方向。"""
         path = getattr(self, 'education_image_path', None)
@@ -5875,22 +6060,18 @@ class BossFilterGUI:
             label._image_ref = None
             return
         try:
-            from PIL import Image, ImageOps, ImageTk
+            from PIL import Image, ImageTk
             rotation_locked = getattr(self, "education_rotation_locked", set())
             if item_id in rotation_locked:
                 display_angle = self.education_manual_rotation.get(item_id, 0)
             else:
                 display_angle = int((item or {}).get("auto_rotation", 0) or 0)
-            with Image.open(path) as source:
-                image = ImageOps.exif_transpose(source).convert("RGB")
-                if display_angle:
-                    image = image.rotate(
-                        -display_angle, expand=True, resample=Image.Resampling.BICUBIC
-                    )
-                width = max(320, label.winfo_width() - 20)
-                height = max(320, label.winfo_height() - 20)
-                image.thumbnail((width, height), Image.Resampling.LANCZOS)
-                photo = ImageTk.PhotoImage(image)
+            image = self._get_education_source_image(path, item_id, display_angle)
+            width = max(320, label.winfo_width() - 20)
+            height = max(320, label.winfo_height() - 20)
+            image = image.copy()
+            image.thumbnail((width, height), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(image)
             label.configure(image=photo, text="")
             label._image_ref = photo
         except Exception as error:
@@ -6793,9 +6974,11 @@ class BossFilterGUI:
             ("chat", "已打招呼", "greeted", self.colors['warning']),
         ]
 
-        for icon_name, label_text, var_name, color in summary_items:
+        card_gap = int(10 * self.dpi_scale * self.zoom_factor)
+        for idx, (icon_name, label_text, var_name, color) in enumerate(summary_items):
             card = ttk.Frame(summary_container, style='Card.TFrame')
-            card.pack(side="left", fill="x", expand=True, padx=int(10 * self.dpi_scale * self.zoom_factor),
+            card_padx = (0, card_gap) if idx < len(summary_items) - 1 else 0
+            card.pack(side="left", fill="x", expand=True, padx=card_padx,
                      pady=int(10 * self.dpi_scale * self.zoom_factor))
 
             # 图标容器
@@ -6882,6 +7065,11 @@ class BossFilterGUI:
         table_container.grid_columnconfigure(0, weight=1)
         self.stats_tree.bind("<Double-Button-1>", lambda e: self._show_selected_job_review())
         self.stats_tree.bind("<Button-3>", self._show_stats_context_menu)
+        self.stats_tree.bind(
+            "<Configure>",
+            lambda _event: self._schedule_page_width_policy(),
+            add="+",
+        )
 
     def _load_stats_candidates(self, job_name=None):
         """Load candidates with the current stats filters applied.
@@ -7873,9 +8061,6 @@ class BossFilterGUI:
         self.current_page_index = PageIndex.SETTINGS
         self._schedule_page_width_policy()
         self.update_nav_highlight()
-        # 重置滚动条位置到顶部
-        if hasattr(self, 'api_canvas'):
-            self.api_canvas.yview_moveto(0.0)
         # 重新绑定滚轮事件（覆盖动态创建的控件）
         self._bind_mousewheel(self.api_canvas, self.api_scrollable_frame)
         self._schedule_api_key_resolution()
@@ -9254,7 +9439,7 @@ class BossFilterGUI:
         self._update_api_status(text=status_text, foreground=self.colors['success'])
 
     def _update_api_status(self, text, foreground=None):
-        """更新 API 状态标签，同时清理之前的可点击标签"""
+        """更新 API 状态标签，同时清理之前的可点击标签；⏳ 进行状态期间显示忙碌光标。"""
         # 清理之前的可点击标签
         for lbl in self._status_clickable_labels:
             lbl.destroy()
@@ -9264,6 +9449,13 @@ class BossFilterGUI:
         if foreground is not None:
             config["foreground"] = foreground
         self.api_status_label.config(**config)
+        # ⏳ 是测试连接 / 获取模型列表等耗时操作的统一进行标记，终态文案到达时恢复光标
+        root = getattr(self, 'root', None)
+        if root is not None:
+            try:
+                root.config(cursor='watch' if str(text).startswith("⏳") else '')
+            except tk.TclError:
+                pass
 
     def _is_relay_endpoint_for_timeout(self) -> bool:
         """判断当前 API 配置是否为中转服务（用于读取超时默认值）"""
@@ -12849,6 +13041,40 @@ class BossFilterGUI:
             pass
         self.root.after(50, self._process_ui_queue)
 
+    def _get_lamp_icon(self, color):
+        """按状态颜色取交通灯图标（带缓存），统一替代文本状态圆点。"""
+        cache = getattr(self, '_lamp_icon_cache', None)
+        if cache is None:
+            cache = self._lamp_icon_cache = {}
+        if color == self.colors.get('success'):
+            kind = 'success'
+        elif color == self.colors.get('danger'):
+            kind = 'error'
+        else:
+            kind = 'pending'
+        if kind not in cache:
+            size = int(16 * getattr(self, 'dpi_scale', 1.0) * getattr(self, 'zoom_factor', 1.0))
+            cache[kind] = self.icons.get(
+                f'traffic_light_{kind}', size, self.colors.get('text_primary', ui_theme.TEXT_PRIMARY))
+        return cache[kind]
+
+    def _apply_lamp_status(self, label, status_text, color):
+        """把 "● 文本" 形式的状态渲染为交通灯图标 + 文本，颜色语义保持不变；图标不可用时保留原文本。"""
+        display_text = status_text
+        image = ""
+        if status_text.startswith("● "):
+            try:
+                image = self._get_lamp_icon(color)
+            except Exception:
+                image = ""
+            if image:
+                display_text = " " + status_text[2:]
+        label.config(
+            text=display_text, foreground=color,
+            image=image, compound='left' if image else 'none',
+        )
+        label._icon_ref = image
+
     def set_browser_ui(self, indicator_text=None, indicator_color=None, help_text=None, start_state=None):
         """线程安全更新浏览器状态控件，并缓存状态文本供后台线程判断。"""
         if indicator_text is not None:
@@ -12858,7 +13084,7 @@ class BossFilterGUI:
 
         def apply_update():
             if indicator_text is not None:
-                self.browser_status_indicator.config(text=indicator_text, foreground=indicator_color)
+                self._apply_lamp_status(self.browser_status_indicator, indicator_text, indicator_color)
             if help_text is not None:
                 self.browser_status_help.config(text=help_text)
             # 运行中不覆盖按钮状态，防止轮询覆盖 start_run 的 disabled
@@ -13711,7 +13937,7 @@ class BossFilterGUI:
 
         self.is_running = True
         self.stop_event.clear()
-        self.status_label.config(text="● 运行中...", foreground=self.colors['warning'])
+        self._apply_lamp_status(self.status_label, "● 运行中...", self.colors['warning'])
         self.stop_btn.config(state="normal")
 
         # 重置进度显示
@@ -13729,7 +13955,7 @@ class BossFilterGUI:
         """停止运行"""
         self.is_running = False
         self.stop_event.set()
-        self.status_label.config(text="● 已停止", foreground=self.colors['danger'])
+        self._apply_lamp_status(self.status_label, "● 已停止", self.colors['danger'])
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.append_run_log(f"[{datetime.now().strftime('%H:%M:%S')}] ⏹ 已停止")
@@ -14018,7 +14244,7 @@ class BossFilterGUI:
             )
 
             def finish_ui():
-                self.status_label.config(text=status_text, foreground=status_color)
+                self._apply_lamp_status(self.status_label, status_text, status_color)
                 self.start_btn.config(state="normal")
                 self.stop_btn.config(state="disabled")
                 self.progress_var.set(100)
@@ -15537,7 +15763,7 @@ class BossFilterGUI:
         self.result_tree.bind('<Double-Button-1>', self._on_tree_double_click)
         self.result_tree.bind('<Control-a>', self._select_all_result_rows, add='+')
         self.result_tree.bind('<Control-A>', self._select_all_result_rows, add='+')
-        # 状态列 tooltip（截断时显示完整状态）
+        # 状态、求职状态及经历列 tooltip（截断时显示完整内容）
         self._tooltip = None
         self._tooltip_after_id = None
         self._tooltip_item = None
@@ -15554,7 +15780,7 @@ class BossFilterGUI:
         return "break"
 
     def _on_tree_motion(self, event):
-        """Treeview 鼠标移动：长状态、学校和公司显示完整 tooltip。"""
+        """Treeview 鼠标移动：被截断的状态和经历信息显示完整 tooltip。"""
         item = self.result_tree.identify_row(event.y)
         column_id = self.result_tree.identify_column(event.x)
         if not item or not column_id:
@@ -15575,6 +15801,18 @@ class BossFilterGUI:
             full = cand.get('_full_status', '')
             display = cand.get('_display_status', '')
             show_tooltip = bool(full and full != display)
+        elif cand and column_name == 'job_status':
+            extra = cand.get('_extra_fields') or ('', '', '', '', '')
+            full = str(extra[2] or '')
+            try:
+                cell_bbox = self.result_tree.bbox(item, column_id)
+                show_tooltip = bool(
+                    full
+                    and cell_bbox
+                    and self._result_tree_font.measure(full) > max(0, cell_bbox[2] - 12)
+                )
+            except (tk.TclError, TypeError, ValueError):
+                show_tooltip = False
         elif cand and column_name in ('school', 'company'):
             extra = cand.get('_extra_fields') or ('', '', '', '', '')
             school, company = extra[3], extra[4]
@@ -15711,6 +15949,11 @@ class BossFilterGUI:
         )
 
         def _draw():
+            try:
+                if not canvas.winfo_exists():
+                    return
+            except tk.TclError:
+                return
             canvas.delete('all')
             on = bool(variable.get())
             track = (self.colors['primary'] if on
@@ -17036,9 +17279,9 @@ class BossFilterGUI:
             self.root.after(0, self._on_ai_eval_complete)
 
     def _refresh_ai_eval_status(self):
-        """定时刷新AI评估状态"""
+        """定时刷新AI评估状态；每组评估完成都会落盘，指纹变化时 refresh_results 自动全量刷新，未变时是廉价空操作。"""
         if self._ai_eval_in_progress:
-            self.refresh_results(force=True)
+            self.refresh_results()
             self._ai_eval_refresh_timer = self.root.after(1000, self._refresh_ai_eval_status)
 
     def _on_ai_eval_complete(self):

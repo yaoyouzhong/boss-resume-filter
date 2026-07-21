@@ -27,8 +27,8 @@ class CenteredMessageBox:
         )
         canvas.create_oval(1, 1, size - 1, size - 1, fill=color, outline="")
         canvas.create_text(
-            size / 2, size / 2, text=symbol, fill="#FFFFFF",
-            font=("Microsoft YaHei UI", int(size * 0.46), "bold"),
+            size / 2, size / 2, text=symbol, fill=ui_theme.BG_CARD,
+            font=(ui_theme.FONT_FAMILY, int(size * 0.46), "bold"),
         )
         return canvas
 
@@ -36,9 +36,9 @@ class CenteredMessageBox:
         self._window_placer = None
         # 哪些弹窗类型强制显示语义图标（调用方 show_icon 仍可按需覆盖）
         self.icon_kinds = frozenset()
-        self._headline_font = ("Microsoft YaHei UI", 13, "bold")
-        self._message_font = ("Microsoft YaHei UI", 13)
-        self._button_font = ("Microsoft YaHei UI", 13)
+        self._headline_font = (ui_theme.FONT_FAMILY, 13, "bold")
+        self._message_font = (ui_theme.FONT_FAMILY, 13)
+        self._button_font = (ui_theme.FONT_FAMILY, 13)
 
     def __getattr__(self, name):
         return getattr(_native_messagebox, name)
@@ -147,12 +147,12 @@ class CenteredMessageBox:
         window.transient(parent)
         window.resizable(False, False)
         window.withdraw()
-        window.configure(bg="#FFFFFF")
+        window.configure(bg=ui_theme.BG_CARD)
 
         window.grid_columnconfigure(0, weight=1)
         window.grid_rowconfigure(0, weight=1)
 
-        body = tk.Frame(window, bg="#FFFFFF")
+        body = tk.Frame(window, bg=ui_theme.BG_CARD)
         body.grid(
             row=0,
             column=0,
@@ -163,7 +163,7 @@ class CenteredMessageBox:
         if show_icon or kind in self.icon_kinds:
             self._make_icon(body, kind).pack(side="left", anchor="n", padx=(0, 12))
 
-        content = tk.Frame(body, bg="#FFFFFF")
+        content = tk.Frame(body, bg=ui_theme.BG_CARD)
         content.pack(side="left", fill="both", expand=True)
         if headline:
             tk.Label(
@@ -171,13 +171,13 @@ class CenteredMessageBox:
                 text=str(headline),
                 font=headline_font,
                 fg=ui_theme.TEXT_PRIMARY,
-                bg="#FFFFFF",
+                bg=ui_theme.BG_CARD,
                 justify="left",
                 anchor="w",
                 wraplength=content_wraplength,
             ).pack(fill="x", anchor="w", pady=(0, 16))
         if numbered_items:
-            items_frame = tk.Frame(content, bg="#FFFFFF")
+            items_frame = tk.Frame(content, bg=ui_theme.BG_CARD)
             items_frame.pack(fill="both", expand=True)
             items_frame.grid_columnconfigure(1, weight=1)
             for index, item in enumerate(numbered_items, start=1):
@@ -187,7 +187,7 @@ class CenteredMessageBox:
                     text=f"{index}.",
                     font=message_font,
                     fg=ui_theme.TEXT_PRIMARY,
-                    bg="#FFFFFF",
+                    bg=ui_theme.BG_CARD,
                     justify="right",
                     anchor="ne",
                 ).grid(row=index - 1, column=0, sticky="ne", padx=(0, 8), pady=row_padding)
@@ -196,13 +196,13 @@ class CenteredMessageBox:
                     text=str(item),
                     font=message_font,
                     fg=ui_theme.TEXT_PRIMARY,
-                    bg="#FFFFFF",
+                    bg=ui_theme.BG_CARD,
                     justify="left",
                     anchor="nw",
                     wraplength=item_wraplength,
                 ).grid(row=index - 1, column=1, sticky="nw", pady=row_padding)
         elif self._message_needs_scroll(message):
-            text_frame = tk.Frame(content, bg="#FFFFFF")
+            text_frame = tk.Frame(content, bg=ui_theme.BG_CARD)
             text_frame.pack(fill="both", expand=True)
             text_widget = tk.Text(
                 text_frame,
@@ -210,7 +210,7 @@ class CenteredMessageBox:
                 height=12,
                 wrap="word",
                 font=message_font,
-                bg="#FFFFFF",
+                bg=ui_theme.BG_CARD,
                 fg=ui_theme.TEXT_PRIMARY,
                 relief="flat",
                 borderwidth=0,
@@ -228,7 +228,7 @@ class CenteredMessageBox:
                 text=message,
                 font=message_font,
                 fg=ui_theme.TEXT_PRIMARY,
-                bg="#FFFFFF",
+                bg=ui_theme.BG_CARD,
                 justify="left",
                 anchor="w",
                 wraplength=content_wraplength,
@@ -270,7 +270,7 @@ class CenteredMessageBox:
             font=button_font,
             padding=(15, 8),
             background=ui_theme.PRIMARY,
-            foreground="#FFFFFF",
+            foreground=ui_theme.BG_CARD,
             bordercolor=ui_theme.PRIMARY_DARK,
         )
         button_style.map(
