@@ -1180,7 +1180,7 @@ def _check_code_to_changelog_coverage(strict=False):
             "cls", "self", "super", "raw", "try", "err", "exc", "msg", "key",
             "tmp", "obj", "idx", "cnt", "num", "old", "cur", "buf", "src", "dst",
             "fmt", "ptr", "ref", "box", "row", "col", "pos", "off", "end", "beg",
-            "def", "elif", "else", "except", "args", "kwargs", "func", "meth",
+            "and", "def", "elif", "else", "except", "args", "kwargs", "func", "meth",
             "getattr", "hasattr", "datetime", "strftime",
             # Tk / UI 框架方法和属性
             "ttk", "tk", "tframe", "tlabel", "tbutton",
@@ -1228,6 +1228,7 @@ def _check_code_to_changelog_coverage(strict=False):
             "job", "task", "work", "param", "value", "data", "info",
             "scan", "extract", "extraction", "diagnostics",
             "thread", "lock", "mutex", "semaphore", "queue", "stack", "heap",
+            "cand", "column", "column_name",
             "file", "dir", "path", "line", "char", "byte", "word", "block",
             "batch", "loop", "iter", "recur", "chain", "pipe", "stream",
             "push", "pull", "pop", "peek", "flush", "drain", "buffer",
