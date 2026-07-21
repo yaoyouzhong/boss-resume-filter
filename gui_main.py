@@ -2155,6 +2155,23 @@ class BossFilterGUI:
         if tuple(self.result_tree.cget("displaycolumns")) != display_columns:
             self.result_tree.configure(displaycolumns=display_columns)
 
+    def _result_header_floors(self, display_columns, min_widths):
+        """每列不被截断的宽度下限：表头文字实测宽度 + 排序/内边距余量，与 minwidth 取大。"""
+        import tkinter.font as tkfont
+        scale = getattr(self, 'dpi_scale', 1.0) * getattr(self, 'zoom_factor', 1.0)
+        overhead = int(30 * scale)
+        try:
+            measure_font = tkfont.Font(
+                font=(FONT_FAMILY, int(12 * getattr(self, 'font_scale', 1.0)), 'bold'))
+            floors = {}
+            for column in display_columns:
+                text = str(self.result_tree.heading(column).get('text', '') or '')
+                floors[column] = max(
+                    min_widths[column], measure_font.measure(text) + overhead)
+            return floors
+        except (tk.TclError, RuntimeError, AttributeError):
+            return {column: min_widths[column] for column in display_columns}
+
     def _apply_result_tree_column_widths(self, display_columns):
         """Balance visible columns while keeping education and age readable."""
         base_widths = {
@@ -2171,36 +2188,36 @@ class BossFilterGUI:
         }
 
         wide_mode = "company" in display_columns
-        widths = {column: base_widths[column] for column in display_columns}
         try:
             available_width = max(0, int(self.result_tree.winfo_width()) - 2)
         except (tk.TclError, ValueError):
             available_width = 0
 
+        # education/age 在 13 列模式下保持紧凑固定宽，其余列参与富余分配
+        fixed_columns = {"education", "age"} if wide_mode else set()
+        flexible_columns = [c for c in display_columns if c not in fixed_columns]
+        floors = self._result_header_floors(flexible_columns, min_widths)
+        fixed_width = sum(base_widths[c] for c in fixed_columns)
+        flexible_available = max(0, available_width - fixed_width)
+
+        widths = {c: base_widths[c] for c in display_columns}
         stretch = not wide_mode
-        if wide_mode:
-            compact_columns = {"education", "age"}
-            flexible_columns = [
-                column for column in display_columns
-                if column not in compact_columns
-            ]
-            compact_width = sum(widths[column] for column in compact_columns)
-            flexible_base_width = sum(widths[column] for column in flexible_columns)
-            flexible_available = max(0, available_width - compact_width)
-            if flexible_available > flexible_base_width:
-                scale = flexible_available / flexible_base_width
-                for column in flexible_columns:
-                    widths[column] = int(widths[column] * scale)
-                rounding_gap = available_width - sum(widths.values())
-                widths["company"] += rounding_gap
-        elif available_width > sum(widths.values()):
+        floor_total = sum(floors.values())
+        base_flex_total = sum(base_widths[c] for c in flexible_columns)
+        if flexible_available > max(base_flex_total, floor_total):
             # ttk 的 stretch 只会收缩不会放大，富余宽度必须显式按比例分配，
-            # 否则列保持基础宽度、右侧留白且表头被截断
-            scale = available_width / sum(widths.values())
-            for column in display_columns:
-                widths[column] = int(widths[column] * scale)
+            # 否则列保持基础宽度、右侧留白且表头被截断；
+            # 每列先满足表头实测下限，再按基础宽度权重分配剩余空间
+            extra = flexible_available - floor_total
+            weights = {c: max(base_widths[c] - floors[c], 0) for c in flexible_columns}
+            total_weight = sum(weights.values())
+            if total_weight <= 0:
+                weights = {c: base_widths[c] for c in flexible_columns}
+                total_weight = sum(weights.values())
+            for column in flexible_columns:
+                widths[column] = floors[column] + int(extra * weights[column] / total_weight)
             rounding_gap = available_width - sum(widths.values())
-            widths[display_columns[-1]] += rounding_gap
+            widths[flexible_columns[-1]] += rounding_gap
             stretch = False
 
         for column in display_columns:
