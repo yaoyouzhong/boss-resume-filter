@@ -1292,6 +1292,28 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     ) == 1698
 
 
+def test_stats_tree_columns_expand_with_available_width():
+    """统计明细表与结果表同一套列宽逻辑：窄窗口保持基础宽度可收缩，
+    宽窗口显式分配富余填满表格（ttk stretch 只会收缩不会放大）。"""
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = _FakeRoot()
+
+    gui.stats_tree = _FakeTree(900)
+    gui._update_stats_tree_columns()
+    assert gui.stats_tree.column_options["job"]["width"] == 200
+    assert gui.stats_tree.column_options["job"]["stretch"] is True
+
+    gui.stats_tree = _FakeTree(1400)
+    gui._update_stats_tree_columns()
+    assert gui.stats_tree.column_options["job"]["width"] > 200
+    assert gui.stats_tree.column_options["job"]["width"] <= 340
+    assert gui.stats_tree.column_options["avg_score"]["width"] <= 105
+    assert gui.stats_tree.column_options["job"]["stretch"] is False
+    assert sum(
+        options["width"] for options in gui.stats_tree.column_options.values()
+    ) == 1398
+
+
 def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot(state="zoomed", width=3840, height=2000)

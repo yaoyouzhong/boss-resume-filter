@@ -2082,6 +2082,8 @@ class BossFilterGUI:
             self._update_result_stats_compact()
         elif current_page == 4:
             self._update_education_queue_columns()
+        elif current_page == 5:
+            self._update_stats_tree_columns()
 
     def _update_run_page_dynamic_heights(self):
         """高窗口下让运行日志区域利用多余高度。"""
@@ -2155,7 +2157,7 @@ class BossFilterGUI:
         if tuple(self.result_tree.cget("displaycolumns")) != display_columns:
             self.result_tree.configure(displaycolumns=display_columns)
 
-    def _result_header_floors(self, display_columns, min_widths):
+    def _tree_header_floors(self, tree, display_columns, min_widths):
         """每列不被截断的宽度下限：表头文字实测宽度 + 排序/内边距余量，与 minwidth 取大。"""
         import tkinter.font as tkfont
         scale = getattr(self, 'dpi_scale', 1.0) * getattr(self, 'zoom_factor', 1.0)
@@ -2165,12 +2167,45 @@ class BossFilterGUI:
                 font=(FONT_FAMILY, int(12 * getattr(self, 'font_scale', 1.0)), 'bold'))
             floors = {}
             for column in display_columns:
-                text = str(self.result_tree.heading(column).get('text', '') or '')
+                text = str(tree.heading(column).get('text', '') or '')
                 floors[column] = max(
                     min_widths[column], measure_font.measure(text) + overhead)
             return floors
         except (tk.TclError, RuntimeError, AttributeError):
             return {column: min_widths[column] for column in display_columns}
+
+    @staticmethod
+    def _distribute_tree_surplus(widths, flexible_columns, floors, base_widths,
+                                 growth_caps, extra):
+        """富余宽度分配：增长上限内按基础宽度权重灌水，全部触顶后余量再按比例摊开。
+
+        ttk 的 stretch 只会收缩不会放大，富余宽度必须显式分配；
+        数值/短文本列设增长上限，避免宽屏下短内容列被拉成空阔巨列、
+        长文本列反而截断。
+        """
+        while extra > 0:
+            eligible = [c for c in flexible_columns
+                        if widths[c] < max(growth_caps[c], floors[c])]
+            if not eligible:
+                break
+            total_weight = sum(base_widths[c] for c in eligible)
+            allocated = 0
+            for column in eligible:
+                share = min(extra * base_widths[column] // total_weight,
+                            max(growth_caps[column], floors[column]) - widths[column])
+                widths[column] += share
+                allocated += share
+            if allocated <= 0:
+                break
+            extra -= allocated
+        if extra > 0:
+            total_weight = sum(base_widths[c] for c in flexible_columns)
+            allocated = 0
+            for column in flexible_columns[:-1]:
+                share = extra * base_widths[column] // total_weight
+                widths[column] += share
+                allocated += share
+            widths[flexible_columns[-1]] += extra - allocated
 
     def _apply_result_tree_column_widths(self, display_columns):
         """Balance visible columns while keeping education and age readable."""
@@ -2196,7 +2231,7 @@ class BossFilterGUI:
         # education/age 在 13 列模式下保持紧凑固定宽，其余列参与富余分配
         fixed_columns = {"education", "age"} if wide_mode else set()
         flexible_columns = [c for c in display_columns if c not in fixed_columns]
-        floors = self._result_header_floors(flexible_columns, min_widths)
+        floors = self._tree_header_floors(self.result_tree, flexible_columns, min_widths)
         fixed_width = sum(base_widths[c] for c in fixed_columns)
         flexible_available = max(0, available_width - fixed_width)
 
@@ -2205,11 +2240,6 @@ class BossFilterGUI:
         floor_total = sum(floors.values())
         base_flex_total = sum(base_widths[c] for c in flexible_columns)
         if flexible_available > max(base_flex_total, floor_total):
-            # ttk 的 stretch 只会收缩不会放大，富余宽度必须显式分配，
-            # 否则列保持基础宽度、右侧留白且表头被截断；
-            # 每列先满足表头实测下限，再按基础宽度权重分配剩余空间，
-            # 但数值/短文本列设增长上限，避免宽屏下状态列被拉成空阔巨列、
-            # 学校/公司等长文本列反而截断；全部触顶后的余量再按比例摊开
             growth_caps = {
                 "name": 130, "exp": 115, "salary": 120, "skills": 130,
                 "score": 95, "ai_eval": 95, "level": 120, "status": 260,
@@ -2217,34 +2247,62 @@ class BossFilterGUI:
                 "school": 280, "company": 340,
             }
             widths.update(floors)
-            extra = flexible_available - floor_total
-            while extra > 0:
-                eligible = [c for c in flexible_columns
-                            if widths[c] < max(growth_caps[c], floors[c])]
-                if not eligible:
-                    break
-                total_weight = sum(base_widths[c] for c in eligible)
-                allocated = 0
-                for column in eligible:
-                    share = min(extra * base_widths[column] // total_weight,
-                                max(growth_caps[column], floors[column]) - widths[column])
-                    widths[column] += share
-                    allocated += share
-                if allocated <= 0:
-                    break
-                extra -= allocated
-            if extra > 0:
-                total_weight = sum(base_widths[c] for c in flexible_columns)
-                allocated = 0
-                for column in flexible_columns[:-1]:
-                    share = extra * base_widths[column] // total_weight
-                    widths[column] += share
-                    allocated += share
-                widths[flexible_columns[-1]] += extra - allocated
+            self._distribute_tree_surplus(
+                widths, flexible_columns, floors, base_widths, growth_caps,
+                flexible_available - floor_total)
             stretch = False
 
         for column in display_columns:
             self.result_tree.column(
+                column,
+                width=widths[column],
+                minwidth=min_widths[column],
+                stretch=stretch,
+            )
+
+    def _update_stats_tree_columns(self):
+        """Rebalance stats detail columns so wide windows fill the table.
+
+        与结果表同一套逻辑：表头实测宽度为下限，富余在增长上限内按
+        基础宽度分配，避免右侧留白或岗位名称等长文本列截断。
+        """
+        tree = getattr(self, 'stats_tree', None)
+        if tree is None:
+            return
+        base_widths = {
+            "job": 200, "filter_dist": 175, "greeted": 100, "feedback": 80,
+            "suitable_rate": 75, "false_positive_rate": 75,
+            "replied": 100, "interviewed": 100, "avg_score": 65,
+        }
+        min_widths = {
+            "job": 150, "filter_dist": 140, "greeted": 80, "feedback": 65,
+            "suitable_rate": 60, "false_positive_rate": 60,
+            "replied": 80, "interviewed": 80, "avg_score": 55,
+        }
+        growth_caps = {
+            "job": 340, "filter_dist": 260, "greeted": 150, "feedback": 120,
+            "suitable_rate": 110, "false_positive_rate": 110,
+            "replied": 150, "interviewed": 150, "avg_score": 100,
+        }
+        columns = list(base_widths)
+        try:
+            available_width = max(0, int(tree.winfo_width()) - 2)
+        except (tk.TclError, ValueError):
+            available_width = 0
+
+        floors = self._tree_header_floors(tree, columns, min_widths)
+        widths = dict(base_widths)
+        stretch = True
+        floor_total = sum(floors.values())
+        if available_width > max(sum(base_widths.values()), floor_total):
+            widths.update(floors)
+            self._distribute_tree_surplus(
+                widths, columns, floors, base_widths, growth_caps,
+                available_width - floor_total)
+            stretch = False
+
+        for column in columns:
+            tree.column(
                 column,
                 width=widths[column],
                 minwidth=min_widths[column],
