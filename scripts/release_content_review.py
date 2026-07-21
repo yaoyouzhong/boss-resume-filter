@@ -34,8 +34,8 @@ def content_sha256(version: str, release_sha: str, title: str, body: str) -> str
     return hashlib.sha256(payload).hexdigest()
 
 
-def review_release_content(version: str, release_sha: str) -> dict[str, Any]:
-    """Run the fixed user-facing audit and return immutable review evidence."""
+def _review_user_facing_content(version: str) -> tuple[str, str, list[str]]:
+    """Extract the current release text and enforce the fixed user-facing audit."""
     title, body = build._extract_changelog_release(version)
     issues = audit_user_facing_release(BASE_DIR)
     blocking = [
@@ -45,11 +45,37 @@ def review_release_content(version: str, release_sha: str) -> dict[str, Any]:
     if blocking:
         details = "; ".join(f"{issue.title}: {issue.detail}" for issue in blocking)
         raise ReleaseContentReviewError(f"发布内容审核未通过：{details}")
+    warnings = [issue.title for issue in issues if issue.severity == "warning"]
+    return title, body, warnings
+
+
+def review_release_content(version: str, release_sha: str) -> dict[str, Any]:
+    """Run the fixed user-facing audit and return immutable review evidence."""
+    title, body, warnings = _review_user_facing_content(version)
     return {
         "release_title": title,
         "release_body": body,
         "content_sha": content_sha256(version, release_sha, title, body),
-        "review_warnings": [issue.title for issue in issues if issue.severity == "warning"],
+        "review_warnings": warnings,
+    }
+
+
+def review_release_candidate(
+    version: str,
+    candidate_sha: str,
+    candidate_tree_sha: str,
+) -> dict[str, Any]:
+    """Bind human approval to the exact candidate tree before Squash merge."""
+    title, body, warnings = _review_user_facing_content(version)
+    return {
+        "release_title": title,
+        "release_body": body,
+        "candidate_sha": candidate_sha,
+        "candidate_tree_sha": candidate_tree_sha,
+        "content_sha": content_sha256(
+            version, f"tree:{candidate_tree_sha}", title, body,
+        ),
+        "review_warnings": warnings,
     }
 
 

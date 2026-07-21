@@ -65,3 +65,16 @@ def test_approval_rejects_missing_or_stale_digest():
         review.require_approved_content(evidence, "")
     with _raises("必须重新展示并确认"):
         review.require_approved_content(evidence, "d" * 64)
+
+
+def test_candidate_approval_binds_tree_instead_of_pre_merge_commit():
+    with (
+        patch.object(review.build, "_extract_changelog_release", return_value=("v2.24 — Test", "body")),
+        patch.object(review, "audit_user_facing_release", return_value=[]),
+    ):
+        first = review.review_release_candidate("2.24", "a" * 40, "t" * 40)
+        same_tree = review.review_release_candidate("2.24", "b" * 40, "t" * 40)
+        changed_tree = review.review_release_candidate("2.24", "b" * 40, "x" * 40)
+
+    assert first["content_sha"] == same_tree["content_sha"]
+    assert first["content_sha"] != changed_tree["content_sha"]
