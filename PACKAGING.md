@@ -15,17 +15,20 @@
 
 ### 正式发布（Actions 构建 + 本机镜像）
 
-正式发布的唯一用户入口是本机 `scripts/release_dispatch.py`。PR 合并后必须先运行只读预览，脚本会完整展示标题、正文和内容审核结果。用户确认“确认正式发布 vX.Y”后，内容凭证由脚本在后台传给 Actions；用户无需手工复制摘要。版本、提交、标题或正文任一变化都会使旧确认失效。
+正常发布的唯一用户入口是本机 `scripts/release_flow.py`。它把开发分支提交、版本材料、候选 PR、CI 等待、内容确认、正式发布和线上验收串成一个可恢复状态机；唯一正常停点是最终标题和正文确认。`release_prepare.py`、`release_delivery.py`、`pr_delivery.py` 与 `release_dispatch.py` 仅保留为分阶段恢复入口。
 
 ```bash
-# 默认只读预览，不触发 Actions
-python scripts/release_dispatch.py --version 2.22
-
-# 精确授权后触发、等待并核验公开版本
-python scripts/release_dispatch.py --version 2.22 \
+# 准备单分支候选 PR，等待 CI 后展示最终版本内容并停止
+python scripts/release_flow.py --version 2.24 \
+  --notes-file "<项目目录外的发布说明文件>" \
   --execute \
-  --authorization="确认正式发布 v2.22" \
-  --approved-content-sha="<预览输出的内部凭证>"
+  --authorization="一键发布版本 v2.24"
+
+# 用户确认已展示内容后，自动合并并发布到完整验收成功
+python scripts/release_flow.py --version 2.24 \
+  --confirm \
+  --approved-content-sha="<由编排器从预览结果后台传入>" \
+  --authorization="确认发布 v2.24"
 ```
 
 确定性发布规则仍统一放在 `scripts/release_ci.py`，不是两套实现；`.github/workflows/release.yml` 只运行其中的 GitHub 暂存阶段，本机驱动器运行 Gitee 镜像和最终发布阶段。不要把 Actions 暂存任务成功误判为正式版本已经公开。
@@ -41,13 +44,15 @@ python scripts/release_dispatch.py --version 2.22 \
 7. Gitee Release 附件齐全且 size 与 GitHub 一致后，本机生成 `latest.json` 的双源下载地址和 SHA256，提交并推送到 GitHub/Gitee `master`。
 8. 只读核验双远端分支/tag/Release/附件/清单，并实际请求六个公开下载地址和两份在线清单。
 
-**断点续跑：**流程按“版本 + 发布提交”恢复。GitHub Draft 的三个附件已经完整时，再次执行同一正式发布命令会跳过 Actions，直接从本机 Gitee 镜像阶段继续；本机下载使用 `.part` 文件续传，45 秒没有收到新数据即中断当前请求并保留已下载字节。`.release_state.json` 记录当前阶段和各附件字节数，不保存 Token 或下载 URL。已存在的同提交 tag 不重建，本地缺少 tag 时自动从 GitHub 精确拉取；已一致的 Gitee 附件不重传。同名 tag 指向其他提交、或发布期间 `master` 出现非 `latest.json` 业务变更时立即中止，绝不移动 tag 或强制推送。
+**断点续跑：**`.release_flow_state.json` 记录候选分支、PR、候选提交、tree、内容摘要和当前阶段，`.release_state.json` 记录正式发布阶段和附件下载进度；两者都不保存 Token。候选内容变化后重新执行准备命令会更新同一 PR、重跑 CI 并产生新摘要。GitHub Draft 的三个附件已经完整时，确认命令重跑会跳过 Actions，直接从本机 Gitee 镜像阶段继续；本机下载使用 `.part` 文件续传。已存在的同提交 tag 不重建，同名 tag 指向其他提交时立即中止。
 
 **停滞与重试：**GitHub Release 和 Actions 状态查询遇到瞬态网络失败会按上限重试。Actions 连续 30 分钟没有 job/step 阶段变化时，本机停止等待并保留远端任务，排查后可用同一版本安全续跑。发布暂存 job 只安装 `requirements-release.txt`，双平台构建使用 `requirements-build.txt` 作为独立 pip 缓存键，避免每次重新下载完整发布依赖。
 
 **Dry Run：**将 `dry_run` 设为 `true` 时只执行授权校验和严格门禁，不构建、不创建 tag、不推送、不发布。
 
-**凭据配置：**Actions 只使用 `GITHUB_TOKEN` 创建 tag、Draft Release 和上传附件，不保存也不使用 `GITEE_TOKEN`。正式发布前，本机必须提供具有 Gitee projects 权限的 `GITEE_TOKEN`；缺失或 Gitee API 不可达时会在触发 Actions 前停止。本地 `build.py --release` 仍停用，正式发布统一从 `release_dispatch.py` 进入。
+**多分支聚合：**重复传入 `--branch` 显式声明纳入顺序，并为每个分支传入与手工 GUI 实测一致的 `--tested-branch branch=commit_sha`。每个分支必须有独立且干净的 worktree；脚本先在各自目录运行稳定回归和导入烟测，再从同步的 `master` 创建 `codex/release-vX.Y`，逐个合入并对组合结果重新执行完整门禁。冲突、实测 SHA 变化、分支独立测试或组合测试失败都立即停止。示例授权：`一键发布版本 v2.24，包含 codex/a、codex/b`。
+
+**凭据配置：**Actions 只使用 `GITHUB_TOKEN` 创建 tag、Draft Release 和上传附件，不保存也不使用 `GITEE_TOKEN`。正式发布前，本机必须提供具有 Gitee projects 权限的 `GITEE_TOKEN`；缺失或 Gitee API 不可达时会在触发 Actions 前停止。本地 `build.py --release` 仍停用，正常发布统一从 `release_flow.py` 进入。
 
 Release 页面最终包含：
 
@@ -105,17 +110,14 @@ python build.py --check --strict-changelog
 # 使用自动打包脚本（推荐）
 python build.py
 
-# 版本准备与 PR 交付预览：检查双远端、版本范围、提交和变更文件，不改文件
-python scripts/release_delivery.py --version 2.22
+# 单分支：准备候选 PR、等待 CI、展示最终内容
+python scripts/release_flow.py --version 2.24 --notes-file "<项目目录外的发布说明文件>" --execute --authorization "一键发布版本 v2.24"
 
-# 已复核发布说明后：一次完成版本材料、严格门禁、提交、PR、CI、合并、双远端同步和分支清理
-python scripts/release_delivery.py --version 2.22 --notes-file "<项目目录外的发布说明文件>" --execute --authorization "一键准备并交付版本 v2.22"
+# 多分支：每个分支都必须带匹配其 HEAD 的 GUI 实测凭证
+python scripts/release_flow.py --version 2.24 --notes-file "<项目目录外的发布说明文件>" --branch codex/a --branch codex/b --tested-branch "codex/a=<sha-a>" --tested-branch "codex/b=<sha-b>" --execute --authorization "一键发布版本 v2.24，包含 codex/a、codex/b"
 
-# 发布准备分支交付后：只读预览正式发布
-python scripts/release_dispatch.py --version 2.22
-
-# 用户确认预览内容后正式发布（内容凭证由调用方传入）
-python scripts/release_dispatch.py --version 2.22 --execute --authorization "确认正式发布 v2.22" --approved-content-sha "<sha256>"
+# 内容确认后自动合并、构建、双源发布、清单同步和线上验收
+python scripts/release_flow.py --version 2.24 --confirm --approved-content-sha "<由编排器后台传入>" --authorization "确认发布 v2.24"
 
 # 发布完成后只读核验 GitHub/Gitee、附件和 latest.json
 python build.py --verify-release 2.5
@@ -144,7 +146,7 @@ pyinstaller --onefile --noconsole \
 - `python tests/test_import.py` 通过
 - 工作区干净
 
-正式发布工作流不会提交业务代码或自动改版本号；版本号、更新说明和用户文档必须随发布准备 PR 一起合并。推荐使用 `scripts/release_delivery.py`：默认只读；执行必须提供经过复核的发布说明文件和精确授权“`一键准备并交付版本 vX.Y`”，自动完成本地 `codex/release-vX.Y` 的准备、交付与清理，但不创建 tag、安装包或公开 Release。`release_prepare.py` 与 `pr_delivery.py` 保留为分阶段执行和故障恢复入口。
+`release_flow.py` 要求开发修改已经由 Codex 完成语义审查和提交；确定性脚本不自行猜测哪些脏文件属于本次任务。它在当前单分支或显式多分支聚合结果上同步版本材料、运行严格门禁、推送候选 PR 并等待 CI，然后停在内容确认。内容调整继续使用同一 PR；确认前不得合并，确认后才连续执行正式发布。底层脚本保留用于失败后的分阶段恢复。
 
 Release 标题和说明必须先写在 `CHANGELOG.md` 对应版本段落中。`scripts/release_ci.py` 会自动提取该段落作为 GitHub/Gitee Release 内容；如果缺少对应版本，或未按以下顺序分类，发布会直接中断：
 

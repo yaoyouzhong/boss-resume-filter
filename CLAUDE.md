@@ -43,7 +43,8 @@ boss-resume-filter/
 │   ├── release_ci.py   # GitHub 暂存、本机镜像与正式发布规则
 │   ├── release_content_review.py # 发布内容审核与内部凭证绑定
 │   ├── pr_delivery.py # 普通 PR 一次授权交付（门禁、PR、合并、双远端同步、分支清理）
-│   ├── release_delivery.py / release_prepare.py / release_dispatch.py # 版本准备、PR 交付与正式发布驱动
+│   ├── release_flow.py # 单/多分支一键发布、内容确认与断点续跑统一入口
+│   ├── release_delivery.py / release_prepare.py / release_dispatch.py # 分阶段恢复入口
 │   └── watch_progress.py # 发布进度监控脚本（轮询 .build_progress.json）
 ├── pyinstaller-hooks/    # PyInstaller 自定义 hook（控制模块收集范围，减小产物体积）
 ├── GUI 使用说明.md       # 图形界面操作说明
@@ -82,8 +83,10 @@ boss-resume-filter/
 - 低风险文档、测试和局部文案可在当前工作区修改；普通代码任务使用 `codex/<task>` 短期分支，并行、脏工作区、长周期或高风险任务才创建独立 worktree
 - PR 不作统一要求；核心筛选、自动打招呼、存储、更新器、发布脚本、CI/CD 或大范围修改应使用 PR；面向 `master` 的 PR 由 `PR Checks` 验证，PR 合并始终是独立授权，合并不会触发发布
 - 普通分支推送、PR 合并、删除分支/worktree/临时文件默认须分别获得用户授权。用户准确授权“`一键交付分支 <branch>`”后，该一次授权仅覆盖指定分支的本地门禁、普通 push、创建/复用 PR、等待 `PR Checks`、Squash 合并、同步 GitHub/Gitee `master`、删除本地和远端分支、快进本地 `master`；不覆盖 rebase、force push、worktree 删除、冲突处理或正式发布。任一门禁/CI/一致性检查失败必须停止且不得清理分支
-- 用户准确授权“`一键准备版本 vX.Y`”后，仅允许从干净且双远端一致的 `master` 创建本地 `codex/release-vX.Y`、同步版本材料、运行严格门禁并提交；该分支仍用“`一键交付分支 codex/release-vX.Y`”单独交付。准确授权“`一键准备并交付版本 vX.Y`”后，允许先根据上一公开 tag 到 `master` 的实际变更生成项目外临时发布说明，再顺序组合上述两段权限；任一阶段失败立即停止，已合并时允许幂等收口；两种授权都不覆盖 tag、安装包、GitHub/Gitee Release、rebase、force push、冲突处理或正式发布
-- 用户说“正式发布 vX.Y”时必须先运行只读预览，完整展示最终标题、正文和内容审核结果；只有用户随后准确授权“`确认正式发布 vX.Y`”，才覆盖本机驱动器与 Actions 暂存阶段的严格门禁、tag/清单推送、GitHub/Gitee Release 和线上验收。内容摘要由脚本在后台传递，用户无需输入；版本、发布提交、标题或正文变化后旧确认自动失效
+- 用户准确授权“`一键发布版本 vX.Y`”后，统一入口允许提交当前 `codex/*` 开发分支、同步版本材料、运行严格门禁、普通 push、创建/复用发布候选 PR 并等待 `PR Checks`；随后必须完整展示最终标题、正文、候选提交和内容审核结果并停在内容确认阶段，不得合并、创建 tag、构建安装包或公开 Release。用户可在该阶段反复调整版本内容；每次修改都必须在同一候选 PR 重跑门禁和 CI，并使旧确认自动失效
+- 用户准确授权“`一键发布版本 vX.Y，包含 <branch-a>、<branch-b>...`”时，统一入口可从双远端一致的 `master` 创建 `codex/release-vX.Y` 聚合分支，按声明顺序合入显式列出的干净分支并验证每个分支记录的 GUI 实测提交；不得自动纳入未列出的分支。各分支测试与最终聚合测试都必须通过，冲突、来源不明、实测提交变化或组合回归失败立即停止，不自动解决冲突
+- 只有用户在候选 PR、CI 和最终内容展示完成后准确授权“`确认发布 vX.Y`”，才允许核验内容与候选 tree 凭证、Squash 合并、同步 GitHub/Gitee `master`、触发双平台构建、创建不可变 tag、公开 GitHub/Gitee Release、同步 `latest.json`、完成线上验收并在全部成功后清理已授权分支。候选 tree、版本、标题、正文、PR head、目标分支或测试凭证变化后旧确认自动失效；确认不覆盖 rebase、force push、冲突处理、移动公开 tag 或删除 worktree
+- `release_flow.py` 是正常发布的唯一用户入口；`release_prepare.py`、`release_delivery.py`、`pr_delivery.py` 和 `release_dispatch.py` 仅作为确定性底层与故障恢复入口。任一阶段失败必须保留可恢复状态；GitHub 已公开后不得回滚，只能幂等续跑 Gitee、清单同步和公开验收
 - 发布准备 PR 合并前执行 `/neat-freak`、文案润色和风险相关实测；授权后由工作流重跑严格门禁并核验公开下载、自动更新和双远端状态
 - 已公开 tag 不得移动或覆盖，修复必须发布更高补丁版本；同一提交允许断点续跑
 - `candidates_all.json`、本地 API 配置、Chrome profile 和登录状态不属于任务临时文件，禁止收尾时自动清理
@@ -113,7 +116,7 @@ boss-resume-filter/
 #### 发布命令与门禁
 
 - `python build.py --check [--strict-changelog]`：仅发布前检查；严格模式将 CHANGELOG 启发式覆盖、README 逐条镜像和 latest.json 同步提示升级为硬失败
-- `python scripts/release_delivery.py --version X.Y` 预览版本准备与 PR 交付，增加 `--notes-file <file> --execute --authorization="一键准备并交付版本 vX.Y"` 后执行完整交付；`release_prepare.py` 与 `pr_delivery.py` 保留为分阶段恢复入口；`release_dispatch.py --version X.Y` 是必须的最终内容预览，用户确认后再由脚本传入 `--execute --authorization="确认正式发布 vX.Y" --approved-content-sha <内部凭证>`
+- `python scripts/release_flow.py --version X.Y --notes-file <file> --execute --authorization="一键发布版本 vX.Y"` 准备单分支发布候选并停在内容确认；多分支增加重复的 `--branch <codex/...>` 并使用包含显式分支列表的授权文本。用户确认后由脚本内部续跑 `--confirm --authorization="确认发布 vX.Y"`，内容凭证不要求用户复制。底层 `release_prepare.py`、`release_delivery.py`、`pr_delivery.py` 与 `release_dispatch.py` 仅保留为分阶段恢复入口
 - `python build.py`：自动打包；`--sync-release-notes` 仅用于公开后恢复同步，要求干净且双远端一致的 `master`、已推送且与 CHANGELOG 一致的 `latest.json`，不再自动修改或提交本地文件
 - `python build.py --verify-release X.Y.Z`：只读核验双远端分支/tag、GitHub/Gitee Release、附件完整性和 latest.json，不打包不推送
 - 发布前必须执行 `/neat-freak` 并润色 CHANGELOG 当前版本段落；`gui_main.py` 的 `__version__` 是唯一版本号来源

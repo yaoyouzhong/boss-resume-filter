@@ -12,34 +12,33 @@ python tests/test_import.py
 ## 活跃脚本
 
 - `release_ci.py`：正式发布的确定性规则实现；Actions 只调用严格门禁和 GitHub Draft 暂存，本机驱动器校验附件后先公开 GitHub 主源，再镜像 Gitee、同步清单并完成线上验收；行为测试在 `tests/unit/test_release_ci.py`。
-- `release_content_review.py`：对最终标题和正文做固定用户视角审核，并绑定版本、发布提交和内容凭证。
-- `release_delivery.py`：一次授权组合版本材料准备与发布准备 PR 交付，不触发正式发布；行为测试在 `tests/unit/test_release_delivery.py`。
+- `release_flow.py`：正常发布唯一入口；支持单分支和显式多分支聚合，把候选 PR、内容确认、Squash tree 校验、正式发布与断点续跑串成一个状态机；行为测试在 `tests/unit/test_release_flow.py`。
+- `release_content_review.py`：对最终标题和正文做固定用户视角审核；确认前绑定候选 tree，合并后绑定正式发布提交。
+- `release_delivery.py`：旧版版本准备与 PR 组合入口，仅保留为分阶段恢复入口；行为测试在 `tests/unit/test_release_delivery.py`。
 - `release_prepare.py`：版本号、CHANGELOG、README 与项目版本注释的本地准备和严格门禁，保留为分阶段执行及故障恢复入口。
-- `release_dispatch.py`：正式发布的唯一用户入口，负责预检、触发或跳过 Actions 暂存、本机公开 GitHub 主源、Gitee 镜像和最终验收。
+- `release_dispatch.py`：正式发布底层入口，负责预检、触发或跳过 Actions 暂存、本机公开 GitHub 主源、Gitee 镜像和最终验收。
 - `pr_delivery.py`：普通开发分支的一次授权交付编排，负责本地门禁、push、PR、CI 等待、Squash 合并、双远端同步和安全分支清理；默认只预览，行为测试在 `tests/unit/test_pr_delivery.py`。
 - `watch_progress.py`：轮询 `.build_progress.json` 并输出本地打包状态，保留作为手工构建辅助工具。
 
 版本准备、一键交付和正式发布入口会优先使用项目 `pack_venv`；即使通过系统 Python 或 Anaconda Python 启动，也会在执行仓库检查前自动切换。
 
-### 版本准备与 PR 一键交付
-
-默认只读检查版本范围和仓库状态：
+### 单分支一键发布
 
 ```powershell
-python scripts/release_delivery.py --version 2.22
-```
-
-发布说明复核完成后，将临时文件放在项目目录外，并准确授权“`一键准备并交付版本 v2.22`”：
-
-```powershell
-python scripts/release_delivery.py `
-  --version 2.22 `
+python scripts/release_flow.py `
+  --version 2.24 `
   --notes-file "<项目目录外的发布说明文件>" `
   --execute `
-  --authorization "一键准备并交付版本 v2.22"
+  --authorization "一键发布版本 v2.24"
 ```
 
-流程自动完成版本材料同步、严格门禁、本地提交、push、PR、CI 等待、Squash 合并、双远端同步和分支清理。任一阶段失败立即停止；不会创建 tag、安装包或公开 Release。完成后必须先运行 `release_dispatch.py --version X.Y` 展示最终内容，再等待用户确认。
+脚本完成版本材料、严格门禁、push、候选 PR 和 CI 后展示最终内容并停止。需要调整时更新项目外说明文件并重跑同一命令；同一 PR 会更新，旧内容凭证失效。确认后执行：
+
+```powershell
+python scripts/release_flow.py --version 2.24 --confirm --approved-content-sha "<由编排器后台传入>" --authorization "确认发布 v2.24"
+```
+
+确认后自动完成 Squash 合并、双远端同步、双平台构建、GitHub/Gitee Release、`latest.json` 和线上验收。多分支使用重复的 `--branch` 与 `--tested-branch branch=commit_sha`；每个分支必须有独立干净的 worktree，脚本会先在各自目录重跑稳定回归和导入烟测，再验证聚合结果。分支顺序同时进入精确授权文本。任一失败保留状态，不自动处理冲突、rebase、force push 或删除 worktree。
 
 ### 普通 PR 一键交付
 

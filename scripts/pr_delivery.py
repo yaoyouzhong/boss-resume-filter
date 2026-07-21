@@ -374,7 +374,7 @@ def _pr_view(number: int) -> dict[str, Any]:
             [
             "gh", "pr", "view", str(number),
             "--json",
-            "number,state,isDraft,url,mergeable,mergeStateStatus,statusCheckRollup,mergeCommit",
+            "number,state,isDraft,url,headRefOid,baseRefOid,mergeable,mergeStateStatus,statusCheckRollup,mergeCommit",
             ],
             f"读取 PR #{number} 状态",
         )
