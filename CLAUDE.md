@@ -16,17 +16,14 @@ boss-resume-filter/
 ├── release_user_audit.py # 用户视角发布审计模块
 ├── storage.py            # 候选人数据持久化模块（去重、原子写入、备份恢复）
 ├── contact_queue.py      # GUI 候选人联系清单持久化与恢复模块
-├── gui_main.py           # 图形界面主程序（v2.23.4）
-├── gui_dialogs.py        # 独立对话框模块（更新日志、关于弹窗、CHANGELOG 渲染）
-├── ui_messagebox.py      # 统一居中提示与确认弹窗（兼容 tkinter.messagebox）
+├── gui_main.py           # 图形界面主程序（v2.23.5）
+├── gui_dialogs.py / ui_messagebox.py # 独立对话框与统一居中提示
 ├── changelog_parser.py   # CHANGELOG 解析模块（版本段落提取、标题解析）
 ├── updater.py            # 自动更新模块（Gitee/GitHub 双源检查、下载替换、完整性校验、启动时自动检查）
 ├── icons.py              # 图标绘制模块（Pillow 矢量图标 + IconCache）
 ├── doc_parser.py         # 招聘需求文档解析器（JD → 必要条件 + 职位要求）
 ├── education_certificate.py # 毕业证书图片识别、字段校验与学信网页面填写
-├── education_tool.py    # 独立学历证书核验助手入口（复用 gui_main 学历核验模式）
-├── education_tool_config.py # 独立工具固定 AI 配置
-├── education_tool_security.py # 独立工具内置 API Key 解密
+├── education_tool.py / education_tool_config.py / education_tool_security.py # 独立学历核验工具、配置与密钥解密
 ├── security.py           # API Key 安全存储模块（keyring 加密，按 provider+base_url 组合存储）
 ├── migrate_keys.py       # API Key 迁移工具（明文→加密）
 ├── constants.py          # 共享常量（评分模型参数、阈值、学历档位、滚动参数、城市列表）
