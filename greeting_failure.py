@@ -70,8 +70,8 @@ def diagnose_greeting_failure(message: str, *, page_required: bool = False) -> G
         )
     return GreetingFailureDiagnosis(
         "unknown",
-        "未能识别的发送失败",
-        "先查看原始失败信息；不确定是否已发送时，到 BOSS 沟通列表核实。",
+        "发送失败",
+        "请根据原始失败信息处理；不确定是否已发送时，到 BOSS 沟通列表核实。",
     )
 
 

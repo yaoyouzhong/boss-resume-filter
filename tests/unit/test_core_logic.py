@@ -326,6 +326,41 @@ def test_job_title_match_is_tolerant_but_not_overbroad():
     assert bossmaster._job_titles_match("Java工程师", "") is None
 
 
+def test_recommend_page_identity_maps_job_id_to_real_boss_job_name():
+    class Target:
+        def run_js(self, script):
+            if script == "return location.href":
+                return (
+                    "https://www.zhipin.com/web/frame/recommend/"
+                    "?jobid=encrypted-job-1&status=0"
+                )
+            assert "/wapi/zpjob/job/chatted/jobList" in script
+            assert "encryptJobId" in script
+            return "AI-AGENT开发（出差南宁）"
+
+    assert bossmaster._read_recommend_page_identity(Target()) == {
+        "job_id": "encrypted-job-1",
+        "job_title": "AI-AGENT开发（出差南宁）",
+        "href": (
+            "https://www.zhipin.com/web/frame/recommend/"
+            "?jobid=encrypted-job-1&status=0"
+        ),
+    }
+
+
+def test_recommend_page_identity_never_treats_recommend_tabs_as_job_names():
+    class Target:
+        def run_js(self, script):
+            if script == "return location.href":
+                return "https://www.zhipin.com/web/frame/recommend/?jobid=job-1"
+            return "精选"
+
+    identity = bossmaster._read_recommend_page_identity(Target())
+
+    assert identity["job_id"] == "job-1"
+    assert identity["job_title"] == ""
+
+
 def test_page_job_mismatch_requires_explicit_confirmation():
     callback_args = []
 

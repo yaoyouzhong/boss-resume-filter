@@ -1659,7 +1659,83 @@ def test_checkbutton_style_uses_large_checkmark_indicator_but_ai_keeps_switch():
     check_layout = check_layout[:check_layout.index("\n        style.configure(")]
     assert "Checkbutton.focus" not in check_layout
     assert "('Checkbutton.label', {" in check_layout
-    assert "ai_switch = self._create_switch(row_ai, self.ai_eval_var)" in run_block
+    assert "enabled_variable=self.ai_eval_available_var" in run_block
+
+
+def test_ai_switch_is_compact_and_supersampled():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    switch_block = source[source.index("def _create_switch("):]
+    switch_block = switch_block[:switch_block.index("\n    def _styled_tooltip")]
+
+    assert "int(round(30 * scale))" in switch_block
+    assert "int(round(16 * scale))" in switch_block
+    assert "render_scale = 4" in switch_block
+    assert "Image.Resampling.LANCZOS" in switch_block
+    assert "ImageTk.PhotoImage(image)" in switch_block
+    assert "canvas.create_image" in switch_block
+    assert "canvas.create_oval" not in switch_block
+    assert "if not _is_enabled():" in switch_block
+    assert "variable.set(False)" in switch_block
+    assert "enabled_variable.trace_add" in switch_block
+
+
+def test_ai_eval_status_disables_switch_when_model_is_not_configured():
+    gui = object.__new__(BossFilterGUI)
+    gui.api_config = {"api_provider": "deepseek", "model": "deepseek-chat", "api_key": ""}
+    gui.ai_status_label = Mock()
+    gui.ai_eval_var = Mock()
+    gui.ai_eval_var.get.return_value = True
+    gui.ai_eval_available_var = Mock()
+    gui.ai_eval_label = Mock()
+    gui.colors = {
+        "success": "green",
+        "warning": "orange",
+        "text_primary": "black",
+        "text_muted": "gray",
+    }
+    gui._ai_eval_auto_done = True
+
+    gui._update_ai_eval_status()
+
+    gui.ai_eval_available_var.set.assert_called_once_with(False)
+    gui.ai_eval_var.set.assert_called_once_with(False)
+    gui.ai_status_label.config.assert_called_once_with(
+        text="⚠ 未配置", foreground="orange"
+    )
+    gui.ai_eval_label.configure.assert_called_once_with(
+        cursor="arrow", foreground="gray"
+    )
+
+
+def test_ai_eval_status_enables_switch_only_with_complete_model_config():
+    gui = object.__new__(BossFilterGUI)
+    gui.api_config = {
+        "api_provider": "deepseek",
+        "model": "deepseek-chat",
+        "api_key": "secret",
+    }
+    gui.ai_status_label = Mock()
+    gui.ai_eval_var = Mock()
+    gui.ai_eval_available_var = Mock()
+    gui.ai_eval_label = Mock()
+    gui.colors = {
+        "success": "green",
+        "warning": "orange",
+        "text_primary": "black",
+        "text_muted": "gray",
+    }
+    gui._ai_eval_auto_done = True
+
+    gui._update_ai_eval_status()
+
+    gui.ai_eval_available_var.set.assert_called_once_with(True)
+    gui.ai_eval_var.set.assert_not_called()
+    gui.ai_status_label.config.assert_called_once_with(
+        text="✓ 已配置", foreground="green"
+    )
+    gui.ai_eval_label.configure.assert_called_once_with(
+        cursor="hand2", foreground="black"
+    )
 
 
 def test_button_style_removes_inner_focus_ring_and_keeps_outer_focus_border():
@@ -1804,6 +1880,33 @@ def test_system_settings_populates_model_controls_before_page_is_visible():
     assert show_block.index("self._schedule_api_key_resolution()") > show_block.index(
         "self.api_config_page.pack"
     )
+
+
+def test_system_settings_ignores_timeout_hint_from_cancelled_run_page():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.PROVIDER_DISPLAY = gui_main.PROVIDER_DISPLAY
+    gui.api_config = {
+        "api_provider": "qwen",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen-plus",
+        "llm_read_timeout": 60,
+    }
+    gui.api_provider_var = _FakeVar()
+    gui.api_key_var = _FakeVar()
+    gui.api_base_url_var = _FakeVar()
+    gui.api_model_var = _FakeVar()
+    gui.llm_read_timeout_var = _FakeVar()
+    gui._timeout_hint_label = Mock()
+    gui._timeout_hint_label.winfo_exists.return_value = False
+    gui._is_relay_endpoint_for_timeout = Mock(return_value=False)
+    gui.update_current_model_display = Mock()
+    gui.load_saved_models_to_tree = Mock()
+
+    gui.load_api_config_to_ui(resolve_key=False)
+
+    gui._timeout_hint_label.config.assert_not_called()
+    gui.update_current_model_display.assert_called_once_with()
+    gui.load_saved_models_to_tree.assert_called_once_with()
 
 
 def test_api_key_resolution_waits_for_settings_page_first_frame():
@@ -4052,7 +4155,7 @@ def test_text_dialog_keeps_scrollbar_buttons_and_horizontal_inset_visible():
     assert "button.pack()" in block
 
 
-def test_contact_queue_readiness_column_has_explanatory_tooltip():
+def test_contact_queue_readiness_and_result_columns_have_explanatory_tooltips():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     dialog_block = source[source.index("def _show_greet_queue_dialog"):]
     dialog_block = dialog_block[:dialog_block.index("\n    def _on_greet_queue_group_selected")]
@@ -4062,8 +4165,9 @@ def test_contact_queue_readiness_column_has_explanatory_tooltip():
     assert 'tree.bind("<Motion>", self._on_greet_queue_motion)' in dialog_block
     assert 'tree.bind("<Leave>", self._hide_tooltip)' in dialog_block
     assert 'tree.bind("<Button-3>", self._show_greet_queue_context_menu)' in dialog_block
-    assert 'column_id != "#5"' in tooltip_block
+    assert 'column_id not in ("#5", "#7")' in tooltip_block
     assert "self._greet_queue_readiness_tooltip" in tooltip_block
+    assert 'queue_item.get(\'message\') or "暂无最近结果"' in tooltip_block
 
 
 def test_contact_queue_context_menu_preserves_multi_selection_and_sends_it():
@@ -4258,7 +4362,7 @@ def test_scan_contact_policy_selects_threshold_then_reuses_queue_validation():
     assert [candidate["geek_id"] for candidate in selected] == ["strong", "normal"]
 
 
-def test_page_dependent_contact_fails_closed_on_wrong_job_page():
+def test_page_dependent_contact_reports_wrong_job_page_for_confirmation():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.browser_page = object()
     gui._get_greet_queue_page_state = Mock(return_value=(
@@ -4271,11 +4375,67 @@ def test_page_dependent_contact_fails_closed_on_wrong_job_page():
         "bossmaster._read_recommend_page_identity",
         return_value={"job_title": "Python Engineer"},
     ), patch("bossmaster._job_titles_match", return_value=False):
-        ready, message = gui._greet_queue_candidate_page_ready({"job_name": "Java Engineer"})
+        ready, message, actual_job = gui._greet_queue_candidate_page_ready(
+            {"job_name": "Java Engineer"}
+        )
 
     assert ready is False
+    assert actual_job == "Python Engineer"
     assert "Python Engineer" in message
     assert "Java Engineer" in message
+
+
+def test_page_dependent_contact_can_continue_after_confirming_job_name_mismatch():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._greet_queue_candidate_page_ready = Mock(
+        return_value=(False, "岗位名称不同", "精选")
+    )
+    gui._confirm_job_name_mismatch = Mock(return_value=True)
+    decisions = {}
+    candidate = {"job_name": "中高级AI工程师"}
+
+    assert gui._ensure_greet_queue_candidate_page_ready(
+        candidate, object(), decisions
+    ) == (True, "")
+    assert gui._ensure_greet_queue_candidate_page_ready(
+        candidate, object(), decisions
+    ) == (True, "")
+
+    gui._confirm_job_name_mismatch.assert_called_once()
+    assert decisions == {("中高级ai工程师", "精选"): True}
+
+
+def test_page_dependent_contact_stays_pending_when_job_mismatch_is_not_confirmed():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._greet_queue_candidate_page_ready = Mock(
+        return_value=(False, "岗位名称不同", "精选")
+    )
+    gui._confirm_job_name_mismatch = Mock(return_value=False)
+
+    assert gui._ensure_greet_queue_candidate_page_ready(
+        {"job_name": "中高级AI工程师"}, object(), {}
+    ) == (False, "岗位名称不同")
+
+
+def test_job_name_mismatch_confirmation_explains_names_may_differ():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.stop_event = Mock()
+    gui.stop_event.is_set.return_value = False
+    gui.run_on_ui = lambda callback: callback()
+
+    with patch("gui_main.messagebox.askyesno", return_value=True) as confirm:
+        assert gui._confirm_job_name_mismatch(
+            "中高级AI工程师",
+            "精选",
+            context="run",
+            parent=object(),
+        ) is True
+
+    _title, message = confirm.call_args.args[:2]
+    assert "岗位名称不同，但可能指向同一个岗位" in message
+    assert "本地岗位配置：中高级AI工程师" in message
+    assert "BOSS 当前岗位：精选" in message
+    assert confirm.call_args.kwargs["yes_label"] == "确认并继续"
 
 
 def test_legacy_gui_contact_methods_only_add_to_contact_list():
@@ -4305,37 +4465,78 @@ def test_greet_queue_dialog_has_status_groups_and_double_click_detail():
     refresh_block = source[source.index("def _refresh_greet_queue_dialog"):]
     refresh_block = refresh_block[:refresh_block.index("\n    def _set_greet_queue_item_state")]
 
-    assert "联系状态" in dialog_block
+    assert "按状态筛选" in dialog_block
     assert "self.greet_queue_group_tree" in dialog_block
     assert "self.greet_queue_detail_title_var" in dialog_block
     assert "GreetQueue.Small.TButton" in dialog_block
     assert "GreetQueue.Primary.TButton" not in dialog_block
     assert 'win.title("联系候选人")' in dialog_block
-    assert 'text="联系待发送"' in dialog_block
+    assert 'text="开始联系"' in dialog_block
+    assert 'style="Workbench.Primary.TButton"' in dialog_block
     assert 'width=14' not in dialog_block
     assert 'text="暂停",' in dialog_block and 'width=8' in dialog_block
     assert 'text="确认已发送"' in dialog_block
     assert 'text="确认未发送"' in dialog_block
     assert 'text="移除选中",' in dialog_block
-    assert 'queue_actions.pack(side="right", padx=(0, int(8 * scale)))' in dialog_block
+    assert 'queue_actions.pack(side="right")' in dialog_block
     assert "padding=(int(6 * scale), int(10 * scale))" in dialog_block
-    assert "detail_header = ttk.Frame(tree_frame)" in dialog_block
+    assert "detail_header = ttk.Frame(tree_frame, style='Card.TFrame')" in dialog_block
     assert "detail_title_box" not in dialog_block
-    assert "foreground=self.colors['text_secondary']" in dialog_block
+    assert "self.greet_queue_detail_summary_var = tk.StringVar" in dialog_block
+    assert "foreground=self.colors['text_primary']" in dialog_block
     assert "background=self.colors['bg_card']" in dialog_block
     assert 'padx=(int(10 * scale), int(8 * scale))' in dialog_block
-    assert "selected_actions = ttk.Frame(detail_header)" in dialog_block
-    assert "selected_actions.grid(row=0, column=1, sticky=\"e\")" in dialog_block
-    assert 'group_tree.column("#0", width=int(130 * scale), minwidth=int(110 * scale), anchor="w")' in dialog_block
-    assert 'group_tree.column("count", width=int(58 * scale), minwidth=int(48 * scale), anchor="center")' in dialog_block
-    assert 'group_order = ("全部", "待核实", "发送失败", "待发送", "发送中", "已发送", "已跳过")' in refresh_block
+    assert "selected_actions = ttk.Frame(tree_frame" in dialog_block
+    assert "selected_actions.grid(row=2, column=0, columnspan=2, sticky=\"ew\")" in dialog_block
+    assert '"job": "w"' in dialog_block
+    assert '"message": "w"' in dialog_block
+    assert 'orient="horizontal"' not in dialog_block
+    assert 'xscrollcommand' not in dialog_block
+    assert 'group_tree.column("#0", width=int(190 * scale), minwidth=int(150 * scale), anchor="w")' in dialog_block
+    assert 'group_tree.column("count", width=0, minwidth=0, stretch=False)' in dialog_block
+    assert 'group_order = ("全部", "待核实", "待发送", "发送失败", "发送中", "已发送", "已跳过")' in refresh_block
     assert 'iid="全部"' in refresh_block
     assert 'open=True' in refresh_block
-    assert 'for group in group_order[1:]:' in refresh_block
+    assert 'if counts.get(group, 0) > 0' in refresh_block
+    assert 'for group in visible_groups:' in refresh_block
     assert 'group_tree.insert(\n                    "全部",' in refresh_block
+    assert 'item.get(\'message\') or "—"' in refresh_block
+    assert 'self._greet_queue_group_hint(selected_status)' in refresh_block
     assert "联系清单为空" in refresh_block
     assert "需处理" in refresh_block
     assert 'tree.bind("<Double-Button-1>", lambda _event: self._show_selected_greet_queue_detail())' in dialog_block
+
+
+def test_contact_queue_result_tooltip_wraps_and_stays_screen_bounded():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    tooltip_block = source[source.index("def _styled_tooltip"):]
+    tooltip_block = tooltip_block[:tooltip_block.index("\n    def _hide_tooltip")]
+    queue_motion_block = source[source.index("def _on_greet_queue_motion"):]
+    queue_motion_block = queue_motion_block[:queue_motion_block.index("\n    def _show_greet_queue_context_menu")]
+
+    assert "_get_windows_monitor_area(tip, tooltip_parent)" in tooltip_block
+    assert "safe_x =" in tooltip_block
+    assert "safe_y =" in tooltip_block
+    assert "tooltip_wraplength = max(" in queue_motion_block
+    assert "wraplength=tooltip_wraplength" in queue_motion_block
+
+
+def test_contact_queue_selection_text_includes_names_without_unbounded_growth():
+    one = [{"status": "待发送", "candidate": {"name": "张三"}}]
+    many = [
+        {"status": "待发送", "candidate": {"name": name}}
+        for name in ("张三", "李四", "王五", "赵六")
+    ]
+
+    assert BossFilterGUI._greet_queue_selection_text(one) == "已选：张三 · 待发送"
+    assert BossFilterGUI._greet_queue_selection_text(many) == (
+        "已选 4 人：张三、李四、王五等 · 待发送"
+    )
+
+
+def test_contact_queue_group_hints_explain_the_selected_status_action():
+    assert "只联系选中范围" in BossFilterGUI._greet_queue_group_hint("待发送")
+    assert "逐一核实" in BossFilterGUI._greet_queue_group_hint("待核实")
 
 
 def test_contact_queue_persists_intent_and_revalidates_before_each_send():
@@ -4356,7 +4557,8 @@ def test_contact_queue_persists_intent_and_revalidates_before_each_send():
         'self._set_greet_queue_item_state(item, "发送中", "")'
     )
     assert worker_block.count("self._reload_greet_queue_candidate(item)") == 2
-    assert worker_block.count("self._greet_queue_candidate_page_ready(candidate)") >= 2
+    assert worker_block.count("self._ensure_greet_queue_candidate_page_ready(") >= 2
+    assert "job_mismatch_decisions = {}" in worker_block
     assert "resolve_candidate_greeting_confirmation(" in resolve_block
     assert 'item[\'status\'] = "已发送"' in resolve_block
     assert 'item[\'status\'] = "待发送"' in resolve_block
@@ -4606,27 +4808,75 @@ def test_greet_queue_result_dialog_uses_shared_fonts_and_adaptive_width():
     assert "content_bottom_padding=28" in block
 
 
-def test_candidate_state_diagnostics_detail_does_not_repeat_severity_column():
+def test_candidate_state_diagnostics_uses_group_summary_and_compact_candidate_rows():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     dialog_block = source[source.index("def _show_candidate_state_diagnostics_dialog"):]
     dialog_block = dialog_block[:dialog_block.index("\n    def _clip_table_text")]
 
     assert 'columns=("count", "level")' in dialog_block
-    assert 'group_tree.heading("level", text="级别")' in dialog_block
-    assert 'columns = ("name", "job", "problem", "action")' in dialog_block
+    assert 'show="tree"' in dialog_block
+    assert 'for level_index, level in enumerate(("error", "warning", "info")):' in dialog_block
+    assert 'group_tree.insert(\n                    "", "end", iid=level_iid' in dialog_block
+    assert 'group_tree.insert(\n                        level_iid, "end", iid=child_iid' in dialog_block
+    assert 'columns = ("name", "job", "issue", "key_info")' in dialog_block
+    assert 'tree.heading("issue", text="问题类型")' in dialog_block
+    assert 'tree.heading("key_info", text="关键信息")' in dialog_block
+    assert 'orient="horizontal"' not in dialog_block
+    assert 'xscrollcommand' not in dialog_block
+    assert 'selected_issue_summary_var.set(f"处理建议：{current_issues[0].suggestion}")' in dialog_block
+    assert 'self._format_state_issue_key_info(issue, candidate)' in dialog_block
+    assert 'self._clip_table_text(issue.suggestion, 42)' not in dialog_block
+    assert 'issue_action_var' not in dialog_block
     assert 'tree.heading("severity", text="级别")' not in dialog_block
     assert 'tree.column("severity"' not in dialog_block
     assert 'severity_label.get(issue.severity, "提醒"),' not in dialog_block
     assert 'column_id not in ("#3", "#4")' in dialog_block
     assert 'if column_id == "#3":' in dialog_block
     assert 'full = f"{issue.title}\\n\\n{issue.detail}"' in dialog_block
-    assert 'full = issue.suggestion' in dialog_block
+    assert 'full = issue.detail' in dialog_block
     assert 'def on_issue_group_motion(event):' in dialog_block
     assert 'column_id != "#0"' in dialog_block
     assert '("state_check_group", item_id, column_id)' in dialog_block
-    assert 'lambda: self._show_tooltip(title, x, y, tooltip_key, parent=win)' in dialog_block
+    assert 'lambda: self._show_tooltip(label, x, y, tooltip_key, parent=win)' in dialog_block
     assert 'group_tree.bind("<Motion>", on_issue_group_motion)' in dialog_block
     assert 'group_tree.bind("<Leave>", self._hide_tooltip)' in dialog_block
+    assert 'ttk.Button(btn_row, text="查看详情", command=show_detail)' not in dialog_block
+
+
+def test_candidate_workbench_primary_buttons_keep_standard_button_typography():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    style_block = source[source.index("style.configure('Workbench.Primary.TButton'"):]
+    style_block = style_block[:style_block.index("# 危险级")]
+    daily_block = source[source.index("def _show_daily_candidate_actions_dialog"):]
+    daily_block = daily_block[:daily_block.index("\n    def _show_candidate_state_diagnostics_dialog")]
+    state_block = source[source.index("def _show_candidate_state_diagnostics_dialog"):]
+    state_block = state_block[:state_block.index("\n    def _clip_table_text")]
+    queue_block = source[source.index("def _show_greet_queue_dialog"):]
+    queue_block = queue_block[:queue_block.index("\n    def _set_greet_queue_item_state")]
+
+    assert "font=self.font_label, padding=(15, 8)" in style_block
+    assert "style='Workbench.Primary.TButton'" in daily_block
+    assert "style='Workbench.Primary.TButton'" in state_block
+    assert 'style="Workbench.Primary.TButton"' in queue_block
+
+
+def test_candidate_workbench_hierarchies_share_navigation_style_and_neutral_details():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    daily_block = source[source.index("def _show_daily_candidate_actions_dialog"):]
+    daily_block = daily_block[:daily_block.index("\n    def _show_candidate_state_diagnostics_dialog")]
+    state_block = source[source.index("def _show_candidate_state_diagnostics_dialog"):]
+    state_block = state_block[:state_block.index("\n    def _clip_table_text")]
+    queue_block = source[source.index("def _show_greet_queue_dialog"):]
+    queue_block = queue_block[:queue_block.index("\n    def _set_greet_queue_item_state")]
+
+    for block in (daily_block, state_block, queue_block):
+        assert "self._candidate_workbench_navigation_style(scale)" in block
+        assert "self._apply_candidate_workbench_navigation_tags(group_tree)" in block
+        assert 'tags=("workbench_root",)' in block
+        assert 'tags=("workbench_child",)' in block
+    assert 'tree.tag_configure("warning", background=' not in state_block
+    assert 'tree.tag_configure("error", background=' not in state_block
+    assert 'tree.tag_configure("info", background=' not in state_block
 
 
 def test_candidate_workflow_dialog_subtitles_use_neutral_text_color():
@@ -4679,13 +4929,54 @@ def test_daily_actions_dialog_uses_time_groups_then_business_and_review_subgroup
     assert 'win.title("今日待办")' in daily_block
     assert 'win.title("今日候选人待办")' not in daily_block
     assert "for timing_index, timing_group in enumerate(ACTION_TIMING_ORDER):" in daily_block
-    assert 'text=timing_group' in daily_block
+    assert 'text=f"{timing_group}  {len(timing_items)}"' in daily_block
     assert 'if group != "待复核":' in daily_block
     assert "candidate_review_category(item.candidate)" in daily_block
-    assert 'child_iid, "end", iid=review_iid, text=category' in daily_block
+    assert 'child_iid, "end", iid=review_iid, text=f"{category}  {len(category_items)}"' in daily_block
     assert 'open=(group == "待复核")' in daily_block
-    assert 'f"检查范围：{scope}    今日需处理：{due_now} 人' in daily_block
-    assert '("due", "到期", 95, "center")' in daily_block
+    assert '"按时间优先级整理候选人，逐项推进下一步"' in daily_block
+    assert '("due", "需处理", counts["due"], self.colors[\'primary\'])' in daily_block
+    assert 'columns = ("name", "job", "score", "task", "key_info", "due")' in daily_block
+    assert '("task", "任务类型", 165, "center")' in daily_block
+    assert '("key_info", "关键信息", 245, "w")' in daily_block
+    assert '("due", "到期", 80, "center")' in daily_block
+    assert 'selected_group_summary_var.set(f"处理建议：{next(iter(unique_actions))}")' in daily_block
+    assert 'self._format_daily_action_key_info(item)' in daily_block
+    assert 'self._format_daily_action_due(item)' in daily_block
+    assert 'orient="horizontal"' not in daily_block
+    assert 'xscrollcommand' not in daily_block
+    assert 'ttk.Button(btn_row, text="查看详情", command=show_detail)' not in daily_block
+
+
+def test_daily_action_key_info_removes_repeated_due_text_and_explains_contact_gap():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    scheduled = types.SimpleNamespace(
+        group="待约面待推进",
+        reason="候选人等待约面安排；下次处理时间：2026-07-23",
+        action="确认面试时间，或调整下次跟进日期。",
+        due_at="20260723_000000",
+        timing_group="以后",
+    )
+    missing_contact_context = types.SimpleNamespace(
+        group="待打招呼",
+        reason="候选人已通过筛选，尚未联系",
+        action="打开对应岗位的推荐牛人页面并重新扫描，再加入联系清单。",
+        due_at="",
+        timing_group="待安排",
+    )
+
+    assert gui._format_daily_action_key_info(scheduled) == "候选人等待约面安排"
+    assert gui._format_daily_action_key_info(missing_contact_context) == "缺少联系条件，需重新扫描岗位"
+
+
+def test_daily_action_due_uses_explicit_immediate_and_unscheduled_labels():
+    immediate = types.SimpleNamespace(due_at="", timing_group="立即处理")
+    unscheduled = types.SimpleNamespace(due_at="", timing_group="待安排")
+    scheduled = types.SimpleNamespace(due_at="20260723_000000", timing_group="以后")
+
+    assert BossFilterGUI._format_daily_action_due(immediate) == "立即"
+    assert BossFilterGUI._format_daily_action_due(unscheduled) == "未安排"
+    assert BossFilterGUI._format_daily_action_due(scheduled) == "2026-07-23"
 
 
 def test_daily_resume_action_promotes_resume_context_menu_entry():
@@ -4868,7 +5159,7 @@ def test_greet_queue_preparation_status_is_not_rendered_inside_send_button():
         "发送准备：正在打开推荐牛人页面..."
     )
     gui.greet_queue_start_btn.configure.assert_called_once_with(
-        text="联系待发送（2 人）",
+        text="开始联系",
         state="disabled",
     )
 
@@ -4973,7 +5264,7 @@ def test_contact_queue_send_button_reflects_selected_scope():
     gui._update_greet_queue_action_states()
 
     gui.greet_queue_start_btn.configure.assert_called_once_with(
-        text="联系选中（1 人）",
+        text="开始联系",
         state="normal",
     )
 
@@ -5009,7 +5300,7 @@ def test_ready_browser_restores_queue_summary_before_confirmation():
 
     def confirm(_pending):
         gui.greet_queue_summary_var.set.assert_called_with(
-            "联系清单共 1 人｜待发送 1 人"
+            "发送前会再次核验候选人和岗位状态"
         )
         return False
 
@@ -5428,10 +5719,15 @@ def test_inline_form_notes_use_flat_copy_without_outer_parentheses():
     assert '_note_suffix = "15 分调整"' in run_block
     assert '(推荐 50-200 轮次)' not in run_block
     assert 'self._result_search_placeholder = "姓名/匹配分/推荐指数/状态"' in result_block
-    assert "textvariable=self.result_search_var, width=28" in result_block
+    assert "textvariable=self.result_search_var, width=26" in result_block
+    assert "'text_placeholder', ui_theme.TEXT_PLACEHOLDER" in result_block
+    assert "max(8, int(8 * self.dpi_scale * self.zoom_factor))" in result_block
     assert "bind('<FocusIn>', _hide_result_search_placeholder)" in result_block
     assert "bind('<FocusOut>', _show_result_search_placeholder)" in result_block
     assert 'text="Esc 清空"' in result_block
+    assert "def _sync_result_search_clear_hint():" in result_block
+    assert "hint.pack_forget()" in result_block
+    assert "pack_options['before'] = result_view_label" in result_block
     assert 'text="姓名/匹配分/推荐指数/状态，Esc 清空"' not in result_block
     assert 'bind_all("<Button-1>", self._on_global_left_click, add="+")' in source
     assert 'lambda _event: self._refresh_results_and_reset_sort()' in result_block
@@ -5456,7 +5752,59 @@ def test_ai_parse_reminder_uses_shared_modal_font_without_compact_delta():
     block = block[:block.index("\n    def _start_ai_progress_animation")]
 
     assert '"AI 解析提醒"' in block
+    assert "self._format_ai_parse_warning_item(" in block
     assert "font_delta=" not in block
+
+
+def test_ai_parse_warning_item_separates_conclusion_from_confirmation_prompt():
+    assert BossFilterGUI._format_ai_parse_warning_item(
+        "数据库要求写的是 MySQL、Oracle 其中一种，请确认是否满足任一即可"
+    ) == (
+        "数据库要求写的是 MySQL、Oracle 其中一种",
+        "请确认：是否满足任一即可",
+    )
+    assert BossFilterGUI._format_ai_parse_warning_item("需要人工核对") == (
+        "需要人工核对",
+        "",
+    )
+
+
+def test_candidate_state_issue_key_info_keeps_only_candidate_specific_fact():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    incomplete_greeting = types.SimpleNamespace(
+        title="打招呼记录不完整",
+        detail="候选人已标记为已打招呼，但没有记录发送时间或发送方式。",
+    )
+    low_score = types.SimpleNamespace(
+        title="低分候选人缺少保留理由",
+        detail="匹配分低于通过线。",
+    )
+    manual_review = types.SimpleNamespace(
+        title="需要人工确认",
+        detail="候选人结论没有显示为待人工确认。",
+    )
+
+    assert gui._format_state_issue_key_info(
+        incomplete_greeting,
+        {"greet_sent_at": "", "greet_method": ""},
+    ) == "缺少：发送时间、发送方式"
+    assert gui._format_state_issue_key_info(low_score, {"match_score": 0}) == "匹配分：0"
+    assert gui._format_state_issue_key_info(
+        manual_review,
+        {"auto_greet_blocked_reason": "工作经验证据不足"},
+    ) == "待确认：工作经验证据不足"
+    assert gui._format_state_issue_key_info(manual_review, {}) == (
+        "待确认：尚未形成明确资格结论"
+    )
+
+
+def test_delete_job_confirmation_describes_only_the_saved_job_deletion():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def delete_job(self):"):]
+    block = block[:block.index("\n    def _build_current_job_rule_preview")]
+
+    assert "删除后需要重新配置该岗位" in block
+    assert "当前未保存修改" not in block
 
 
 def test_run_summary_splits_status_prefix_for_fixed_summary_card():
@@ -5718,6 +6066,9 @@ def test_job_review_workbench_uses_cards_funnel_and_contextual_actions():
     assert "anchor='w'" in block
     assert "int(9 * self.font_scale)" not in block
     assert "self._show_text_dialog(" not in block
+    assert "root_height = self.root.winfo_height()" in block
+    assert "height = min(int(760 * scale), root_height, int(area_height * 0.82))" in block
+    assert "width, height = int(820 * scale), int(760 * scale)" in block
 
 
 def test_job_review_suggestion_format_separates_heading_and_detail():
@@ -5992,6 +6343,15 @@ def test_education_page_has_scroll_container_and_conditional_queue():
     ]
 
     assert "self.education_canvas, self.education_scrollable_frame" in create_block
+    assert 'self._create_page_header(\n            self.education_page,' in create_block
+    assert 'scroll_frame = ttk.Frame(self.education_page' in create_block
+    assert '_create_scroll_container(\n            scroll_frame,' in create_block
+    assert "auto_hide_scrollbar=True" in create_block
+    assert create_block.index("self._create_page_header(") < create_block.index(
+        "self._create_scroll_container("
+    )
+    scroll_content = create_block[create_block.index("content = self.education_scrollable_frame"):]
+    assert "self._create_page_header(" not in scroll_content
     assert "self.education_queue_card.pack_forget()" in create_block
     queue_card_block = create_block[
         create_block.index('content, "待核验队列"'):
@@ -6012,6 +6372,8 @@ def test_education_page_has_scroll_container_and_conditional_queue():
     assert "self._education_tree_font.measure(full_text)" in source
     assert "if total >= 1" in summary_block
     assert "elif total < 1" in summary_block
+    assert "height=max(420, int(440 * self.dpi_scale * self.zoom_factor))" in create_block
+    assert "workspace.pack_propagate(False)" in create_block
 
 
 def test_mousewheel_routes_education_and_api_pages_to_correct_canvas():
@@ -6190,24 +6552,136 @@ def test_education_queue_summary_text_varies_by_count():
     gui = object.__new__(_GUI)
     gui.education_items = {"edu_1": {}}
     gui.education_file_var = Mock()
-    gui.education_queue_card = None
-    gui.education_workspace = None
+    gui.education_queue_card = Mock()
+    gui.education_queue_card.winfo_manager.return_value = ""
+    gui.education_workspace = Mock()
+    gui.education_queue_tree = Mock()
+    gui.education_queue_scrollbar = Mock()
+    gui.education_queue_scrollbar.winfo_manager.return_value = ""
     gui.education_remove_btn = Mock()
     gui.education_recognize_btn = Mock()
     gui.education_fill_btn = Mock()
     gui.education_current_id = "edu_1"
     gui.education_recognition_running = False
+    gui.dpi_scale = 1.0
+    gui.zoom_factor = 1.0
 
     gui._refresh_education_queue_summary()
     gui.education_file_var.set.assert_called_with("已导入 1 张证书")
+    gui.education_queue_card.pack.assert_called_once_with(
+        fill="x",
+        before=gui.education_workspace,
+        pady=(0, int(16 * gui.dpi_scale * gui.zoom_factor)),
+    )
+    gui.education_queue_tree.configure.assert_called_with(height=1)
 
+    gui.education_queue_card.winfo_manager.return_value = "pack"
     gui.education_items = {"edu_1": {}, "edu_2": {}}
     gui._refresh_education_queue_summary()
     gui.education_file_var.set.assert_called_with("已导入 2 张证书，点击队列切换")
+    gui.education_queue_tree.configure.assert_called_with(height=2)
+    gui.education_queue_scrollbar.pack.assert_not_called()
 
+    gui.education_queue_card.winfo_manager.return_value = "pack"
     gui.education_items = {}
     gui._refresh_education_queue_summary()
     gui.education_file_var.set.assert_called_with("尚未导入毕业证书")
+    gui.education_queue_card.pack_forget.assert_called_once_with()
+
+
+def test_education_queue_caps_visible_rows_and_scrolls_after_five_items():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {f"edu_{index}": {} for index in range(6)}
+    gui.education_file_var = Mock()
+    gui.education_queue_card = Mock()
+    gui.education_queue_card.winfo_manager.return_value = "pack"
+    gui.education_workspace = Mock()
+    gui.education_queue_tree = Mock()
+    gui.education_queue_scrollbar = Mock()
+    gui.education_queue_scrollbar.winfo_manager.return_value = ""
+    gui.education_canvas = Mock()
+    gui.education_canvas._schedule_overflow_sync = Mock()
+    gui.education_remove_btn = Mock()
+    gui.education_recognize_btn = Mock()
+    gui.education_fill_btn = Mock()
+    gui.education_current_id = "edu_0"
+    gui.education_recognition_running = False
+    gui.dpi_scale = 1.0
+    gui.zoom_factor = 1.0
+
+    gui._refresh_education_queue_summary()
+
+    gui.education_queue_tree.configure.assert_called_once_with(height=5)
+    gui.education_queue_scrollbar.grid.assert_called_once_with()
+    gui.education_canvas._schedule_overflow_sync.assert_called_once_with()
+    gui.education_canvas.after.assert_called_once_with(
+        16, gui.education_canvas._schedule_overflow_sync
+    )
+
+
+def test_education_queue_scrollbar_returns_after_delete_and_reimport():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_file_var = Mock()
+    gui.education_queue_card = Mock()
+    gui.education_queue_card.winfo_manager.return_value = "pack"
+    gui.education_workspace = Mock()
+    gui.education_queue_tree = Mock()
+    gui.education_queue_scrollbar = Mock()
+    gui.education_canvas = Mock()
+    gui.education_canvas._schedule_overflow_sync = Mock()
+    gui.education_remove_btn = Mock()
+    gui.education_recognize_btn = Mock()
+    gui.education_fill_btn = Mock()
+    gui.education_current_id = None
+    gui.education_recognition_running = False
+    gui.dpi_scale = 1.0
+    gui.zoom_factor = 1.0
+
+    gui.education_items = {f"edu_{index}": {} for index in range(6)}
+    gui.education_queue_scrollbar.winfo_manager.return_value = ""
+    gui._refresh_education_queue_summary()
+
+    gui.education_items = {}
+    gui.education_queue_scrollbar.winfo_manager.return_value = "grid"
+    gui._refresh_education_queue_summary()
+
+    gui.education_items = {f"new_{index}": {} for index in range(6)}
+    gui.education_queue_scrollbar.winfo_manager.return_value = ""
+    gui._refresh_education_queue_summary()
+
+    assert gui.education_queue_scrollbar.grid.call_count == 2
+    gui.education_queue_scrollbar.grid_remove.assert_called_once_with()
+
+
+def test_education_scrollbar_is_visible_only_when_content_overflows():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    helper_block = source[
+        source.index("def _create_scroll_container"):
+        source.index("def _bind_mousewheel")
+    ]
+
+    assert "max(requested_height, viewport_height)" in helper_block
+    assert "has_overflow = requested_height > viewport_height + 8" in helper_block
+    assert 'scrollbar.pack(side="right", fill="y")' in helper_block
+    assert "scrollbar.pack_forget()" in helper_block
+    assert "canvas.yview_moveto(0)" in helper_block
+    assert "canvas._schedule_overflow_sync = _schedule_sync" in helper_block
+
+
+def test_education_queue_scrollbar_has_visible_local_style():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    create_block = source[
+        source.index("def create_education_page"):
+        source.index("def _select_education_images")
+    ]
+
+    assert '"Education.Vertical.TScrollbar"' in create_block
+    assert "width=max(14" in create_block
+    assert "arrowsize=max(14" in create_block
+    assert "('active', self.colors['text_secondary'])" in create_block
+    assert "('pressed', self.colors['text_secondary'])" in create_block
+    assert "('active', self.colors['primary'])" not in create_block
+    assert 'style="Education.Vertical.TScrollbar"' in create_block
 
 
 def test_education_import_button_text_is_certificate():

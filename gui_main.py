@@ -957,6 +957,7 @@ class BossFilterGUI:
         self.greet_queue_group_tree = None
         self.greet_queue_summary_var = None
         self.greet_queue_detail_title_var = None
+        self.greet_queue_detail_summary_var = None
         self.greet_queue_status_filter_var = None
         self.run_summary_frame = None
         self.run_summary_status_label = None
@@ -1398,6 +1399,17 @@ class BossFilterGUI:
                         bordercolor=c['primary_dark'], focuscolor=c['primary_dark'],
                         lightcolor=c['primary'], darkcolor=c['primary'])
         style.map('Accent.TButton',
+                  background=[('pressed', c.get('primary_deep', ui_theme.PRIMARY_DEEP)),
+                              ('active', c['primary_dark']),
+                              ('disabled', c['bg_input'])],
+                  foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
+                  bordercolor=[('disabled', c['border'])])
+        # 工作台主动作：与普通按钮保持相同字号和内边距，仅用颜色区分主次。
+        style.configure('Workbench.Primary.TButton', font=self.font_label, padding=(15, 8),
+                        background=c['primary'], foreground='#FFFFFF',
+                        bordercolor=c['primary_dark'], focuscolor=c['primary_dark'],
+                        lightcolor=c['primary'], darkcolor=c['primary'])
+        style.map('Workbench.Primary.TButton',
                   background=[('pressed', c.get('primary_deep', ui_theme.PRIMARY_DEEP)),
                               ('active', c['primary_dark']),
                               ('disabled', c['bg_input'])],
@@ -3408,7 +3420,7 @@ class BossFilterGUI:
             spinbox.bind('<Button-5>', _on_wheel)
 
     @staticmethod
-    def _create_scroll_container(parent, bg_color):
+    def _create_scroll_container(parent, bg_color, auto_hide_scrollbar=False):
         """创建可滚动容器，返回 (canvas, container_frame)。
 
         所有平台统一使用 Canvas + create_window。
@@ -3418,21 +3430,62 @@ class BossFilterGUI:
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         container = ttk.Frame(canvas, style='TFrame')
 
-        container.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
         canvas_window = canvas.create_window((0, 0), window=container, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
 
-        # Canvas 宽度变化 → 同步嵌入 Frame 宽度
+        sync_after_id = None
+
+        if auto_hide_scrollbar:
+            def _sync_layout():
+                """Fill the viewport when content is short and scroll only on overflow."""
+                nonlocal sync_after_id
+                sync_after_id = None
+                try:
+                    viewport_height = max(1, canvas.winfo_height())
+                    requested_height = max(1, container.winfo_reqheight())
+                    content_height = max(requested_height, viewport_height)
+                    canvas.itemconfig(canvas_window, height=content_height)
+                    canvas.configure(
+                        scrollregion=(0, 0, canvas.winfo_width(), content_height)
+                    )
+
+                    has_overflow = requested_height > viewport_height + 8
+                    if has_overflow and not scrollbar.winfo_manager():
+                        scrollbar.pack(side="right", fill="y")
+                    elif not has_overflow:
+                        if scrollbar.winfo_manager():
+                            scrollbar.pack_forget()
+                        canvas.yview_moveto(0)
+                except tk.TclError:
+                    return
+
+            def _schedule_sync(_event=None):
+                nonlocal sync_after_id
+                if sync_after_id is not None:
+                    try:
+                        canvas.after_cancel(sync_after_id)
+                    except tk.TclError:
+                        return
+                sync_after_id = canvas.after_idle(_sync_layout)
+
+            container.bind("<Configure>", _schedule_sync)
+            canvas._schedule_overflow_sync = _schedule_sync
+        else:
+            container.bind(
+                "<Configure>",
+                lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+            )
+
+        # Canvas 宽度变化 → 同步嵌入 Frame 宽度与自适应高度
         def _on_canvas_configure(event):
             canvas.itemconfig(canvas_window, width=event.width)
+            if auto_hide_scrollbar:
+                _schedule_sync()
         canvas.bind("<Configure>", _on_canvas_configure)
 
         canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        if not auto_hide_scrollbar:
+            scrollbar.pack(side="right", fill="y")
         return canvas, container
 
     @staticmethod
@@ -4169,9 +4222,10 @@ class BossFilterGUI:
             _default_read = 120 if _is_relay else 60
             self.llm_read_timeout_var.set(self.api_config.get("llm_read_timeout") or _default_read)
             # 刷新提示文案
-            if hasattr(self, '_timeout_hint_label'):
+            timeout_hint_label = getattr(self, '_timeout_hint_label', None)
+            if timeout_hint_label is not None and timeout_hint_label.winfo_exists():
                 _hint = _api_timeout_hint_text(self.api_config)
-                self._timeout_hint_label.config(text=_hint)
+                timeout_hint_label.config(text=_hint)
 
         # 更新当前使用模型显示
         self.update_current_model_display()
@@ -4835,15 +4889,27 @@ class BossFilterGUI:
                  background=self.colors['bg_card']).pack(side="left")
         # API Key 状态：先显示"检测中"，后台查 keyring 后更新（避免主线程阻塞）
         self.ai_eval_var = tk.BooleanVar(value=False)
+        self.ai_eval_available_var = tk.BooleanVar(value=False)
         # 拨动开关 + 可点击文字（替代 clam 下 oversized 的勾选框）
-        ai_switch = self._create_switch(row_ai, self.ai_eval_var)
+        ai_switch = self._create_switch(
+            row_ai, self.ai_eval_var,
+            enabled_variable=self.ai_eval_available_var,
+        )
+        self.ai_eval_switch = ai_switch
         ai_switch.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
         ai_label = ttk.Label(
             row_ai, text="启用 AI 辅助评估", font=self.font_label,
-            background=self.colors['bg_card'], cursor='hand2',
+            background=self.colors['bg_card'], cursor='arrow',
         )
+        self.ai_eval_label = ai_label
         ai_label.pack(side="left")
-        ai_label.bind('<Button-1>', lambda _e: self.ai_eval_var.set(not self.ai_eval_var.get()))
+
+        def _toggle_ai_eval_from_label(_event=None):
+            if self.ai_eval_available_var.get():
+                self.ai_eval_var.set(not self.ai_eval_var.get())
+            return 'break'
+
+        ai_label.bind('<Button-1>', _toggle_ai_eval_from_label)
         # API Key 状态标签（先显示检测中，后台查询完毕后由 _update_ai_eval_status 更新）
         _status_font = (FONT_FAMILY, int(11 * self.font_scale))
         self.ai_status_label = tk.Label(row_ai, text="检测中…", font=_status_font,
@@ -5234,45 +5300,84 @@ class BossFilterGUI:
         self._result_search_placeholder_active = True
         self.result_search_var = tk.StringVar(value=self._result_search_placeholder)
         self.result_search_entry = ttk.Entry(
-            search_frame, textvariable=self.result_search_var, width=28, font=self.font_label)
+            search_frame, textvariable=self.result_search_var, width=26, font=self.font_label)
+        _search_placeholder_color = self.colors.get(
+            'text_placeholder', ui_theme.TEXT_PLACEHOLDER
+        )
         self.result_search_entry.configure(
-            foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED)
+            foreground=_search_placeholder_color
         )
         self.result_search_entry.pack(
-            side="left", padx=(int(6 * self.dpi_scale * self.zoom_factor), 0)
+            side="left", padx=(max(8, int(8 * self.dpi_scale * self.zoom_factor)), 0)
         )
+        self._result_search_focused = False
+
+        def _sync_result_search_clear_hint():
+            hint = getattr(self, 'result_search_clear_hint', None)
+            if hint is None:
+                return
+            query_active = (
+                not self._result_search_placeholder_active
+                and bool(self.result_search_var.get().strip())
+            )
+            should_show = self._result_search_focused or query_active
+            if should_show and not hint.winfo_manager():
+                pack_options = {
+                    'side': 'left',
+                    'padx': (self.inline_note_gap, 0),
+                }
+                result_view_label = getattr(self, 'result_view_label', None)
+                if result_view_label is not None:
+                    pack_options['before'] = result_view_label
+                hint.pack(**pack_options)
+            elif not should_show and hint.winfo_manager():
+                hint.pack_forget()
 
         def _hide_result_search_placeholder(_event=None):
+            self._result_search_focused = True
             if self._result_search_placeholder_active:
                 self._result_search_placeholder_active = False
                 self.result_search_var.set("")
                 self.result_search_entry.configure(foreground=self.colors['text_primary'])
+            _sync_result_search_clear_hint()
 
         def _show_result_search_placeholder(_event=None):
+            self._result_search_focused = False
             if not self.result_search_var.get():
                 self._result_search_placeholder_active = True
                 self.result_search_var.set(self._result_search_placeholder)
                 self.result_search_entry.configure(
-                    foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED)
+                    foreground=_search_placeholder_color
                 )
+            _sync_result_search_clear_hint()
 
         def _clear_result_search(_event=None):
             self._result_search_placeholder_active = False
             self.result_search_var.set("")
             self.result_search_entry.configure(foreground=self.colors['text_primary'])
+            _sync_result_search_clear_hint()
             return "break"
 
-        self.result_search_var.trace_add('write', lambda *_: self._filter_result_tree())
+        def _on_result_search_changed(*_):
+            self._filter_result_tree()
+            _sync_result_search_clear_hint()
+
+        self.result_search_var.trace_add('write', _on_result_search_changed)
         self.result_search_entry.bind('<FocusIn>', _hide_result_search_placeholder)
         self.result_search_entry.bind('<FocusOut>', _show_result_search_placeholder)
         self.result_search_entry.bind('<Escape>', _clear_result_search)
-        ttk.Label(search_frame, text="Esc 清空",
-                 font=(FONT_FAMILY, int(10 * self.font_scale)),
-                 foreground=self.colors['text_secondary'],
-                 background=self.colors['bg_main']).pack(side="left", padx=(self.inline_note_gap, 0))
+        self.result_search_clear_hint = ttk.Label(
+            search_frame, text="Esc 清空",
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_main'],
+        )
 
-        ttk.Label(search_frame, text="结果范围:", font=self.font_label,
-                 background=self.colors['bg_main']).pack(
+        self.result_view_label = ttk.Label(
+            search_frame, text="结果范围:", font=self.font_label,
+            background=self.colors['bg_main'],
+        )
+        self.result_view_label.pack(
                      side="left", padx=(int(16 * self.dpi_scale * self.zoom_factor), 0))
         self.result_view_var = tk.StringVar(value="全部记录")
         self.result_view_combo = ttk.Combobox(
@@ -5521,15 +5626,19 @@ class BossFilterGUI:
     def create_education_page(self):
         """创建学历核验页面。"""
         self.education_page = ttk.Frame(self.pages_frame, style='Page.TFrame')
-        self.education_canvas, self.education_scrollable_frame = self._create_scroll_container(
-            self.education_page, self.colors['bg_main']
-        )
-        content = self.education_scrollable_frame
+
         self._create_page_header(
-            content,
+            self.education_page,
             "学历核验",
             "导入毕业证书图片/PDF，识别姓名和证书编号；验证码与手机扫码由 HR 人工完成。",
         )
+
+        scroll_frame = ttk.Frame(self.education_page, style='Page.TFrame')
+        scroll_frame.pack(fill="both", expand=True)
+        self.education_canvas, self.education_scrollable_frame = self._create_scroll_container(
+            scroll_frame, self.colors['bg_main'], auto_hide_scrollbar=True
+        )
+        content = self.education_scrollable_frame
 
         toolbar = self._create_card(
             content, "毕业证书", fill="x",
@@ -5578,6 +5687,24 @@ class BossFilterGUI:
             "Education.Treeview.Heading",
             font=(FONT_FAMILY, int(11 * self.font_scale), "bold"),
         )
+        education_style.configure(
+            "Education.Vertical.TScrollbar",
+            width=max(14, int(16 * self.dpi_scale * self.zoom_factor)),
+            arrowsize=max(14, int(16 * self.dpi_scale * self.zoom_factor)),
+            background=self.colors.get('border_strong', self.colors['border']),
+            troughcolor=self.colors.get('bg_footer', self.colors['bg_main']),
+            bordercolor=self.colors['border'],
+            arrowcolor=self.colors['text_secondary'],
+            lightcolor=self.colors.get('border_strong', self.colors['border']),
+            darkcolor=self.colors.get('border_strong', self.colors['border']),
+        )
+        education_style.map(
+            "Education.Vertical.TScrollbar",
+            background=[
+                ('active', self.colors['text_secondary']),
+                ('pressed', self.colors['text_secondary']),
+            ],
+        )
         self._education_tree_font = font.Font(
             family=FONT_FAMILY, size=int(10 * self.font_scale)
         )
@@ -5600,11 +5727,18 @@ class BossFilterGUI:
                 stretch=column in ("file", "number", "school", "major"),
             )
         queue_scroll = ttk.Scrollbar(
-            queue_card, orient="vertical", command=self.education_queue_tree.yview
+            queue_card,
+            orient="vertical",
+            command=self.education_queue_tree.yview,
+            style="Education.Vertical.TScrollbar",
         )
+        self.education_queue_scrollbar = queue_scroll
         self.education_queue_tree.configure(yscrollcommand=queue_scroll.set)
-        self.education_queue_tree.pack(side="left", fill="x", expand=True)
-        queue_scroll.pack(side="right", fill="y")
+        queue_card.columnconfigure(0, weight=1)
+        queue_card.rowconfigure(0, weight=1)
+        self.education_queue_tree.grid(row=0, column=0, sticky="nsew")
+        queue_scroll.grid(row=0, column=1, sticky="ns")
+        queue_scroll.grid_remove()
         self.education_queue_tree.bind(
             "<<TreeviewSelect>>", self._on_education_queue_select
         )
@@ -5632,9 +5766,14 @@ class BossFilterGUI:
         )
         self._context_menus.append(self.education_queue_menu)
 
-        workspace = ttk.Frame(content, style='Page.TFrame')
+        workspace = ttk.Frame(
+            content,
+            style='Page.TFrame',
+            height=max(420, int(440 * self.dpi_scale * self.zoom_factor)),
+        )
         self.education_workspace = workspace
         workspace.pack(fill="both", expand=True)
+        workspace.pack_propagate(False)
 
         # 顺转 90° 构造器：注入到预览卡片标题栏右侧
         # 用 tk.Label + 点击绑定代替 ttk.Button —— 高度严格等于标题文字高度，绝不撑高标题栏
@@ -5833,6 +5972,24 @@ class BossFilterGUI:
                 )
             elif total < 1 and queue_card.winfo_manager():
                 queue_card.pack_forget()
+        queue_tree = getattr(self, "education_queue_tree", None)
+        if total >= 1 and queue_tree is not None:
+            queue_tree.configure(height=min(5, total))
+        queue_scrollbar = getattr(self, "education_queue_scrollbar", None)
+        if queue_scrollbar is not None:
+            if total > 5 and not queue_scrollbar.winfo_manager():
+                queue_scrollbar.grid()
+            elif total <= 5 and queue_scrollbar.winfo_manager():
+                queue_scrollbar.grid_remove()
+        education_canvas = getattr(self, "education_canvas", None)
+        schedule_scroll_sync = getattr(
+            education_canvas, "_schedule_overflow_sync", None
+        )
+        if schedule_scroll_sync is not None:
+            schedule_scroll_sync()
+            # Treeview 的行数变化会经过一轮 Tk 几何计算才更新父容器请求高度；
+            # 下一帧再同步一次，覆盖“先导入 1 张、随后继续追加”的场景。
+            education_canvas.after(16, schedule_scroll_sync)
         has_current = self.education_current_id in self.education_items
         state = "normal" if has_current else "disabled"
         self.education_remove_btn.configure(state=state)
@@ -7523,13 +7680,15 @@ class BossFilterGUI:
         win.protocol('WM_DELETE_WINDOW', close)
         win.bind('<Escape>', lambda _event: close())
         try:
+            self.root.update_idletasks()
+            root_height = self.root.winfo_height()
             monitor_area = _get_windows_monitor_area(win, self.root)
             area_width = monitor_area[2] if monitor_area else win.winfo_screenwidth()
             area_height = monitor_area[3] if monitor_area else win.winfo_screenheight()
             width = min(int(820 * scale), int(area_width * 0.92))
-            height = min(int(640 * scale), int(area_height * 0.9))
+            height = min(int(760 * scale), root_height, int(area_height * 0.82))
         except tk.TclError:
-            width, height = int(820 * scale), int(640 * scale)
+            width, height = int(820 * scale), int(760 * scale)
         _place_window_centered(win, width, height, parent=self.root)
         win.deiconify()
 
@@ -9466,18 +9625,34 @@ class BossFilterGUI:
         if not hasattr(self, 'ai_status_label'):
             return  # UI 尚未创建完成
         has_key = bool(self.api_config.get("api_key"))
+        has_model_config = bool(
+            has_key
+            and str(self.api_config.get("api_provider") or "").strip()
+            and str(self.api_config.get("model") or "").strip()
+        )
+        available_var = getattr(self, 'ai_eval_available_var', None)
+        if available_var is not None:
+            available_var.set(has_model_config)
         # 首次检测到已配置 Key 时自动启用 AI 评估，后续不覆盖用户手动取消
         if not getattr(self, '_ai_eval_auto_done', False):
             self._ai_eval_auto_done = True
-            if has_key:
+            if has_model_config:
                 self.ai_eval_var.set(True)
-        if has_key:
+        if has_model_config:
             self.ai_status_label.config(text="✓ 已配置", foreground=self.colors['success'])
         else:
             self.ai_status_label.config(text="⚠ 未配置", foreground=self.colors['warning'])
-            # 无 key 时自动关闭 checkbox，防止用户勾选后静默跳过
-            if self.ai_eval_var.get():
-                self.ai_eval_var.set(False)
+            # 模型配置不完整时强制关闭，且开关/文字点击均不允许重新启用。
+            self.ai_eval_var.set(False)
+        ai_label = getattr(self, 'ai_eval_label', None)
+        if ai_label is not None:
+            ai_label.configure(
+                cursor='hand2' if has_model_config else 'arrow',
+                foreground=(
+                    self.colors['text_primary'] if has_model_config
+                    else self.colors.get('text_muted', ui_theme.TEXT_MUTED)
+                ),
+            )
 
     def use_selected_model(self):
         """使用选中的模型 - 从系统钥匙串读取加密的 API Key（按服务商管理）"""
@@ -12276,6 +12451,19 @@ class BossFilterGUI:
         text = re.sub(r'\s+', ' ', text).strip()
         return text or "有一处解析结果需要人工确认"
 
+    @staticmethod
+    def _format_ai_parse_warning_item(warning):
+        """Split one AI warning into its parsed conclusion and confirmation prompt."""
+        text = str(warning or "").strip()
+        for marker in ("，请确认", "。请确认", " 请确认"):
+            if marker not in text:
+                continue
+            conclusion, prompt = text.split(marker, 1)
+            conclusion = conclusion.rstrip("，。；; ")
+            prompt = prompt.lstrip("：:，, ").rstrip("。 ")
+            return conclusion, f"请确认：{prompt}"
+        return text, ""
+
     def _apply_requirement_parse_result(self, result, parse_id):
         """在主线程中把解析结果填回界面。"""
         if not self._is_current_requirement_parse(parse_id):
@@ -12450,7 +12638,9 @@ class BossFilterGUI:
 
             if ai_parse_warnings:
                 warning_items = [
-                    self._humanize_ai_parse_warning(warning)
+                    self._format_ai_parse_warning_item(
+                        self._humanize_ai_parse_warning(warning)
+                    )
                     for warning in ai_parse_warnings[:5]
                 ]
                 messagebox.showinfo(
@@ -12664,7 +12854,7 @@ class BossFilterGUI:
         if job_name in self.job_rules:
             if messagebox.askyesno(
                 "删除岗位",
-                f"确定删除岗位“{job_name}”及其当前未保存修改吗？",
+                f"确定删除岗位“{job_name}”吗？\n删除后需要重新配置该岗位。",
                 parent=self.root,
             ):
                 del self.job_rules[job_name]
@@ -13960,6 +14150,44 @@ class BossFilterGUI:
         self.stop_btn.config(state="disabled")
         self.append_run_log(f"[{datetime.now().strftime('%H:%M:%S')}] ⏹ 已停止")
 
+    def _confirm_job_name_mismatch(self, expected_job_name, actual_job_name, *, context, parent):
+        """Ask on the UI thread whether two differently named jobs are the same job."""
+        event = threading.Event()
+        result = [False]
+
+        def show_dialog():
+            if context == "contact":
+                prompt = (
+                    "请确认当前 BOSS 页面就是该候选人对应的岗位推荐页。\n"
+                    "确认无误后，将继续联系候选人。"
+                )
+            else:
+                prompt = (
+                    "请确认当前 BOSS 页面就是要使用上述本地配置筛选的岗位。\n"
+                    "确认无误后，本轮将继续运行。"
+                )
+            result[0] = messagebox.askyesno(
+                "确认岗位对应关系",
+                "岗位名称不同，但可能指向同一个岗位。\n\n"
+                f"本地岗位配置：{expected_job_name}\n"
+                f"BOSS 当前岗位：{actual_job_name}\n\n"
+                f"{prompt}",
+                parent=parent,
+                yes_label="确认并继续",
+                no_label="暂不继续",
+                headline="岗位名称需要确认",
+                show_icon=False,
+                min_width=620,
+            )
+            event.set()
+
+        self.run_on_ui(show_dialog)
+        while not event.is_set():
+            if self.stop_event.is_set():
+                break
+            event.wait(timeout=0.5)
+        return result[0]
+
     def run_worker(self):
         """运行工作线程"""
         import sys
@@ -14148,27 +14376,12 @@ class BossFilterGUI:
 
             def job_match_callback(expected_job_name, actual_job_name):
                 """岗位不一致确认 — 用户明确选择后工作线程才继续。"""
-                event = threading.Event()
-                result = [False]
-
-                def show_dialog():
-                    result[0] = messagebox.askyesno(
-                        "岗位不一致",
-                        "当前配置岗位与 BOSS 页面岗位不一致。\n\n"
-                        f"配置岗位：{expected_job_name}\n"
-                        f"BOSS 当前岗位：{actual_job_name}\n\n"
-                        "继续运行会使用配置岗位的规则筛选当前页面候选人。\n\n"
-                        "是否仍要继续？",
-                        parent=self.root,
-                    )
-                    event.set()
-
-                self.run_on_ui(show_dialog)
-                while not event.is_set():
-                    if self.stop_event.is_set():
-                        break
-                    event.wait(timeout=0.5)
-                return result[0]
+                return self._confirm_job_name_mismatch(
+                    expected_job_name,
+                    actual_job_name,
+                    context="run",
+                    parent=self.root,
+                )
 
             def job_config_callback(text, has_error):
                 """运行前岗位配置体检 — 在 UI 线程展示并等待用户决定。"""
@@ -14634,6 +14847,101 @@ class BossFilterGUI:
             scope = f"{scope} / {date_scope}"
         return candidates, scope
 
+    def _create_candidate_workbench_header(self, parent, title, subtitle, scope):
+        """Create the shared title and scope block used by candidate workbenches."""
+        scale = self.dpi_scale * self.zoom_factor
+        header = ttk.Frame(parent, style='Page.TFrame')
+        header.pack(fill="x", pady=(0, int(10 * scale)))
+        ttk.Label(
+            header,
+            text=title,
+            font=(FONT_FAMILY, int(18 * self.font_scale), 'bold'),
+            foreground=self.colors['text_primary'],
+            background=self.colors['bg_main'],
+        ).pack(anchor="w")
+        ttk.Label(
+            header,
+            text=subtitle,
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_main'],
+        ).pack(anchor="w", pady=(int(2 * scale), 0))
+        ttk.Label(
+            header,
+            text=f"范围：{scope}",
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            foreground=self.colors['text_muted'],
+            background=self.colors['bg_main'],
+        ).pack(anchor="w", pady=(int(4 * scale), 0))
+        return header
+
+    def _create_candidate_workbench_metrics(self, parent, metrics):
+        """Create a compact segmented metric strip and return its value variables."""
+        scale = self.dpi_scale * self.zoom_factor
+        strip = ttk.Frame(parent, style='Page.TFrame')
+        strip.pack(fill="x", pady=(0, int(12 * scale)))
+        value_vars = {}
+        for index, (key, label, value, color) in enumerate(metrics):
+            segment = tk.Frame(
+                strip,
+                bg=self.colors['bg_card'],
+                highlightbackground=self.colors['border'],
+                highlightthickness=1,
+            )
+            segment.pack(
+                side="left",
+                fill="x",
+                expand=True,
+                padx=(0 if index == 0 else int(4 * scale), 0),
+            )
+            tk.Frame(segment, bg=color, width=max(3, int(3 * scale))).pack(side="left", fill="y")
+            content = tk.Frame(segment, bg=self.colors['bg_card'])
+            content.pack(side="left", fill="x", expand=True, padx=int(10 * scale), pady=int(7 * scale))
+            value_var = tk.StringVar(value=str(value))
+            value_vars[key] = value_var
+            tk.Label(
+                content,
+                textvariable=value_var,
+                font=(FONT_FAMILY, int(15 * self.font_scale), 'bold'),
+                foreground=self.colors['text_primary'],
+                background=self.colors['bg_card'],
+            ).pack(side="left")
+            tk.Label(
+                content,
+                text=label,
+                font=(FONT_FAMILY, int(10 * self.font_scale)),
+                foreground=self.colors['text_secondary'],
+                background=self.colors['bg_card'],
+            ).pack(side="left", padx=(int(6 * scale), 0), pady=(int(2 * scale), 0))
+        return value_vars
+
+    def _candidate_workbench_navigation_style(self, scale):
+        """Configure the shared hierarchy style used by candidate workbenches."""
+        style_name = "CandidateWorkbench.Navigation.Treeview"
+        style = ttk.Style()
+        style.configure(
+            style_name,
+            font=(FONT_FAMILY, int(11 * self.font_scale)),
+            rowheight=int(UI_CONFIG['treeview_rowheight'] * scale),
+            background=self.colors['bg_card'],
+            fieldbackground=self.colors['bg_card'],
+            foreground=self.colors['text_primary'],
+        )
+        return style_name
+
+    def _apply_candidate_workbench_navigation_tags(self, tree):
+        """Apply identical root and child typography to a workbench hierarchy."""
+        tree.tag_configure(
+            "workbench_root",
+            font=(FONT_FAMILY, int(11 * self.font_scale), "bold"),
+            foreground=self.colors['primary'],
+        )
+        tree.tag_configure(
+            "workbench_child",
+            font=(FONT_FAMILY, int(11 * self.font_scale)),
+            foreground=self.colors['text_primary'],
+        )
+
     def _show_daily_candidate_actions_dialog(self, scope, items):
         win = tk.Toplevel(self.root)
         win.title("今日待办")
@@ -14656,26 +14964,30 @@ class BossFilterGUI:
         ]
         all_items = list(items)
 
-        def daily_headline(current_items):
-            due_now = sum(
-                item.timing_group in ("立即处理", "已逾期", "今天")
-                for item in current_items
-            )
-            unscheduled = sum(item.timing_group == "待安排" for item in current_items)
-            future = sum(item.timing_group == "以后" for item in current_items)
-            return (
-                f"检查范围：{scope}    今日需处理：{due_now} 人    "
-                f"待安排：{unscheduled} 人    以后：{future} 人"
-            )
+        def daily_counts(current_items):
+            return {
+                "due": sum(
+                    item.timing_group in ("立即处理", "已逾期", "今天")
+                    for item in current_items
+                ),
+                "overdue": sum(item.timing_group == "已逾期" for item in current_items),
+                "unscheduled": sum(item.timing_group == "待安排" for item in current_items),
+                "future": sum(item.timing_group == "以后" for item in current_items),
+            }
 
-        headline_var = tk.StringVar(value=daily_headline(all_items))
-        ttk.Label(
+        counts = daily_counts(all_items)
+        self._create_candidate_workbench_header(
             body,
-            textvariable=headline_var,
-            font=self.font_label,
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_main'],
-        ).pack(anchor="w", pady=(0, int(10 * scale)))
+            "今日待办",
+            "按时间优先级整理候选人，逐项推进下一步",
+            scope,
+        )
+        metric_vars = self._create_candidate_workbench_metrics(body, (
+            ("due", "需处理", counts["due"], self.colors['primary']),
+            ("overdue", "已逾期", counts["overdue"], self.colors['danger']),
+            ("unscheduled", "待安排", counts["unscheduled"], self.colors['warning']),
+            ("future", "以后", counts["future"], self.colors['text_muted']),
+        ))
 
         content = ttk.Frame(body, style='Page.TFrame')
         content.pack(fill="both", expand=True)
@@ -14695,23 +15007,23 @@ class BossFilterGUI:
         nav_frame.pack(side="left", fill="y", padx=(0, int(10 * scale)))
         ttk.Label(
             nav_frame,
-            text="任务分组",
+            text="按优先级筛选",
             font=self.font_label,
             foreground=self.colors['text_primary'],
             background=self.colors['bg_card'],
         ).pack(anchor="w", pady=(0, int(8 * scale)))
+        navigation_style = self._candidate_workbench_navigation_style(scale)
         group_tree = ttk.Treeview(
             nav_frame,
             columns=("count",),
-            show="tree headings",
+            show="tree",
             height=9,
-            style="ActionQueue.Treeview",
+            style=navigation_style,
             selectmode="browse",
         )
-        group_tree.heading("#0", text="类型")
-        group_tree.heading("count", text="人数")
-        group_tree.column("#0", width=int(150 * scale), minwidth=int(120 * scale), anchor="w")
-        group_tree.column("count", width=int(58 * scale), minwidth=int(48 * scale), anchor="center")
+        group_tree.column("#0", width=int(210 * scale), minwidth=int(170 * scale), anchor="w")
+        group_tree.column("count", width=0, minwidth=0, stretch=False)
+        self._apply_candidate_workbench_navigation_tags(group_tree)
         group_tree.pack(fill="y", expand=True)
         action_group_by_iid = {}
         action_items_by_key = {}
@@ -14737,8 +15049,9 @@ class BossFilterGUI:
                 action_label_by_key[timing_group] = timing_group
                 action_iid_by_key[timing_group] = parent_iid
                 group_tree.insert(
-                    "", "end", iid=parent_iid, text=timing_group,
+                    "", "end", iid=parent_iid, text=f"{timing_group}  {len(timing_items)}",
                     values=(len(timing_items),), open=(timing_group != "以后"),
+                    tags=("workbench_root",),
                 )
                 for group_index, group in enumerate(business_group_order):
                     group_items = [
@@ -14753,8 +15066,9 @@ class BossFilterGUI:
                     action_label_by_key[selection_key] = group
                     action_iid_by_key[selection_key] = child_iid
                     group_tree.insert(
-                        parent_iid, "end", iid=child_iid, text=group,
+                        parent_iid, "end", iid=child_iid, text=f"{group}  {len(group_items)}",
                         values=(len(group_items),), open=(group == "待复核"),
+                        tags=("workbench_child",),
                     )
                     if group != "待复核":
                         continue
@@ -14772,8 +15086,8 @@ class BossFilterGUI:
                         action_label_by_key[review_key] = category
                         action_iid_by_key[review_key] = review_iid
                         group_tree.insert(
-                            child_iid, "end", iid=review_iid, text=category,
-                            values=(len(category_items),),
+                            child_iid, "end", iid=review_iid, text=f"{category}  {len(category_items)}",
+                            values=(len(category_items),), tags=("workbench_child",),
                         )
 
         rebuild_action_group_tree()
@@ -14782,38 +15096,116 @@ class BossFilterGUI:
         detail_frame = ttk.Frame(content, style='Card.TFrame')
         detail_frame.pack(side="left", fill="both", expand=True)
         selected_group_var = tk.StringVar()
+        selected_group_summary_var = tk.StringVar()
         selected_group_label = ttk.Label(
             detail_frame,
             textvariable=selected_group_var,
             font=self.font_label,
-            foreground=self.colors['text_secondary'],
+            foreground=self.colors['text_primary'],
             background=self.colors['bg_card'],
         )
         selected_group_label.grid(row=0, column=0, columnspan=3, sticky="w", padx=int(10 * scale), pady=(int(10 * scale), 0))
+        ttk.Label(
+            detail_frame,
+            textvariable=selected_group_summary_var,
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+            justify="left",
+            wraplength=int(760 * scale),
+        ).grid(
+            row=1, column=0, columnspan=3, sticky="w",
+            padx=int(10 * scale), pady=(int(4 * scale), int(2 * scale)),
+        )
 
-        columns = ("name", "job", "score", "reason", "action", "due")
-        tree = ttk.Treeview(detail_frame, columns=columns, show="headings", height=13, style="ActionQueue.Treeview")
+        columns = ("name", "job", "score", "task", "key_info", "due")
+        tree = ttk.Treeview(detail_frame, columns=columns, show="headings", height=8, style="ActionQueue.Treeview")
         for col, text, width, anchor in (
-            ("name", "候选人", 100, "center"),
-            ("job", "岗位", 145, "w"),
-            ("score", "分数", 65, "center"),
-            ("reason", "为什么处理", 290, "w"),
-            ("action", "下一步", 315, "w"),
-            ("due", "到期", 95, "center"),
+            ("name", "候选人", 95, "center"),
+            ("job", "岗位", 135, "w"),
+            ("score", "分数", 55, "center"),
+            ("task", "任务类型", 165, "center"),
+            ("key_info", "关键信息", 245, "w"),
+            ("due", "到期", 80, "center"),
         ):
             tree.heading(col, text=text)
             tree.column(col, width=int(width * scale), minwidth=int(max(60, width * 0.65) * scale), anchor=anchor)
 
         current_items = []
         current_group_name = {"value": default_group}
+        show_selected_action = {"value": False}
         scroll_y = ttk.Scrollbar(detail_frame, orient="vertical", command=tree.yview)
-        scroll_x = ttk.Scrollbar(detail_frame, orient="horizontal", command=tree.xview)
-        tree.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
-        tree.grid(row=1, column=0, sticky="nsew", padx=int(10 * scale), pady=int(10 * scale))
-        scroll_y.grid(row=1, column=1, sticky="ns", pady=int(10 * scale))
-        scroll_x.grid(row=2, column=0, sticky="ew", padx=int(10 * scale))
-        detail_frame.grid_rowconfigure(1, weight=1)
+        tree.configure(yscrollcommand=scroll_y.set)
+        tree.grid(row=2, column=0, sticky="nsew", padx=int(10 * scale), pady=int(10 * scale))
+        scroll_y.grid(row=2, column=1, sticky="ns", pady=int(10 * scale))
+        detail_frame.grid_rowconfigure(2, weight=1)
         detail_frame.grid_columnconfigure(0, weight=1)
+
+        selection_frame = ttk.Frame(detail_frame, style='Card.TFrame', padding=int(10 * scale))
+        selection_frame.grid(row=3, column=0, columnspan=2, sticky="ew")
+        selection_frame.grid_columnconfigure(0, weight=1)
+        selection_reason_var = tk.StringVar(value="选择一位候选人，查看处理依据和下一步")
+        selection_action_var = tk.StringVar(value="")
+        ttk.Label(
+            selection_frame,
+            textvariable=selection_reason_var,
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+        ).grid(row=0, column=0, sticky="w")
+        selection_action_label = ttk.Label(
+            selection_frame,
+            textvariable=selection_action_var,
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            foreground=self.colors['text_primary'],
+            background=self.colors['bg_card'],
+        )
+        selection_action_label.grid(row=1, column=0, sticky="w", pady=(int(3 * scale), 0))
+        selection_action_label.grid_remove()
+
+        def open_selected_workbench():
+            selection = tree.selection()
+            if not selection:
+                return
+            try:
+                item = current_items[int(selection[0])]
+            except (ValueError, IndexError):
+                return
+            self._open_candidate_review_workbench(item.candidate)
+
+        process_btn = ttk.Button(
+            selection_frame,
+            text="查看与处理",
+            style='Workbench.Primary.TButton',
+            command=open_selected_workbench,
+            state="disabled",
+        )
+        process_btn.grid(row=0, column=1, rowspan=2, sticky="e", padx=(int(12 * scale), 0))
+
+        def update_selection_context(_event=None):
+            selection = tree.selection()
+            if not selection:
+                selection_reason_var.set("选择一位候选人，查看处理依据和下一步")
+                selection_action_var.set("")
+                selection_action_label.grid_remove()
+                process_btn.configure(state="disabled")
+                return
+            try:
+                item = current_items[int(selection[0])]
+            except (ValueError, IndexError):
+                return
+            key_info = self._format_daily_action_key_info(item)
+            selection_reason_var.set(
+                f"已选择：{item.name or '未命名'} · {item.job_name or '未知岗位'} · "
+                f"{self._clip_table_text(key_info, 42)}"
+            )
+            if show_selected_action["value"]:
+                selection_action_var.set(f"下一步：{self._clip_table_text(item.action, 72)}")
+                selection_action_label.grid()
+            else:
+                selection_action_var.set("")
+                selection_action_label.grid_remove()
+            process_btn.configure(state="normal")
 
         def populate_group(selection_key):
             nonlocal current_items
@@ -14821,16 +15213,39 @@ class BossFilterGUI:
             current_group_name["value"] = selection_key
             label = action_label_by_key.get(selection_key, selection_key)
             selected_group_var.set(f"{label}：{len(current_items)} 人")
+            unique_actions = {
+                " ".join(str(item.action or "").split())
+                for item in current_items
+                if str(item.action or "").strip()
+            }
+            if "::" not in selection_key:
+                task_type_count = len({item.group for item in current_items})
+                selected_group_summary_var.set(
+                    f"包含 {task_type_count} 类任务；选择左侧具体任务可查看统一处理建议。"
+                )
+                show_selected_action["value"] = True
+            elif len(unique_actions) == 1:
+                selected_group_summary_var.set(f"处理建议：{next(iter(unique_actions))}")
+                show_selected_action["value"] = False
+            else:
+                selected_group_summary_var.set(
+                    f"本组包含 {len(unique_actions)} 种处理方式；选中候选人后查看对应下一步。"
+                )
+                show_selected_action["value"] = True
             tree.delete(*tree.get_children())
             for idx, item in enumerate(current_items):
                 tree.insert("", "end", iid=str(idx), values=(
                     item.name or "未命名",
                     item.job_name or "未知岗位",
                     item.score,
-                    self._clip_table_text(item.reason, 42),
-                    self._clip_table_text(item.action, 48),
-                    format_followup_due_at(item.due_at) if item.due_at else "—",
+                    item.group,
+                    self._format_daily_action_key_info(item),
+                    self._format_daily_action_due(item),
                 ))
+            if current_items:
+                tree.selection_set("0")
+                tree.focus("0")
+            update_selection_context()
 
         def on_group_selected(_event=None):
             selection = group_tree.selection()
@@ -14845,7 +15260,9 @@ class BossFilterGUI:
             except Exception:
                 refreshed_items = []
             all_items = list(refreshed_items)
-            headline_var.set(daily_headline(all_items))
+            refreshed_counts = daily_counts(all_items)
+            for key, value in refreshed_counts.items():
+                metric_vars[key].set(str(value))
             rebuild_action_group_tree()
             preferred = current_group_name["value"] if current_group_name["value"] in action_items_by_key else next(iter(action_items_by_key), "")
             if preferred:
@@ -14856,7 +15273,9 @@ class BossFilterGUI:
             else:
                 current_items.clear()
                 selected_group_var.set("暂无需要优先处理的候选人")
+                selected_group_summary_var.set("当前范围内没有需要优先处理的候选人。")
                 tree.delete(*tree.get_children())
+                update_selection_context()
 
         def show_detail(_event=None):
             selection = tree.selection()
@@ -14877,6 +15296,7 @@ class BossFilterGUI:
             self._show_text_dialog("今日待办详情", detail, width=620, height=360)
 
         tree.bind("<Double-Button-1>", show_detail)
+        tree.bind("<<TreeviewSelect>>", update_selection_context)
 
         def show_action_context_menu(event):
             item_id = tree.identify_row(event.y)
@@ -14909,7 +15329,7 @@ class BossFilterGUI:
         def on_action_motion(event):
             item_id = tree.identify_row(event.y)
             column_id = tree.identify_column(event.x)
-            if not item_id or column_id not in ("#4", "#5"):
+            if not item_id or column_id != "#5":
                 self._hide_tooltip()
                 return
             try:
@@ -14917,7 +15337,7 @@ class BossFilterGUI:
             except (ValueError, IndexError):
                 self._hide_tooltip()
                 return
-            full = item.reason if column_id == "#4" else item.action
+            full = item.reason
             tooltip_key = ("daily_actions", item_id, column_id)
             if (
                 tooltip_key == getattr(self, "_tooltip_item", None)
@@ -14969,10 +15389,9 @@ class BossFilterGUI:
             win.destroy()
 
         ttk.Button(btn_row, text="导出报告", command=export_report).pack(side="left")
-        ttk.Button(btn_row, text="查看详情", command=show_detail).pack(side="left", padx=int(8 * scale))
         ttk.Button(btn_row, text="关闭", command=close).pack(side="right")
         win.protocol("WM_DELETE_WINDOW", close)
-        _place_window_centered(win, int(1060 * scale), int(620 * scale), parent=self.root)
+        _place_window_centered(win, int(1120 * scale), int(680 * scale), parent=self.root)
         win.deiconify()
 
     def _show_candidate_state_diagnostics_dialog(self, scope, candidates, issues, summary_text):
@@ -14990,17 +15409,18 @@ class BossFilterGUI:
             "warning": sum(1 for item in issues if item.severity == "warning"),
             "info": sum(1 for item in issues if item.severity == "info"),
         }
-        headline = (
-            f"检查范围：{scope}    候选人：{len(candidates)} 人    "
-            f"发现问题：{len(issues)} 项（严重 {counts['error']}，提醒 {counts['warning']}，建议 {counts['info']}）"
-        )
-        ttk.Label(
+        self._create_candidate_workbench_header(
             body,
-            text=headline,
-            font=self.font_label,
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_main'],
-        ).pack(anchor="w", pady=(0, int(10 * scale)))
+            "候选人状态体检",
+            "定位状态冲突和待补信息，并给出可执行的处理建议",
+            scope,
+        )
+        metric_vars = self._create_candidate_workbench_metrics(body, (
+            ("candidates", "检查人数", len(candidates), self.colors['primary']),
+            ("error", "严重", counts["error"], self.colors['danger']),
+            ("warning", "提醒", counts["warning"], self.colors['warning']),
+            ("info", "建议", counts["info"], self.colors['primary']),
+        ))
 
         content = ttk.Frame(body, style='Page.TFrame')
         content.pack(fill="both", expand=True)
@@ -15050,95 +15470,220 @@ class BossFilterGUI:
         nav_frame.pack(side="left", fill="y", padx=(0, int(10 * scale)))
         ttk.Label(
             nav_frame,
-            text="问题类型",
+            text="按问题筛选",
             font=self.font_label,
             foreground=self.colors['text_primary'],
             background=self.colors['bg_card'],
         ).pack(anchor="w", pady=(0, int(8 * scale)))
+        navigation_style = self._candidate_workbench_navigation_style(scale)
         group_tree = ttk.Treeview(
             nav_frame,
             columns=("count", "level"),
-            show="tree headings",
+            show="tree",
             height=10,
-            style="StateCheck.Treeview",
+            style=navigation_style,
             selectmode="browse",
         )
-        group_tree.heading("#0", text="类型")
-        group_tree.heading("count", text="项")
-        group_tree.heading("level", text="级别")
-        group_tree.column("#0", width=int(180 * scale), minwidth=int(130 * scale), anchor="w")
-        group_tree.column("count", width=int(48 * scale), minwidth=int(42 * scale), anchor="center")
-        group_tree.column("level", width=int(58 * scale), minwidth=int(48 * scale), anchor="center")
+        group_tree.column("#0", width=int(230 * scale), minwidth=int(180 * scale), anchor="w")
+        group_tree.column("count", width=0, minwidth=0, stretch=False)
+        group_tree.column("level", width=0, minwidth=0, stretch=False)
+        self._apply_candidate_workbench_navigation_tags(group_tree)
         group_tree.pack(fill="y", expand=True)
 
         issue_group_by_iid = {}
-        for idx, (title, values) in enumerate(grouped_issues.items()):
-            iid = f"issue_group_{idx}"
-            issue_group_by_iid[iid] = title
-            if values:
-                level = min(values, key=lambda item: severity_rank.get(item.severity, 9)).severity
-                group_tree.insert("", "end", iid=iid, text=title, values=(len(values), severity_label.get(level, "提醒")))
-            else:
-                group_tree.insert("", "end", iid=iid, text=title, values=(0, "通过"))
+        issue_items_by_key = {}
+        issue_label_by_key = {}
+        issue_iid_by_key = {}
+
+        def rebuild_issue_navigation():
+            group_tree.delete(*group_tree.get_children())
+            issue_group_by_iid.clear()
+            issue_items_by_key.clear()
+            issue_label_by_key.clear()
+            issue_iid_by_key.clear()
+            has_issues = any(grouped_issues.values())
+            if not has_issues:
+                key = "severity::clear"
+                iid = "severity_clear"
+                issue_group_by_iid[iid] = key
+                issue_items_by_key[key] = []
+                issue_label_by_key[key] = "未发现问题"
+                issue_iid_by_key[key] = iid
+                group_tree.insert(
+                    "", "end", iid=iid, text="通过 · 未发现问题",
+                    values=(0, "通过"), tags=("workbench_root",),
+                )
+                return
+
+            for level_index, level in enumerate(("error", "warning", "info")):
+                level_items = [
+                    issue
+                    for values in grouped_issues.values()
+                    for issue in values
+                    if issue.severity == level
+                ]
+                if not level_items:
+                    continue
+                level_key = f"severity::{level}"
+                level_iid = f"severity_{level_index}"
+                level_text = severity_label[level]
+                issue_group_by_iid[level_iid] = level_key
+                issue_items_by_key[level_key] = level_items
+                issue_label_by_key[level_key] = level_text
+                issue_iid_by_key[level_key] = level_iid
+                group_tree.insert(
+                    "", "end", iid=level_iid,
+                    text=f"{level_text}  {len(level_items)}",
+                    values=(len(level_items), level_text),
+                    tags=("workbench_root",),
+                    open=True,
+                )
+                child_index = 0
+                for title, values in grouped_issues.items():
+                    title_items = [issue for issue in values if issue.severity == level]
+                    if not title_items:
+                        continue
+                    child_key = f"issue::{level}::{child_index}"
+                    child_iid = f"{level_iid}_issue_{child_index}"
+                    issue_group_by_iid[child_iid] = child_key
+                    issue_items_by_key[child_key] = title_items
+                    issue_label_by_key[child_key] = title
+                    issue_iid_by_key[child_key] = child_iid
+                    group_tree.insert(
+                        level_iid, "end", iid=child_iid,
+                        text=f"{title}  {len(title_items)}",
+                        values=(len(title_items), level_text),
+                        tags=("workbench_child",),
+                    )
+                    child_index += 1
+
+        rebuild_issue_navigation()
 
         detail_frame = ttk.Frame(content, style='Card.TFrame')
         detail_frame.pack(side="left", fill="both", expand=True)
         selected_issue_group_var = tk.StringVar()
+        selected_issue_summary_var = tk.StringVar()
         selected_issue_group_label = ttk.Label(
             detail_frame,
             textvariable=selected_issue_group_var,
             font=self.font_label,
-            foreground=self.colors['text_secondary'],
+            foreground=self.colors['text_primary'],
             background=self.colors['bg_card'],
         )
         selected_issue_group_label.grid(
             row=0, column=0, columnspan=3, sticky="w",
             padx=int(10 * scale), pady=(int(10 * scale), 0),
         )
+        ttk.Label(
+            detail_frame,
+            textvariable=selected_issue_summary_var,
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+            justify="left",
+            wraplength=int(760 * scale),
+        ).grid(
+            row=1, column=0, columnspan=3, sticky="w",
+            padx=int(10 * scale), pady=(int(4 * scale), int(2 * scale)),
+        )
 
-        columns = ("name", "job", "problem", "action")
+        columns = ("name", "job", "issue", "key_info")
         tree = ttk.Treeview(
             detail_frame,
             columns=columns,
             show="headings",
-            height=13,
+            height=8,
             style="StateCheck.Treeview",
         )
         tree.heading("name", text="候选人")
         tree.heading("job", text="岗位")
-        tree.heading("problem", text="发现的问题")
-        tree.heading("action", text="建议怎么处理")
-        tree.column("name", width=int(110 * scale), minwidth=90, anchor="center")
+        tree.heading("issue", text="问题类型")
+        tree.heading("key_info", text="关键信息")
+        tree.column("name", width=int(105 * scale), minwidth=85, anchor="center")
         tree.column("job", width=int(145 * scale), minwidth=110, anchor="w")
-        tree.column("problem", width=int(350 * scale), minwidth=240, anchor="w")
-        tree.column("action", width=int(392 * scale), minwidth=260, anchor="w")
-        tree.tag_configure("error", background=self.colors.get('banner_error_bg', ui_theme.BANNER_ERROR_BG))
-        tree.tag_configure("warning", background=self.colors.get('banner_warning_bg', ui_theme.BANNER_WARNING_BG))
-        tree.tag_configure("info", background=self.colors.get('banner_info_bg', ui_theme.BANNER_INFO_BG))
-
+        tree.column("issue", width=int(205 * scale), minwidth=160, anchor="w")
+        tree.column("key_info", width=int(325 * scale), minwidth=220, anchor="w")
         current_issues = []
-        current_issue_group_name = {"value": next(iter(grouped_issues), "")}
+        current_issue_group_name = {"value": next(iter(issue_items_by_key), "")}
         scroll_y = ttk.Scrollbar(detail_frame, orient="vertical", command=tree.yview)
-        scroll_x = ttk.Scrollbar(detail_frame, orient="horizontal", command=tree.xview)
-        tree.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
-        tree.grid(row=1, column=0, sticky="nsew", padx=int(10 * scale), pady=int(10 * scale))
-        scroll_y.grid(row=1, column=1, sticky="ns", pady=int(10 * scale))
-        scroll_x.grid(row=2, column=0, sticky="ew", padx=int(10 * scale))
-        detail_frame.grid_rowconfigure(1, weight=1)
+        tree.configure(yscrollcommand=scroll_y.set)
+        tree.grid(row=2, column=0, sticky="nsew", padx=int(10 * scale), pady=int(10 * scale))
+        scroll_y.grid(row=2, column=1, sticky="ns", pady=int(10 * scale))
+        detail_frame.grid_rowconfigure(2, weight=1)
         detail_frame.grid_columnconfigure(0, weight=1)
 
-        def populate_issue_group(title):
+        issue_context = ttk.Frame(detail_frame, style='Card.TFrame', padding=int(10 * scale))
+        issue_context.grid(row=3, column=0, columnspan=2, sticky="ew")
+        issue_context.grid_columnconfigure(0, weight=1)
+        issue_detail_var = tk.StringVar(value="选择一位候选人，查看并处理")
+        ttk.Label(
+            issue_context,
+            textvariable=issue_detail_var,
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+        ).grid(row=0, column=0, sticky="w")
+
+        def open_selected_candidate():
+            selection = tree.selection()
+            if not selection or not current_issues:
+                return
+            try:
+                candidate = candidate_for_issue(current_issues[int(selection[0])])
+            except (ValueError, IndexError):
+                return
+            if candidate:
+                self._open_candidate_review_workbench(candidate)
+
+        inspect_btn = ttk.Button(
+            issue_context,
+            text="查看与处理",
+            style='Workbench.Primary.TButton',
+            command=open_selected_candidate,
+            state="disabled",
+        )
+        inspect_btn.grid(row=0, column=1, sticky="e", padx=(int(12 * scale), 0))
+
+        def update_issue_context(_event=None):
+            selection = tree.selection()
+            if not selection or not current_issues:
+                issue_detail_var.set("状态正常，无需处理" if not current_issues else "选择一位候选人，查看并处理")
+                inspect_btn.configure(state="disabled")
+                return
+            try:
+                issue = current_issues[int(selection[0])]
+            except (ValueError, IndexError):
+                return
+            candidate = candidate_for_issue(issue)
+            name = issue.name or issue.candidate_key
+            job_name = issue.job_name or "未知岗位"
+            key_info = self._format_state_issue_key_info(issue, candidate)
+            issue_detail_var.set(
+                f"已选择：{name} · {job_name} · {self._clip_table_text(key_info, 46)}"
+            )
+            inspect_btn.configure(state="normal" if candidate else "disabled")
+
+        def populate_issue_group(selection_key):
             nonlocal current_issues
-            current_issues = grouped_issues.get(title, [])
-            current_issue_group_name["value"] = title
+            current_issues = issue_items_by_key.get(selection_key, [])
+            current_issue_group_name["value"] = selection_key
             tree.delete(*tree.get_children())
             if not current_issues:
                 selected_issue_group_var.set("未发现明显状态冲突。")
-                tree.insert("", "end", values=("—", "—", "未发现明显状态冲突", "无需处理"))
+                selected_issue_summary_var.set("当前范围内没有需要处理的候选人状态问题。")
+                update_issue_context()
                 return
-            selected_issue_group_var.set(f"{title}：{len(current_issues)} 项")
+            label = issue_label_by_key.get(selection_key, selection_key)
+            selected_issue_group_var.set(f"{label}：{len(current_issues)} 项")
+            if selection_key.startswith("severity::"):
+                issue_type_count = len({issue.title for issue in current_issues})
+                selected_issue_summary_var.set(
+                    f"包含 {issue_type_count} 类问题；选择左侧具体问题可查看统一处理建议。"
+                )
+            else:
+                selected_issue_summary_var.set(f"处理建议：{current_issues[0].suggestion}")
             for idx, issue in enumerate(current_issues):
-                problem_text = self._format_state_issue_problem(issue)
+                candidate = candidate_for_issue(issue)
                 tree.insert(
                     "",
                     "end",
@@ -15146,11 +15691,14 @@ class BossFilterGUI:
                     values=(
                         issue.name or issue.candidate_key,
                         issue.job_name or "未知岗位",
-                        problem_text,
-                        self._clip_table_text(issue.suggestion, 42),
+                        issue.title,
+                        self._format_state_issue_key_info(issue, candidate),
                     ),
                     tags=(issue.severity,),
                 )
+            tree.selection_set("0")
+            tree.focus("0")
+            update_issue_context()
 
         def on_issue_group_selected(_event=None):
             selection = group_tree.selection()
@@ -15160,8 +15708,9 @@ class BossFilterGUI:
         def on_issue_group_motion(event):
             item_id = group_tree.identify_row(event.y)
             column_id = group_tree.identify_column(event.x)
-            title = issue_group_by_iid.get(item_id, "")
-            if not item_id or column_id != "#0" or not title:
+            selection_key = issue_group_by_iid.get(item_id, "")
+            label = issue_label_by_key.get(selection_key, "")
+            if not item_id or column_id != "#0" or not label:
                 self._hide_tooltip()
                 return
             tooltip_key = ("state_check_group", item_id, column_id)
@@ -15179,7 +15728,7 @@ class BossFilterGUI:
             self._tooltip_item = tooltip_key
             self._tooltip_after_id = self.root.after(
                 250,
-                lambda: self._show_tooltip(title, x, y, tooltip_key, parent=win),
+                lambda: self._show_tooltip(label, x, y, tooltip_key, parent=win),
             )
 
         def rebuild_issue_groups(refreshed_issues):
@@ -15202,19 +15751,22 @@ class BossFilterGUI:
             candidate_by_key.clear()
             candidate_by_key.update({candidate_key_for(candidate): candidate for candidate in refreshed_candidates})
             grouped_issues = rebuild_issue_groups(refreshed_issues)
-            group_tree.delete(*group_tree.get_children())
-            issue_group_by_iid.clear()
-            for idx, (title, values) in enumerate(grouped_issues.items()):
-                iid = f"issue_group_{idx}"
-                issue_group_by_iid[iid] = title
-                if values:
-                    level = min(values, key=lambda item: severity_rank.get(item.severity, 9)).severity
-                    group_tree.insert("", "end", iid=iid, text=title, values=(len(values), severity_label.get(level, "提醒")))
-                else:
-                    group_tree.insert("", "end", iid=iid, text=title, values=(0, "通过"))
-            preferred = current_issue_group_name["value"] if current_issue_group_name["value"] in grouped_issues else next(iter(grouped_issues), "")
+            refreshed_counts = {
+                "candidates": len(refreshed_candidates),
+                "error": sum(1 for item in refreshed_issues if item.severity == "error"),
+                "warning": sum(1 for item in refreshed_issues if item.severity == "warning"),
+                "info": sum(1 for item in refreshed_issues if item.severity == "info"),
+            }
+            for key, value in refreshed_counts.items():
+                metric_vars[key].set(str(value))
+            rebuild_issue_navigation()
+            preferred = (
+                current_issue_group_name["value"]
+                if current_issue_group_name["value"] in issue_items_by_key
+                else next(iter(issue_items_by_key), "")
+            )
             if preferred:
-                preferred_iid = next((iid for iid, title in issue_group_by_iid.items() if title == preferred), "")
+                preferred_iid = issue_iid_by_key[preferred]
                 group_tree.selection_set(preferred_iid)
                 group_tree.focus(preferred_iid)
                 populate_issue_group(preferred)
@@ -15236,6 +15788,7 @@ class BossFilterGUI:
             self._show_text_dialog("状态体检详情", detail, width=620, height=360)
 
         tree.bind("<Double-Button-1>", show_detail)
+        tree.bind("<<TreeviewSelect>>", update_issue_context)
 
         def show_state_context_menu(event):
             item_id = tree.identify_row(event.y)
@@ -15271,7 +15824,7 @@ class BossFilterGUI:
             if column_id == "#3":
                 full = f"{issue.title}\n\n{issue.detail}"
             else:
-                full = issue.suggestion
+                full = issue.detail
             tooltip_key = ("state_check", item, column_id)
             if (
                 tooltip_key == getattr(self, "_tooltip_item", None)
@@ -15295,9 +15848,9 @@ class BossFilterGUI:
         group_tree.bind("<<TreeviewSelect>>", on_issue_group_selected)
         group_tree.bind("<Motion>", on_issue_group_motion)
         group_tree.bind("<Leave>", self._hide_tooltip)
-        default_group = next(iter(grouped_issues), "")
+        default_group = next(iter(issue_items_by_key), "")
         if default_group:
-            default_iid = next((iid for iid, title in issue_group_by_iid.items() if title == default_group), "")
+            default_iid = issue_iid_by_key[default_group]
             group_tree.selection_set(default_iid)
             group_tree.focus(default_iid)
             populate_issue_group(default_group)
@@ -15327,10 +15880,9 @@ class BossFilterGUI:
             win.destroy()
 
         ttk.Button(btn_row, text="导出报告", command=export_report).pack(side="left")
-        ttk.Button(btn_row, text="查看详情", command=show_detail).pack(side="left", padx=int(8 * scale))
         ttk.Button(btn_row, text="关闭", command=close).pack(side="right")
         win.protocol("WM_DELETE_WINDOW", close)
-        _place_window_centered(win, int(1040 * scale), int(620 * scale), parent=self.root)
+        _place_window_centered(win, int(1120 * scale), int(680 * scale), parent=self.root)
         win.deiconify()
 
     @staticmethod
@@ -15340,12 +15892,87 @@ class BossFilterGUI:
             return clean
         return clean[: max(0, limit - 1)] + "…"
 
-    def _format_state_issue_problem(self, issue):
-        detail = " ".join(str(issue.detail or "").split())
+    def _format_daily_action_key_info(self, item):
+        """Return the candidate-specific fact for one daily-action row."""
+        reason = " ".join(str(item.reason or "").split())
+        reason = re.sub(r"[；;]\s*下次处理时间[:：].*$", "", reason).strip()
+        action = " ".join(str(item.action or "").split())
+
+        if item.group == "发送结果待核实":
+            return self._clip_table_text(reason or "发送结果尚未确认", 28)
+        if item.group == "已回复待推进":
+            return "尚未记录后续处理结果"
+        if item.group == "待完成简历评估":
+            return "已导入简历，尚未重新评分"
+        if item.group == "待打招呼":
+            if "重新扫描" in action:
+                return "缺少联系条件，需重新扫描岗位"
+            return self._clip_table_text(reason or "尚未联系", 28)
+        if item.group == "已打招呼待跟进" and not item.due_at:
+            return "尚未安排下次跟进"
+        return self._clip_table_text(reason, 28)
+
+    @staticmethod
+    def _format_daily_action_due(item):
+        """Format an explicit due state instead of an ambiguous dash."""
+        if item.due_at:
+            return format_followup_due_at(item.due_at)
+        return {
+            "立即处理": "立即",
+            "已逾期": "已逾期",
+            "今天": "今天",
+            "待安排": "未安排",
+            "以后": "以后",
+        }.get(item.timing_group, "未安排")
+
+    def _format_state_issue_key_info(self, issue, candidate):
+        """Return only the candidate-specific fact that distinguishes one issue row."""
+        candidate = candidate or {}
         title = str(issue.title or "").strip()
-        if detail:
-            return self._clip_table_text(f"{title}：{detail}", 46)
-        return self._clip_table_text(title, 46)
+        followup_status = str(candidate.get("followup_status") or "未设置")
+        qualification_labels = {
+            "qualified": "通过",
+            "rejected": "淘汰",
+            "manual_review": "待人工确认",
+        }
+
+        if title == "打招呼记录不完整":
+            missing = []
+            if not candidate.get("greet_sent_at"):
+                missing.append("发送时间")
+            if not candidate.get("greet_method"):
+                missing.append("发送方式")
+            return f"缺少：{'、'.join(missing)}" if missing else "发送记录待核对"
+        if title == "低分候选人缺少保留理由":
+            return f"匹配分：{candidate.get('match_score', 0)}"
+        if title in {"待约面未安排时间", "跟进时间待安排"}:
+            return "未设置下次跟进日期"
+        if title == "下次跟进日期无效":
+            return f"当前值：{candidate.get('next_followup_at') or '空'}"
+        if title in {"结束状态仍有跟进提醒", "已打招呼但跟进状态未更新", "已屏蔽候选人仍是活跃跟进"}:
+            return f"跟进状态：{followup_status}"
+        if title == "需要人工确认":
+            reason = str(candidate.get("auto_greet_blocked_reason") or "").strip()
+            if not reason:
+                for field in ("qualification_reasons", "risk_flags"):
+                    values = candidate.get(field) or []
+                    if isinstance(values, str):
+                        values = [values]
+                    reason = next((str(value).strip() for value in values if str(value).strip()), "")
+                    if reason:
+                        break
+            return self._clip_table_text(
+                f"待确认：{reason or '尚未形成明确资格结论'}",
+                38,
+            )
+        if title in {"未知资格审查状态", "淘汰候选人仍处于沟通状态"}:
+            qualification = str(candidate.get("qualification_status") or "未设置")
+            return f"资格结论：{qualification_labels.get(qualification, qualification)}"
+        if title == "未知人工反馈":
+            return f"人工反馈：{candidate.get('feedback_status') or '未设置'}"
+        if title == "未知跟进状态":
+            return f"跟进状态：{followup_status}"
+        return self._clip_table_text(issue.detail, 38)
 
     def _show_candidate_workflow_context_menu(
         self,
@@ -15932,21 +16559,26 @@ class BossFilterGUI:
             except tk.TclError:
                 pass
 
-    def _create_switch(self, parent, variable):
+    def _create_switch(self, parent, variable, enabled_variable=None):
         """自绘拨动开关（OFF 灰色圆点居左 / ON 品牌蓝圆点居右），绑定 BooleanVar。
 
         clam 下 ttk.Checkbutton 的 indicator 尺寸配置会放大成粗大灰框，
         启用类语义用开关控件更准确；点击或空格切换，可聚焦。
         """
+        from PIL import Image, ImageDraw, ImageTk
+
         scale = self.dpi_scale * self.zoom_factor
-        width = int(44 * scale)
-        height = int(24 * scale)
-        knob_d = height - int(6 * scale)
+        width = max(28, int(round(30 * scale)))
+        height = max(14, int(round(16 * scale)))
         canvas = tk.Canvas(
             parent, width=width, height=height,
-            bg=self.colors['bg_card'], highlightthickness=0, bd=0,
+            bg=self.colors['bg_card'], highlightthickness=1,
+            highlightbackground=self.colors['bg_card'], bd=0,
             cursor='hand2', takefocus=1,
         )
+
+        def _is_enabled():
+            return enabled_variable is None or bool(enabled_variable.get())
 
         def _draw():
             try:
@@ -15955,40 +16587,67 @@ class BossFilterGUI:
             except tk.TclError:
                 return
             canvas.delete('all')
+            enabled = _is_enabled()
+            canvas.configure(
+                cursor='hand2' if enabled else 'arrow',
+                takefocus=1 if enabled else 0,
+            )
             on = bool(variable.get())
             track = (self.colors['primary'] if on
                      else self.colors.get('border_strong', ui_theme.BORDER_STRONG))
-            radius = height // 2
-            canvas.create_oval(0, 0, height, height, fill=track, outline='')
-            canvas.create_oval(width - height, 0, width, height, fill=track, outline='')
-            canvas.create_rectangle(radius, 0, width - radius + 1, height, fill=track, outline='')
-            margin = (height - knob_d) // 2
-            knob_x = width - knob_d - margin if on else margin
-            canvas.create_oval(
-                knob_x, margin, knob_x + knob_d, margin + knob_d,
-                fill='#FFFFFF', outline='',
+            render_scale = 4
+            render_width = width * render_scale
+            render_height = height * render_scale
+            image = Image.new('RGBA', (render_width, render_height), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            draw.rounded_rectangle(
+                (0, 0, render_width - 1, render_height - 1),
+                radius=render_height // 2,
+                fill=track,
             )
+            margin = max(2, int(round(2 * scale)))
+            knob_d = height - margin * 2
+            knob_x = width - knob_d - margin if on else margin
+            draw.ellipse(
+                (
+                    knob_x * render_scale,
+                    margin * render_scale,
+                    (knob_x + knob_d) * render_scale,
+                    (margin + knob_d) * render_scale,
+                ),
+                fill='#FFFFFF',
+            )
+            image = image.resize((width, height), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(image)
+            canvas._switch_photo = photo
+            canvas.create_image(width // 2, height // 2, image=photo)
 
         def _toggle(_event=None):
+            if not _is_enabled():
+                variable.set(False)
+                return 'break'
             variable.set(not variable.get())
             return 'break'
 
         canvas.bind('<Button-1>', _toggle)
         canvas.bind('<space>', _toggle)
         canvas.bind('<FocusIn>', lambda _e: canvas.configure(
-            highlightthickness=2,
             highlightbackground=self.colors.get('primary_light', ui_theme.PRIMARY_LIGHT),
         ))
-        canvas.bind('<FocusOut>', lambda _e: canvas.configure(highlightthickness=0))
+        canvas.bind('<FocusOut>', lambda _e: canvas.configure(
+            highlightbackground=self.colors['bg_card'],
+        ))
         _draw()
         variable.trace_add('write', lambda *_args: _draw())
+        if enabled_variable is not None:
+            enabled_variable.trace_add('write', lambda *_args: _draw())
         return canvas
 
     def _styled_tooltip(self, text, x, y, wraplength=None, parent=None):
         """创建统一深色现代 tooltip（圆角观感、白字、无边框），返回 Toplevel。"""
-        tip = tk.Toplevel(parent or self.root)
+        tooltip_parent = parent or self.root
+        tip = tk.Toplevel(tooltip_parent)
         tip.wm_overrideredirect(True)
-        tip.wm_geometry(f'+{x}+{y}')
         kwargs = {}
         if wraplength:
             kwargs['wraplength'] = wraplength
@@ -16002,12 +16661,32 @@ class BossFilterGUI:
             padx=10, pady=6, **kwargs
         )
         label.pack()
+        tip.update_idletasks()
+        monitor_area = _get_windows_monitor_area(tip, tooltip_parent)
+        if monitor_area is None:
+            monitor_area = (
+                0,
+                0,
+                int(tip.winfo_screenwidth()),
+                int(tip.winfo_screenheight()),
+            )
+        left, top, area_width, area_height = monitor_area
+        margin = 8
+        max_x = left + area_width - int(tip.winfo_reqwidth()) - margin
+        max_y = top + area_height - int(tip.winfo_reqheight()) - margin
+        safe_x = max(left + margin, min(int(x), max_x))
+        safe_y = max(top + margin, min(int(y), max_y))
+        x_geometry = f"+{safe_x}" if safe_x >= 0 else str(safe_x)
+        y_geometry = f"+{safe_y}" if safe_y >= 0 else str(safe_y)
+        tip.wm_geometry(f'{x_geometry}{y_geometry}')
         return tip
 
-    def _show_tooltip(self, text, x, y, tooltip_key=None, parent=None):
+    def _show_tooltip(self, text, x, y, tooltip_key=None, parent=None, wraplength=None):
         """显示 tooltip 窗口。"""
         self._hide_tooltip()
-        tip = self._styled_tooltip(text, x, y, parent=parent)
+        tip = self._styled_tooltip(
+            text, x, y, wraplength=wraplength, parent=parent
+        )
         self._tooltip = tip
         self._tooltip_item = tooltip_key
 
@@ -18701,42 +19380,71 @@ class BossFilterGUI:
         body = ttk.Frame(win, style='Page.TFrame', padding=int(16 * scale))
         body.pack(fill="both", expand=True)
 
-        header = ttk.Frame(body, style='Page.TFrame')
+        self._create_candidate_workbench_header(
+            body,
+            "联系候选人",
+            "确认发送范围，跟踪待核实与失败任务",
+            "当前联系清单",
+        )
+        initial_counts = Counter(
+            (item.get('status') or "待发送") for item in self.greet_queue_items
+        )
+        self.greet_queue_metric_vars = self._create_candidate_workbench_metrics(body, (
+            ("pending", "待发送", initial_counts.get("待发送", 0), self.colors['primary']),
+            (
+                "attention",
+                "需处理",
+                initial_counts.get("待核实", 0) + initial_counts.get("发送失败", 0),
+                self.colors['warning'],
+            ),
+            ("sending", "发送中", initial_counts.get("发送中", 0), self.colors['purple']),
+            ("sent", "已发送", initial_counts.get("已发送", 0), self.colors['success']),
+        ))
+
+        header = ttk.Frame(body, style='Card.TFrame', padding=(int(10 * scale), int(8 * scale)))
         header.pack(fill="x", pady=(0, int(10 * scale)))
         self.greet_queue_summary_var = tk.StringVar(value="")
         ttk.Label(
             header,
             textvariable=self.greet_queue_summary_var,
-            font=(FONT_FAMILY, int(12 * self.font_scale)),
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
             foreground=self.colors['text_secondary'],
-            background=self.colors['bg_main'],
+            background=self.colors['bg_card'],
         ).pack(side="left", anchor="w")
 
-        queue_actions = ttk.Frame(header, style='Page.TFrame')
-        queue_actions.pack(side="right", padx=(0, int(8 * scale)))
+        queue_actions = ttk.Frame(header, style='Card.TFrame')
+        queue_actions.pack(side="right")
+        self.greet_queue_action_scope_var = tk.StringVar(value="")
+        ttk.Label(
+            queue_actions,
+            textvariable=self.greet_queue_action_scope_var,
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            foreground=self.colors['text_muted'],
+            background=self.colors['bg_card'],
+        ).pack(side="left", padx=(0, int(10 * scale)))
         self.greet_queue_start_btn = ttk.Button(
             queue_actions,
-            text="联系待发送",
+            text="开始联系",
             command=self._start_greet_queue,
-            style="GreetQueue.Small.TButton",
+            style="Workbench.Primary.TButton",
         )
-        self.greet_queue_start_btn.pack(side="left", padx=(0, int(6 * scale)))
+        self.greet_queue_start_btn.pack(side="right")
+        self.greet_queue_transport_frame = ttk.Frame(queue_actions, style='Card.TFrame')
+        self.greet_queue_transport_frame.pack(side="right", padx=(0, int(6 * scale)))
         self.greet_queue_pause_btn = ttk.Button(
-            queue_actions,
+            self.greet_queue_transport_frame,
             text="暂停",
             command=self._pause_greet_queue,
             style="GreetQueue.Small.TButton",
             width=8,
         )
-        self.greet_queue_pause_btn.pack(side="left", padx=(0, int(6 * scale)))
         self.greet_queue_resume_btn = ttk.Button(
-            queue_actions,
+            self.greet_queue_transport_frame,
             text="继续",
             command=self._resume_greet_queue,
             style="GreetQueue.Small.TButton",
             width=8,
         )
-        self.greet_queue_resume_btn.pack(side="left")
 
         self.greet_queue_status_filter_var = tk.StringVar(value=self.greet_queue_selected_group)
 
@@ -18762,83 +19470,98 @@ class BossFilterGUI:
         nav_frame.pack(side="left", fill="y", padx=(0, int(8 * scale)))
         ttk.Label(
             nav_frame,
-            text="联系状态",
+            text="按状态筛选",
             font=self.font_label,
             foreground=self.colors['text_primary'],
             background=self.colors['bg_card'],
         ).pack(anchor="w", pady=(0, int(8 * scale)))
+        navigation_style = self._candidate_workbench_navigation_style(scale)
         group_tree = ttk.Treeview(
             nav_frame,
             columns=("count",),
-            show="tree headings",
+            show="tree",
             height=8,
-            style="GreetQueue.Treeview",
+            style=navigation_style,
             selectmode="browse",
         )
         self.greet_queue_group_tree = group_tree
-        group_tree.heading("#0", text="状态")
-        group_tree.heading("count", text="人数")
-        group_tree.column("#0", width=int(130 * scale), minwidth=int(110 * scale), anchor="w")
-        group_tree.column("count", width=int(58 * scale), minwidth=int(48 * scale), anchor="center")
-        group_tree.tag_configure(
-            "all_statuses",
-            font=(FONT_FAMILY, int(11 * self.font_scale), "bold"),
-        )
+        group_tree.column("#0", width=int(190 * scale), minwidth=int(150 * scale), anchor="w")
+        group_tree.column("count", width=0, minwidth=0, stretch=False)
+        self._apply_candidate_workbench_navigation_tags(group_tree)
         group_tree.pack(fill="y", expand=True)
         group_tree.bind("<<TreeviewSelect>>", lambda _event: self._on_greet_queue_group_selected())
 
         tree_frame = ttk.Frame(content, style='Card.TFrame')
         tree_frame.pack(side="left", fill="both", expand=True)
         self.greet_queue_detail_title_var = tk.StringVar(value="")
-        detail_header = ttk.Frame(tree_frame)
+        detail_header = ttk.Frame(tree_frame, style='Card.TFrame')
         detail_header.grid(row=0, column=0, columnspan=3, sticky="ew", padx=(int(10 * scale), int(8 * scale)), pady=(int(10 * scale), 0))
         detail_header.grid_columnconfigure(0, weight=1)
         ttk.Label(
             detail_header,
             textvariable=self.greet_queue_detail_title_var,
             font=self.font_label,
-            foreground=self.colors['text_secondary'],
+            foreground=self.colors['text_primary'],
             background=self.colors['bg_card'],
         ).grid(row=0, column=0, sticky="w", padx=(0, int(10 * scale)))
-        selected_actions = ttk.Frame(detail_header)
-        selected_actions.grid(row=0, column=1, sticky="e")
-        self.greet_queue_confirm_sent_btn = ttk.Button(
+        self.greet_queue_detail_summary_var = tk.StringVar(value="")
+        ttk.Label(
+            detail_header,
+            textvariable=self.greet_queue_detail_summary_var,
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+            justify="left",
+            wraplength=int(820 * scale),
+        ).grid(row=1, column=0, sticky="w", pady=(int(4 * scale), 0))
+
+        selected_actions = ttk.Frame(tree_frame, style='Card.TFrame', padding=int(10 * scale))
+        selected_actions.grid(row=2, column=0, columnspan=2, sticky="ew")
+        selected_actions.grid_columnconfigure(0, weight=1)
+        self.greet_queue_selection_var = tk.StringVar(value="选择候选人后，可在这里处理当前状态")
+        ttk.Label(
             selected_actions,
+            textvariable=self.greet_queue_selection_var,
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+        ).grid(row=0, column=0, sticky="w")
+        selected_action_buttons = ttk.Frame(selected_actions, style='Card.TFrame')
+        selected_action_buttons.grid(row=0, column=1, sticky="e", padx=(int(10 * scale), 0))
+        self.greet_queue_selected_action_buttons = selected_action_buttons
+        self.greet_queue_confirm_sent_btn = ttk.Button(
+            selected_action_buttons,
             text="确认已发送",
             command=lambda: self._resolve_selected_greet_queue_pending(sent=True),
             style="GreetQueue.Small.TButton",
         )
-        self.greet_queue_confirm_sent_btn.pack(side="left", padx=(0, int(6 * scale)))
         self.greet_queue_confirm_not_sent_btn = ttk.Button(
-            selected_actions,
+            selected_action_buttons,
             text="确认未发送",
             command=lambda: self._resolve_selected_greet_queue_pending(sent=False),
             style="GreetQueue.Small.TButton",
         )
-        self.greet_queue_confirm_not_sent_btn.pack(side="left", padx=(0, int(6 * scale)))
         self.greet_queue_retry_btn = ttk.Button(
-            selected_actions,
+            selected_action_buttons,
             text="重试失败",
             command=self._retry_failed_greet_queue_items,
             style="GreetQueue.Small.TButton",
             width=8,
         )
-        self.greet_queue_retry_btn.pack(side="left", padx=(0, int(6 * scale)))
         self.greet_queue_remove_btn = ttk.Button(
-            selected_actions,
+            selected_action_buttons,
             text="移除选中",
             command=self._remove_selected_greet_queue_items,
             style="GreetQueue.Small.TButton",
             width=8,
         )
-        self.greet_queue_remove_btn.pack(side="left")
 
         columns = ("name", "job", "score", "level", "readiness", "status", "message")
         tree = ttk.Treeview(
             tree_frame,
             columns=columns,
             show="headings",
-            height=12,
+            height=8,
             selectmode="extended",
             style="GreetQueue.Treeview",
         )
@@ -18861,15 +19584,22 @@ class BossFilterGUI:
             "status": 80,
             "message": 260,
         }
+        anchors = {
+            "name": "center",
+            "job": "w",
+            "score": "center",
+            "level": "center",
+            "readiness": "center",
+            "status": "center",
+            "message": "w",
+        }
         for col in columns:
             tree.heading(col, text=headings[col])
-            tree.column(col, width=int(widths[col] * scale), minwidth=50, anchor="center")
+            tree.column(col, width=int(widths[col] * scale), minwidth=50, anchor=anchors[col])
         scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-        scroll_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
-        tree.configure(yscrollcommand=scroll.set, xscrollcommand=scroll_x.set)
+        tree.configure(yscrollcommand=scroll.set)
         tree.grid(row=1, column=0, sticky="nsew", padx=int(10 * scale), pady=int(10 * scale))
         scroll.grid(row=1, column=1, sticky="ns", pady=int(10 * scale))
-        scroll_x.grid(row=2, column=0, sticky="ew", padx=int(10 * scale))
         tree_frame.grid_rowconfigure(1, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
         tree.bind("<Double-Button-1>", lambda _event: self._show_selected_greet_queue_detail())
@@ -18882,7 +19612,7 @@ class BossFilterGUI:
 
         win.protocol("WM_DELETE_WINDOW", self._close_greet_queue_window)
         self._refresh_greet_queue_dialog()
-        _place_window_centered(win, int(1160 * scale), int(620 * scale), parent=_parent)
+        _place_window_centered(win, int(1220 * scale), int(680 * scale), parent=_parent)
         win.deiconify()
 
     def _on_greet_queue_group_selected(self):
@@ -18944,10 +19674,18 @@ class BossFilterGUI:
         tree = self.greet_queue_tree
         tree.delete(*tree.get_children())
         counts = {}
-        group_order = ("全部", "待核实", "发送失败", "待发送", "发送中", "已发送", "已跳过")
+        group_order = ("全部", "待核实", "待发送", "发送失败", "发送中", "已发送", "已跳过")
         for item in self.greet_queue_items:
             status = item.get('status') or "待发送"
             counts[status] = counts.get(status, 0) + 1
+        metric_values = {
+            "pending": counts.get("待发送", 0),
+            "attention": counts.get("待核实", 0) + counts.get("发送失败", 0),
+            "sending": counts.get("发送中", 0),
+            "sent": counts.get("已发送", 0),
+        }
+        for key, value_var in getattr(self, 'greet_queue_metric_vars', {}).items():
+            value_var.set(str(metric_values.get(key, 0)))
 
         if self.greet_queue_group_tree and self.greet_queue_group_tree.winfo_exists():
             group_tree = self.greet_queue_group_tree
@@ -18957,20 +19695,25 @@ class BossFilterGUI:
                 "",
                 "end",
                 iid="全部",
-                text="全部",
+                text=f"全部  {len(self.greet_queue_items)}",
                 values=(len(self.greet_queue_items),),
-                tags=("all_statuses",),
+                tags=("workbench_root",),
                 open=True,
             )
-            for group in group_order[1:]:
+            visible_groups = [
+                group for group in group_order[1:]
+                if counts.get(group, 0) > 0
+            ]
+            for group in visible_groups:
                 group_tree.insert(
                     "全部",
                     "end",
                     iid=group,
-                    text=group,
+                    text=f"{group}  {counts.get(group, 0)}",
                     values=(counts.get(group, 0),),
+                    tags=("workbench_child",),
                 )
-            if previous_selection not in group_order:
+            if previous_selection != "全部" and previous_selection not in visible_groups:
                 previous_selection = "全部"
             self.greet_queue_selected_group = previous_selection
             if self.greet_queue_status_filter_var:
@@ -18997,11 +19740,15 @@ class BossFilterGUI:
                     candidate.get('recommend_level', ''),
                     self._greet_queue_readiness_label(candidate),
                     status,
-                    item.get('message', ''),
+                    item.get('message') or "—",
                 ),
             )
         if self.greet_queue_detail_title_var:
             self.greet_queue_detail_title_var.set(f"{selected_status}：{visible_count} 人")
+        if self.greet_queue_detail_summary_var:
+            self.greet_queue_detail_summary_var.set(
+                self._greet_queue_group_hint(selected_status)
+            )
         if self.greet_queue_summary_var:
             self.greet_queue_summary_var.set(self._greet_queue_summary_text())
         self._update_greet_queue_action_states()
@@ -19013,12 +19760,41 @@ class BossFilterGUI:
         )
         total = len(self.greet_queue_items)
         needs_attention = counts.get('待核实', 0) + counts.get('发送失败', 0)
-        pending = counts.get('待发送', 0)
         if total == 0:
             return "联系清单为空"
         if needs_attention:
-            return f"联系清单共 {total} 人｜需处理 {needs_attention} 人｜待发送 {pending} 人"
-        return f"联系清单共 {total} 人｜待发送 {pending} 人"
+            return f"需处理 {needs_attention} 人，请先核实发送结果或重试失败任务"
+        return "发送前会再次核验候选人和岗位状态"
+
+    @staticmethod
+    def _greet_queue_group_hint(status):
+        """Return one short instruction for the selected contact-queue group."""
+        hints = {
+            "全部": "按状态筛选候选人；待核实和发送失败应优先处理。",
+            "待核实": "请先在 BOSS 沟通列表逐一核实，再确认发送结果。",
+            "发送失败": "选择候选人后重试；不再需要的任务可以移除。",
+            "待发送": "未选择时联系全部待发送候选人；选中后只联系选中范围。",
+            "发送中": "当前联系任务正在执行，可暂停后继续。",
+            "已发送": "已完成的发送记录仅供查看。",
+            "已跳过": "发送前复核未通过，不会自动联系。",
+        }
+        return hints.get(status, "选择候选人后，可在下方处理当前状态。")
+
+    @staticmethod
+    def _greet_queue_selection_text(selected):
+        """Summarize the selected scope with candidate names and status."""
+        statuses = {item.get('status') or "待发送" for item in selected}
+        status_text = next(iter(statuses)) if len(statuses) == 1 else "包含多种状态"
+        names = [
+            str((item.get('candidate') or {}).get('name') or "未命名").strip()
+            for item in selected
+        ]
+        if len(selected) == 1:
+            return f"已选：{names[0]} · {status_text}"
+        visible_names = "、".join(names[:3])
+        if len(names) > 3:
+            visible_names += "等"
+        return f"已选 {len(selected)} 人：{visible_names} · {status_text}"
 
     def _set_greet_queue_item_state(self, item, status, message=""):
         item['status'] = status
@@ -19055,20 +19831,14 @@ class BossFilterGUI:
                 summary = self._greet_queue_summary_text()
             self.greet_queue_summary_var.set(summary)
         if start_btn and start_btn.winfo_exists():
-            if selected:
-                start_text = (
-                    f"联系选中（{selected_pending_count} 人）"
-                    if selected_pending_count
-                    else "选中项不可联系"
-                )
-            else:
-                start_text = (
-                    f"联系待发送（{pending_count} 人）"
-                    if pending_count
-                    else "没有待联系"
-                )
+            action_scope_var = getattr(self, 'greet_queue_action_scope_var', None)
+            if action_scope_var:
+                if selected:
+                    action_scope_var.set(f"已选 {len(selected)} 人 · 可联系 {selected_pending_count} 人")
+                else:
+                    action_scope_var.set(f"待发送 {pending_count} 人")
             start_btn.configure(
-                text=start_text,
+                text="开始联系",
                 state=(
                     "disabled"
                     if preparing or self.greet_queue_running or not action_pending_count
@@ -19077,18 +19847,20 @@ class BossFilterGUI:
             )
         pause_btn = getattr(self, 'greet_queue_pause_btn', None)
         if pause_btn and pause_btn.winfo_exists():
-            pause_btn.configure(
-                state="normal" if self.greet_queue_running and not self.greet_queue_paused else "disabled"
-            )
+            pause_btn.pack_forget()
+            if self.greet_queue_running and not self.greet_queue_paused:
+                pause_btn.configure(state="normal")
+                pause_btn.pack(side="left")
         resume_btn = getattr(self, 'greet_queue_resume_btn', None)
         if resume_btn and resume_btn.winfo_exists():
-            resume_btn.configure(
-                state="normal" if self.greet_queue_running and self.greet_queue_paused else "disabled"
-            )
+            resume_btn.pack_forget()
+            if self.greet_queue_running and self.greet_queue_paused:
+                resume_btn.configure(state="normal")
+                resume_btn.pack(side="left")
         queue_idle = not self.greet_queue_running and not getattr(
             self, 'greet_queue_preparing', False
         )
-        for attr, enabled in (
+        action_states = (
             ('greet_queue_confirm_sent_btn', queue_idle and bool(selected) and selected_statuses == {"待核实"}),
             ('greet_queue_confirm_not_sent_btn', queue_idle and bool(selected) and selected_statuses == {"待核实"}),
             ('greet_queue_retry_btn', queue_idle and bool(selected) and selected_statuses == {"发送失败"}),
@@ -19098,10 +19870,20 @@ class BossFilterGUI:
                 and bool(selected)
                 and not selected_statuses.intersection({"发送中", "待核实"}),
             ),
-        ):
+        )
+        selection_var = getattr(self, 'greet_queue_selection_var', None)
+        if selection_var:
+            if not selected:
+                selection_var.set("选择候选人后，可在这里处理当前状态")
+            else:
+                selection_var.set(self._greet_queue_selection_text(selected))
+        for attr, enabled in action_states:
             button = getattr(self, attr, None)
             if button and button.winfo_exists():
                 button.configure(state="normal" if enabled else "disabled")
+                button.pack_forget()
+                if enabled:
+                    button.pack(side="left", padx=(0, int(6 * self.dpi_scale * self.zoom_factor)))
 
     def _selected_greet_queue_items(self):
         tree = getattr(self, 'greet_queue_tree', None)
@@ -19639,12 +20421,12 @@ class BossFilterGUI:
         return "已跳过", skip_reason
 
     def _greet_queue_candidate_page_ready(self, candidate):
-        """Fail closed when a list-page send is not on the candidate's job page."""
+        """Inspect whether a list-page send is on the candidate's job page."""
         ok, current_url, _page_text, reason = self._get_greet_queue_page_state()
         if not ok:
-            return False, reason
+            return False, reason, ""
         if not self._is_boss_recommend_url(current_url):
-            return False, f"请打开“{candidate.get('job_name') or '对应'}”岗位推荐页"
+            return False, f"请打开“{candidate.get('job_name') or '对应'}”岗位推荐页", ""
         try:
             from bossmaster import get_iframe, _job_titles_match, _read_recommend_page_identity
             target = get_iframe(self.browser_page) or self.browser_page
@@ -19653,14 +20435,35 @@ class BossFilterGUI:
             ).strip()
             matched = _job_titles_match(candidate.get('job_name', ''), actual_job)
         except Exception as exc:
-            return False, f"无法确认当前岗位页面：{str(exc)[:60]}"
+            return False, f"无法确认当前岗位页面：{str(exc)[:60]}", ""
         if matched is True:
-            return True, ""
+            return True, "", actual_job
         if not actual_job:
-            return False, f"无法读取当前岗位，请打开“{candidate.get('job_name') or '对应'}”岗位推荐页"
-        return False, (
-            f"当前是“{actual_job}”岗位，请切换到“{candidate.get('job_name') or '对应'}”岗位推荐页"
+            return False, f"无法读取当前岗位，请打开“{candidate.get('job_name') or '对应'}”岗位推荐页", ""
+        return (
+            False,
+            f"BOSS 当前岗位“{actual_job}”与本地岗位“{candidate.get('job_name') or '对应岗位'}”名称不同",
+            actual_job,
         )
+
+    def _ensure_greet_queue_candidate_page_ready(self, candidate, parent, mismatch_decisions):
+        """Allow a list-page send after the user confirms a job-title mismatch."""
+        page_ready, page_message, actual_job = self._greet_queue_candidate_page_ready(candidate)
+        if page_ready or not actual_job:
+            return page_ready, page_message
+
+        expected_job = str(candidate.get('job_name') or '对应岗位').strip()
+        decision_key = (expected_job.casefold(), actual_job.casefold())
+        if decision_key not in mismatch_decisions:
+            mismatch_decisions[decision_key] = self._confirm_job_name_mismatch(
+                expected_job,
+                actual_job,
+                context="contact",
+                parent=parent,
+            )
+        if mismatch_decisions[decision_key]:
+            return True, ""
+        return False, page_message
 
     def _run_greet_queue_worker(self, pending=None):
         connection_lock_acquired = False
@@ -19674,6 +20477,7 @@ class BossFilterGUI:
         skipped_count = 0
         page_waiting_count = 0
         page_waiting_jobs = Counter()
+        job_mismatch_decisions = {}
         consecutive_uncertain = 0
         run_error = ""
         try:
@@ -19724,7 +20528,9 @@ class BossFilterGUI:
                     continue
 
                 if not self._has_direct_send_context(candidate):
-                    page_ready, page_message = self._greet_queue_candidate_page_ready(candidate)
+                    page_ready, page_message = self._ensure_greet_queue_candidate_page_ready(
+                        candidate, parent, job_mismatch_decisions
+                    )
                     if not page_ready:
                         page_waiting_count += 1
                         page_waiting_jobs[
@@ -19756,7 +20562,9 @@ class BossFilterGUI:
                     continue
 
                 if not self._has_direct_send_context(candidate):
-                    page_ready, page_message = self._greet_queue_candidate_page_ready(candidate)
+                    page_ready, page_message = self._ensure_greet_queue_candidate_page_ready(
+                        candidate, parent, job_mismatch_decisions
+                    )
                     if not page_ready:
                         page_waiting_count += 1
                         page_waiting_jobs[
@@ -19781,7 +20589,9 @@ class BossFilterGUI:
                     )
                     method = "queue_context"
                     if not success and ("缺少" in msg or "字段" in msg):
-                        page_ready, page_message = self._greet_queue_candidate_page_ready(candidate)
+                        page_ready, page_message = self._ensure_greet_queue_candidate_page_ready(
+                            candidate, parent, job_mismatch_decisions
+                        )
                         if page_ready:
                             success, msg = send_greeting_on_list_page(
                                 self.browser_page,
@@ -20363,11 +21173,11 @@ class BossFilterGUI:
         win.deiconify()
 
     def _on_greet_queue_motion(self, event):
-        """Explain the readiness column without presenting a premature warning."""
+        """Show full readiness or result text for compact contact-queue columns."""
         tree = self.greet_queue_tree
         item_id = tree.identify_row(event.y)
         column_id = tree.identify_column(event.x)
-        if not item_id or column_id != "#5":
+        if not item_id or column_id not in ("#5", "#7"):
             self._hide_tooltip()
             return
         queue_item = next(
@@ -20377,9 +21187,12 @@ class BossFilterGUI:
         if queue_item is None:
             self._hide_tooltip()
             return
-        full_text = self._greet_queue_readiness_tooltip(
-            queue_item.get('candidate') or {}
-        )
+        if column_id == "#5":
+            full_text = self._greet_queue_readiness_tooltip(
+                queue_item.get('candidate') or {}
+            )
+        else:
+            full_text = str(queue_item.get('message') or "暂无最近结果")
         tooltip_key = ("greet_queue", item_id, column_id)
         if (
             tooltip_key == getattr(self, "_tooltip_item", None)
@@ -20392,10 +21205,23 @@ class BossFilterGUI:
         x = event.x_root + 12
         y = event.y_root + 12
         parent = tree.winfo_toplevel()
+        screen_width = max(1, int(tree.winfo_screenwidth()))
+        tooltip_wraplength = max(
+            360,
+            min(
+                int(560 * self.dpi_scale * self.zoom_factor),
+                int(screen_width * 0.42),
+            ),
+        )
         self._tooltip_after_id = self.root.after(
             250,
             lambda: self._show_tooltip(
-                full_text, x, y, tooltip_key, parent=parent
+                full_text,
+                x,
+                y,
+                tooltip_key,
+                parent=parent,
+                wraplength=tooltip_wraplength,
             ),
         )
 
