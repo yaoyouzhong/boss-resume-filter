@@ -2,6 +2,7 @@ import importlib.util
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import call, patch
 
 
@@ -54,31 +55,32 @@ def test_authorizations_are_exact_and_multi_branch_order_is_explicit():
     assert release_flow.expected_confirm_authorization("2.24") == "确认发布 v2.24"
 
 
-def test_apply_release_materials_reuses_commit_when_staging_has_no_diff(tmp_path):
-    notes = tmp_path / "notes.md"
-    notes.write_text("release notes", encoding="utf-8")
+def test_apply_release_materials_reuses_commit_when_staging_has_no_diff():
     commands = []
 
     def run(args, **kwargs):
         commands.append(args)
         return subprocess.CompletedProcess(args, 0, "", "")
 
-    with (
-        patch.object(
-            release_flow.release_prepare,
-            "parse_release_notes",
-            return_value=("v2.24 — Test", "### 问题修复\n\n- Test"),
-        ),
-        patch.object(release_flow.release_prepare, "apply_release_materials"),
-        patch.object(
-            release_flow.release_prepare,
-            "_status_paths",
-            return_value={"CHANGELOG.md"},
-        ),
-        patch.object(release_flow.release_prepare, "_run_strict_gate"),
-        patch.object(release_flow, "_run", side_effect=run),
-    ):
-        release_flow._apply_release_materials("2.24", notes)
+    with TemporaryDirectory() as temp_dir:
+        notes = Path(temp_dir) / "notes.md"
+        notes.write_text("release notes", encoding="utf-8")
+        with (
+            patch.object(
+                release_flow.release_prepare,
+                "parse_release_notes",
+                return_value=("v2.24 — Test", "### 问题修复\n\n- Test"),
+            ),
+            patch.object(release_flow.release_prepare, "apply_release_materials"),
+            patch.object(
+                release_flow.release_prepare,
+                "_status_paths",
+                return_value={"CHANGELOG.md"},
+            ),
+            patch.object(release_flow.release_prepare, "_run_strict_gate"),
+            patch.object(release_flow, "_run", side_effect=run),
+        ):
+            release_flow._apply_release_materials("2.24", notes)
 
     assert ["git", "diff", "--cached", "--quiet"] in commands
     assert not any(command[:2] == ["git", "commit"] for command in commands)
