@@ -16,17 +16,14 @@ boss-resume-filter/
 ├── release_user_audit.py # 用户视角发布审计模块
 ├── storage.py            # 候选人数据持久化模块（去重、原子写入、备份恢复）
 ├── contact_queue.py      # GUI 候选人联系清单持久化与恢复模块
-├── gui_main.py           # 图形界面主程序（v2.23.4）
-├── gui_dialogs.py        # 独立对话框模块（更新日志、关于弹窗、CHANGELOG 渲染）
-├── ui_messagebox.py      # 统一居中提示与确认弹窗（兼容 tkinter.messagebox）
+├── gui_main.py           # 图形界面主程序（v2.23.5）
+├── gui_dialogs.py / ui_messagebox.py # 独立对话框与统一居中提示
 ├── changelog_parser.py   # CHANGELOG 解析模块（版本段落提取、标题解析）
 ├── updater.py            # 自动更新模块（Gitee/GitHub 双源检查、下载替换、完整性校验、启动时自动检查）
 ├── icons.py              # 图标绘制模块（Pillow 矢量图标 + IconCache）
 ├── doc_parser.py         # 招聘需求文档解析器（JD → 必要条件 + 职位要求）
 ├── education_certificate.py # 毕业证书图片识别、字段校验与学信网页面填写
-├── education_tool.py    # 独立学历证书核验助手入口（复用 gui_main 学历核验模式）
-├── education_tool_config.py # 独立工具固定 AI 配置
-├── education_tool_security.py # 独立工具内置 API Key 解密
+├── education_tool.py / education_tool_config.py / education_tool_security.py # 独立学历核验工具、配置与密钥解密
 ├── security.py           # API Key 安全存储模块（keyring 加密，按 provider+base_url 组合存储）
 ├── migrate_keys.py       # API Key 迁移工具（明文→加密）
 ├── constants.py          # 共享常量（评分模型参数、阈值、学历档位、滚动参数、城市列表）
@@ -150,7 +147,7 @@ boss-resume-filter/
 - 沟通上限只接受明确耗尽文案，或可见升级弹窗中的“升级动作 + 次数语境”组合；“今日剩余 N 次”不能单独判定为耗尽
 - **联系清单**：GUI 的所有联系动作统一进入“联系候选人”工作台，不提供绕过清单的立即发送入口。加入前过滤已沟通、需人工确认、分数不足或状态不适合发送的候选人，并给出跳过汇总。工作台支持暂停、移除、失败重试，以及对待核实记录明确确认已发送或未发送
 - **持久化与恢复**：`contact_queue.json` 只保存候选人/岗位身份和清单意图，不复制候选人资料；程序重启后恢复待发送、发送失败和待核实项目。上次退出时处于发送中的项目必须恢复为待核实，禁止自动重发
-- **发送前复核**：每次真正发送前重新读取 `candidates_all.json` 并复核最新状态；已沟通、已屏蔽、待人工确认或已不符合联系条件的候选人必须跳过。无 `greet_context` 的候选人只能在对应岗位推荐页发送，岗位不一致时保留待发送，不得跨岗位定位
+- **发送前复核**：每次真正发送前重新读取 `candidates_all.json` 并复核最新状态；已沟通、已屏蔽、待人工确认或已不符合联系条件的候选人必须跳过。无 `greet_context` 的候选人只能在对应岗位推荐页发送；BOSS 岗位名称与本地配置不一致时必须列出双方名称并等待用户确认，确认对应关系无误后才可继续，未确认则保留待发送
 - 命令行 `--greet` 保留筛选后直接联系的既有行为；上述联系清单闭环专用于 GUI
 
 ### 运行控制闭环

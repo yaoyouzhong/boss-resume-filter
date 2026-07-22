@@ -221,7 +221,14 @@ def _apply_release_materials(version: str, notes_path: Path) -> None:
         release_prepare._run_strict_gate()
         _run(["git", "add", *sorted(release_prepare.RELEASE_FILES)])
         _run(["git", "diff", "--cached", "--check"])
-        _run(["git", "commit", "-m", f"chore: 准备 v{version} 正式发布"])
+        staged = _run(
+            ["git", "diff", "--cached", "--quiet"],
+            check=False,
+        )
+        if staged.returncode == 1:
+            _run(["git", "commit", "-m", f"chore: 准备 v{version} 正式发布"])
+        elif staged.returncode != 0:
+            _fail("无法确认发布材料的暂存状态")
     else:
         release_prepare._run_strict_gate()
 

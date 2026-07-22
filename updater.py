@@ -960,7 +960,10 @@ def check_and_update_gui(root: tk.Tk, silent: bool = False, on_complete=None, gu
                 messagebox.showinfo(
                     "检查更新",
                     f"当前已是最新版本 v{result['current']}",
-                    parent=root
+                    parent=root,
+                    min_width=500,
+                    font_delta=-1,
+                    compact_action=True,
                 )
             if on_complete:
                 on_complete(result)

@@ -86,6 +86,10 @@ def test_numbered_item_rows_wrap_content_without_splitting_the_number_column():
     assert "column=1" in block
     assert "wraplength=item_wraplength" in block
     assert "wraplength=0" not in block
+    assert "item_text, item_prompt = item" in block
+    assert "text=str(item_text)" in block
+    assert "text=str(item_prompt)" in block
+    assert "fg=ui_theme.TEXT_SECONDARY" in block
 
 
 def test_centered_messagebox_hides_character_icons_for_all_dialog_types_by_default():
@@ -147,6 +151,36 @@ def test_centered_messagebox_can_add_space_above_action_footer():
     assert show.call_args.kwargs["content_bottom_padding"] == 28
 
 
+def test_centered_messagebox_supports_compact_single_action_layout():
+    box = CenteredMessageBox()
+    parent = Mock()
+    with patch.object(box, "_resolve_parent", return_value=parent), \
+            patch.object(box, "_show", return_value="ok") as show:
+        result = box.showinfo(
+            "检查更新",
+            "当前已是最新版本 v2.23.4",
+            parent=parent,
+            min_width=500,
+            font_delta=-1,
+            compact_action=True,
+        )
+
+    assert result == "ok"
+    assert show.call_args.kwargs["min_width"] == 500
+    assert show.call_args.kwargs["font_delta"] == -1
+    assert show.call_args.kwargs["compact_action"] is True
+
+
+def test_update_result_uses_compact_single_action_layout():
+    source = Path("updater.py").read_text(encoding="utf-8")
+    block = source[source.index('messagebox.showinfo(\n                    "检查更新"'):]
+    block = block[:block.index("\n                )")]
+
+    assert "min_width=500" in block
+    assert "font_delta=-1" in block
+    assert "compact_action=True" in block
+
+
 def test_centered_messagebox_centers_buttons_vertically_in_footer():
     source = Path("ui_messagebox.py").read_text(encoding="utf-8")
     footer_block = source[source.index('footer = tk.Frame(window, bg=ui_theme.BG_FOOTER)'):]
@@ -154,7 +188,9 @@ def test_centered_messagebox_centers_buttons_vertically_in_footer():
 
     assert 'footer.grid(row=2, column=0, sticky="ew")' in footer_block
     assert "ipady=14" not in footer_block
-    assert footer_block.count("pady=(14, 14)") == 2
+    assert "footer_padding = (11, 11) if compact_action else (14, 14)" in footer_block
+    assert "button.pack(pady=footer_padding)" in footer_block
+    assert "pady=(14, 14)" in footer_block
 
 
 def test_medium_multiline_message_uses_scrollable_content():
@@ -174,6 +210,12 @@ def test_medium_multiline_message_uses_scrollable_content():
 def test_dialog_height_is_screen_aware_and_bounded():
     assert CenteredMessageBox._max_dialog_height(600) == 492
     assert CenteredMessageBox._max_dialog_height(1080) == 680
+
+
+def test_dialog_button_width_counts_cjk_glyphs_as_double_width():
+    assert CenteredMessageBox._button_text_units("确认并继续") == 10
+    assert CenteredMessageBox._button_text_units("Continue") == 8
+    assert CenteredMessageBox._button_text_units("AI 确认") == 7
 
 
 def test_all_gui_messagebox_calls_use_centered_proxy():

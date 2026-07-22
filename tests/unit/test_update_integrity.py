@@ -124,6 +124,48 @@ diff --git a/gui_main.py b/gui_main.py
     assert "未覆盖信号" not in output.getvalue()
 
 
+def test_changelog_coverage_ignores_removed_nested_helper():
+    diff_text = """\
+diff --git a/gui_main.py b/gui_main.py
+--- a/gui_main.py
++++ b/gui_main.py
+-        def daily_headline(current_items):
+"""
+
+    class Result:
+        returncode = 0
+        stdout = diff_text
+
+    originals = (
+        build._read_version,
+        build._extract_changelog_release,
+        build._get_last_tag,
+        build.subprocess.run,
+    )
+    try:
+        build._read_version = lambda: "2.21"
+        build._extract_changelog_release = lambda _version: (
+            "v2.21 — 测试",
+            "### 新增功能\n\n- 测试\n\n### 体验优化\n\n- 测试\n\n### 问题修复\n\n- 测试",
+        )
+        build._get_last_tag = lambda: "v2.20"
+        build.subprocess.run = lambda *args, **kwargs: Result()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            build._check_code_to_changelog_coverage(strict=True)
+    finally:
+        (
+            build._read_version,
+            build._extract_changelog_release,
+            build._get_last_tag,
+            build.subprocess.run,
+        ) = originals
+
+    assert "未检测到用户可见的新增代码信号" in output.getvalue()
+    assert "未覆盖信号" not in output.getvalue()
+
+
 def _with_build_context(tmp_path, dist_dir, *, is_win, is_mac):
     class BuildContext:
         def __enter__(self):

@@ -1710,7 +1710,7 @@ def _build_recommend_api_pagination_from_page(target: Any) -> dict[str, Any] | N
 
 
 def _read_recommend_page_identity(target: Any) -> dict[str, str]:
-    """读取当前推荐 iframe 的岗位标识，用于刷新监听兜底前后校验。"""
+    """读取当前推荐 iframe 的岗位 ID，并从 BOSS 岗位列表解析真实岗位名称。"""
     try:
         href = target.run_js('return location.href') or ""
     except Exception:
@@ -1723,22 +1723,63 @@ def _read_recommend_page_identity(target: Any) -> dict[str, str]:
             parsed = urlparse(href)
             params = parse_qs(parsed.query, keep_blank_values=True)
             job_id = (params.get('jobid') or params.get('jobId') or params.get('job_id') or [""])[0]
+            if str(job_id).strip().lower() in {"null", "undefined", "none"}:
+                job_id = ""
         except Exception:
             job_id = ""
 
     title = ""
+    if job_id:
+        try:
+            title = target.run_js(r'''
+                return (function() {
+                    const currentJobId = new URL(location.href).searchParams.get('jobid')
+                        || new URL(location.href).searchParams.get('jobId')
+                        || new URL(location.href).searchParams.get('job_id')
+                        || '';
+                    if (!currentJobId || ['null', 'undefined', 'none'].includes(currentJobId.toLowerCase())) {
+                        return '';
+                    }
+                    window.__bossResumeFilterJobTitles = window.__bossResumeFilterJobTitles || {};
+                    if (window.__bossResumeFilterJobTitles[currentJobId]) {
+                        return window.__bossResumeFilterJobTitles[currentJobId];
+                    }
+                    try {
+                        const request = new XMLHttpRequest();
+                        request.open('GET', '/wapi/zpjob/job/chatted/jobList', false);
+                        request.send(null);
+                        if (request.status < 200 || request.status >= 300) return '';
+                        const payload = JSON.parse(request.responseText || '{}');
+                        const data = payload.zpData;
+                        const jobs = Array.isArray(data)
+                            ? data
+                            : (Array.isArray(data && data.jobList)
+                                ? data.jobList
+                                : (Array.isArray(data && data.jobs) ? data.jobs : []));
+                        const current = jobs.find(job =>
+                            String(job.encryptJobId || job.jobId || '') === currentJobId
+                        );
+                        const jobTitle = current && String(
+                            current.jobName || current.name || current.positionName || ''
+                        ).trim();
+                        if (jobTitle) {
+                            window.__bossResumeFilterJobTitles[currentJobId] = jobTitle;
+                        }
+                        return jobTitle || '';
+                    } catch (_error) {
+                        return '';
+                    }
+                })()
+            ''') or ""
+        except Exception:
+            title = ""
+
+    # “推荐”“精选”等是推荐页栏目，不是岗位名称；接口不可读时保持为空。
+    if str(title).strip() in {"推荐", "精选", "精选牛人", "推荐牛人", "最新"}:
+        title = ""
+
     try:
-        title = target.run_js(r'''
-            return (function() {
-                const text = (document.body && document.body.innerText || '').split('\n')
-                    .map(s => s.trim()).filter(Boolean);
-                for (let i = 0; i < text.length; i++) {
-                    if (text[i] === '最新' && text[i + 1]) return text[i + 1];
-                    if (text[i] === '推荐' && text[i + 1] && text[i + 1] !== '最新') return text[i + 1];
-                }
-                return '';
-            })()
-        ''') or ""
+        title = str(title or "").strip()
     except Exception:
         title = ""
 

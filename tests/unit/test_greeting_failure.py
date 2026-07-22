@@ -21,3 +21,12 @@ def test_greeting_failure_formats_raw_message_with_action():
 
     assert "BOSS 触发安全验证" in text
     assert "原始信息" in text
+
+
+def test_unknown_greeting_failure_keeps_raw_detail_without_claiming_it_is_unrecognized():
+    raw = "服务端返回 candidate status conflict"
+    text = format_greeting_failure_message(raw)
+
+    assert text.startswith("发送失败；")
+    assert f"原始信息：{raw}" in text
+    assert "未能识别" not in text

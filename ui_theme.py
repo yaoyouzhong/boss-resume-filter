@@ -39,6 +39,7 @@ BG_FOOTER = "#F7F8FA"        # 弹窗底栏
 TEXT_PRIMARY = "#1A202C"     # 主文字
 TEXT_SECONDARY = "#718096"   # 次要文字
 TEXT_MUTED = "#6B7280"       # 弱化文字（白底对比度 ≥4.5）
+TEXT_PLACEHOLDER = "#94A3B8" # 输入框占位提示（低于正文视觉权重）
 TEXT_SIDEBAR = "#A0AEC0"     # 侧边栏文字
 TEXT_SIDEBAR_ACTIVE = "#FFFFFF"
 TEXT_SIDEBAR_SUBTITLE = "#94A3B8"
@@ -150,6 +151,7 @@ def build_palette():
         "text_primary": TEXT_PRIMARY,
         "text_secondary": TEXT_SECONDARY,
         "text_muted": TEXT_MUTED,
+        "text_placeholder": TEXT_PLACEHOLDER,
         "text_sidebar": TEXT_SIDEBAR,
         "text_sidebar_active": TEXT_SIDEBAR_ACTIVE,
         "text_sidebar_subtitle": TEXT_SIDEBAR_SUBTITLE,

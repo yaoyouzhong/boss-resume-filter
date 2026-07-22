@@ -2,6 +2,7 @@
 
 import math
 import tkinter as tk
+import unicodedata
 from tkinter import messagebox as _native_messagebox, ttk
 
 import ui_theme
@@ -81,6 +82,14 @@ class CenteredMessageBox:
         return min(680, max(320, round(screen_height * 0.82)))
 
     @staticmethod
+    def _button_text_units(label):
+        """Estimate ttk character-width units, counting CJK glyphs as double width."""
+        return sum(
+            2 if unicodedata.east_asian_width(char) in {"W", "F", "A"} else 1
+            for char in str(label)
+        )
+
+    @staticmethod
     def _resolve_parent(parent):
         parent = parent or getattr(tk, "_default_root", None)
         if parent is None:
@@ -127,6 +136,7 @@ class CenteredMessageBox:
         max_width=700,
         font_delta=0,
         content_bottom_padding=8,
+        compact_action=False,
     ):
         parent = self._resolve_parent(parent)
         if parent is None:
@@ -181,7 +191,11 @@ class CenteredMessageBox:
             items_frame.pack(fill="both", expand=True)
             items_frame.grid_columnconfigure(1, weight=1)
             for index, item in enumerate(numbered_items, start=1):
-                row_padding = (0, 8) if index < len(numbered_items) else (0, 0)
+                row_padding = (0, 12) if index < len(numbered_items) else (0, 0)
+                if isinstance(item, (tuple, list)) and len(item) == 2:
+                    item_text, item_prompt = item
+                else:
+                    item_text, item_prompt = item, ""
                 tk.Label(
                     items_frame,
                     text=f"{index}.",
@@ -191,16 +205,29 @@ class CenteredMessageBox:
                     justify="right",
                     anchor="ne",
                 ).grid(row=index - 1, column=0, sticky="ne", padx=(0, 8), pady=row_padding)
+                item_content = tk.Frame(items_frame, bg=ui_theme.BG_CARD)
+                item_content.grid(row=index - 1, column=1, sticky="new", pady=row_padding)
                 tk.Label(
-                    items_frame,
-                    text=str(item),
+                    item_content,
+                    text=str(item_text),
                     font=message_font,
                     fg=ui_theme.TEXT_PRIMARY,
                     bg=ui_theme.BG_CARD,
                     justify="left",
                     anchor="nw",
                     wraplength=item_wraplength,
-                ).grid(row=index - 1, column=1, sticky="nw", pady=row_padding)
+                ).pack(fill="x", anchor="w")
+                if item_prompt:
+                    tk.Label(
+                        item_content,
+                        text=str(item_prompt),
+                        font=message_font,
+                        fg=ui_theme.TEXT_SECONDARY,
+                        bg=ui_theme.BG_CARD,
+                        justify="left",
+                        anchor="nw",
+                        wraplength=item_wraplength,
+                    ).pack(fill="x", anchor="w", pady=(3, 0))
         elif self._message_needs_scroll(message):
             text_frame = tk.Frame(content, bg=ui_theme.BG_CARD)
             text_frame.pack(fill="both", expand=True)
@@ -258,17 +285,19 @@ class CenteredMessageBox:
                 except tk.TclError:
                     pass
 
+        button_padding = (12, 5) if compact_action else (15, 8)
+        footer_padding = (11, 11) if compact_action else (14, 14)
         button_style = ttk.Style(window)
         button_style.configure(
             "CenteredMessageBox.TButton",
             font=button_font,
-            padding=(15, 8),
+            padding=button_padding,
         )
         # 主按钮（第一个）使用实心品牌蓝，建立主次层级
         button_style.configure(
             "CenteredMessageBox.Accent.TButton",
             font=button_font,
-            padding=(15, 8),
+            padding=button_padding,
             background=ui_theme.PRIMARY,
             foreground=ui_theme.BG_CARD,
             bordercolor=ui_theme.PRIMARY_DARK,
@@ -277,7 +306,11 @@ class CenteredMessageBox:
             "CenteredMessageBox.Accent.TButton",
             background=[("pressed", ui_theme.PRIMARY_DEEP), ("active", ui_theme.PRIMARY_DARK)],
         )
-        equal_button_width = max(8, max(len(str(label)) for label, _value in buttons) + 2)
+        min_button_width = 6 if compact_action else 8
+        equal_button_width = max(
+            min_button_width,
+            max(self._button_text_units(label) for label, _value in buttons) + 2,
+        )
         single_button = len(buttons) == 1
         for label, value in reversed(buttons):
             is_primary = (label, value) == buttons[0]
@@ -289,7 +322,7 @@ class CenteredMessageBox:
                 width=equal_button_width,
             )
             if single_button:
-                button.pack(pady=(14, 14))
+                button.pack(pady=footer_padding)
             else:
                 button.pack(
                     side="right",
@@ -322,6 +355,7 @@ class CenteredMessageBox:
         max_width = options.pop("max_width", 700)
         font_delta = options.pop("font_delta", 0)
         content_bottom_padding = options.pop("content_bottom_padding", 8)
+        compact_action = options.pop("compact_action", False)
         parent = self._resolve_parent(options.get("parent"))
         if parent is None:
             return _native_messagebox.showinfo(title, message, **options)
@@ -340,6 +374,7 @@ class CenteredMessageBox:
             max_width=max_width,
             font_delta=font_delta,
             content_bottom_padding=content_bottom_padding,
+            compact_action=compact_action,
         )
         return "ok"
 

@@ -24,7 +24,7 @@ def test_diagnose_greeted_candidate_requires_followup_and_audit_fields():
 
     titles = {issue.title for issue in issues}
     assert "已打招呼但跟进状态未更新" in titles
-    assert "缺少打招呼审计信息" in titles
+    assert "打招呼记录不完整" in titles
 
 
 def test_diagnose_pending_and_success_greeting_conflict():

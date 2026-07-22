@@ -133,9 +133,9 @@ def _diagnose_individual_candidates(candidates: Iterable[dict[str, Any]]) -> lis
                 ))
             if not candidate.get("greet_sent_at") or not candidate.get("greet_method"):
                 issues.append(_issue(
-                    candidate, "warning", "缺少打招呼审计信息",
-                    "候选人已打招呼，但缺少发送时间或发送方式。",
-                    "如果只是旧数据，可以先忽略；以后新发送成功时会自动补齐。",
+                    candidate, "warning", "打招呼记录不完整",
+                    "候选人已标记为已打招呼，但没有记录发送时间或发送方式。",
+                    "如果是历史数据，可以暂不处理；以后通过本程序发送成功时会自动记录。",
                 ))
 
         if candidate.get("greet_confirmation_pending") and candidate.get("greet_sent") is True:

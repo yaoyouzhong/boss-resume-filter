@@ -1486,11 +1486,18 @@ def _check_code_to_changelog_coverage(strict=False):
                 continue
             if line.strip() in normalized_additions:
                 continue
-            removed_func = re.search(r"\bdef\s+([a-zA-Z_]\w*)\s*\(", line)
-            if removed_func and removed_func.group(1) in added_function_names:
-                continue
-            if removed_func and removed_func.group(1).startswith("_"):
-                continue
+            any_removed_func = re.search(r"\bdef\s+([a-zA-Z_]\w*)\s*\(", line)
+            if any_removed_func:
+                # Only top-level public functions are release-note signals.
+                # Nested helpers are implementation details even when their
+                # local names do not start with an underscore.
+                removed_func = re.search(r"^def\s+([a-zA-Z_]\w*)\s*\(", line)
+                if removed_func is None:
+                    continue
+                if removed_func.group(1) in added_function_names:
+                    continue
+                if removed_func.group(1).startswith("_"):
+                    continue
             if (
                 re.search(r"[一-鿿]{3,}", line)
                 or re.search(r"def\s+[a-zA-Z_]\w+\s*\(", line)
