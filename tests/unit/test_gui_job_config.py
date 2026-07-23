@@ -288,6 +288,65 @@ class _FakeCombo(dict):
         return self.current_value
 
 
+def test_run_job_default_prefers_recent_concrete_job():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.job_select_var = _FakeVar("")
+    gui.job_combo = _FakeCombo()
+    gui._last_run_job_selection = "Python 工程师"
+
+    selected = gui._sync_run_job_combo_values(
+        {"Java 工程师": {}, "Python 工程师": {}},
+        prefer_current=False,
+    )
+
+    assert selected == "Python 工程师"
+    assert gui.job_select_var.get() == "Python 工程师"
+    assert gui.job_combo["values"] == ["全部岗位", "Java 工程师", "Python 工程师"]
+
+
+def test_run_job_default_falls_back_to_first_saved_job():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.job_select_var = _FakeVar("")
+    gui.job_combo = _FakeCombo()
+    gui._last_run_job_selection = "已删除岗位"
+
+    selected = gui._sync_run_job_combo_values(
+        {"Java 工程师": {}, "Python 工程师": {}},
+        prefer_current=False,
+    )
+
+    assert selected == "Java 工程师"
+    assert gui.job_select_var.get() == "Java 工程师"
+
+
+def test_run_job_selection_preserves_current_valid_choice_on_refresh():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.job_select_var = _FakeVar("全部岗位")
+    gui.job_combo = _FakeCombo()
+    gui._last_run_job_selection = "Java 工程师"
+
+    selected = gui._sync_run_job_combo_values(
+        {"Java 工程师": {}},
+        prefer_current=True,
+    )
+
+    assert selected == "全部岗位"
+    assert gui.job_select_var.get() == "全部岗位"
+
+
+def test_remember_run_job_selection_persists_only_concrete_jobs():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._run_preferences = {}
+    saved = []
+
+    with patch("gui_main._save_run_preferences", saved.append):
+        gui._remember_run_job_selection("Java 工程师")
+        gui._remember_run_job_selection("全部岗位")
+
+    assert gui._last_run_job_selection == "Java 工程师"
+    assert saved == [{"last_run_job_name": "Java 工程师"}]
+
+
 class _FakePackFrame:
     def __init__(self):
         self.manager = ""
@@ -3987,9 +4046,45 @@ def test_scan_messages_feed_run_log_explicitly():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.log_queue = queue.Queue()
 
-    gui.append_run_log("开始扫描候选人")
+    with patch.object(gui, "_append_run_log_file") as append_file:
+        gui.append_run_log("开始扫描候选人")
 
     assert gui.log_queue.get_nowait() == "开始扫描候选人"
+    append_file.assert_called_once_with("开始扫描候选人")
+
+
+def test_run_log_appends_to_daily_file():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        log_dir = Path(tmp_dir) / "logs"
+
+        with patch("gui_main.RUN_LOG_DIR", log_dir), \
+             patch("gui_main.datetime") as fake_datetime:
+            fake_datetime.now.return_value.strftime.side_effect = lambda fmt: {
+                "%Y%m%d": "20260723",
+            }[fmt]
+            gui = BossFilterGUI.__new__(BossFilterGUI)
+            gui._append_run_log_file("开始扫描候选人")
+
+        assert (log_dir / "run-20260723.log").read_text(encoding="utf-8") == "开始扫描候选人\n"
+
+
+def test_run_settings_snapshot_writes_only_to_file_log():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.log_queue = queue.Queue()
+    file_logs = []
+    gui._append_run_log_file = file_logs.append
+
+    gui._append_run_settings_snapshot([
+        ("滚动轮次", 30),
+        ("扫描增强", "自动补全候选人详情"),
+    ])
+
+    assert gui.log_queue.empty()
+    assert file_logs == [
+        "本轮参数设置：",
+        "  滚动轮次：30",
+        "  扫描增强：自动补全候选人详情",
+    ]
 
 
 def test_run_log_sink_is_only_used_by_run_control_methods():
@@ -5396,6 +5491,52 @@ def test_run_page_describes_actual_ai_score_adjustment_range():
     assert '_note_suffix = "10 分调整"' not in run_page_block
 
 
+def test_run_page_exposes_user_friendly_advanced_scan_settings():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    run_page_block = source[source.index("def create_run_page"):]
+    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+    worker_block = source[source.index("def run_worker"):]
+    worker_block = worker_block[:worker_block.index("\n    def on_closing")]
+
+    assert "高级扫描设置" in run_page_block
+    assert "这些设置会增加访问频率，建议谨慎调高" in run_page_block
+    assert 'advanced_inner.pack(fill="x")' in run_page_block
+    assert 'ttk.Label(row_api_enhance, text="", width=12' in run_page_block
+    assert "扫描增强:" in run_page_block
+    assert "自动补全候选人详情" in run_page_block
+    assert "最多读取:" in run_page_block
+    assert "可提升经验、薪资、城市等信息准确性" in run_page_block
+    assert 'ttk.Label(row_contact_prepare, text="", width=12' in run_page_block
+    assert "后续联系:" in run_page_block
+    assert "扫描后准备联系信息" in run_page_block
+    assert "最多准备:" in run_page_block
+    assert "可提升打招呼成功率" in run_page_block
+    assert "读取越多越慢" not in run_page_block
+    assert "准备人数越多耗时越长" not in run_page_block
+    assert "api_direct_pages * 20" in worker_block
+    assert "listener_first=not api_direct_enabled" in worker_block
+    assert "greet_context_capture=greet_context_capture_enabled" in worker_block
+    assert "greet_context_limit=greet_context_capture_limit" in worker_block
+    assert '"提取链路"' in worker_block
+    assert 'self.append_run_log(f"扫描增强：' not in worker_block
+    assert 'self.append_run_log(f"后续联系：' not in worker_block
+
+
+def test_run_page_job_selector_defaults_to_recent_or_saved_job():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    run_page_block = source[source.index("def create_run_page"):]
+    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+    show_page_run_block = source[source.index("def show_page_run"):]
+    show_page_run_block = show_page_run_block[:show_page_run_block.index("\n    def show_page_result")]
+    save_job_block = source[source.index("def save_current_job"):]
+    save_job_block = save_job_block[:save_job_block.index("\n    def _restore_or_clear_job_form")]
+
+    assert 'self.job_select_var = tk.StringVar(value="")' in run_page_block
+    assert "_sync_run_job_combo_values(self.job_rules, prefer_current=False)" in run_page_block
+    assert "self._sync_run_job_combo_values(job_rules)" in show_page_run_block
+    assert "self._remember_run_job_selection(normalized_job_name)" in save_job_block
+
+
 def test_result_tree_ctrl_a_selects_all_visible_candidates():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.result_tree = Mock()
@@ -5714,10 +5855,11 @@ def test_inline_form_notes_use_flat_copy_without_outer_parentheses():
     result_block = source[source.index("def create_result_page"):]
     result_block = result_block[:result_block.index("\n    def create_education_page")]
 
-    assert 'text="推荐 50-200 轮次"' in run_block
+    assert 'text="推荐 20-100 轮次"' in run_block
     assert '_note_prefix = "对通过筛选的候选人进行 LLM 二次评估，"' in run_block
     assert '_note_suffix = "15 分调整"' in run_block
     assert '(推荐 50-200 轮次)' not in run_block
+    assert 'StringVar(value=str(MAX_ROUNDS_DEFAULT))' in run_block
     assert 'self._result_search_placeholder = "姓名/匹配分/推荐指数/状态"' in result_block
     assert "textvariable=self.result_search_var, width=26" in result_block
     assert "'text_placeholder', ui_theme.TEXT_PLACEHOLDER" in result_block

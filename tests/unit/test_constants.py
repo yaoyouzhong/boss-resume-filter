@@ -3,6 +3,12 @@
 from constants import (
     API_CANDIDATE_LIMIT_DEFAULT,
     CHINESE_NUMERALS,
+    DOM_SCROLL_BATCH_MAX,
+    DOM_SCROLL_BATCH_MIN,
+    DOM_SCROLL_BATCH_PAUSE_CENTER,
+    DOM_SCROLL_BATCH_PAUSE_SPREAD,
+    DOM_SCROLL_DELAY_CENTER,
+    DOM_SCROLL_DELAY_SPREAD,
     MAJOR_CITIES,
     NON_REGULAR_EDU,
     SCORE_BASE,
@@ -25,8 +31,17 @@ def test_score_components_sum_to_100():
     assert SCORE_BASE + SCORE_SKILL_MAX + SCORE_EXP_MAX + SCORE_EDU_MAX == 100
 
 
-def test_default_api_enrichment_budget_covers_twenty_pages():
-    assert API_CANDIDATE_LIMIT_DEFAULT == 400
+def test_default_api_enrichment_budget_covers_eight_pages():
+    assert API_CANDIDATE_LIMIT_DEFAULT == 160
+
+
+def test_dom_scroll_delay_is_conservative():
+    assert DOM_SCROLL_DELAY_CENTER == 2.75
+    assert DOM_SCROLL_DELAY_SPREAD == 2.5
+    assert DOM_SCROLL_BATCH_MIN == 5
+    assert DOM_SCROLL_BATCH_MAX == 10
+    assert DOM_SCROLL_BATCH_PAUSE_CENTER == 11.5
+    assert DOM_SCROLL_BATCH_PAUSE_SPREAD == 7.0
 
 
 # ========== 中文数字映射 ==========

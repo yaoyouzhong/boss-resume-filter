@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.23.5"
+__version__ = "2.24"
 
 import json
 import logging
@@ -98,7 +98,15 @@ from job_config_diagnostics import (
 )
 from constants import (
     API_CANDIDATE_LIMIT_DEFAULT,
+    DOM_SCROLL_BATCH_MAX,
+    DOM_SCROLL_BATCH_MIN,
+    DOM_SCROLL_BATCH_PAUSE_CENTER,
+    DOM_SCROLL_BATCH_PAUSE_SPREAD,
+    DOM_SCROLL_DELAY_CENTER,
+    DOM_SCROLL_DELAY_SPREAD,
     EMPTY_RECOMMEND_MARKS,
+    GREET_CONTEXT_CAPTURE_LIMIT,
+    MAX_ROUNDS_DEFAULT,
     SCORE_THRESHOLD_PASS,
     SCORE_THRESHOLD_RECOMMEND,
     SCORE_THRESHOLD_STRONG,
@@ -130,6 +138,8 @@ CONFIG_PATH = BASE_DIR / "job_config.json"
 CANDIDATES_PATH = BASE_DIR / "candidates_all.json"
 CANDIDATES_XLSX_PATH = BASE_DIR / "candidates_all.xlsx"
 CONFIG_BACKUP_PATH = BASE_DIR / "job_config.json.bak"
+RUN_LOG_DIR = BASE_DIR / "logs"
+RUN_PREFERENCES_PATH = BASE_DIR / ".run_preferences.json"
 API_CONFIG_PATH = get_api_config_path()
 CHROME_DEBUG_PORT_FILE = BASE_DIR / ".chrome_debug_port"
 
@@ -389,6 +399,28 @@ def _load_ui_config() -> dict:
 
 
 UI_CONFIG = _load_ui_config()
+
+
+def _load_run_preferences() -> dict:
+    """加载本机运行偏好，例如最近一次运行岗位。"""
+    try:
+        if RUN_PREFERENCES_PATH.exists():
+            with open(RUN_PREFERENCES_PATH, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                return loaded
+    except (json.JSONDecodeError, OSError) as e:
+        logging.warning("加载运行偏好失败：%s", e)
+    return {}
+
+
+def _save_run_preferences(preferences: dict) -> None:
+    """保存本机运行偏好；失败不影响主流程。"""
+    try:
+        with open(RUN_PREFERENCES_PATH, 'w', encoding='utf-8') as f:
+            json.dump(preferences, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        logging.warning("保存运行偏好失败：%s", e)
 
 
 def _clamp(value, min_value, max_value):
@@ -1011,6 +1043,10 @@ class BossFilterGUI:
         # 缓存：job_config 读取（mtime 未变则跳过磁盘 IO）
         self._job_rules_cache = None
         self._job_rules_mtime = 0
+        self._run_preferences = _load_run_preferences()
+        self._last_run_job_selection = str(
+            self._run_preferences.get("last_run_job_name") or ""
+        ).strip()
         # 缓存：Treeview 刷新（数据未变则跳过重建）
         self._result_tree_fingerprint = None
         self._result_last_job = None
@@ -3803,6 +3839,57 @@ class BossFilterGUI:
                       min(UI_CONFIG['spinbox_rounds_max'], new_val))
         self.rounds_var.set(str(new_val))
 
+    @staticmethod
+    def _coerce_int_setting(value, default: int, minimum: int, maximum: int) -> int:
+        """Return a bounded integer for run-page numeric settings."""
+        try:
+            number = int(str(value).strip())
+        except (TypeError, ValueError):
+            number = default
+        return max(minimum, min(maximum, number))
+
+    def _remember_run_job_selection(self, job_name: str) -> None:
+        """Remember the latest concrete run-page job selection."""
+        normalized = str(job_name or "").strip()
+        if not normalized or normalized == "全部岗位":
+            return
+        self._last_run_job_selection = normalized
+        preferences = dict(getattr(self, "_run_preferences", {}) or {})
+        preferences["last_run_job_name"] = normalized
+        self._run_preferences = preferences
+        _save_run_preferences(preferences)
+
+    def _resolve_default_run_job_selection(self, job_rules: dict) -> str:
+        """Prefer the latest concrete run job, then the config-page job, then first saved job."""
+        if not job_rules:
+            return "全部岗位"
+
+        remembered = str(getattr(self, "_last_run_job_selection", "") or "").strip()
+        if remembered in job_rules:
+            return remembered
+
+        if hasattr(self, "config_job_combo"):
+            selected_config_job = str(self.config_job_combo.get() or "").strip()
+            if selected_config_job in job_rules:
+                return selected_config_job
+
+        return next(iter(job_rules.keys()), "全部岗位")
+
+    def _sync_run_job_combo_values(self, job_rules: dict | None = None, *, prefer_current: bool = True) -> str:
+        """Refresh run-page job options and choose a concrete default when possible."""
+        if job_rules is None:
+            job_rules = self._get_job_rules_cached()
+        jobs = ["全部岗位"] + list(job_rules.keys())
+        self.job_combo['values'] = jobs
+
+        current = str(self.job_select_var.get() or "").strip()
+        if prefer_current and current in jobs and current:
+            return current
+
+        selected = self._resolve_default_run_job_selection(job_rules)
+        self.job_select_var.set(selected)
+        return selected
+
     def _create_api_config_content(self) -> None:
         """同步创建系统设置内容。"""
         for _step in self._create_api_config_content_steps():
@@ -4804,7 +4891,7 @@ class BossFilterGUI:
         row1.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
         ttk.Label(row1, text="滚动轮次:", font=self.font_label, width=12,
                  background=self.colors['bg_card']).pack(side="left")
-        self.rounds_var = tk.StringVar(value="100")
+        self.rounds_var = tk.StringVar(value=str(MAX_ROUNDS_DEFAULT))
         self.rounds_spin = ttk.Spinbox(row1, from_=UI_CONFIG['spinbox_rounds_min'],
                                        to=UI_CONFIG['spinbox_rounds_max'],
                                        increment=10, textvariable=self.rounds_var,
@@ -4817,7 +4904,7 @@ class BossFilterGUI:
             lambda e: self.rounds_spin.bind('<MouseWheel>', self._on_rounds_mousewheel))
         self.rounds_spin.bind('<Leave>',
             lambda e: self.rounds_spin.unbind('<MouseWheel>'))
-        self.rounds_hint_label = ttk.Label(row1, text="推荐 50-200 轮次", font=(FONT_FAMILY, int(11 * self.font_scale)),
+        self.rounds_hint_label = ttk.Label(row1, text="推荐 20-100 轮次", font=(FONT_FAMILY, int(11 * self.font_scale)),
                  foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card'])
         self.rounds_hint_label.pack(side="left", padx=(self.inline_note_gap, 0))
 
@@ -4826,7 +4913,7 @@ class BossFilterGUI:
         row_job.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
         ttk.Label(row_job, text="选择岗位:", font=self.font_label, width=12,
                  background=self.colors['bg_card']).pack(side="left")
-        self.job_select_var = tk.StringVar(value="全部岗位")
+        self.job_select_var = tk.StringVar(value="")
         self.job_combo = ttk.Combobox(row_job, textvariable=self.job_select_var,
                                        values=["全部岗位"], width=28, state="readonly",
                                        font=self.font_label)
@@ -4834,6 +4921,7 @@ class BossFilterGUI:
             side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0)
         )
         self.job_combo.bind("<<ComboboxSelected>>", self.on_run_job_selected)
+        self._sync_run_job_combo_values(self.job_rules, prefer_current=False)
         ttk.Label(row_job, text="建议每次选择一个岗位，\"全部岗位\"将依次处理",
                  font=(FONT_FAMILY, int(11 * self.font_scale)),
                  foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
@@ -4882,8 +4970,170 @@ class BossFilterGUI:
 
         yield
 
+        # 高级扫描设置：默认折叠，避免干扰普通扫描路径。
+        row_advanced_header = ttk.Frame(param_frame, style='TFrame')
+        row_advanced_header.pack(fill="x", pady=(int(6 * self.dpi_scale * self.zoom_factor), 0))
+        ttk.Label(row_advanced_header, text="", width=12, background=self.colors['bg_card']).pack(side="left")
+        self.scan_advanced_visible_var = tk.BooleanVar(value=False)
+        self.scan_advanced_toggle_label = ttk.Label(
+            row_advanced_header,
+            text="高级扫描设置 ▸",
+            font=(FONT_FAMILY_SEMIBOLD, int(11 * self.font_scale)),
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+            cursor="hand2",
+        )
+        self.scan_advanced_toggle_label.pack(side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0))
+        ttk.Label(
+            row_advanced_header,
+            text="这些设置会增加访问频率，建议谨慎调高",
+            font=(FONT_FAMILY, int(11 * self.font_scale)),
+            foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
+            background=self.colors['bg_card'],
+        ).pack(side="left", padx=(self.inline_note_gap, 0))
+
+        self.scan_advanced_details_frame = ttk.Frame(param_frame, style='TFrame')
+        advanced_inner = ttk.Frame(self.scan_advanced_details_frame, style='TFrame')
+        advanced_inner.pack(fill="x")
+
+        default_api_pages = max(1, (API_CANDIDATE_LIMIT_DEFAULT + 19) // 20)
+        self.api_direct_enabled_var = tk.BooleanVar(value=True)
+        self.api_direct_pages_var = tk.StringVar(value=str(default_api_pages))
+        self.greet_context_capture_enabled_var = tk.BooleanVar(value=True)
+        self.greet_context_capture_limit_var = tk.StringVar(value=str(GREET_CONTEXT_CAPTURE_LIMIT))
+
+        _sub_font = (FONT_FAMILY, int(11 * self.font_scale))
+        _spin_font = (FONT_FAMILY, int(12 * self.font_scale))
+        _spin_pad = int(5 * self.dpi_scale * self.zoom_factor)
+
+        row_api_enhance = ttk.Frame(advanced_inner, style='TFrame')
+        row_api_enhance.pack(fill="x", pady=(int(8 * self.dpi_scale * self.zoom_factor), 0))
+        ttk.Label(row_api_enhance, text="", width=12, background=self.colors['bg_card']).pack(side="left")
+        ttk.Label(row_api_enhance, text="扫描增强:", font=_sub_font,
+                  width=10, foreground=self.colors['text_secondary'],
+                  background=self.colors['bg_card']).pack(side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0))
+        api_switch = self._create_switch(row_api_enhance, self.api_direct_enabled_var)
+        api_switch.pack(side="left")
+        api_label = ttk.Label(
+            row_api_enhance, text="自动补全候选人详情", font=_sub_font,
+            background=self.colors['bg_card'], cursor='arrow',
+        )
+        api_label.pack(side="left", padx=(_spin_pad, 0))
+        ttk.Label(row_api_enhance, text="最多读取:", font=_sub_font,
+                  foreground=self.colors['text_secondary'],
+                  background=self.colors['bg_card']).pack(side="left", padx=(self.inline_note_gap, 0))
+        self.api_direct_pages_spin = ttk.Spinbox(
+            row_api_enhance, from_=1, to=20, increment=1, width=4,
+            textvariable=self.api_direct_pages_var, font=_spin_font,
+        )
+        self.api_direct_pages_spin.pack(side="left", padx=(_spin_pad, 0))
+        ttk.Label(row_api_enhance, text="页", font=_sub_font,
+                  foreground=self.colors['text_secondary'],
+                  background=self.colors['bg_card']).pack(side="left", padx=(_spin_pad, 0))
+
+        row_api_note = ttk.Frame(advanced_inner, style='TFrame')
+        row_api_note.pack(fill="x", pady=(int(3 * self.dpi_scale * self.zoom_factor), 0))
+        ttk.Label(row_api_note, text="", width=12, background=self.colors['bg_card']).pack(side="left")
+        ttk.Label(row_api_note, text="", width=10, background=self.colors['bg_card']).pack(side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0))
+        ttk.Label(
+            row_api_note,
+            text="可提升经验、薪资、城市等信息准确性",
+            font=_sub_font,
+            foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
+            background=self.colors['bg_card'],
+        ).pack(side="left")
+
+        row_contact_prepare = ttk.Frame(advanced_inner, style='TFrame')
+        row_contact_prepare.pack(fill="x", pady=(int(8 * self.dpi_scale * self.zoom_factor), 0))
+        ttk.Label(row_contact_prepare, text="", width=12, background=self.colors['bg_card']).pack(side="left")
+        ttk.Label(row_contact_prepare, text="后续联系:", font=_sub_font,
+                  width=10, foreground=self.colors['text_secondary'],
+                  background=self.colors['bg_card']).pack(side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0))
+        contact_prepare_switch = self._create_switch(
+            row_contact_prepare, self.greet_context_capture_enabled_var
+        )
+        contact_prepare_switch.pack(side="left")
+        contact_prepare_label = ttk.Label(
+            row_contact_prepare, text="扫描后准备联系信息", font=_sub_font,
+            background=self.colors['bg_card'], cursor='arrow',
+        )
+        contact_prepare_label.pack(side="left", padx=(_spin_pad, 0))
+        ttk.Label(row_contact_prepare, text="最多准备:", font=_sub_font,
+                  foreground=self.colors['text_secondary'],
+                  background=self.colors['bg_card']).pack(side="left", padx=(self.inline_note_gap, 0))
+        self.greet_context_capture_limit_spin = ttk.Spinbox(
+            row_contact_prepare, from_=1, to=100, increment=1, width=4,
+            textvariable=self.greet_context_capture_limit_var, font=_spin_font,
+        )
+        self.greet_context_capture_limit_spin.pack(side="left", padx=(_spin_pad, 0))
+        ttk.Label(row_contact_prepare, text="人", font=_sub_font,
+                  foreground=self.colors['text_secondary'],
+                  background=self.colors['bg_card']).pack(side="left", padx=(_spin_pad, 0))
+
+        row_contact_note = ttk.Frame(advanced_inner, style='TFrame')
+        row_contact_note.pack(fill="x", pady=(int(3 * self.dpi_scale * self.zoom_factor), 0))
+        ttk.Label(row_contact_note, text="", width=12, background=self.colors['bg_card']).pack(side="left")
+        ttk.Label(row_contact_note, text="", width=10, background=self.colors['bg_card']).pack(side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0))
+        ttk.Label(
+            row_contact_note,
+            text="可提升打招呼成功率",
+            font=_sub_font,
+            foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
+            background=self.colors['bg_card'],
+        ).pack(side="left")
+
+        def _sync_advanced_scan_controls(*_):
+            self.api_direct_pages_spin.configure(
+                state="normal" if self.api_direct_enabled_var.get() else "disabled"
+            )
+            self.greet_context_capture_limit_spin.configure(
+                state="normal" if self.greet_context_capture_enabled_var.get() else "disabled"
+            )
+
+        def _toggle_api_direct_from_label(_event=None):
+            self.api_direct_enabled_var.set(not self.api_direct_enabled_var.get())
+            return 'break'
+
+        def _toggle_contact_prepare_from_label(_event=None):
+            self.greet_context_capture_enabled_var.set(
+                not self.greet_context_capture_enabled_var.get()
+            )
+            return 'break'
+
+        def _toggle_advanced_scan_settings(_event=None):
+            visible = not self.scan_advanced_visible_var.get()
+            self.scan_advanced_visible_var.set(visible)
+            self.scan_advanced_toggle_label.config(
+                text="高级扫描设置 ▾" if visible else "高级扫描设置 ▸"
+            )
+            if visible:
+                before_widget = getattr(self, 'ai_eval_row', None)
+                pack_kwargs = {
+                    "fill": "x",
+                    "pady": (0, int(8 * self.dpi_scale * self.zoom_factor)),
+                }
+                if before_widget is not None:
+                    self.scan_advanced_details_frame.pack(
+                        before=before_widget, **pack_kwargs
+                    )
+                else:
+                    self.scan_advanced_details_frame.pack(**pack_kwargs)
+            else:
+                self.scan_advanced_details_frame.pack_forget()
+            return 'break'
+
+        self.api_direct_enabled_var.trace_add('write', _sync_advanced_scan_controls)
+        self.greet_context_capture_enabled_var.trace_add('write', _sync_advanced_scan_controls)
+        api_label.bind('<Button-1>', _toggle_api_direct_from_label)
+        contact_prepare_label.bind('<Button-1>', _toggle_contact_prepare_from_label)
+        self.scan_advanced_toggle_label.bind('<Button-1>', _toggle_advanced_scan_settings)
+        _sync_advanced_scan_controls()
+
+        yield
+
         # AI 辅助评估开关
         row_ai = ttk.Frame(param_frame, style='TFrame')
+        self.ai_eval_row = row_ai
         row_ai.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
         ttk.Label(row_ai, text="AI 评估:", font=self.font_label, width=12,
                  background=self.colors['bg_card']).pack(side="left")
@@ -8150,8 +8400,7 @@ class BossFilterGUI:
         # 刷新岗位选择列表
         try:
             job_rules = self._get_job_rules_cached()
-            jobs = ["全部岗位"] + list(job_rules.keys())
-            self.job_combo['values'] = jobs
+            self._sync_run_job_combo_values(job_rules)
         except Exception:
             pass
         # 重新绑定滚轮事件（覆盖动态创建的控件）
@@ -13078,6 +13327,9 @@ class BossFilterGUI:
         self.save_config()
         self.config_job_combo['values'] = list(self.job_rules.keys())
         self.config_job_combo.set(normalized_job_name)
+        self._remember_run_job_selection(normalized_job_name)
+        if hasattr(self, 'job_select_var') and hasattr(self, 'job_combo'):
+            self._sync_run_job_combo_values(self.job_rules, prefer_current=False)
         restore_button = getattr(self, 'btn_restore_job', None)
         if restore_button is not None:
             restore_button.configure(text=" 恢复已保存")
@@ -13210,6 +13462,23 @@ class BossFilterGUI:
     def append_run_log(self, message):
         """追加候选人扫描及其运行准备过程日志。"""
         self.log_queue.put(message)
+        self._append_run_log_file(message)
+
+    def _append_run_log_file(self, message):
+        """把运行日志追加落盘；失败不影响扫描主流程。"""
+        try:
+            RUN_LOG_DIR.mkdir(parents=True, exist_ok=True)
+            log_path = RUN_LOG_DIR / f"run-{datetime.now().strftime('%Y%m%d')}.log"
+            with open(log_path, 'a', encoding='utf-8') as f:
+                f.write(f"{message}\n")
+        except Exception as e:
+            logger.warning("[GUI] 运行日志落盘失败: %s", e)
+
+    def _append_run_settings_snapshot(self, settings):
+        """记录本轮运行参数到落盘日志，避免占用界面过程日志。"""
+        self._append_run_log_file("本轮参数设置：")
+        for label, value in settings:
+            self._append_run_log_file(f"  {label}：{value}")
 
     def run_on_ui(self, callback):
         """在 Tk 主线程执行 UI 更新（线程安全）。
@@ -14219,7 +14488,32 @@ class BossFilterGUI:
             sys.stdout = log_redirector
 
             rounds = int(self.rounds_var.get())
-            effective_max_candidates = API_CANDIDATE_LIMIT_DEFAULT
+            default_api_pages = max(1, (API_CANDIDATE_LIMIT_DEFAULT + 19) // 20)
+            api_direct_enabled = (
+                bool(self.api_direct_enabled_var.get())
+                if hasattr(self, 'api_direct_enabled_var') else True
+            )
+            api_direct_pages = self._coerce_int_setting(
+                self.api_direct_pages_var.get() if hasattr(self, 'api_direct_pages_var') else default_api_pages,
+                default_api_pages,
+                1,
+                20,
+            )
+            effective_max_candidates = api_direct_pages * 20 if api_direct_enabled else 0
+            greet_context_capture_enabled = (
+                bool(self.greet_context_capture_enabled_var.get())
+                if hasattr(self, 'greet_context_capture_enabled_var') else True
+            )
+            greet_context_capture_limit = self._coerce_int_setting(
+                (
+                    self.greet_context_capture_limit_var.get()
+                    if hasattr(self, 'greet_context_capture_limit_var')
+                    else GREET_CONTEXT_CAPTURE_LIMIT
+                ),
+                GREET_CONTEXT_CAPTURE_LIMIT,
+                1,
+                100,
+            )
             greet_level = (
                 "strong"
                 if contact_policy_text == "将强烈推荐加入联系清单"
@@ -14230,15 +14524,40 @@ class BossFilterGUI:
             import argparse
 
             self.append_run_log(f">>> BOSS 直聘候选人智能提取工具 v{__version__} [图形界面模式]")
-            self.append_run_log(f"滚动轮次：{rounds}, 筛选完成后：{contact_policy_text}")
-            self.append_run_log("提取链路：listener + refresh 优先捕获结构化数据；DOM 扫描确认可点击候选人；必要时 API 最后补全已出现候选人")
 
             # 获取选择的岗位
             selected_job = self.job_select_var.get()
             job_arg = None if selected_job == "全部岗位" else selected_job
+            if job_arg:
+                self._remember_run_job_selection(job_arg)
 
             # 构造命令行参数
             ai_eval_enabled = self.ai_eval_var.get()
+            dom_delay_min = DOM_SCROLL_DELAY_CENTER - DOM_SCROLL_DELAY_SPREAD / 2
+            dom_delay_max = DOM_SCROLL_DELAY_CENTER + DOM_SCROLL_DELAY_SPREAD / 2
+            dom_pause_min = DOM_SCROLL_BATCH_PAUSE_CENTER - DOM_SCROLL_BATCH_PAUSE_SPREAD / 2
+            dom_pause_max = DOM_SCROLL_BATCH_PAUSE_CENTER + DOM_SCROLL_BATCH_PAUSE_SPREAD / 2
+            self._append_run_settings_snapshot([
+                ("滚动轮次", rounds),
+                ("DOM滚动间隔", f"{dom_delay_min:g}-{dom_delay_max:g} 秒"),
+                ("DOM长暂停", f"每 {DOM_SCROLL_BATCH_MIN}-{DOM_SCROLL_BATCH_MAX} 轮暂停 {dom_pause_min:g}-{dom_pause_max:g} 秒"),
+                ("筛选完成后", contact_policy_text),
+                ("选择岗位", selected_job),
+                ("扫描增强", "自动补全候选人详情" if api_direct_enabled else "关闭"),
+                ("最多读取页数", api_direct_pages if api_direct_enabled else "未启用"),
+                ("后续联系", "扫描后准备联系信息" if greet_context_capture_enabled else "关闭"),
+                ("最多准备人数", greet_context_capture_limit if greet_context_capture_enabled else "未启用"),
+                ("AI 辅助评估", "启用" if ai_eval_enabled else "关闭"),
+                ("AI 模型", self.api_config.get("model", "") if ai_eval_enabled else "未启用"),
+                (
+                    "AI 响应超时",
+                    f"{self.llm_read_timeout_var.get()} 秒"
+                    if ai_eval_enabled and hasattr(self, 'llm_read_timeout_var')
+                    else "未启用",
+                ),
+                ("打招呼等级", greet_level),
+                ("提取链路", "先读取页面已有信息；再滚动确认可见候选人；必要时按设置补全候选人详情"),
+            ])
             ai_api_config = None
             ai_api_key = None
             if ai_eval_enabled:
@@ -14283,11 +14602,13 @@ class BossFilterGUI:
                 rounds=rounds,
                 max_candidates=effective_max_candidates,
                 dom_only=False,
-                listener_first=False,
+                listener_first=not api_direct_enabled,
                 verbose=False,
                 ai_eval=ai_eval_enabled,
                 api_config=ai_api_config,
                 api_key=ai_api_key,
+                greet_context_capture=greet_context_capture_enabled,
+                greet_context_limit=greet_context_capture_limit,
             )
 
             if job_arg:
@@ -14515,6 +14836,7 @@ class BossFilterGUI:
         """运行页选择岗位后，提醒切换到 BOSS 对应发布职位"""
         selected = self.job_select_var.get()
         if selected and selected != "全部岗位":
+            self._remember_run_job_selection(selected)
             messagebox.showinfo(
                 "提示",
                 f"请在 BOSS 直聘「推荐牛人」页面，切换到「{selected}」职位后再开始运行。",
@@ -22028,7 +22350,7 @@ class BossFilterGUI:
    - 保存配置
 
 2. 运行控制：
-    - 设置 DOM 滚动轮次（深度扫描可提高到 50-200）
+    - 设置 DOM 滚动轮次（深度扫描可提高到 20-100）
    - 选择打招呼等级
    - 点击"开始运行"
 

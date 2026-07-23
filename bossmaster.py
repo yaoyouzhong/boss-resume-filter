@@ -23,6 +23,12 @@ from constants import (
     SCORE_THRESHOLD_RECOMMEND,
     SCORE_THRESHOLD_STRONG,
     SCROLL_PX,
+    DOM_SCROLL_DELAY_CENTER,
+    DOM_SCROLL_DELAY_SPREAD,
+    DOM_SCROLL_BATCH_MIN,
+    DOM_SCROLL_BATCH_MAX,
+    DOM_SCROLL_BATCH_PAUSE_CENTER,
+    DOM_SCROLL_BATCH_PAUSE_SPREAD,
     MAX_SCROLL_SEARCH,
     MAX_ROUNDS_DEFAULT,
     EMPTY_RECOMMEND_MARKS,
@@ -35,6 +41,13 @@ from constants import (
     API_PAGE_DELAY_CENTER,
     API_PAGE_DELAY_SPREAD,
     API_CANDIDATE_LIMIT_DEFAULT,
+    GREET_CONTEXT_CAPTURE_LIMIT,
+    GREET_CONTEXT_MIN_SCORE,
+    GREET_CONTEXT_DELAY_CENTER,
+    GREET_CONTEXT_DELAY_SPREAD,
+    GREET_CONTEXT_BATCH_SIZE,
+    GREET_CONTEXT_BATCH_PAUSE_CENTER,
+    GREET_CONTEXT_BATCH_PAUSE_SPREAD,
     AUTO_GREET_RUN_LIMIT,
     GREET_DELAY_CENTER,
     GREET_DELAY_SPREAD,
@@ -102,13 +115,6 @@ RECOMMEND_PAGE_URL_PARTS = (
 )
 RECOMMEND_PAGE_URL = "https://www.zhipin.com/web/chat/recommend"
 GREET_CONTEXT_VERSION = 1
-GREET_CONTEXT_CAPTURE_LIMIT = 30
-GREET_CONTEXT_MIN_SCORE = SCORE_THRESHOLD_PASS
-GREET_CONTEXT_DELAY_CENTER = 1.2
-GREET_CONTEXT_DELAY_SPREAD = 0.7
-GREET_CONTEXT_BATCH_SIZE = 10
-GREET_CONTEXT_BATCH_PAUSE_CENTER = 5.0
-GREET_CONTEXT_BATCH_PAUSE_SPREAD = 2.5
 
 
 def is_transient_page_refresh_error(exc: Exception) -> bool:
@@ -2039,6 +2045,7 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
             print(f"刷新页面失败，将继续使用当前页面：{e}")
 
     try:
+        next_dom_scroll_pause_after = random.randint(DOM_SCROLL_BATCH_MIN, DOM_SCROLL_BATCH_MAX)
         for scroll_round in range(max_rounds):
             rounds_completed = scroll_round + 1
             bottom_reached = False
@@ -2109,10 +2116,10 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
                             }};
                         }})()
                     ''')
-                    time.sleep(_human_delay(0.8, 0.5))
+                    time.sleep(_human_delay(DOM_SCROLL_DELAY_CENTER, DOM_SCROLL_DELAY_SPREAD))
                 else:
                     page.run_js(f'window.scrollBy(0, {SCROLL_PX})')
-                    time.sleep(_human_delay(0.8, 0.5))
+                    time.sleep(_human_delay(DOM_SCROLL_DELAY_CENTER, DOM_SCROLL_DELAY_SPREAD))
 
                 # 到底检测：滚动位置优先（单次 JS 调用，无 DOM 查找）
                 scroll_info = get_frame_scroll_info(iframe) if iframe else None
@@ -2210,6 +2217,21 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
             if (scroll_round + 1) % 10 == 0 or (scroll_round + 1) == max_rounds:
                 status = f"+{new_count}" if new_count > 0 else "无新增"
                 print(f"轮次 {scroll_round + 1}/{max_rounds}: {status}, 累计 {total_count} 个")
+
+            if (
+                scroll_round > 0
+                and (scroll_round + 1) >= next_dom_scroll_pause_after
+                and (scroll_round + 1) < max_rounds
+            ):
+                pause = _human_delay(DOM_SCROLL_BATCH_PAUSE_CENTER, DOM_SCROLL_BATCH_PAUSE_SPREAD)
+                if stop_event and stop_event.wait(timeout=pause) is True:
+                    _record_scan_outcome("interrupted", "用户停止扫描")
+                    raise StopRequested()
+                if not stop_event:
+                    time.sleep(pause)
+                next_dom_scroll_pause_after = (
+                    scroll_round + 1 + random.randint(DOM_SCROLL_BATCH_MIN, DOM_SCROLL_BATCH_MAX)
+                )
         else:
             scan_status = "partial"
             scan_reason = (
@@ -2243,7 +2265,7 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
                 pagination = _build_recommend_api_pagination_from_page(target)
             if pagination:
                 if max_candidates and max_candidates > 0:
-                    page_limit = min(20, max(5, (max_candidates + 19) // 20))
+                    page_limit = min(20, max(1, (max_candidates + 19) // 20))
                 else:
                     page_limit = 5
                 print(f"API 直调仅补全 DOM 已出现候选人，最多 {page_limit} 页")
@@ -3524,7 +3546,7 @@ def _filter_reason_sort_key(item: tuple[str, int]) -> tuple[int, int]:
     return (8, -count)
 
 
-def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUNDS_DEFAULT, verbose=False, greet_level='normal', greet_names_list=None, list_candidates=False, progress_callback=None, stop_event=None, ai_eval=False, api_config=None, api_key=None, captcha_callback=None, notice_callback=None, blocking_notice_callback=None, stats=None, max_candidates=API_CANDIDATE_LIMIT_DEFAULT, use_api_extraction=True, extraction_mode=None, greet_confirm_callback=None):
+def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUNDS_DEFAULT, verbose=False, greet_level='normal', greet_names_list=None, list_candidates=False, progress_callback=None, stop_event=None, ai_eval=False, api_config=None, api_key=None, captcha_callback=None, notice_callback=None, blocking_notice_callback=None, stats=None, max_candidates=API_CANDIDATE_LIMIT_DEFAULT, use_api_extraction=True, extraction_mode=None, greet_confirm_callback=None, greet_context_capture=True, greet_context_limit=GREET_CONTEXT_CAPTURE_LIMIT):
     """
     智能扫描候选人 - 两阶段模式
 
@@ -3549,6 +3571,8 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
         captcha_callback: callable(detail) -> bool，检测到验证码时调用，
             用于 GUI 弹窗通知用户。返回 True 继续等待，False 中止。
         notice_callback: callable(title, message)，用于 GUI 展示非阻塞提示。
+        greet_context_capture: 是否在扫描后预先准备后续联系信息。
+        greet_context_limit: 后续联系信息准备人数上限。
     """
     job_name = job_info['job_name']
 
@@ -3967,19 +3991,27 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
         ),
     )
 
-    context_candidates = _select_greet_context_candidates(
-        passed_candidates,
-        auto_greet=auto_greet,
-        point_to_point_mode=point_to_point_mode,
-        greet_names_list=greet_names_list,
-        greet_levels_allowed=greet_levels_allowed,
-        existing_greeted_ids=existing_ids_for_job_and_greeted,
-        raw_order_by_geek_id=raw_order_by_geek_id,
-    )
-    context_candidates = _prioritize_greet_context_candidates(
-        context_candidates,
-        raw_order_by_geek_id,
-    )
+    context_candidates: list[dict[str, Any]] = []
+    if greet_context_capture:
+        try:
+            effective_context_limit = max(0, int(greet_context_limit))
+        except (TypeError, ValueError):
+            effective_context_limit = GREET_CONTEXT_CAPTURE_LIMIT
+        if effective_context_limit > 0:
+            context_candidates = _select_greet_context_candidates(
+                passed_candidates,
+                auto_greet=auto_greet,
+                point_to_point_mode=point_to_point_mode,
+                greet_names_list=greet_names_list,
+                greet_levels_allowed=greet_levels_allowed,
+                existing_greeted_ids=existing_ids_for_job_and_greeted,
+                raw_order_by_geek_id=raw_order_by_geek_id,
+            )
+            context_candidates = _prioritize_greet_context_candidates(
+                context_candidates,
+                raw_order_by_geek_id,
+                limit=effective_context_limit,
+            )
     if context_candidates and not list_candidates and hasattr(page, "listen"):
         print(f"\n=== 阶段 1.6: 捕获打招呼上下文（共 {len(context_candidates)} 人，最佳努力）===")
         enriched_count = enrich_greet_contexts_for_candidates(
@@ -4426,7 +4458,7 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
         parser.add_argument('--greet-names', type=str, help='点对点打招呼（仅补打招呼模式有效）：指定候选人姓名，多个用逗号分隔')
         parser.add_argument('--list-candidates', action='store_true', help='仅列出候选人，不打招呼')
         parser.add_argument('--rounds', type=int, default=30,
-                            help='最大 DOM 滚动轮次（默认 30；深度扫描可手动设为 50-200）')
+                            help='最大 DOM 滚动轮次（默认 30；深度扫描可手动设为 20-100）')
         parser.add_argument('--max-candidates', type=int, default=API_CANDIDATE_LIMIT_DEFAULT,
                             help=f'API 结构化补全预算（默认 {API_CANDIDATE_LIMIT_DEFAULT}，用于推导最多补全页数）')
         extraction_group = parser.add_mutually_exclusive_group()
@@ -4742,6 +4774,13 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
             else:
                 extraction_mode = "api"
 
+            try:
+                greet_context_limit = int(
+                    getattr(args, 'greet_context_limit', GREET_CONTEXT_CAPTURE_LIMIT)
+                )
+            except (TypeError, ValueError):
+                greet_context_limit = GREET_CONTEXT_CAPTURE_LIMIT
+            greet_context_limit = max(0, greet_context_limit)
             job_stats = {}
             candidates = smart_scan_candidates(page, job_info, auto_greet=auto_greet_scan,
                                                max_rounds=args.rounds, verbose=args.verbose,
@@ -4758,7 +4797,9 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                                                max_candidates=getattr(args, 'max_candidates', API_CANDIDATE_LIMIT_DEFAULT),
                                                extraction_mode=extraction_mode,
                                                stats=job_stats,
-                                               greet_confirm_callback=greet_confirm_callback)
+                                               greet_confirm_callback=greet_confirm_callback,
+                                               greet_context_capture=getattr(args, 'greet_context_capture', True),
+                                               greet_context_limit=greet_context_limit)
             all_candidates.extend(candidates)
             total_raw += job_stats.get('raw_count', 0)
             total_rule_passed += job_stats.get(
