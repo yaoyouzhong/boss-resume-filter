@@ -1,29 +1,29 @@
 {
-  "version": "2.23.5",
-  "release_date": "2026-07-22",
+  "version": "2.24",
+  "release_date": "2026-07-23",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.5/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.5/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.5/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "macos_dmg": {
-      "size": 33584748,
-      "sha256": "0165739b71340188673b281f32cbe51f95016761a8d195472ebd1bd614276212"
+      "size": 33607197,
+      "sha256": "b198f9f4c399b3afdc7642ed16a58e92a8a56db08085c1257c7470039b25046c"
     },
     "windows": {
-      "size": 35807529,
-      "sha256": "f15198cb501d8cb2bd60cd28d36d731d263abc4b000ce65cbefa7dc9a5483fd0"
+      "size": 35822677,
+      "sha256": "f5b42e9c0fac048c3e5cf28e2b7d266922dce33961e0fa58f5da56165957e56e"
     },
     "macos": {
-      "size": 34351051,
-      "sha256": "708231da567bd9db4f48cff3e5dd3340ae359d0d50193ee5b0078f680b0ec030"
+      "size": 34367744,
+      "sha256": "8819c6711518098a37c389481170c35e10cf4cbe75e5583dea2341b8b7c8cfd0"
     }
   },
-  "release_notes": "### 体验优化\n\n- **今日待办工作台**：按立即处理、已逾期、今天、待安排和以后展示任务，并区分待打招呼、已打招呼待跟进、已回复待推进等任务类型；选中候选人后直接显示下一步和关键信息，尚未安排下次跟进的任务也会明确提示。\n- **候选人状态体检**：按严重、提醒和建议组织问题层级，统一指标、字体、颜色与操作区域；候选人明细突出问题类型、关键信息和处理建议。\n- **联系清单操作**：发送准备状态补充“已选择”的候选人姓名和当前发送范围，优化待发送、待核实、发送失败等状态的显示顺序与处理提示。\n- **学历核验布局**：标题保持固定，导入证书后始终显示待核验队列；队列最多展示 5 行并支持内部滚动，为证书预览和识别结果保留稳定空间。\n- **筛选与复核显示**：优化结果搜索框、问题筛选层级和候选人明细颜色，人工确认原因改用更容易理解的业务说明。\n- **运行与弹窗控件**：缩小并提升 AI 评估开关的清晰度；未配置可用模型时保持关闭且不可开启，并优化更新提示、解析提醒和确认弹窗的尺寸与文字显示。\n\n### 问题修复\n\n- **岗位名称识别**：修复把“精选”等页面栏目误识别为岗位名称的问题；运行筛选或联系候选人时，岗位名称不同会列出双方名称，确认对应关系后可继续。\n- **联系失败信息**：修复失败详情过长时悬停提示超出屏幕的问题，长内容会在显示器范围内自动换行，并保留完整原始信息。\n- **页面与队列刷新**：修复系统设置首次打开可能报错，以及学历核验队列删除后重新导入时滚动条不再出现的问题。\n- **弹窗按钮显示**：修复高分辨率或中文字体环境下确认按钮文字显示不完整的问题。",
+  "release_notes": "### 新增功能\n\n- **高级扫描设置**：运行控制页新增可展开的扫描设置，可控制是否自动补全候选人详情、最多读取页数，以及是否为后续联系准备信息和最多准备人数。\n- **运行日志落盘**：每次运行会自动保存到本地日志文件，完整记录扫描过程、本轮参数设置、筛选完成后安排、AI 辅助评估启用或关闭状态、模型和响应超时，未启用的项目也会明确标记，便于后续复盘慢扫描、异常中断或风控触发点。\n- **岗位选择记忆**：运行页默认使用最近一次运行或新建保存的岗位，减少重复切换；仍可手动选择“全部岗位”依次处理。\n\n### 体验优化\n\n- **扫描节奏更保守**：默认滚动轮次降为 30，推荐范围调整为 20-100；DOM 页面滚动加入更自然的随机等待和阶段性长暂停，降低连续高频访问特征。\n- **联系信息准备更克制**：默认只为推荐及以上候选人准备打招呼所需信息，上限降为 15 人；单人间隔放慢为约 3-5 秒，每准备 3 人后额外暂停约 6-10 秒，避免对低确定性候选人产生额外访问。\n- **详情读取范围收敛**：自动补全候选人详情默认最多读取 8 页，单页读取间隔放慢为约 3-7 秒；页面已取得完整详情时不会再额外读取。\n- **运行日志更清爽**：界面日志只展示扫描过程，参数明细保留在本地日志文件中，运行时更容易关注当前进度。",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.5/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.5/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.23.5/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24/BOSS_ResumeFilter.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24/BOSS_ResumeFilter.dmg"
   }
 }
