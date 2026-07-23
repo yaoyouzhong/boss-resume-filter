@@ -294,6 +294,44 @@ def test_wait_for_pr_checks_waits_for_expected_head_sha_before_checks():
     sleep.assert_called_once_with(1)
 
 
+def test_wait_for_pr_checks_uses_actions_run_when_rollup_is_stale():
+    stale_rollup = {
+        "number": 8,
+        "state": "OPEN",
+        "isDraft": False,
+        "headRefName": "codex/test",
+        "headRefOid": "a" * 40,
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "UNSTABLE",
+        "statusCheckRollup": [{
+            "__typename": "CheckRun",
+            "name": "Stable regression",
+            "status": "IN_PROGRESS",
+            "conclusion": "",
+        }],
+    }
+    with (
+        patch.object(pr_delivery, "_pr_view", return_value=stale_rollup),
+        patch.object(
+            pr_delivery,
+            "_pull_request_run_state_for_head",
+            return_value=("success", "GitHub Actions run 已成功"),
+        ) as run_state,
+        patch.object(pr_delivery.time, "monotonic", return_value=0),
+        patch.object(pr_delivery.time, "sleep") as sleep,
+    ):
+        result = pr_delivery.wait_for_pr_checks(
+            8,
+            timeout=10,
+            poll_interval=1,
+            expected_head_sha="a" * 40,
+        )
+
+    assert result == stale_rollup
+    run_state.assert_called_once_with("codex/test", "a" * 40)
+    sleep.assert_not_called()
+
+
 def test_finalize_preserves_branches_when_gitee_is_not_synchronized():
     merge_sha = "a" * 40
     with (

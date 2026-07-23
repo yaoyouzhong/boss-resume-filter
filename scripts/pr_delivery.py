@@ -380,7 +380,7 @@ def _pr_view(number: int) -> dict[str, Any]:
             [
             "gh", "pr", "view", str(number),
             "--json",
-            "number,state,isDraft,url,headRefOid,baseRefOid,mergeable,mergeStateStatus,statusCheckRollup,mergeCommit",
+            "number,state,isDraft,url,headRefName,headRefOid,baseRefOid,mergeable,mergeStateStatus,statusCheckRollup,mergeCommit",
             ],
             f"读取 PR #{number} 状态",
         )
@@ -417,6 +417,48 @@ def _check_rollup_state(rollup: list[dict[str, Any]]) -> tuple[str, str]:
     if pending:
         return "pending", "、".join(pending)
     return "success", "全部检查通过"
+
+
+def _pull_request_run_state_for_head(
+    branch: str,
+    head_sha: str,
+) -> tuple[str, str] | None:
+    """Read pull_request workflow runs when PR check rollup is stale."""
+    if not branch or not head_sha:
+        return None
+    try:
+        runs = release_retry.run_json_query_with_retries(
+            _run,
+            [
+                "gh", "run", "list",
+                "--branch", branch,
+                "--event", "pull_request",
+                "--limit", "20",
+                "--json",
+                "databaseId,workflowName,status,conclusion,headSha,url",
+            ],
+            f"读取分支 {branch} 的 GitHub Actions 状态",
+        ) or []
+    except release_retry.RetryExhausted as exc:
+        _fail(str(exc))
+    matching = [run for run in runs if run.get("headSha") == head_sha]
+    if not matching:
+        return None
+    pending = [
+        str(run.get("workflowName") or run.get("databaseId") or "未命名工作流")
+        for run in matching
+        if str(run.get("status") or "").lower() != "completed"
+    ]
+    if pending:
+        return "pending", "、".join(pending)
+    failures = [
+        str(run.get("workflowName") or run.get("databaseId") or "未命名工作流")
+        for run in matching
+        if str(run.get("conclusion") or "").lower() != "success"
+    ]
+    if failures:
+        return "failed", "、".join(failures)
+    return "success", "GitHub Actions run 已成功"
 
 
 def wait_for_pr_checks(
@@ -459,6 +501,25 @@ def wait_for_pr_checks(
             _fail(f"PR #{number} 检查失败：{detail}")
         if pr.get("mergeable") == "CONFLICTING":
             _fail(f"PR #{number} 存在合并冲突")
+        run_state = None
+        if expected_head_sha:
+            run_state = _pull_request_run_state_for_head(
+                str(pr.get("headRefName") or ""), expected_head_sha,
+            )
+        if run_state is not None:
+            run_check_state, run_detail = run_state
+            if run_check_state == "failed":
+                _fail(f"PR #{number} GitHub Actions 失败：{run_detail}")
+            if (
+                run_check_state == "success"
+                and pr.get("mergeable") == "MERGEABLE"
+            ):
+                print(
+                    f"  [OK] PR #{number} GitHub Actions 已成功且可合并"
+                )
+                return pr
+            if run_check_state == "pending":
+                detail = run_detail
         if not rollup and now >= startup_deadline:
             _fail(
                 f"PR #{number} 未发现任何 PR Checks，可能是 GitHub Actions 未触发"
