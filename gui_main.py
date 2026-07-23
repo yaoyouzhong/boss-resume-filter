@@ -14306,6 +14306,31 @@ class BossFilterGUI:
             self.colors['text_primary'],
         )
 
+    @staticmethod
+    def _replace_run_summary_contact_queue_count(final_desc, added_count):
+        """Use the GUI contact-queue wording and count in the run summary."""
+        try:
+            count = max(0, int(added_count))
+        except (TypeError, ValueError):
+            count = 0
+        text = str(final_desc or "")
+        replacement = f"本轮已加联系清单：{count} 人"
+        updated = re.sub(
+            r"本轮(?:打招呼|已联系)：\d+ 人",
+            replacement,
+            text,
+            count=1,
+        )
+        if updated != text:
+            return updated
+
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            if line.startswith("最终保留："):
+                lines.insert(index + 1, replacement)
+                return "\n".join(lines)
+        return f"{text.rstrip()}\n{replacement}".strip()
+
     def update_progress(self):
         """更新进度条显示"""
         try:
@@ -14337,7 +14362,8 @@ class BossFilterGUI:
                         text=f"{percentage}%  {raw_desc}"
                     )
                 if percentage >= 100 and raw_desc.startswith('['):
-                    self._set_run_summary(raw_desc)
+                    summary_desc = self._replace_run_summary_contact_queue_count(raw_desc, 0)
+                    self._set_run_summary(summary_desc)
         except queue.Empty:
             pass
 
@@ -14842,13 +14868,19 @@ class BossFilterGUI:
                 self.progress_label.config(
                     text=f"100%  {progress_text}", image='', compound='text'
                 )
-                self._set_run_summary(final_desc)
+                summary_desc = self._replace_run_summary_contact_queue_count(final_desc, 0)
+                self._set_run_summary(summary_desc)
                 self.root.after(100, self.refresh_results)
                 if should_build_contact_list:
-                    self._add_scan_candidates_to_contact_queue(
+                    added_count = self._add_scan_candidates_to_contact_queue(
                         scanned_candidates,
                         contact_policy_text,
                     )
+                    summary_desc = self._replace_run_summary_contact_queue_count(
+                        final_desc,
+                        added_count,
+                    )
+                    self._set_run_summary(summary_desc)
 
             self.run_on_ui(finish_ui)
 

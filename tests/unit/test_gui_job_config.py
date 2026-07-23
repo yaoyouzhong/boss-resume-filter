@@ -6071,7 +6071,8 @@ def test_run_worker_preserves_scan_completion_state():
     assert "job_config_callback=job_config_callback" in run_block
     assert 'context="run"' in run_block
     assert 'self.progress_var.set(100)' in run_block
-    assert 'self._set_run_summary(final_desc)' in run_block
+    assert 'self._replace_run_summary_contact_queue_count(final_desc, 0)' in run_block
+    assert 'self._set_run_summary(summary_desc)' in run_block
     assert 'self._reset_run_summary()' in start_block
     assert 'self.run_summary_text_label' in create_block
     assert '本轮结果摘要' in create_block
@@ -6237,6 +6238,29 @@ def test_run_summary_splits_status_prefix_for_fixed_summary_card():
         "height": 5,
         "foreground": "#111",
     }
+
+
+def test_run_summary_uses_contact_queue_wording_and_actual_added_count():
+    assert BossFilterGUI._replace_run_summary_contact_queue_count(
+        "[完成] 筛选结果\n"
+        "最终保留：8 人\n"
+        "本轮打招呼：0 人",
+        3,
+    ) == (
+        "[完成] 筛选结果\n"
+        "最终保留：8 人\n"
+        "本轮已加联系清单：3 人"
+    )
+    assert BossFilterGUI._replace_run_summary_contact_queue_count(
+        "[完成] 筛选结果\n"
+        "最终保留：8 人\n"
+        "本轮已联系：0 人",
+        2,
+    ) == (
+        "[完成] 筛选结果\n"
+        "最终保留：8 人\n"
+        "本轮已加联系清单：2 人"
+    )
 
 
 def test_terminal_progress_line_is_short_and_defers_details_to_summary():
