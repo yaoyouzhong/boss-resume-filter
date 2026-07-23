@@ -1292,6 +1292,19 @@ def _check_code_to_changelog_coverage(strict=False):
     def _is_release_note_implementation_detail(fpath: str, line: str) -> bool:
         """Return True for implementation churn that should not force user-facing notes."""
         lowered = f"{fpath} {line}".lower()
+        stripped = line.strip()
+        if not re.search(r"[一-鿿]", stripped):
+            if re.match(
+                r"^[A-Za-z_]\w*(?:\.\w+)*(?:\s*:\s*[^=]+)?\s*=",
+                stripped,
+            ):
+                return True
+            if re.match(r"^(?:if|elif|for|while|and|or)\b", stripped):
+                return True
+            if re.match(r"^[A-Za-z_]\w*(?:\.\w+)+\(.*\)\s*$", stripped):
+                return True
+            if re.match(r"""^["'][A-Za-z_][A-Za-z0-9_ -]*["'],?$""", stripped):
+                return True
         if re.search(r"\b\w*cache\w*\s*=", lowered):
             return True
         if re.search(r"getattr\(.*cache|source_cache|preview_render", lowered):

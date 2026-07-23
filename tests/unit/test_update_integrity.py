@@ -124,6 +124,53 @@ diff --git a/gui_main.py b/gui_main.py
     assert "未覆盖信号" not in output.getvalue()
 
 
+def test_changelog_coverage_ignores_internal_assignments_and_control_flow():
+    diff_text = """\
+diff --git a/bossmaster.py b/bossmaster.py
+--- a/bossmaster.py
++++ b/bossmaster.py
++    retry_at = parsedate_to_datetime(raw)
++    listener = page.listen
++    if detail_listener:
++        or any(mark in page_text for mark in risk_marks)
++        detail_listener.stop()
++        "risk_blocked",
+"""
+
+    class Result:
+        returncode = 0
+        stdout = diff_text
+
+    originals = (
+        build._read_version,
+        build._extract_changelog_release,
+        build._get_last_tag,
+        build.subprocess.run,
+    )
+    try:
+        build._read_version = lambda: "2.24.1"
+        build._extract_changelog_release = lambda _version: (
+            "v2.24.1 — 测试",
+            "### 体验优化\n\n- 测试",
+        )
+        build._get_last_tag = lambda: "v2.24"
+        build.subprocess.run = lambda *args, **kwargs: Result()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            build._check_code_to_changelog_coverage(strict=True)
+    finally:
+        (
+            build._read_version,
+            build._extract_changelog_release,
+            build._get_last_tag,
+            build.subprocess.run,
+        ) = originals
+
+    assert "未检测到用户可见的新增代码信号" in output.getvalue()
+    assert "未覆盖信号" not in output.getvalue()
+
+
 def test_changelog_coverage_ignores_removed_nested_helper():
     diff_text = """\
 diff --git a/gui_main.py b/gui_main.py
