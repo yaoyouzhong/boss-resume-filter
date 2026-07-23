@@ -1,6 +1,7 @@
 """User-facing classification for greeting send failures."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -43,6 +44,28 @@ def diagnose_greeting_failure(message: str, *, page_required: bool = False) -> G
             "当前不在对应岗位推荐页",
             "先在浏览器打开该岗位的“推荐牛人”页面，再发送没有上下文的候选人。",
         )
+    status_match = re.search(
+        r"(?:\bHTTP\s+|\bcode\s*=\s*|业务码\s+)(4\d\d)\b",
+        msg,
+        re.IGNORECASE,
+    )
+    if status_match:
+        status = int(status_match.group(1))
+        if status in {401, 403, 408, 412, 418, 423, 425, 428, 429} or (
+            430 <= status <= 499 and status not in {431, 451}
+        ):
+            return GreetingFailureDiagnosis(
+                "risk_blocked",
+                "BOSS 接口疑似触发访问保护",
+                "停止本轮自动发送，等待冷却后再试；不要切换路径反复重试。",
+                terminal=True,
+            )
+        return GreetingFailureDiagnosis(
+            "client_error",
+            "BOSS 接口拒绝请求",
+            "停止本轮自动发送，检查登录状态和页面是否正常后再试。",
+            terminal=True,
+        )
     if _contains_any(msg, ("缺少打招呼上下文", "缺少", "字段", "上下文")):
         return GreetingFailureDiagnosis(
             "context",
@@ -54,13 +77,6 @@ def diagnose_greeting_failure(message: str, *, page_required: bool = False) -> G
             "pending",
             "发送结果无法确认",
             "先到 BOSS 沟通列表核实，确认没有发送成功前不要重复发。",
-        )
-    if _contains_any(msg, ("http 403", "http 412", "http 429", "code=403", "code=412", "code=429")):
-        return GreetingFailureDiagnosis(
-            "risk_blocked",
-            "BOSS 接口疑似风控",
-            "停止自动发送，稍后再试；不要切换路径反复重试。",
-            terminal=True,
         )
     if "http" in lower or "exception" in lower or "异常" in msg:
         return GreetingFailureDiagnosis(

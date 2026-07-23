@@ -1,5 +1,6 @@
 import ast
 import json
+import os
 import queue
 import re
 import sys
@@ -13,6 +14,7 @@ from unittest.mock import MagicMock, Mock, call, patch
 
 import gui_main
 import icons
+import bossmaster
 from gui_main import (
     BossFilterGUI,
     PAGE_SPECS,
@@ -4053,6 +4055,52 @@ def test_scan_messages_feed_run_log_explicitly():
     append_file.assert_called_once_with("开始扫描候选人")
 
 
+def test_operation_log_writes_both_files_without_feeding_scan_ui():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.log_queue = queue.Queue()
+
+    with patch.object(gui, "_append_runtime_log_file") as append_runtime, \
+            patch.object(gui, "_append_run_log_file") as append_run:
+        gui.append_operation_log("[联系候选人] Candidate A 发送成功")
+
+    assert gui.log_queue.empty()
+    append_runtime.assert_called_once_with(
+        "app",
+        "[联系候选人] Candidate A 发送成功",
+        add_timestamp=True,
+    )
+    append_run.assert_called_once_with("[联系候选人] Candidate A 发送成功")
+
+
+def test_operation_log_can_surface_critical_event_to_scan_ui():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.log_queue = queue.Queue()
+    message = "[访问保护] 联系候选人返回 HTTP 429，已停止后续发送"
+
+    with patch.object(gui, "_append_runtime_log_file") as append_runtime, \
+            patch.object(gui, "_append_run_log_file") as append_run:
+        gui.append_operation_log(message, show_in_run_ui=True)
+
+    assert gui.log_queue.get_nowait() == message
+    append_runtime.assert_called_once_with("app", message, add_timestamp=True)
+    append_run.assert_called_once_with(message)
+
+
+def test_boss_access_protection_message_reaches_ui_and_file_logs():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.log_queue = queue.Queue()
+    message = (
+        "[访问保护] BOSS 返回 HTTP 429（API 直调第 1 页）：请求过于频繁。"
+        "已停止后续 BOSS 访问"
+    )
+
+    with patch.object(gui, "_append_run_log_file") as append_file:
+        gui.append_run_log(message)
+
+    assert gui.log_queue.get_nowait() == message
+    append_file.assert_called_once_with(message)
+
+
 def test_run_log_appends_to_daily_file():
     with tempfile.TemporaryDirectory() as tmp_dir:
         log_dir = Path(tmp_dir) / "logs"
@@ -4066,6 +4114,58 @@ def test_run_log_appends_to_daily_file():
             gui._append_run_log_file("开始扫描候选人")
 
         assert (log_dir / "run-20260723.log").read_text(encoding="utf-8") == "开始扫描候选人\n"
+
+
+def test_runtime_logs_are_separated_and_sensitive_values_are_redacted():
+    with tempfile.TemporaryDirectory() as tmp_dir, \
+            patch("gui_main.RUN_LOG_DIR", Path(tmp_dir)):
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+        gui.log_queue = queue.Queue()
+
+        gui.append_run_log(
+            'BOSS {"securityId":"top-secret","access_token":"token-value",'
+            '"expectId":"expect-value"}'
+        )
+        gui.append_log("请求头 Authorization: Bearer bearer-value")
+
+        run_log = next(Path(tmp_dir).glob("run-*.log"))
+        app_log = next(Path(tmp_dir).glob("app-*.log"))
+        run_text = run_log.read_text(encoding="utf-8")
+        app_text = app_log.read_text(encoding="utf-8")
+
+    assert "top-secret" not in run_text
+    assert "token-value" not in run_text
+    assert "expect-value" not in run_text
+    assert "bearer-value" not in app_text
+    assert '"securityId":"***"' in run_text
+    assert '"expectId":"***"' in run_text
+    assert "Authorization: ***" in app_text
+    assert gui.log_queue.get_nowait() == (
+        'BOSS {"securityId":"***","access_token":"***","expectId":"***"}'
+    )
+
+
+def test_runtime_log_cleanup_only_removes_expired_owned_logs():
+    with tempfile.TemporaryDirectory() as tmp_dir, \
+            patch("gui_main.RUN_LOG_DIR", Path(tmp_dir)):
+        root = Path(tmp_dir)
+        expired_run = root / "run-20260101.log"
+        expired_app = root / "app-20260101.log"
+        unrelated = root / "notes-20260101.log"
+        current_run = root / "run-current.log"
+        for path in (expired_run, expired_app, unrelated, current_run):
+            path.write_text(path.name, encoding="utf-8")
+        old_time = time.time() - (gui_main.RUNTIME_LOG_RETENTION_DAYS + 2) * 86400
+        for path in (expired_run, expired_app, unrelated):
+            os.utime(path, (old_time, old_time))
+
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+        gui._cleanup_runtime_logs_once()
+
+        assert not expired_run.exists()
+        assert not expired_app.exists()
+        assert unrelated.exists()
+        assert current_run.exists()
 
 
 def test_run_settings_snapshot_writes_only_to_file_log():
@@ -4087,7 +4187,7 @@ def test_run_settings_snapshot_writes_only_to_file_log():
     ]
 
 
-def test_run_log_sink_is_only_used_by_run_control_methods():
+def test_scan_ui_log_sink_is_limited_to_run_control():
     tree = ast.parse(Path("gui_main.py").read_text(encoding="utf-8"))
     gui_class = next(
         node for node in tree.body
@@ -4694,6 +4794,8 @@ def _contact_worker_gui(candidate):
     gui._reload_greet_queue_candidate = Mock(return_value=(candidate, ""))
     gui._persist_greet_queue = Mock()
     gui.append_log = Mock()
+    gui.append_run_log = Mock()
+    gui.append_operation_log = Mock()
     gui.refresh_results = Mock()
     gui.refresh_home_stats = Mock()
     gui._refresh_greet_queue_dialog = Mock()
@@ -4725,7 +4827,10 @@ def test_contact_success_with_local_save_failure_stays_pending_verification():
 
     assert item["status"] == "待核实"
     assert "本地状态保存失败" in item["message"]
-    assert any("成功 0 人" in call.args[0] for call in gui.append_log.call_args_list)
+    assert any(
+        "成功 0 人" in call.args[0]
+        for call in gui.append_operation_log.call_args_list
+    )
 
 
 def test_contact_worker_exception_recovers_sending_item_as_pending_verification():
@@ -4807,6 +4912,158 @@ def test_contact_worker_keeps_delay_between_candidates_only():
     sleep.assert_called_once_with(2.5)
 
 
+def test_contact_worker_stops_after_terminal_http_403():
+    first = {
+        "geek_id": "g1",
+        "job_name": "Java Engineer",
+        "name": "Candidate A",
+        "match_score": 80,
+        "greet_context": {"chat_start": {"jid": "j1"}},
+    }
+    second = {
+        "geek_id": "g2",
+        "job_name": "Java Engineer",
+        "name": "Candidate B",
+        "match_score": 80,
+        "greet_context": {"chat_start": {"jid": "j2"}},
+    }
+    gui, first_item = _contact_worker_gui(first)
+    second_item = gui._build_greet_queue_item(second)
+    gui.greet_queue_items.append(second_item)
+    gui._reload_greet_queue_candidate = Mock(
+        side_effect=lambda item: (item["candidate"], "")
+    )
+
+    with patch(
+        "bossmaster.send_greeting_with_context",
+        return_value=(False, "上下文打招呼失败: HTTP 403 请求未成功"),
+    ) as send:
+        gui._run_greet_queue_worker()
+
+    assert send.call_count == 1
+    assert first_item["status"] == "发送失败"
+    assert second_item["status"] == "待发送"
+    assert any(
+        "4xx" in call.args[0]
+        and call.kwargs.get("show_in_run_ui") is True
+        for call in gui.append_operation_log.call_args_list
+    )
+    assert any(
+        "已停止后续发送" in call.args[0]
+        for call in gui.append_operation_log.call_args_list
+    )
+
+
+def test_contact_worker_stops_after_shared_access_block():
+    first = {
+        "geek_id": "g1",
+        "job_name": "Java Engineer",
+        "name": "Candidate A",
+        "match_score": 80,
+        "greet_context": {"chat_start": {"jid": "j1"}},
+    }
+    second = {
+        "geek_id": "g2",
+        "job_name": "Java Engineer",
+        "name": "Candidate B",
+        "match_score": 80,
+        "greet_context": {"chat_start": {"jid": "j2"}},
+    }
+    gui, first_item = _contact_worker_gui(first)
+    second_item = gui._build_greet_queue_item(second)
+    gui.greet_queue_items.append(second_item)
+    gui._reload_greet_queue_candidate = Mock(
+        side_effect=lambda item: (item["candidate"], "")
+    )
+    risk = bossmaster.activate_boss_access_block(
+        429,
+        "操作频繁",
+        "发起沟通",
+        cooldown_seconds=30,
+    )
+
+    with patch(
+        "bossmaster.send_greeting_with_context",
+        side_effect=risk,
+    ) as send:
+        gui._run_greet_queue_worker()
+
+    assert send.call_count == 1
+    assert first_item["status"] == "发送失败"
+    assert second_item["status"] == "待发送"
+    assert any(
+        "[访问保护]" in call.args[0]
+        and call.kwargs.get("show_in_run_ui") is True
+        for call in gui.append_operation_log.call_args_list
+    )
+
+
+def test_contact_worker_stops_when_job_page_identity_triggers_access_block():
+    first = {
+        "geek_id": "g1",
+        "job_name": "Java Engineer",
+        "name": "Candidate A",
+        "match_score": 80,
+    }
+    second = {
+        "geek_id": "g2",
+        "job_name": "Java Engineer",
+        "name": "Candidate B",
+        "match_score": 80,
+    }
+    gui, first_item = _contact_worker_gui(first)
+    second_item = gui._build_greet_queue_item(second)
+    gui.greet_queue_items.append(second_item)
+    gui._reload_greet_queue_candidate = Mock(
+        side_effect=lambda item: (item["candidate"], "")
+    )
+    risk = bossmaster.activate_boss_access_block(
+        429,
+        "岗位身份请求过于频繁",
+        "岗位身份读取",
+        cooldown_seconds=30,
+    )
+    gui._ensure_greet_queue_candidate_page_ready = Mock(side_effect=risk)
+
+    with patch("bossmaster.send_greeting_on_list_page") as send:
+        gui._run_greet_queue_worker()
+
+    send.assert_not_called()
+    assert first_item["status"] == "待发送"
+    assert "访问保护" in first_item["message"]
+    assert second_item["status"] == "待发送"
+    assert any(
+        "准备阶段" in call.args[0]
+        and call.kwargs.get("show_in_run_ui") is True
+        for call in gui.append_operation_log.call_args_list
+    )
+
+
+def test_contact_page_identity_does_not_swallow_access_block():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.browser_page = object()
+    gui._get_greet_queue_page_state = Mock(return_value=(
+        True,
+        "https://www.zhipin.com/web/chat/recommend",
+        "",
+        "",
+    ))
+    risk = bossmaster.activate_boss_access_block(
+        429,
+        "岗位身份请求过于频繁",
+        "岗位身份读取",
+        cooldown_seconds=30,
+    )
+
+    try:
+        with patch("bossmaster.get_iframe", return_value=None), \
+                patch("bossmaster._read_recommend_page_identity", side_effect=risk):
+            gui._greet_queue_candidate_page_ready({"job_name": "Java Engineer"})
+        assert False, "job-page risk must reach the queue-level circuit breaker"
+    except bossmaster.ApiRiskBlocked as exc:
+        assert exc.status == 429
+
+
 def test_browser_reconnect_method_reuses_existing_live_page():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.browser_page = Mock()
@@ -4819,7 +5076,7 @@ def test_browser_reconnect_method_reuses_existing_live_page():
 
 def test_contact_browser_reconnect_launches_recommend_page_when_chrome_is_absent():
     gui = BossFilterGUI.__new__(BossFilterGUI)
-    gui.append_log = Mock()
+    gui.append_operation_log = Mock()
     gui._try_reconnect_browser = Mock(return_value=False)
     gui._launch_boss_browser = Mock(return_value=True)
 
@@ -4827,7 +5084,7 @@ def test_contact_browser_reconnect_launches_recommend_page_when_chrome_is_absent
     gui._launch_boss_browser.assert_called_once_with()
     assert any(
         "自动启动推荐牛人页面" in call.args[0]
-        for call in gui.append_log.call_args_list
+        for call in gui.append_operation_log.call_args_list
     )
 
 
@@ -5216,7 +5473,7 @@ def test_greet_queue_click_prepares_browser_before_confirmation():
     gui._ensure_greet_queue_loaded = Mock()
     gui._confirm_start_greet_queue = Mock(return_value=True)
     gui._update_greet_queue_action_states = Mock()
-    gui.append_log = Mock()
+    gui.append_operation_log = Mock()
 
     with patch("gui_main.threading.Thread") as thread:
         gui._start_greet_queue()
@@ -5289,7 +5546,7 @@ def test_contact_queue_sends_only_selected_pending_candidate():
     gui._ensure_greet_queue_loaded = Mock()
     gui._selected_greet_queue_items = Mock(return_value=[selected])
     gui._update_greet_queue_action_states = Mock()
-    gui.append_log = Mock()
+    gui.append_operation_log = Mock()
 
     with patch("gui_main.threading.Thread") as thread:
         gui._start_greet_queue()
@@ -5310,7 +5567,7 @@ def test_contact_browser_readiness_only_checks_selected_pending_candidates():
     other = {"status": "待发送", "candidate": {}}
     gui.greet_queue_items = [selected, other]
     gui.browser_page = Mock()
-    gui.append_log = Mock()
+    gui.append_operation_log = Mock()
     gui._get_greet_queue_page_state = Mock(
         return_value=(True, "https://www.zhipin.com/web/geek/chat", "", "")
     )
@@ -5418,7 +5675,7 @@ def test_browser_preflight_waits_for_login_before_showing_confirmation():
     gui._is_browser_page_alive = Mock(return_value=True)
     gui._set_greet_queue_prepare_status = Mock()
     gui._finish_greet_queue_preparation = Mock()
-    gui.append_log = Mock()
+    gui.append_operation_log = Mock()
     gui._get_greet_queue_page_state = Mock(side_effect=[
         (False, "https://www.zhipin.com/web/user/", "", "当前停留在 BOSS 登录页，请先完成登录"),
         (True, "https://www.zhipin.com/web/chat/recommend", "", ""),
@@ -5432,7 +5689,7 @@ def test_browser_preflight_waits_for_login_before_showing_confirmation():
     assert gui._get_greet_queue_page_state.call_count == 2
     assert any(
         "请在 Chrome 中完成 BOSS 登录" in call.args[0]
-        for call in gui.append_log.call_args_list
+        for call in gui.append_operation_log.call_args_list
     )
     gui._finish_greet_queue_preparation.assert_called_once_with(pending, "")
 
@@ -5448,7 +5705,7 @@ def test_browser_preflight_navigates_existing_chrome_to_recommend_page():
     gui._is_browser_page_alive = Mock(return_value=True)
     gui._set_greet_queue_prepare_status = Mock()
     gui._finish_greet_queue_preparation = Mock()
-    gui.append_log = Mock()
+    gui.append_operation_log = Mock()
     gui._get_greet_queue_page_state = Mock(side_effect=[
         (False, "https://example.com", "", "当前页面不是 BOSS 直聘页面"),
         (True, "https://www.zhipin.com/web/chat/recommend", "", ""),

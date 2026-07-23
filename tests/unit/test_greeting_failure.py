@@ -23,6 +23,34 @@ def test_greeting_failure_formats_raw_message_with_action():
     assert "原始信息" in text
 
 
+def test_http_403_takes_priority_over_context_wording_and_stops_queue():
+    diagnosis = diagnose_greeting_failure(
+        "上下文打招呼失败: HTTP 403 请求未成功"
+    )
+
+    assert diagnosis.category == "risk_blocked"
+    assert diagnosis.terminal is True
+    assert "访问保护" in diagnosis.title
+
+
+def test_ordinary_http_4xx_stops_the_current_send_chain_without_calling_it_risk():
+    diagnosis = diagnose_greeting_failure("上下文打招呼失败: HTTP 404 接口不存在")
+
+    assert diagnosis.category == "client_error"
+    assert diagnosis.terminal is True
+    assert "拒绝请求" in diagnosis.title
+    assert "访问保护" not in diagnosis.title
+
+
+def test_business_risk_code_takes_priority_over_context_wording():
+    diagnosis = diagnose_greeting_failure(
+        "上下文打招呼失败: 业务码 403 forbidden"
+    )
+
+    assert diagnosis.category == "risk_blocked"
+    assert diagnosis.terminal is True
+
+
 def test_unknown_greeting_failure_keeps_raw_detail_without_claiming_it_is_unrecognized():
     raw = "服务端返回 candidate status conflict"
     text = format_greeting_failure_message(raw)
