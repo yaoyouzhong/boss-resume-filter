@@ -82,7 +82,7 @@ def test_scan_summary_separates_rule_passed_and_ai_final_counts():
         "AI 复核：成功 4 人\n"
         "AI 淘汰：1 人\n"
         "最终保留：12 人\n"
-        "本轮打招呼：0 人"
+        "本轮已联系：0 人"
     )
 
 
@@ -102,7 +102,7 @@ def test_scan_summary_without_ai_does_not_repeat_final_count():
         "规则筛选：12 / 100 人通过\n"
         "AI 复核：未执行\n"
         "最终保留：12 人\n"
-        "本轮打招呼：3 人"
+        "本轮已联系：3 人"
     )
 
 
@@ -124,7 +124,7 @@ def test_scan_summary_exposes_ai_failures_even_when_all_evaluations_fail():
         "AI 复核：成功 0 人，失败 13 人（按规则结果保留）\n"
         "AI 淘汰：0 人\n"
         "最终保留：13 人\n"
-        "本轮打招呼：0 人"
+        "本轮已联系：0 人"
     )
 
 

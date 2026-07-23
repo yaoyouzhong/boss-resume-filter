@@ -5564,7 +5564,7 @@ def _format_scan_summary(
         lines.append("AI 复核：未执行")
     lines.extend([
         f"最终保留：{total_passed} 人",
-        f"本轮打招呼：{total_greeted} 人",
+        f"本轮已联系：{total_greeted} 人",
     ])
     if detail:
         lines.extend(["", detail])
