@@ -306,7 +306,10 @@ def prepare_candidate(
         )
     with _timed_step("等待 PR Checks"):
         checked = pr_delivery.wait_for_pr_checks(
-            int(pr["number"]), timeout=timeout, poll_interval=poll_interval,
+            int(pr["number"]),
+            timeout=timeout,
+            poll_interval=poll_interval,
+            expected_head_sha=gate["head_sha"],
         )
     candidate_sha = gate["head_sha"]
     with _timed_step("生成版本内容审核"):
@@ -352,7 +355,10 @@ def _verify_candidate(
     )
     release_content_review.require_approved_content(review, state["content_sha"])
     pr = pr_delivery.wait_for_pr_checks(
-        int(state["pr_number"]), timeout=timeout, poll_interval=poll_interval,
+        int(state["pr_number"]),
+        timeout=timeout,
+        poll_interval=poll_interval,
+        expected_head_sha=sha,
     )
     if pr.get("headRefOid") != sha:
         _fail("PR head 在确认前发生变化；必须重新展示版本内容")

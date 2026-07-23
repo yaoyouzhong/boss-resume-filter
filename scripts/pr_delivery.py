@@ -273,12 +273,17 @@ def _find_delivery_pr(branch: str, head_sha: str) -> dict[str, Any] | None:
         ) or []
     except release_retry.RetryExhausted as exc:
         _fail(str(exc))
-    matching = [pr for pr in candidates if pr.get("headRefOid") == head_sha]
-    open_prs = [pr for pr in matching if pr.get("state") == "OPEN"]
+    open_prs = [pr for pr in candidates if pr.get("state") == "OPEN"]
     if open_prs:
         if open_prs[0].get("isDraft"):
             _fail("已存在的 PR 仍为 Draft，请先转为 Ready for review")
+        if open_prs[0].get("headRefOid") != head_sha:
+            print(
+                f"  [复用] PR #{open_prs[0]['number']} 当前 head 尚未同步到目标提交，"
+                "后续等待阶段会继续校验"
+            )
         return open_prs[0]
+    matching = [pr for pr in candidates if pr.get("headRefOid") == head_sha]
     merged_prs = [pr for pr in matching if pr.get("state") == "MERGED"]
     if merged_prs:
         return merged_prs[0]
@@ -420,6 +425,7 @@ def wait_for_pr_checks(
     timeout: int = DEFAULT_CHECK_TIMEOUT,
     poll_interval: int = DEFAULT_POLL_INTERVAL,
     check_startup_timeout: int = DEFAULT_CHECK_STARTUP_TIMEOUT,
+    expected_head_sha: str = "",
 ) -> dict[str, Any]:
     """Wait until every reported PR check succeeds and the PR is clean."""
     started = time.monotonic()
@@ -434,6 +440,19 @@ def wait_for_pr_checks(
             _fail(f"PR #{number} 不再处于可交付状态：{pr.get('state')}")
         if pr.get("isDraft"):
             _fail(f"PR #{number} 仍为 Draft")
+        if expected_head_sha and pr.get("headRefOid") != expected_head_sha:
+            if now >= startup_deadline:
+                _fail(
+                    f"PR #{number} head 未同步到目标提交 {expected_head_sha[:12]}，"
+                    f"当前为 {str(pr.get('headRefOid') or '')[:12]}"
+                )
+            detail = "等待 PR head 同步到最新推送"
+            if now >= deadline:
+                _fail(f"等待 PR #{number} 检查超时：{detail}")
+            elapsed = int(now - started)
+            print(f"  [等待] PR #{number}: {detail}（已等待 {elapsed}s）")
+            time.sleep(max(1, poll_interval))
+            continue
         rollup = pr.get("statusCheckRollup") or []
         check_state, detail = _check_rollup_state(rollup)
         if check_state == "failed":
@@ -580,7 +599,10 @@ def deliver(
     print("\n>>> 推送并创建/复用 PR")
     pr = _push_and_create_pr(branch, gate["head_sha"], title=title)
     pr = wait_for_pr_checks(
-        int(pr["number"]), timeout=timeout, poll_interval=poll_interval
+        int(pr["number"]),
+        timeout=timeout,
+        poll_interval=poll_interval,
+        expected_head_sha=gate["head_sha"],
     )
     merged = _merge_pr(pr)
     merge_sha = (merged.get("mergeCommit") or {}).get("oid")

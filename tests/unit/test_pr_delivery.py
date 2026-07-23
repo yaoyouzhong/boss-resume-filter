@@ -267,6 +267,33 @@ def test_wait_for_pr_checks_fails_fast_when_no_checks_are_created():
     sleep.assert_called_once_with(1)
 
 
+def test_wait_for_pr_checks_waits_for_expected_head_sha_before_checks():
+    stale = {
+        "number": 8,
+        "state": "OPEN",
+        "isDraft": False,
+        "headRefOid": "a" * 40,
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "statusCheckRollup": [],
+    }
+    with (
+        patch.object(pr_delivery, "_pr_view", return_value=stale),
+        patch.object(pr_delivery.time, "monotonic", side_effect=[0, 0, 2]),
+        patch.object(pr_delivery.time, "sleep") as sleep,
+    ):
+        with _raises(pr_delivery.PRDeliveryError, "head 未同步"):
+            pr_delivery.wait_for_pr_checks(
+                8,
+                timeout=10,
+                poll_interval=1,
+                check_startup_timeout=1,
+                expected_head_sha="b" * 40,
+            )
+
+    sleep.assert_called_once_with(1)
+
+
 def test_finalize_preserves_branches_when_gitee_is_not_synchronized():
     merge_sha = "a" * 40
     with (
@@ -514,6 +541,26 @@ def test_pr_creation_retries_transient_new_branch_propagation_failure():
 
     assert result == pr
     sleep.assert_called_once_with(2)
+
+
+def test_existing_open_pr_is_reused_even_when_head_ref_is_stale():
+    branch = "codex/test"
+    target_head = "b" * 40
+    existing = {
+        "number": 10,
+        "state": "OPEN",
+        "isDraft": False,
+        "url": "https://github.example/pr/10",
+        "headRefOid": "a" * 40,
+    }
+    with patch.object(
+        pr_delivery.release_retry,
+        "run_json_query_with_retries",
+        return_value=[existing],
+    ):
+        result = pr_delivery._find_delivery_pr(branch, target_head)
+
+    assert result == existing
 
 
 def test_pr_creation_reports_final_github_error_after_three_retries():
