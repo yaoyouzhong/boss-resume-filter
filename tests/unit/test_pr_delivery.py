@@ -242,6 +242,31 @@ def test_wait_for_pr_checks_stops_before_merge_on_failure():
             pr_delivery.wait_for_pr_checks(8)
 
 
+def test_wait_for_pr_checks_fails_fast_when_no_checks_are_created():
+    clean_without_checks = {
+        "number": 8,
+        "state": "OPEN",
+        "isDraft": False,
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "statusCheckRollup": [],
+    }
+    with (
+        patch.object(pr_delivery, "_pr_view", return_value=clean_without_checks),
+        patch.object(pr_delivery.time, "monotonic", side_effect=[0, 0, 2]),
+        patch.object(pr_delivery.time, "sleep") as sleep,
+    ):
+        with _raises(pr_delivery.PRDeliveryError, "未发现任何 PR Checks"):
+            pr_delivery.wait_for_pr_checks(
+                8,
+                timeout=10,
+                poll_interval=1,
+                check_startup_timeout=1,
+            )
+
+    sleep.assert_called_once_with(1)
+
+
 def test_finalize_preserves_branches_when_gitee_is_not_synchronized():
     merge_sha = "a" * 40
     with (

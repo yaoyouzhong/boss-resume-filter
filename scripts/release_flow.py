@@ -13,6 +13,8 @@ import os
 import re
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +89,17 @@ def _write_state(state: dict[str, Any]) -> None:
         encoding="utf-8",
     )
     os.replace(temporary, STATE_PATH)
+
+
+@contextmanager
+def _timed_step(label: str):
+    started = time.perf_counter()
+    print(f"\n>>> {label}...")
+    try:
+        yield
+    finally:
+        elapsed = time.perf_counter() - started
+        print(f"  [耗时] {label}: {elapsed:.1f}s")
 
 
 def expected_start_authorization(version: str, branches: list[str]) -> str:
@@ -266,32 +279,41 @@ def prepare_candidate(
         expected_start_authorization(version, effective),
         "一键发布",
     )
-    notes_path = _validate_notes_file(notes_file)
-    _assert_clean()
-    master_sha = _fetch_and_verify_masters()
-    release_prepare.assert_target_tag_available(version)
-    if len(effective) > 1:
-        candidate_branch = _prepare_aggregate_branch(
-            version, effective, _tested_map(tested_branches), master_sha,
-        )
-    else:
-        candidate_branch = _prepare_single_branch(effective, master_sha)
+    with _timed_step("校验授权、说明文件与工作区"):
+        notes_path = _validate_notes_file(notes_file)
+        _assert_clean()
+    with _timed_step("拉取并核验 GitHub/Gitee master"):
+        master_sha = _fetch_and_verify_masters()
+    with _timed_step("核验目标版本 tag"):
+        release_prepare.assert_target_tag_available(version)
+    with _timed_step("准备候选分支"):
+        if len(effective) > 1:
+            candidate_branch = _prepare_aggregate_branch(
+                version, effective, _tested_map(tested_branches), master_sha,
+            )
+        else:
+            candidate_branch = _prepare_single_branch(effective, master_sha)
 
-    _apply_release_materials(version, notes_path)
-    gate = pr_delivery.preflight(candidate_branch, run_tests=False)
-    pr = pr_delivery._push_and_create_pr(
-        candidate_branch,
-        gate["head_sha"],
-        title=f"chore: 准备 v{version} 正式发布",
-    )
-    checked = pr_delivery.wait_for_pr_checks(
-        int(pr["number"]), timeout=timeout, poll_interval=poll_interval,
-    )
+    with _timed_step("同步发布材料并运行严格门禁"):
+        _apply_release_materials(version, notes_path)
+    with _timed_step("本地 PR 预检"):
+        gate = pr_delivery.preflight(candidate_branch, run_tests=False)
+    with _timed_step("推送并创建或复用 PR"):
+        pr = pr_delivery._push_and_create_pr(
+            candidate_branch,
+            gate["head_sha"],
+            title=f"chore: 准备 v{version} 正式发布",
+        )
+    with _timed_step("等待 PR Checks"):
+        checked = pr_delivery.wait_for_pr_checks(
+            int(pr["number"]), timeout=timeout, poll_interval=poll_interval,
+        )
     candidate_sha = gate["head_sha"]
-    candidate_tree = _tree_sha(candidate_sha)
-    review = release_content_review.review_release_candidate(
-        version, candidate_sha, candidate_tree,
-    )
+    with _timed_step("生成版本内容审核"):
+        candidate_tree = _tree_sha(candidate_sha)
+        review = release_content_review.review_release_candidate(
+            version, candidate_sha, candidate_tree,
+        )
     state = {
         "phase": "awaiting_content_approval",
         "version": version,

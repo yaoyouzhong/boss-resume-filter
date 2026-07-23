@@ -31,6 +31,7 @@ import release_retry  # noqa: E402
 
 DEFAULT_CHECK_TIMEOUT = 30 * 60
 DEFAULT_POLL_INTERVAL = 10
+DEFAULT_CHECK_STARTUP_TIMEOUT = 90
 SUCCESS_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILURE_CONCLUSIONS = {
     "ACTION_REQUIRED",
@@ -418,10 +419,14 @@ def wait_for_pr_checks(
     *,
     timeout: int = DEFAULT_CHECK_TIMEOUT,
     poll_interval: int = DEFAULT_POLL_INTERVAL,
+    check_startup_timeout: int = DEFAULT_CHECK_STARTUP_TIMEOUT,
 ) -> dict[str, Any]:
     """Wait until every reported PR check succeeds and the PR is clean."""
-    deadline = time.monotonic() + max(1, timeout)
+    started = time.monotonic()
+    deadline = started + max(1, timeout)
+    startup_deadline = started + max(1, min(check_startup_timeout, timeout))
     while True:
+        now = time.monotonic()
         pr = _pr_view(number)
         if pr.get("state") == "MERGED":
             return pr
@@ -429,11 +434,17 @@ def wait_for_pr_checks(
             _fail(f"PR #{number} 不再处于可交付状态：{pr.get('state')}")
         if pr.get("isDraft"):
             _fail(f"PR #{number} 仍为 Draft")
-        check_state, detail = _check_rollup_state(pr.get("statusCheckRollup") or [])
+        rollup = pr.get("statusCheckRollup") or []
+        check_state, detail = _check_rollup_state(rollup)
         if check_state == "failed":
             _fail(f"PR #{number} 检查失败：{detail}")
         if pr.get("mergeable") == "CONFLICTING":
             _fail(f"PR #{number} 存在合并冲突")
+        if not rollup and now >= startup_deadline:
+            _fail(
+                f"PR #{number} 未发现任何 PR Checks，可能是 GitHub Actions 未触发"
+                "或 workflow 配置/权限异常；请先检查 Actions 页面，避免继续空等"
+            )
         if check_state == "success":
             if (
                 pr.get("mergeable") == "MERGEABLE"
@@ -445,9 +456,10 @@ def wait_for_pr_checks(
                 f"PR #{number} 检查通过但合并状态为 "
                 f"{pr.get('mergeable')}/{pr.get('mergeStateStatus')}"
             )
-        if time.monotonic() >= deadline:
+        if now >= deadline:
             _fail(f"等待 PR #{number} 检查超时：{detail}")
-        print(f"  [等待] PR #{number}: {detail}")
+        elapsed = int(now - started)
+        print(f"  [等待] PR #{number}: {detail}（已等待 {elapsed}s）")
         time.sleep(max(1, poll_interval))
 
 
