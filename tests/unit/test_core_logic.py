@@ -612,7 +612,7 @@ def test_parse_greet_context_from_detail_url_builds_chat_start_payload():
     }
 
 
-def test_context_capture_skips_candidates_planned_for_immediate_auto_greet():
+def test_context_capture_skips_auto_greet_and_pending_candidates():
     candidates = [
         {"geek_id": "strong", "name": "强推", "match_score": 80, "recommend_level": "强烈推荐"},
         {"geek_id": "recommend", "name": "推荐", "match_score": 70, "recommend_level": "推荐"},
@@ -638,7 +638,7 @@ def test_context_capture_skips_candidates_planned_for_immediate_auto_greet():
         },
     )
 
-    assert {c["geek_id"] for c in selected} == {"pending", "review"}
+    assert {c["geek_id"] for c in selected} == {"review"}
 
 
 def test_context_capture_keeps_auto_greet_candidates_beyond_run_limit():
@@ -734,6 +734,88 @@ def test_context_first_capture_logs_saved():
     assert result == 1
     assert candidate["greet_context"] == context
     assert "已保存 新候选人 的打招呼上下文" in output.getvalue()
+
+
+def test_context_capture_uses_slow_per_candidate_delay_and_three_item_batches():
+    assert bossmaster.GREET_CONTEXT_DELAY_CENTER == 4.0
+    assert bossmaster.GREET_CONTEXT_DELAY_SPREAD == 2.0
+    assert bossmaster.GREET_CONTEXT_BATCH_SIZE == 3
+    assert bossmaster.GREET_CONTEXT_BATCH_PAUSE_CENTER == 8.0
+    assert bossmaster.GREET_CONTEXT_BATCH_PAUSE_SPREAD == 4.0
+
+
+def test_dom_scan_scroll_delay_uses_named_conservative_constants():
+    source = Path(bossmaster.__file__).read_text(encoding="utf-8")
+    assert "_human_delay(DOM_SCROLL_DELAY_CENTER, DOM_SCROLL_DELAY_SPREAD)" in source
+    assert "random.randint(DOM_SCROLL_BATCH_MIN, DOM_SCROLL_BATCH_MAX)" in source
+    assert "_human_delay(DOM_SCROLL_BATCH_PAUSE_CENTER, DOM_SCROLL_BATCH_PAUSE_SPREAD)" in source
+    assert "_human_delay(0.8, 0.5)" not in source
+
+
+def test_smart_scan_can_disable_context_capture():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+        listen = object()
+
+    job_info = {
+        "job_id": "job-context-off",
+        "job_name": "Java 工程师",
+        "rule_key": "java",
+        "rule": {"min_exp": 0, "edu": "不限", "keywords": ["Java"]},
+    }
+    raw_candidates = [{
+        "geek_id": "g-context-off",
+        "name": "张三",
+        "summary": "本科，5 年 Java",
+    }]
+
+    with patch.object(bossmaster, "load_candidates_all", return_value=[]), \
+         patch.object(bossmaster, "extract_candidates_by_comprehensive_analysis", return_value=raw_candidates), \
+         patch.object(bossmaster, "filter_candidate", return_value=(True, 75, {"skill_matches": ["Java"]})), \
+         patch.object(bossmaster, "_select_greet_context_candidates") as mock_select, \
+         patch.object(bossmaster, "enrich_greet_contexts_for_candidates") as mock_enrich, \
+         patch.object(bossmaster, "merge_candidates_all"):
+        bossmaster.smart_scan_candidates(
+            FakePage(),
+            job_info,
+            max_rounds=1,
+            greet_context_capture=False,
+        )
+
+    mock_select.assert_not_called()
+    mock_enrich.assert_not_called()
+
+
+def test_smart_scan_passes_context_capture_limit_to_prioritizer():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+        listen = object()
+
+    job_info = {
+        "job_id": "job-context-limit",
+        "job_name": "Java 工程师",
+        "rule_key": "java",
+        "rule": {"min_exp": 0, "edu": "不限", "keywords": ["Java"]},
+    }
+    raw_candidates = [
+        {"geek_id": f"g-{i}", "name": f"候选人{i}", "summary": "本科，5 年 Java"}
+        for i in range(3)
+    ]
+
+    with patch.object(bossmaster, "load_candidates_all", return_value=[]), \
+         patch.object(bossmaster, "extract_candidates_by_comprehensive_analysis", return_value=raw_candidates), \
+         patch.object(bossmaster, "filter_candidate", return_value=(True, 75, {"skill_matches": ["Java"]})), \
+         patch.object(bossmaster, "_select_greet_context_candidates", return_value=raw_candidates), \
+         patch.object(bossmaster, "_prioritize_greet_context_candidates", return_value=[]) as mock_prioritize, \
+         patch.object(bossmaster, "merge_candidates_all"):
+        bossmaster.smart_scan_candidates(
+            FakePage(),
+            job_info,
+            max_rounds=1,
+            greet_context_limit=2,
+        )
+
+    assert mock_prioritize.call_args.kwargs["limit"] == 2
 
 
 def test_extract_job_salary_range_handles_numeric_and_negotiable_text():
@@ -1130,7 +1212,7 @@ def test_listener_first_scan_refreshes_to_capture_first_screen_api():
     mock_dom_extract.assert_called_once()
 
 
-def test_api_enrichment_uses_page_cap_and_random_delay():
+def test_api_enrichment_stops_after_three_misses_within_page_cap():
     class FakeFrame:
         def run_js(self, script):
             if script == 'return location.href':
@@ -1154,7 +1236,7 @@ def test_api_enrichment_uses_page_cap_and_random_delay():
             patch('bossmaster._detect_captcha', return_value=(False, "")), \
             patch('bossmaster._extract_cards_batch', return_value=dom_batch) as mock_dom_extract:
         candidates = bossmaster.extract_candidates_by_comprehensive_analysis(
-            FakeFrame(), max_rounds=1, extraction_mode="api", max_candidates=20
+            FakeFrame(), max_rounds=1, extraction_mode="api", max_candidates=100
         )
 
     # API pages return geek_ids not in DOM → matched=0 each time.
@@ -1165,7 +1247,45 @@ def test_api_enrichment_uses_page_cap_and_random_delay():
     mock_dom_extract.assert_called_once()
 
 
-def test_default_api_enrichment_allows_twenty_pages_and_warns_when_still_hitting():
+def test_api_enrichment_respects_one_page_cap():
+    class FakeFrame:
+        def run_js(self, script):
+            if script == 'return location.href':
+                return "https://www.zhipin.com/web/frame/recommend/?jobid=job-123&status=0"
+            return None
+
+    dom_batch = [
+        {"geek_id": "g-dom-1", "name": "张三", "text": "本科，5年 Java"},
+        {"geek_id": "g-dom-2", "name": "李四", "text": "本科，5年 Java"},
+    ]
+    api_pages = [([
+        {
+            "geek_id": "g-dom-1",
+            "name": "张三",
+            "summary": "本科，5年 Java",
+            "structured": {"exp_years": 5},
+        }
+    ], True)]
+
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output), \
+            patch('bossmaster.time.sleep'), \
+            patch('bossmaster._human_delay', return_value=0), \
+            patch('bossmaster.get_iframe', return_value=None), \
+            patch('bossmaster._start_recommend_api_listener', return_value=None), \
+            patch('bossmaster._fetch_api_page_result', side_effect=api_pages) as mock_fetch, \
+            patch('bossmaster._detect_captcha', return_value=(False, "")), \
+            patch('bossmaster._extract_cards_batch', return_value=dom_batch):
+        candidates = bossmaster.extract_candidates_by_comprehensive_analysis(
+            FakeFrame(), max_rounds=1, extraction_mode="api", max_candidates=20
+        )
+
+    assert len(candidates) == 2
+    assert mock_fetch.call_count == 1
+    assert "最多 1 页" in output.getvalue()
+
+
+def test_default_api_enrichment_allows_eight_pages_and_warns_when_still_hitting():
     class FakeFrame:
         def run_js(self, script):
             if script == 'return location.href':
@@ -1174,7 +1294,7 @@ def test_default_api_enrichment_allows_twenty_pages_and_warns_when_still_hitting
 
     dom_batch = [
         {"geek_id": f"g-dom-{i}", "name": f"候选人{i}", "text": "本科，5年 Java"}
-        for i in range(21)
+        for i in range(9)
     ]
     api_pages = [
         ([
@@ -1185,7 +1305,7 @@ def test_default_api_enrichment_allows_twenty_pages_and_warns_when_still_hitting
                 "structured": {"exp_years": 5},
             }
         ], True)
-        for i in range(20)
+        for i in range(8)
     ]
 
     output = io.StringIO()
@@ -1201,10 +1321,10 @@ def test_default_api_enrichment_allows_twenty_pages_and_warns_when_still_hitting
             FakeFrame(), max_rounds=1, extraction_mode="api"
         )
 
-    assert len(candidates) == 21
-    assert mock_fetch.call_count == 20
-    assert "最多 20 页" in output.getvalue()
-    assert "API 补全已达到 20 页上限" in output.getvalue()
+    assert len(candidates) == 9
+    assert mock_fetch.call_count == 8
+    assert "最多 8 页" in output.getvalue()
+    assert "API 补全已达到 8 页上限" in output.getvalue()
     assert "仍有 1 人缺少结构化信息" in output.getvalue()
 
 
@@ -1301,7 +1421,7 @@ def test_api_enrichment_stops_after_consecutive_misses():
             patch('bossmaster._detect_captcha', return_value=(False, "")), \
             patch('bossmaster._extract_cards_batch', return_value=dom_batch):
         candidates = bossmaster.extract_candidates_by_comprehensive_analysis(
-            FakeFrame(), max_rounds=1, extraction_mode="api", max_candidates=20
+            FakeFrame(), max_rounds=1, extraction_mode="api", max_candidates=100
         )
 
     # Page 1 hit, pages 2-4 missed → stopped at page 4, page 5 never fetched.

@@ -31,6 +31,7 @@ import release_retry  # noqa: E402
 
 DEFAULT_CHECK_TIMEOUT = 30 * 60
 DEFAULT_POLL_INTERVAL = 10
+DEFAULT_CHECK_STARTUP_TIMEOUT = 90
 SUCCESS_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILURE_CONCLUSIONS = {
     "ACTION_REQUIRED",
@@ -272,12 +273,17 @@ def _find_delivery_pr(branch: str, head_sha: str) -> dict[str, Any] | None:
         ) or []
     except release_retry.RetryExhausted as exc:
         _fail(str(exc))
-    matching = [pr for pr in candidates if pr.get("headRefOid") == head_sha]
-    open_prs = [pr for pr in matching if pr.get("state") == "OPEN"]
+    open_prs = [pr for pr in candidates if pr.get("state") == "OPEN"]
     if open_prs:
         if open_prs[0].get("isDraft"):
             _fail("已存在的 PR 仍为 Draft，请先转为 Ready for review")
+        if open_prs[0].get("headRefOid") != head_sha:
+            print(
+                f"  [复用] PR #{open_prs[0]['number']} 当前 head 尚未同步到目标提交，"
+                "后续等待阶段会继续校验"
+            )
         return open_prs[0]
+    matching = [pr for pr in candidates if pr.get("headRefOid") == head_sha]
     merged_prs = [pr for pr in matching if pr.get("state") == "MERGED"]
     if merged_prs:
         return merged_prs[0]
@@ -374,7 +380,7 @@ def _pr_view(number: int) -> dict[str, Any]:
             [
             "gh", "pr", "view", str(number),
             "--json",
-            "number,state,isDraft,url,headRefOid,baseRefOid,mergeable,mergeStateStatus,statusCheckRollup,mergeCommit",
+            "number,state,isDraft,url,headRefName,headRefOid,baseRefOid,mergeable,mergeStateStatus,statusCheckRollup,mergeCommit",
             ],
             f"读取 PR #{number} 状态",
         )
@@ -413,15 +419,62 @@ def _check_rollup_state(rollup: list[dict[str, Any]]) -> tuple[str, str]:
     return "success", "全部检查通过"
 
 
+def _pull_request_run_state_for_head(
+    branch: str,
+    head_sha: str,
+) -> tuple[str, str] | None:
+    """Read pull_request workflow runs when PR check rollup is stale."""
+    if not branch or not head_sha:
+        return None
+    try:
+        runs = release_retry.run_json_query_with_retries(
+            _run,
+            [
+                "gh", "run", "list",
+                "--branch", branch,
+                "--event", "pull_request",
+                "--limit", "20",
+                "--json",
+                "databaseId,workflowName,status,conclusion,headSha,url",
+            ],
+            f"读取分支 {branch} 的 GitHub Actions 状态",
+        ) or []
+    except release_retry.RetryExhausted as exc:
+        _fail(str(exc))
+    matching = [run for run in runs if run.get("headSha") == head_sha]
+    if not matching:
+        return None
+    pending = [
+        str(run.get("workflowName") or run.get("databaseId") or "未命名工作流")
+        for run in matching
+        if str(run.get("status") or "").lower() != "completed"
+    ]
+    if pending:
+        return "pending", "、".join(pending)
+    failures = [
+        str(run.get("workflowName") or run.get("databaseId") or "未命名工作流")
+        for run in matching
+        if str(run.get("conclusion") or "").lower() != "success"
+    ]
+    if failures:
+        return "failed", "、".join(failures)
+    return "success", "GitHub Actions run 已成功"
+
+
 def wait_for_pr_checks(
     number: int,
     *,
     timeout: int = DEFAULT_CHECK_TIMEOUT,
     poll_interval: int = DEFAULT_POLL_INTERVAL,
+    check_startup_timeout: int = DEFAULT_CHECK_STARTUP_TIMEOUT,
+    expected_head_sha: str = "",
 ) -> dict[str, Any]:
     """Wait until every reported PR check succeeds and the PR is clean."""
-    deadline = time.monotonic() + max(1, timeout)
+    started = time.monotonic()
+    deadline = started + max(1, timeout)
+    startup_deadline = started + max(1, min(check_startup_timeout, timeout))
     while True:
+        now = time.monotonic()
         pr = _pr_view(number)
         if pr.get("state") == "MERGED":
             return pr
@@ -429,11 +482,49 @@ def wait_for_pr_checks(
             _fail(f"PR #{number} 不再处于可交付状态：{pr.get('state')}")
         if pr.get("isDraft"):
             _fail(f"PR #{number} 仍为 Draft")
-        check_state, detail = _check_rollup_state(pr.get("statusCheckRollup") or [])
+        if expected_head_sha and pr.get("headRefOid") != expected_head_sha:
+            if now >= startup_deadline:
+                _fail(
+                    f"PR #{number} head 未同步到目标提交 {expected_head_sha[:12]}，"
+                    f"当前为 {str(pr.get('headRefOid') or '')[:12]}"
+                )
+            detail = "等待 PR head 同步到最新推送"
+            if now >= deadline:
+                _fail(f"等待 PR #{number} 检查超时：{detail}")
+            elapsed = int(now - started)
+            print(f"  [等待] PR #{number}: {detail}（已等待 {elapsed}s）")
+            time.sleep(max(1, poll_interval))
+            continue
+        rollup = pr.get("statusCheckRollup") or []
+        check_state, detail = _check_rollup_state(rollup)
         if check_state == "failed":
             _fail(f"PR #{number} 检查失败：{detail}")
         if pr.get("mergeable") == "CONFLICTING":
             _fail(f"PR #{number} 存在合并冲突")
+        run_state = None
+        if expected_head_sha:
+            run_state = _pull_request_run_state_for_head(
+                str(pr.get("headRefName") or ""), expected_head_sha,
+            )
+        if run_state is not None:
+            run_check_state, run_detail = run_state
+            if run_check_state == "failed":
+                _fail(f"PR #{number} GitHub Actions 失败：{run_detail}")
+            if (
+                run_check_state == "success"
+                and pr.get("mergeable") == "MERGEABLE"
+            ):
+                print(
+                    f"  [OK] PR #{number} GitHub Actions 已成功且可合并"
+                )
+                return pr
+            if run_check_state == "pending":
+                detail = run_detail
+        if not rollup and now >= startup_deadline:
+            _fail(
+                f"PR #{number} 未发现任何 PR Checks，可能是 GitHub Actions 未触发"
+                "或 workflow 配置/权限异常；请先检查 Actions 页面，避免继续空等"
+            )
         if check_state == "success":
             if (
                 pr.get("mergeable") == "MERGEABLE"
@@ -445,9 +536,10 @@ def wait_for_pr_checks(
                 f"PR #{number} 检查通过但合并状态为 "
                 f"{pr.get('mergeable')}/{pr.get('mergeStateStatus')}"
             )
-        if time.monotonic() >= deadline:
+        if now >= deadline:
             _fail(f"等待 PR #{number} 检查超时：{detail}")
-        print(f"  [等待] PR #{number}: {detail}")
+        elapsed = int(now - started)
+        print(f"  [等待] PR #{number}: {detail}（已等待 {elapsed}s）")
         time.sleep(max(1, poll_interval))
 
 
@@ -568,7 +660,10 @@ def deliver(
     print("\n>>> 推送并创建/复用 PR")
     pr = _push_and_create_pr(branch, gate["head_sha"], title=title)
     pr = wait_for_pr_checks(
-        int(pr["number"]), timeout=timeout, poll_interval=poll_interval
+        int(pr["number"]),
+        timeout=timeout,
+        poll_interval=poll_interval,
+        expected_head_sha=gate["head_sha"],
     )
     merged = _merge_pr(pr)
     merge_sha = (merged.get("mergeCommit") or {}).get("oid")

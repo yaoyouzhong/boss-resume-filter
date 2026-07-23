@@ -16,7 +16,7 @@ boss-resume-filter/
 ├── release_user_audit.py # 用户视角发布审计模块
 ├── storage.py            # 候选人数据持久化模块（去重、原子写入、备份恢复）
 ├── contact_queue.py      # GUI 候选人联系清单持久化与恢复模块
-├── gui_main.py           # 图形界面主程序（v2.23.5）
+├── gui_main.py           # 图形界面主程序（v2.24）
 ├── gui_dialogs.py        # 独立对话框模块（更新日志、关于弹窗、CHANGELOG 渲染）
 ├── ui_messagebox.py      # 统一居中提示与确认弹窗（兼容 tkinter.messagebox）
 ├── changelog_parser.py   # CHANGELOG 解析模块（版本段落提取、标题解析）
@@ -167,6 +167,8 @@ boss-resume-filter/
 - 运行前先执行岗位配置体检：错误必须阻断，警告由用户确认；BOSS 当前岗位与所选配置不一致时必须明确确认后才能继续。
 - GUI 需要区分未登录、非推荐页、无已发布职位和页面无候选人；无已发布职位或无候选人时跳过卡片选择器检查，不能误报为选择器异常。
 - GUI 运行控制只允许“仅保存筛选结果”“将强烈推荐加入联系清单”“将推荐及以上加入联系清单”；扫描阶段不得直接发送。只有正常完成的扫描可以按所选策略自动生成联系清单，中断或异常时仅保存已取得结果。
+- 运行控制页“选择岗位”默认使用最近一次运行时选择的具体岗位；新建并保存岗位后应自动成为运行页默认岗位。“全部岗位”只作为用户手动选择项，不作为有岗位时的首次默认值。
+- 运行控制页提供折叠的“高级扫描设置”：用“扫描增强 / 自动补全候选人详情 / 最多读取”表达 API 直调补全，用“后续联系 / 扫描后准备联系信息 / 最多准备”表达打招呼上下文准备；提示文案强调这些设置会增加访问频率、需谨慎调高，避免在用户界面暴露“结构化补全、补抓、上下文”等实现词。
 - 联系工作台开始发送前必须展示已就绪人数和依赖岗位页面人数并等待确认；待核实项目不参与自动重发。
 - 运行结束、停止、中断和异常都要生成可读的本轮结果摘要；摘要最少 3 行、最多 10 行，超出后内部滚动，日志只保留过程细节和一行终态。达到滚动轮次上限属于本轮正常结束，整体状态显示成功，但摘要必须用黄色“未确认扫描到底”提示范围不确定性。
 
@@ -178,7 +180,7 @@ boss-resume-filter/
 
 - 阶段 1.6 在筛选完成后，从候选人详情页 API（`/wapi/zpjob/view/geek/info`）捕获 `jid/lid/securityId/expectId`，存为 `greet_context` 字段
 - GUI 手动打招呼时优先用 `send_greeting_with_context()` 直发 `/wapi/zpjob/chat/start`，失败回退 `send_greeting_on_list_page()`（列表按钮路径）
-- 阶段 1.6 仅对 `match_score >= GREET_CONTEXT_MIN_SCORE (55)` 且未打过招呼的候选人抓取，单轮硬上限 `GREET_CONTEXT_CAPTURE_LIMIT (30)` 人
+- 阶段 1.6 仅对 `match_score >= GREET_CONTEXT_MIN_SCORE (65)` 且未打过招呼的候选人抓取，单轮硬上限 `GREET_CONTEXT_CAPTURE_LIMIT (15)` 人
 - `qualification_status == "manual_review"` 的候选人**不跳过**上下文采集，但禁止自动打招呼；跨会话/去重合并时保留 `greet_context` 字段
 
 ### 浏览器自动检测
@@ -193,7 +195,7 @@ boss-resume-filter/
 - **随机延迟**：`_human_delay(center, spread)` 所有 sleep 带随机抖动
 - **验证码检测**：`_detect_captcha()` 关键词 + CSS 选择器检测，暂停等待用户完成验证（5 分钟超时）
 - **API 熔断**：`ApiRiskBlocked` 异常，BOSS API 返回 403/412/429 时立即停止扫描，不降级 DOM
-- **API 读取限速**：API 直调默认约 2-4 秒随机间隔；单次最多读取 `API_CANDIDATE_LIMIT_DEFAULT`（默认 400，对应最多补全 20 页）人，达到上限停止继续翻页
+- **API 读取限速**：API 直调默认约 3-7 秒随机间隔；单次最多读取 `API_CANDIDATE_LIMIT_DEFAULT`（默认 160，对应最多补全 8 页）人，达到上限停止继续翻页
 - **打招呼限速**：每 `GREET_BATCH_SIZE` 人暂停随机间隔；每轮上限 `AUTO_GREET_RUN_LIMIT`（默认 50）
 
 > **重要架构约束**：候选人集合必须以推荐页 DOM 滚动提取结果为准。Listener 和 API 直调可以补全结构化字段，但只能增强已经在 DOM 中出现、且 `geek_id` 一致的候选人，不能把接口额外返回的人直接加入筛选结果或自动联系范围。`srcdoc` iframe 无法稳定提供岗位 URL，因此接口分页地址优先来自 listener 捕获结果，缺失时再尝试页面身份信息。
@@ -225,6 +227,8 @@ boss-resume-filter/
 > **为什么仍以 DOM 为准？** Listener/API 返回结果可能与虚拟列表当前已渲染卡片不同步。系统因此先由 DOM 建立唯一候选人集合，再按 `geek_id` 合并 listener/API 的经验、年龄、薪资、城市等结构化字段；接口中未出现在 DOM 的候选人一律忽略。
 
 `filter_candidate()` 接受可选 `structured_fields` 参数，优先使用结构化值，fallback 到正则文本解析。薪资正则 `[kK]?` 末尾 K 可选，兼容 "15-25" 无后缀格式。
+
+DOM 主扫描每次滚动后默认随机等待约 1.5-4 秒，每滚动 5-10 轮额外暂停约 8-15 秒；参数集中在 `DOM_SCROLL_DELAY_*` / `DOM_SCROLL_BATCH_*`，不要在滚动循环内重新硬编码等待时间。
 
 API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求浪费 API 配额。
 

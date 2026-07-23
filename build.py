@@ -755,6 +755,23 @@ def _run_unit_checks():
     _run_checked([sys.executable, "tests/test_import.py"], "导入烟测")
 
 
+def _run_preflight_step(label, func, *args, **kwargs):
+    started = time.perf_counter()
+    func(*args, **kwargs)
+    elapsed = time.perf_counter() - started
+    print(f"  [耗时] {label}: {elapsed:.1f}s")
+
+
+def _check_worktree_clean():
+    has_changes, status_text = _git_status()
+    if has_changes:
+        print("[错误] 工作区不干净，请先提交或撤销变更：\n")
+        for line in status_text.splitlines():
+            print(f"  {line}")
+        sys.exit(1)
+    print("  [OK] 工作区干净")
+
+
 def _get_last_tag():
     """获取最近一个 git tag，供各检查函数复用。"""
     result = subprocess.run(
@@ -1647,34 +1664,52 @@ def _check_project_docs_version_sync(version):
 def _preflight_checks(require_clean=True, strict_changelog=False):
     """发布/打包前检查"""
     print("\n>>> 发布前检查")
-    _check_dependencies()
-    _check_tkinter_packaging_support()
-    _check_storage_not_tracked()
-    _check_sensitive_files_not_tracked()
-    _check_api_config_has_no_plaintext_key()
-    _check_source_compiles()
-    _check_changelog_updated()
-    _check_changelog_entry_quality(strict=strict_changelog)
-    _check_changelog_code_coverage()
-    _check_code_to_changelog_coverage(strict=strict_changelog)
-    _check_todo_not_stale()
-    _check_claude_md_size()
-    _run_unit_checks()
+    if require_clean:
+        _run_preflight_step("工作区干净检查（前置）", _check_worktree_clean)
+    _run_preflight_step("依赖检查", _check_dependencies)
+    _run_preflight_step("Tcl/Tk 运行库检查", _check_tkinter_packaging_support)
+    _run_preflight_step("存储文件跟踪检查", _check_storage_not_tracked)
+    _run_preflight_step("敏感/运行数据跟踪检查", _check_sensitive_files_not_tracked)
+    _run_preflight_step("API 配置明文 Key 检查", _check_api_config_has_no_plaintext_key)
+    _run_preflight_step("源码编译检查", _check_source_compiles)
+    _run_preflight_step("CHANGELOG 版本同步检查", _check_changelog_updated)
+    _run_preflight_step(
+        "CHANGELOG 条目质量检查",
+        _check_changelog_entry_quality,
+        strict=strict_changelog,
+    )
+    _run_preflight_step("CHANGELOG 正向覆盖检查", _check_changelog_code_coverage)
+    _run_preflight_step(
+        "CHANGELOG 反向覆盖检查",
+        _check_code_to_changelog_coverage,
+        strict=strict_changelog,
+    )
+    _run_preflight_step("TODO 时效检查", _check_todo_not_stale)
+    _run_preflight_step("CLAUDE.md 尺寸检查", _check_claude_md_size)
+    _run_preflight_step("稳定单元回归与导入烟测", _run_unit_checks)
     current_version = _read_version()
-    _extract_changelog_release(current_version)
-    _check_readme_release(current_version, strict_details=strict_changelog)
-    _check_latest_json_release_notes(current_version, strict=strict_changelog)
-    _check_project_docs_version_sync(current_version)
-    _check_version_history_integrity()
+    _run_preflight_step("Release 说明提取检查", _extract_changelog_release, current_version)
+    _run_preflight_step(
+        "README 发布说明检查",
+        _check_readme_release,
+        current_version,
+        strict_details=strict_changelog,
+    )
+    _run_preflight_step(
+        "latest.json 发布说明检查",
+        _check_latest_json_release_notes,
+        current_version,
+        strict=strict_changelog,
+    )
+    _run_preflight_step(
+        "CLAUDE.md / AGENTS.md 版本同步检查",
+        _check_project_docs_version_sync,
+        current_version,
+    )
+    _run_preflight_step("版本历史完整性检查", _check_version_history_integrity)
 
     if require_clean:
-        has_changes, status_text = _git_status()
-        if has_changes:
-            print("[错误] 工作区不干净，请先提交或撤销变更：\n")
-            for line in status_text.splitlines():
-                print(f"  {line}")
-            sys.exit(1)
-        print("  [OK] 工作区干净")
+        _run_preflight_step("工作区干净检查（收尾）", _check_worktree_clean)
 
     print(">>> 发布前检查通过\n")
 
