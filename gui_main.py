@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.24"
+__version__ = "2.24.1"
 
 import json
 import logging
@@ -139,6 +139,7 @@ CANDIDATES_PATH = BASE_DIR / "candidates_all.json"
 CANDIDATES_XLSX_PATH = BASE_DIR / "candidates_all.xlsx"
 CONFIG_BACKUP_PATH = BASE_DIR / "job_config.json.bak"
 RUN_LOG_DIR = BASE_DIR / "logs"
+RUNTIME_LOG_RETENTION_DAYS = 30
 RUN_PREFERENCES_PATH = BASE_DIR / ".run_preferences.json"
 API_CONFIG_PATH = get_api_config_path()
 CHROME_DEBUG_PORT_FILE = BASE_DIR / ".chrome_debug_port"
@@ -13456,23 +13457,79 @@ class BossFilterGUI:
         self.log_text.config(state="disabled")
 
     def append_log(self, message):
-        """记录非扫描页面的诊断信息，不写入运行日志。"""
-        logger.info("[GUI] %s", message)
+        """Record non-scan diagnostics in a separate application log."""
+        safe_message = self._sanitize_runtime_log_message(message)
+        logger.info("[GUI] %s", safe_message)
+        self._append_runtime_log_file("app", safe_message, add_timestamp=True)
 
     def append_run_log(self, message):
         """追加候选人扫描及其运行准备过程日志。"""
-        self.log_queue.put(message)
-        self._append_run_log_file(message)
+        safe_message = self._sanitize_runtime_log_message(message)
+        log_queue = getattr(self, "log_queue", None)
+        if log_queue is not None:
+            log_queue.put(safe_message)
+        self._append_run_log_file(safe_message)
+
+    def append_operation_log(self, message, *, show_in_run_ui=False):
+        """Record a foreground business event without polluting the scan UI."""
+        safe_message = self._sanitize_runtime_log_message(message)
+        logger.info("[GUI] %s", safe_message)
+        self._append_runtime_log_file("app", safe_message, add_timestamp=True)
+        if show_in_run_ui:
+            log_queue = getattr(self, "log_queue", None)
+            if log_queue is not None:
+                log_queue.put(safe_message)
+        self._append_run_log_file(safe_message)
+
+    @staticmethod
+    def _sanitize_runtime_log_message(message):
+        try:
+            from bossmaster import redact_boss_sensitive_text
+            return redact_boss_sensitive_text(message)
+        except Exception:
+            return str(message or "")
 
     def _append_run_log_file(self, message):
         """把运行日志追加落盘；失败不影响扫描主流程。"""
+        self._append_runtime_log_file("run", message)
+
+    def _append_runtime_log_file(self, prefix, message, *, add_timestamp=False):
+        """Append one sanitized line and surface the first write failure."""
         try:
             RUN_LOG_DIR.mkdir(parents=True, exist_ok=True)
-            log_path = RUN_LOG_DIR / f"run-{datetime.now().strftime('%Y%m%d')}.log"
+            self._cleanup_runtime_logs_once()
+            log_path = RUN_LOG_DIR / f"{prefix}-{datetime.now().strftime('%Y%m%d')}.log"
+            safe_message = self._sanitize_runtime_log_message(message)
+            if add_timestamp:
+                safe_message = f"[{datetime.now().strftime('%H:%M:%S')}] {safe_message}"
             with open(log_path, 'a', encoding='utf-8') as f:
-                f.write(f"{message}\n")
+                f.write(f"{safe_message}\n")
         except Exception as e:
             logger.warning("[GUI] 运行日志落盘失败: %s", e)
+            if not getattr(self, "_runtime_log_write_warning_emitted", False):
+                self._runtime_log_write_warning_emitted = True
+                try:
+                    self.log_queue.put(f"⚠ 运行日志写入失败：{str(e)[:80]}")
+                except Exception:
+                    pass
+
+    def _cleanup_runtime_logs_once(self):
+        """Delete only this application's run/app logs older than the retention window."""
+        if getattr(self, "_runtime_log_cleanup_done", False):
+            return
+        self._runtime_log_cleanup_done = True
+        cutoff = time.time() - RUNTIME_LOG_RETENTION_DAYS * 24 * 60 * 60
+        log_root = RUN_LOG_DIR.resolve()
+        for pattern in ("run-*.log", "app-*.log"):
+            for log_path in RUN_LOG_DIR.glob(pattern):
+                try:
+                    resolved = log_path.resolve()
+                    if resolved.parent != log_root:
+                        continue
+                    if resolved.stat().st_mtime < cutoff:
+                        resolved.unlink()
+                except OSError:
+                    continue
 
     def _append_run_settings_snapshot(self, settings):
         """记录本轮运行参数到落盘日志，避免占用界面过程日志。"""
@@ -14249,6 +14306,31 @@ class BossFilterGUI:
             self.colors['text_primary'],
         )
 
+    @staticmethod
+    def _replace_run_summary_contact_queue_count(final_desc, added_count):
+        """Use the GUI contact-queue wording and count in the run summary."""
+        try:
+            count = max(0, int(added_count))
+        except (TypeError, ValueError):
+            count = 0
+        text = str(final_desc or "")
+        replacement = f"本轮已加联系清单：{count} 人"
+        updated = re.sub(
+            r"本轮(?:打招呼|已联系)：\d+ 人",
+            replacement,
+            text,
+            count=1,
+        )
+        if updated != text:
+            return updated
+
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            if line.startswith("最终保留："):
+                lines.insert(index + 1, replacement)
+                return "\n".join(lines)
+        return f"{text.rstrip()}\n{replacement}".strip()
+
     def update_progress(self):
         """更新进度条显示"""
         try:
@@ -14280,7 +14362,8 @@ class BossFilterGUI:
                         text=f"{percentage}%  {raw_desc}"
                     )
                 if percentage >= 100 and raw_desc.startswith('['):
-                    self._set_run_summary(raw_desc)
+                    summary_desc = self._replace_run_summary_contact_queue_count(raw_desc, 0)
+                    self._set_run_summary(summary_desc)
         except queue.Empty:
             pass
 
@@ -14785,13 +14868,19 @@ class BossFilterGUI:
                 self.progress_label.config(
                     text=f"100%  {progress_text}", image='', compound='text'
                 )
-                self._set_run_summary(final_desc)
+                summary_desc = self._replace_run_summary_contact_queue_count(final_desc, 0)
+                self._set_run_summary(summary_desc)
                 self.root.after(100, self.refresh_results)
                 if should_build_contact_list:
-                    self._add_scan_candidates_to_contact_queue(
+                    added_count = self._add_scan_candidates_to_contact_queue(
                         scanned_candidates,
                         contact_policy_text,
                     )
+                    summary_desc = self._replace_run_summary_contact_queue_count(
+                        final_desc,
+                        added_count,
+                    )
+                    self._set_run_summary(summary_desc)
 
             self.run_on_ui(finish_ui)
 
@@ -20305,14 +20394,14 @@ class BossFilterGUI:
         if not self.greet_queue_running:
             return
         self.greet_queue_paused = True
-        self.append_log("[联系候选人] 已暂停，当前发送完成后停止推进")
+        self.append_operation_log("[联系候选人] 已暂停，当前发送完成后停止推进")
         self._update_greet_queue_action_states()
 
     def _resume_greet_queue(self):
         if not self.greet_queue_running or not self.greet_queue_paused:
             return
         self.greet_queue_paused = False
-        self.append_log("[联系候选人] 已继续")
+        self.append_operation_log("[联系候选人] 已继续")
         self._update_greet_queue_action_states()
 
     def _start_greet_queue(self):
@@ -20338,7 +20427,10 @@ class BossFilterGUI:
         self.greet_queue_preparing = True
         self.greet_queue_prepare_text = "正在准备浏览器..."
         self._update_greet_queue_action_states()
-        self.append_log("[联系候选人] 正在准备 Chrome 和 BOSS 推荐牛人页面...")
+        self.append_operation_log(
+            f"[联系候选人] 开始准备：待处理 {len(pending)} 人，"
+            "正在检查 Chrome 和 BOSS 推荐牛人页面..."
+        )
         self.greet_queue_thread = threading.Thread(
             target=self._prepare_greet_queue_start,
             args=(pending,),
@@ -20398,12 +20490,16 @@ class BossFilterGUI:
             while time.monotonic() < deadline and not self.stop_event.is_set():
                 ok, current_url, _page_text, reason = self._get_greet_queue_page_state()
                 if ok and self._is_boss_recommend_url(current_url):
-                    self.append_log("[联系候选人] Chrome、BOSS 登录和推荐牛人页面已就绪")
+                    self.append_operation_log(
+                        "[联系候选人] Chrome、BOSS 登录和推荐牛人页面已就绪"
+                    )
                     return
 
                 if "登录" in reason:
                     if not login_prompted:
-                        self.append_log("[联系候选人] 请在 Chrome 中完成 BOSS 登录，程序将自动继续")
+                        self.append_operation_log(
+                            "[联系候选人] 请在 Chrome 中完成 BOSS 登录，程序将自动继续"
+                        )
                         login_prompted = True
                     navigation_attempted = False
                     self._set_greet_queue_prepare_status("请在 Chrome 完成登录...")
@@ -20430,6 +20526,8 @@ class BossFilterGUI:
 
             error = "等待 BOSS 登录或推荐牛人页面超时，请检查 Chrome 后重试。"
         finally:
+            if error:
+                self.append_operation_log(f"[联系候选人] 发送前检查未完成：{error}")
             if connection_lock_acquired:
                 self._browser_connection_lock.release()
             try:
@@ -20634,22 +20732,31 @@ class BossFilterGUI:
             return False, "", "", f"浏览器页面不可用：{str(exc)[:50]}"
         if self._is_boss_login_page(current_url, page_text):
             return False, current_url, page_text, "当前停留在 BOSS 登录页，请先完成登录"
+        url_lower = current_url.lower()
+        risk_marks = ("安全验证", "行为验证", "请完成验证", "操作频繁", "访问受限")
+        if (
+            any(token in url_lower for token in ("/verify", "captcha", "security-check"))
+            or any(mark in page_text for mark in risk_marks)
+        ):
+            return False, current_url, page_text, "当前停留在 BOSS 安全验证页面"
         if "zhipin.com" not in current_url.lower():
             return False, current_url, page_text, "当前页面不是 BOSS 直聘页面"
         return True, current_url, page_text, ""
 
     def _reconnect_browser_or_warn(self, parent, log_prefix, warn_title, warn_text):
         """Try to reconnect the browser and retain an actionable failure reason."""
-        self.append_log(f"[联系候选人] {log_prefix}，正在尝试重连...")
+        self.append_operation_log(f"[联系候选人] {log_prefix}，正在尝试重连...")
         if self._try_reconnect_browser():
-            self.append_log("[联系候选人] 浏览器重连成功")
+            self.append_operation_log("[联系候选人] 浏览器重连成功")
             return True
 
-        self.append_log(
+        self.append_operation_log(
             "[联系候选人] 未检测到可用 Chrome，正在自动启动推荐牛人页面..."
         )
         if self._launch_boss_browser():
-            self.append_log("[联系候选人] Chrome 已启动并打开 BOSS 推荐牛人页面")
+            self.append_operation_log(
+                "[联系候选人] Chrome 已启动并打开 BOSS 推荐牛人页面"
+            )
             return True
         if not getattr(self, '_greet_queue_browser_error', ''):
             self._greet_queue_browser_error = warn_text
@@ -20664,6 +20771,23 @@ class BossFilterGUI:
             )
         )
         self._greet_queue_browser_error = ""
+        try:
+            from bossmaster import get_boss_access_block_state
+            guard_state = get_boss_access_block_state()
+        except Exception:
+            guard_state = {"blocked": False}
+        if guard_state.get("blocked"):
+            remaining = max(1, int(guard_state.get("remaining_seconds", 0) + 0.999))
+            reason = guard_state.get("reason") or "已触发 BOSS 访问保护"
+            self._greet_queue_browser_error = (
+                f"BOSS 访问仍在冷却中，剩余约 {remaining} 秒。\n\n{reason}"
+            )
+            self.append_operation_log(
+                f"[访问保护] 联系候选人操作已阻止：{reason}。"
+                f"剩余冷却约 {remaining} 秒。",
+                show_in_run_ui=True,
+            )
+            return False
         if not self.browser_page:
             if not self._reconnect_browser_or_warn(
                 parent, "浏览器未连接", "浏览器未连接",
@@ -20680,7 +20804,21 @@ class BossFilterGUI:
                 return False
         ok, current_url, _page_text, reason = self._get_greet_queue_page_state()
         if not ok:
-            self.append_log(f"[联系候选人] {reason}")
+            if "安全验证" in reason:
+                try:
+                    from bossmaster import activate_boss_access_block
+                    risk_exc = activate_boss_access_block(
+                        "安全验证",
+                        reason,
+                        "联系候选人页面检查",
+                    )
+                    self.append_operation_log(
+                        f"[访问保护] {risk_exc.reason}。已停止联系候选人操作。",
+                        show_in_run_ui=True,
+                    )
+                except Exception:
+                    pass
+            self.append_operation_log(f"[联系候选人] {reason}")
             needs_job_page = any(
                 not self._has_direct_send_context(item.get('candidate') or {})
                 for item in pending_items
@@ -20699,12 +20837,14 @@ class BossFilterGUI:
         list_page_count = len(pending_items) - direct_count
         if list_page_count and not self._is_boss_recommend_url(current_url):
             if direct_count:
-                self.append_log(
+                self.append_operation_log(
                     f"[联系候选人] 当前不在推荐页，将先发送已就绪的 {direct_count} 人；"
                     f"其余 {list_page_count} 人保留待发送"
                 )
                 return True
-            self.append_log("[联系候选人] 待发送候选人需要对应岗位推荐页")
+            self.append_operation_log(
+                "[联系候选人] 待发送候选人需要对应岗位推荐页"
+            )
             self._greet_queue_browser_error = (
                 "请在 Chrome 中登录 BOSS，并打开对应岗位的“推荐牛人”页面后再次发送。"
             )
@@ -20749,13 +20889,20 @@ class BossFilterGUI:
             return False, reason, ""
         if not self._is_boss_recommend_url(current_url):
             return False, f"请打开“{candidate.get('job_name') or '对应'}”岗位推荐页", ""
+        from bossmaster import (
+            ApiRiskBlocked,
+            get_iframe,
+            _job_titles_match,
+            _read_recommend_page_identity,
+        )
         try:
-            from bossmaster import get_iframe, _job_titles_match, _read_recommend_page_identity
             target = get_iframe(self.browser_page) or self.browser_page
             actual_job = str(
                 (_read_recommend_page_identity(target) or {}).get('job_title') or ''
             ).strip()
             matched = _job_titles_match(candidate.get('job_name', ''), actual_job)
+        except ApiRiskBlocked:
+            raise
         except Exception as exc:
             return False, f"无法确认当前岗位页面：{str(exc)[:60]}", ""
         if matched is True:
@@ -20788,6 +20935,13 @@ class BossFilterGUI:
         return False, page_message
 
     def _run_greet_queue_worker(self, pending=None):
+        from bossmaster import (
+            ApiRiskBlocked,
+            get_boss_access_block_state,
+            send_greeting_on_list_page,
+            send_greeting_with_context,
+        )
+
         connection_lock_acquired = False
         parent = self.greet_queue_window or self.root
         queue_snapshot = list(
@@ -20802,11 +20956,15 @@ class BossFilterGUI:
         job_mismatch_decisions = {}
         consecutive_uncertain = 0
         run_error = ""
+        active_item = None
+        self.append_operation_log(
+            f"[联系候选人] 开始发送：待处理 {len(queue_snapshot)} 人"
+        )
         try:
             connection_lock_acquired = self._browser_connection_lock.acquire(timeout=8)
             if not connection_lock_acquired:
                 run_error = "浏览器正在执行其他操作，请稍后再次发送。"
-                self.append_log(f"[联系候选人] {run_error}")
+                self.append_operation_log(f"[联系候选人] {run_error}")
                 return
             if not self._ensure_greet_queue_browser(parent, queue_snapshot):
                 run_error = getattr(
@@ -20816,12 +20974,12 @@ class BossFilterGUI:
                 )
                 return
 
-            from bossmaster import send_greeting_on_list_page, send_greeting_with_context
             captcha_callback = self._make_greet_queue_captcha_callback(parent)
 
             for item_index, item in enumerate(queue_snapshot):
+                active_item = item
                 if self.stop_event.is_set():
-                    self.append_log("[联系候选人] 用户停止操作")
+                    self.append_operation_log("[联系候选人] 用户停止操作")
                     break
                 while self.greet_queue_paused and not self.stop_event.is_set():
                     time.sleep(0.2)
@@ -20834,6 +20992,11 @@ class BossFilterGUI:
                 if candidate is None:
                     skipped_count += 1
                     self._set_greet_queue_item_state(item, "已跳过", reload_error)
+                    original_name = (item.get('candidate') or {}).get('name', '')
+                    self.append_operation_log(
+                        f"[联系候选人] {original_name or '未知候选人'} 已跳过："
+                        f"{reload_error}"
+                    )
                     continue
                 name = candidate.get('name', '')
                 revalidated_status, revalidated_message = self._revalidate_greet_queue_candidate(candidate)
@@ -20847,6 +21010,10 @@ class BossFilterGUI:
                         pending_count += 1
                     elif revalidated_status == "已跳过":
                         skipped_count += 1
+                    self.append_operation_log(
+                        f"[联系候选人] {name} {revalidated_status}："
+                        f"{revalidated_message}"
+                    )
                     continue
 
                 if not self._has_direct_send_context(candidate):
@@ -20862,12 +21029,20 @@ class BossFilterGUI:
                         item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
                         self._persist_greet_queue()
                         self.root.after(0, self._refresh_greet_queue_dialog)
+                        self.append_operation_log(
+                            f"[联系候选人] {name} 暂未发送：{page_message}"
+                        )
                         continue
 
                 candidate, reload_error = self._reload_greet_queue_candidate(item)
                 if candidate is None:
                     skipped_count += 1
                     self._set_greet_queue_item_state(item, "已跳过", reload_error)
+                    original_name = (item.get('candidate') or {}).get('name', '')
+                    self.append_operation_log(
+                        f"[联系候选人] {original_name or '未知候选人'} 已跳过："
+                        f"{reload_error}"
+                    )
                     continue
                 name = candidate.get('name', '')
                 revalidated_status, revalidated_message = self._revalidate_greet_queue_candidate(candidate)
@@ -20881,6 +21056,10 @@ class BossFilterGUI:
                         pending_count += 1
                     elif revalidated_status == "已跳过":
                         skipped_count += 1
+                    self.append_operation_log(
+                        f"[联系候选人] {name} {revalidated_status}："
+                        f"{revalidated_message}"
+                    )
                     continue
 
                 if not self._has_direct_send_context(candidate):
@@ -20896,42 +21075,75 @@ class BossFilterGUI:
                         item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
                         self._persist_greet_queue()
                         self.root.after(0, self._refresh_greet_queue_dialog)
+                        self.append_operation_log(
+                            f"[联系候选人] {name} 暂未发送：{page_message}"
+                        )
                         continue
 
                 self._set_greet_queue_item_state(item, "发送中", "")
-                self.append_log(f"[联系候选人] 正在向 {name} 打招呼...")
+                self.append_operation_log(f"[联系候选人] 正在向 {name} 打招呼...")
 
                 context = candidate.get('greet_context') or {}
-                if self._has_direct_send_context(candidate):
-                    success, msg = send_greeting_with_context(
-                        self.browser_page,
-                        context,
-                        stop_event=self.stop_event,
-                        captcha_callback=captcha_callback,
-                    )
-                    method = "queue_context"
-                    if not success and ("缺少" in msg or "字段" in msg):
-                        page_ready, page_message = self._ensure_greet_queue_candidate_page_ready(
-                            candidate, parent, job_mismatch_decisions
+                try:
+                    if self._has_direct_send_context(candidate):
+                        success, msg = send_greeting_with_context(
+                            self.browser_page,
+                            context,
+                            stop_event=self.stop_event,
+                            captcha_callback=captcha_callback,
                         )
-                        if page_ready:
-                            success, msg = send_greeting_on_list_page(
-                                self.browser_page,
-                                candidate.get('geek_id'),
-                                stop_event=self.stop_event,
-                                captcha_callback=captcha_callback,
+                        method = "queue_context"
+                        if success is False and ("缺少" in msg or "字段" in msg):
+                            page_ready, page_message = self._ensure_greet_queue_candidate_page_ready(
+                                candidate, parent, job_mismatch_decisions
                             )
-                            method = "queue_list"
-                        else:
-                            success, msg = False, page_message
-                else:
-                    success, msg = send_greeting_on_list_page(
-                        self.browser_page,
-                        candidate.get('geek_id'),
-                        stop_event=self.stop_event,
-                        captcha_callback=captcha_callback,
+                            if page_ready:
+                                success, msg = send_greeting_on_list_page(
+                                    self.browser_page,
+                                    candidate.get('geek_id'),
+                                    stop_event=self.stop_event,
+                                    captcha_callback=captcha_callback,
+                                )
+                                method = "queue_list"
+                            else:
+                                success, msg = False, page_message
+                    else:
+                        success, msg = send_greeting_on_list_page(
+                            self.browser_page,
+                            candidate.get('geek_id'),
+                            stop_event=self.stop_event,
+                            captcha_callback=captcha_callback,
+                        )
+                        method = "queue_list"
+                except ApiRiskBlocked as exc:
+                    item['attempts'] = item.get('attempts', 0) + 1
+                    fail_count += 1
+                    guard_state = get_boss_access_block_state()
+                    remaining = max(
+                        1,
+                        int(guard_state.get("remaining_seconds", 0) + 0.999),
                     )
-                    method = "queue_list"
+                    signal = (
+                        f"HTTP {exc.status}"
+                        if isinstance(exc.status, int)
+                        else str(exc.status)
+                    )
+                    risk_message = (
+                        f"BOSS 访问保护已触发：{signal}，{exc.reason}。"
+                        f"剩余冷却约 {remaining} 秒"
+                    )
+                    self._set_greet_queue_item_state(item, "发送失败", risk_message)
+                    self.append_operation_log(
+                        f"[访问保护] 联系候选人时 BOSS 返回 {signal}：{exc.reason}。"
+                        f"已停止后续发送，冷却约 {remaining} 秒。",
+                        show_in_run_ui=True,
+                    )
+                    self.root.after(0, lambda message=risk_message: messagebox.showwarning(
+                        "BOSS 访问保护",
+                        message,
+                        parent=parent,
+                    ))
+                    break
 
                 item['attempts'] = item.get('attempts', 0) + 1
                 self._persist_greet_queue()
@@ -20941,9 +21153,13 @@ class BossFilterGUI:
                     consecutive_uncertain += 1
                     pending_message = format_greeting_failure_message(msg)
                     self._set_greet_queue_item_state(item, "待核实", pending_message)
-                    self.append_log(f"[联系候选人] {name} 待核实：{pending_message}")
+                    self.append_operation_log(
+                        f"[联系候选人] {name} 待核实：{pending_message}"
+                    )
                     if consecutive_uncertain >= GREET_UNCERTAIN_LIMIT:
-                        self.append_log("[联系候选人] 连续发送结果待核实，已暂停，请人工核实")
+                        self.append_operation_log(
+                            "[联系候选人] 连续发送结果待核实，已暂停，请人工核实"
+                        )
                         self.greet_queue_paused = True
                         break
                 elif success:
@@ -20952,31 +21168,41 @@ class BossFilterGUI:
                     if persisted:
                         success_count += 1
                         self._set_greet_queue_item_state(item, "已发送", msg)
-                        self.append_log(f"[联系候选人] {name} 发送成功")
+                        self.append_operation_log(
+                            f"[联系候选人] {name} 发送成功"
+                        )
                         self.root.after(0, self.refresh_results)
                         self.root.after(0, self.refresh_home_stats)
                     else:
                         pending_count += 1
                         pending_message = "BOSS 已返回发送成功，但本地状态保存失败，请先核实"
                         self._set_greet_queue_item_state(item, "待核实", pending_message)
-                        self.append_log(f"[联系候选人] {name} 待核实：{pending_message}")
+                        self.append_operation_log(
+                            f"[联系候选人] {name} 待核实：{pending_message}"
+                        )
                 else:
                     fail_count += 1
                     consecutive_uncertain = 0
                     fail_message = format_greeting_failure_message(msg)
                     diagnosis = diagnose_greeting_failure(msg)
                     self._set_greet_queue_item_state(item, "发送失败", fail_message)
-                    self.append_log(f"[联系候选人] {name} 发送失败：{fail_message}")
-                    if "上限" in msg or "次数" in msg:
-                        self.append_log("[联系候选人] 沟通次数已达上限，停止发送")
+                    self.append_operation_log(
+                        f"[联系候选人] {name} 发送失败：{fail_message}"
+                    )
+                    if re.search(r"\bHTTP\s+4\d\d\b", str(msg), re.IGNORECASE):
+                        self.append_operation_log(
+                            f"[BOSS接口] 联系候选人返回 4xx：{name}，{fail_message}",
+                            show_in_run_ui=True,
+                        )
+                    if diagnosis.terminal:
+                        self.append_operation_log(
+                            f"[联系候选人] {diagnosis.title}，已停止后续发送"
+                        )
                         self.root.after(0, lambda: messagebox.showwarning(
                             diagnosis.title,
                             f"{diagnosis.action}\n\n原始信息：{msg}",
                             parent=parent,
                         ))
-                        break
-                    if "验证" in msg:
-                        self.append_log("[联系候选人] 检测到安全验证，已停止发送")
                         break
 
                 if self.stop_event.is_set():
@@ -20988,9 +21214,41 @@ class BossFilterGUI:
                 )
                 if has_later_pending:
                     time.sleep(random.uniform(2, 4))
+        except ApiRiskBlocked as exc:
+            guard_state = get_boss_access_block_state()
+            remaining = max(
+                1,
+                int(guard_state.get("remaining_seconds", 0) + 0.999),
+            )
+            signal = (
+                f"HTTP {exc.status}"
+                if isinstance(exc.status, int)
+                else str(exc.status)
+            )
+            run_error = (
+                f"BOSS 访问保护已触发：{signal}，{exc.reason}。"
+                f"剩余冷却约 {remaining} 秒"
+            )
+            if active_item and active_item.get("status") == "待发送":
+                active_item["message"] = run_error
+                active_item["updated_at"] = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.append_operation_log(
+                f"[访问保护] 联系候选人准备阶段 BOSS 返回 {signal}：{exc.reason}。"
+                f"已停止后续发送，冷却约 {remaining} 秒。",
+                show_in_run_ui=True,
+            )
+            self.root.after(
+                0,
+                lambda message=run_error: messagebox.showwarning(
+                    "BOSS 访问保护",
+                    message,
+                    parent=parent,
+                ),
+            )
         except Exception as exc:
-            run_error = f"发送过程出现异常：{exc}"
-            self.append_log(f"[联系候选人] 异常：{exc}")
+            safe_error = self._sanitize_runtime_log_message(exc)
+            run_error = f"发送过程出现异常：{safe_error}"
+            self.append_operation_log(f"[联系候选人] 异常：{safe_error}")
         finally:
             self.greet_queue_running = False
             self.greet_queue_paused = False
@@ -21007,7 +21265,7 @@ class BossFilterGUI:
                 self.root.after(0, self._refresh_greet_queue_dialog)
             except (tk.TclError, RuntimeError):
                 pass
-            self.append_log(
+            self.append_operation_log(
                 f"[联系候选人] 完成：成功 {success_count} 人，失败 {fail_count} 人，"
                 f"待核实 {pending_count} 人，待切换岗位页 {page_waiting_count} 人，"
                 f"已跳过 {skipped_count} 人"

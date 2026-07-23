@@ -12,6 +12,7 @@ import re
 import threading
 import time
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -101,12 +102,163 @@ class StopRequested(Exception):
 
 
 class ApiRiskBlocked(Exception):
-    """BOSS API 返回疑似风控状态码时立即熔断，不继续刷新或 DOM 滚动。"""
+    """BOSS 响应要求立即停止本轮全部后续 BOSS 访问。"""
 
-    def __init__(self, status: int | str, page_num: int):
+    def __init__(
+        self,
+        status: int | str,
+        page_num: int,
+        reason: str = "",
+        source: str = "API 直调",
+        cooldown_seconds: int | None = None,
+        from_guard: bool = False,
+    ):
         self.status = status
         self.page_num = page_num
-        super().__init__(f"API page {page_num} returned risk status {status}")
+        self.reason = redact_boss_sensitive_text(
+            reason or "疑似触发访问保护"
+        )
+        self.source = source
+        self.cooldown_seconds = cooldown_seconds
+        self.from_guard = from_guard
+        super().__init__(
+            f"{source} returned blocking status {status}"
+            + (f" on page {page_num}" if page_num else "")
+            + f": {self.reason}"
+        )
+
+
+class ApiClientError(Exception):
+    """BOSS API 请求无效；停止当前补全链路，但不标记账号风控。"""
+
+    def __init__(
+        self,
+        status: int | str,
+        page_num: int,
+        reason: str = "",
+        source: str = "API 直调",
+        uncertain: bool = False,
+    ):
+        self.status = status
+        self.page_num = page_num
+        self.reason = redact_boss_sensitive_text(reason or "请求未成功")
+        self.source = source
+        self.uncertain = uncertain
+        super().__init__(
+            f"{source} returned client error {status}"
+            + (f" on page {page_num}" if page_num else "")
+            + f": {self.reason}"
+        )
+
+
+BOSS_RISK_DEFAULT_COOLDOWN_SECONDS = 15 * 60
+BOSS_RISK_MAX_COOLDOWN_SECONDS = 24 * 60 * 60
+
+
+class BossAccessGuard:
+    """Process-wide cooldown shared by all automated BOSS access paths."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._blocked_until = 0.0
+        self._status: int | str = ""
+        self._reason = ""
+        self._source = ""
+        self._triggered_at = ""
+
+    def block(self, exc: ApiRiskBlocked) -> dict[str, Any]:
+        cooldown = exc.cooldown_seconds or BOSS_RISK_DEFAULT_COOLDOWN_SECONDS
+        cooldown = max(1, min(int(cooldown), BOSS_RISK_MAX_COOLDOWN_SECONDS))
+        with self._lock:
+            blocked_until = time.monotonic() + cooldown
+            if blocked_until >= self._blocked_until:
+                self._blocked_until = blocked_until
+                self._status = exc.status
+                self._reason = exc.reason
+                self._source = exc.source
+                self._triggered_at = datetime.now().isoformat(timespec="seconds")
+            return self._state_locked()
+
+    def state(self) -> dict[str, Any]:
+        with self._lock:
+            if self._blocked_until and self._blocked_until <= time.monotonic():
+                self._clear_locked()
+            return self._state_locked()
+
+    def ensure_allowed(self, source: str) -> None:
+        state = self.state()
+        if not state["blocked"]:
+            return
+        remaining = max(1, int(state["remaining_seconds"] + 0.999))
+        raise ApiRiskBlocked(
+            state["status"],
+            0,
+            reason=(
+                f"会话仍处于访问保护冷却期，剩余约 {remaining} 秒"
+                + (f"；原因为：{state['reason']}" if state["reason"] else "")
+            ),
+            source=source,
+            cooldown_seconds=remaining,
+            from_guard=True,
+        )
+
+    def clear(self) -> None:
+        with self._lock:
+            self._clear_locked()
+
+    def _state_locked(self) -> dict[str, Any]:
+        remaining = max(0.0, self._blocked_until - time.monotonic())
+        return {
+            "blocked": remaining > 0,
+            "remaining_seconds": remaining,
+            "status": self._status,
+            "reason": self._reason,
+            "source": self._source,
+            "triggered_at": self._triggered_at,
+        }
+
+    def _clear_locked(self) -> None:
+        self._blocked_until = 0.0
+        self._status = ""
+        self._reason = ""
+        self._source = ""
+        self._triggered_at = ""
+
+
+BOSS_ACCESS_GUARD = BossAccessGuard()
+
+
+def get_boss_access_block_state() -> dict[str, Any]:
+    """Return the current process-wide BOSS access cooldown state."""
+    return BOSS_ACCESS_GUARD.state()
+
+
+def clear_boss_access_block() -> None:
+    """Clear the process-wide guard; intended for explicit recovery and tests."""
+    BOSS_ACCESS_GUARD.clear()
+
+
+def activate_boss_access_block(
+    status: int | str,
+    reason: str,
+    source: str,
+    *,
+    cooldown_seconds: int | None = None,
+) -> ApiRiskBlocked:
+    """Create and store a manual BOSS access block, then return its exception."""
+    exc = ApiRiskBlocked(
+        status,
+        0,
+        reason=redact_boss_sensitive_text(reason),
+        source=source,
+        cooldown_seconds=cooldown_seconds,
+    )
+    BOSS_ACCESS_GUARD.block(exc)
+    return exc
+
+
+def _ensure_boss_access_allowed(source: str) -> None:
+    BOSS_ACCESS_GUARD.ensure_allowed(source)
 
 
 RECOMMEND_PAGE_URL_PARTS = (
@@ -115,6 +267,34 @@ RECOMMEND_PAGE_URL_PARTS = (
 )
 RECOMMEND_PAGE_URL = "https://www.zhipin.com/web/chat/recommend"
 GREET_CONTEXT_VERSION = 1
+
+
+def _is_boss_auth_or_verification_url(url: Any) -> bool:
+    """Return whether a BOSS URL is an authentication or verification route."""
+    from urllib.parse import urlparse
+
+    raw_url = str(url or "").strip()
+    if not raw_url:
+        return False
+    parsed = urlparse(raw_url)
+    hostname = (parsed.hostname or "").lower()
+    if not (hostname == "zhipin.com" or hostname.endswith(".zhipin.com")):
+        return False
+    route = f"{parsed.path}?{parsed.query}".lower()
+    return any(
+        token in route
+        for token in ("login", "passport", "verify", "captcha", "security")
+    )
+
+
+def _client_error_status_from_message(message: Any) -> int | None:
+    """Extract an explicit 4xx HTTP or business status from a send result."""
+    match = re.search(
+        r"(?:\bHTTP\s+|\bcode\s*=\s*|业务码\s+)(4\d\d)\b",
+        str(message or ""),
+        re.IGNORECASE,
+    )
+    return int(match.group(1)) if match else None
 
 
 def is_transient_page_refresh_error(exc: Exception) -> bool:
@@ -163,6 +343,13 @@ def _ensure_recommend_page(page: Any, notice_callback=None, context: str = "运�
 
     if current_url and any(part in current_url.lower() for part in RECOMMEND_PAGE_URL_PARTS):
         return True
+
+    if _is_boss_auth_or_verification_url(current_url):
+        activate_boss_access_block(
+            "页面跳转",
+            "BOSS 页面进入登录或安全验证流程",
+            context,
+        )
 
     page_detail = current_url if current_url else error_detail
 
@@ -1418,46 +1605,122 @@ class _ApiCapture:
 
     # 注入到页面的 JS 代码：拦截 fetch + XMLHttpRequest，缓存匹配的响应
     _INJECT_JS = '''
-    if (!window.__bossApiCapture) {
-        window.__bossApiCapture = {requests: [], origFetch: window.fetch, injected: true};
+    (function() {
+        if (window.__bossApiCapture && window.__bossApiCapture.installed) {
+            window.__bossApiCapture.active = true;
+            window.__bossApiCapture.requests = [];
+            return;
+        }
 
-        // 拦截 fetch
-        window.fetch = async function(...args) {
-            const resp = await window.__bossApiCapture.origFetch.apply(this, args);
+        const capture = {
+            requests: [],
+            origFetch: window.fetch,
+            origXhrOpen: XMLHttpRequest.prototype.open,
+            origXhrSend: XMLHttpRequest.prototype.send,
+            active: true,
+            installed: true,
+            injected: true
+        };
+        capture.record = function(item) {
+            if (!capture.active) return;
+            capture.requests.push(item);
+            if (capture.requests.length > 100) {
+                capture.requests.splice(0, capture.requests.length - 100);
+            }
+        };
+        window.__bossApiCapture = capture;
+
+        capture.fetchWrapper = async function(...args) {
+            const resp = await capture.origFetch.apply(this, args);
             try {
-                const url = (typeof args[0] === 'string') ? args[0] : (args[0]?.url || '');
-                if (url.includes('geek') && (url.includes('/wapi/') || url.includes('/api/'))) {
-                    const clone = resp.clone();
-                    const body = await clone.text();
-                    window.__bossApiCapture.requests.push({url: url, body: body, method: args[1]?.method || 'GET'});
+                const url = (typeof args[0] === 'string')
+                    ? args[0]
+                    : (args[0]?.url || '');
+                if (
+                    capture.active
+                    && (
+                        url.includes('/wapi/zpjob/')
+                        || (url.includes('geek') && url.includes('/api/'))
+                    )
+                ) {
+                    const metadata = {
+                        url: url,
+                        method: args[1]?.method || 'GET',
+                        status: resp.status,
+                        contentType: resp.headers.get('content-type') || '',
+                        retryAfter: resp.headers.get('retry-after') || '',
+                        finalUrl: resp.url || '',
+                        redirected: !!resp.redirected
+                    };
+                    resp.clone().text()
+                        .then(body => capture.record({...metadata, body: body}))
+                        .catch(() => {});
                 }
             } catch(e) {}
             return resp;
         };
+        window.fetch = capture.fetchWrapper;
 
-        // 拦截 XMLHttpRequest
-        var origOpen = XMLHttpRequest.prototype.open;
-        var origSend = XMLHttpRequest.prototype.send;
-        XMLHttpRequest.prototype.open = function(method, url) {
+        capture.xhrOpenWrapper = function(method, url) {
             this.__bossUrl = url || '';
             this.__bossMethod = method;
-            return origOpen.apply(this, arguments);
+            return capture.origXhrOpen.apply(this, arguments);
         };
-        XMLHttpRequest.prototype.send = function(body) {
-            var xhr = this;
-            var url = xhr.__bossUrl || '';
-            if (url.includes('geek') && (url.includes('/wapi/') || url.includes('/api/'))) {
+        capture.xhrSendWrapper = function(body) {
+            const xhr = this;
+            const url = xhr.__bossUrl || '';
+            if (
+                capture.active
+                && (
+                    url.includes('/wapi/zpjob/')
+                    || (url.includes('geek') && url.includes('/api/'))
+                )
+            ) {
                 xhr.addEventListener('load', function() {
                     try {
-                        window.__bossApiCapture.requests.push({
-                            url: url, body: xhr.responseText, method: xhr.__bossMethod || 'GET'
+                        capture.record({
+                            url: url,
+                            body: xhr.responseText,
+                            method: xhr.__bossMethod || 'GET',
+                            status: xhr.status,
+                            contentType: xhr.getResponseHeader('content-type') || '',
+                            retryAfter: xhr.getResponseHeader('retry-after') || '',
+                            finalUrl: xhr.responseURL || '',
+                            redirected: !!(
+                                xhr.responseURL && xhr.responseURL !== url
+                            )
                         });
                     } catch(e) {}
                 });
             }
-            return origSend.apply(this, arguments);
+            return capture.origXhrSend.apply(this, arguments);
         };
-    }
+        XMLHttpRequest.prototype.open = capture.xhrOpenWrapper;
+        XMLHttpRequest.prototype.send = capture.xhrSendWrapper;
+    })();
+    '''
+
+    _STOP_JS = '''
+    (function() {
+        const capture = window.__bossApiCapture;
+        if (!capture) return;
+        capture.active = false;
+        capture.requests = [];
+        if (window.fetch === capture.fetchWrapper) {
+            window.fetch = capture.origFetch;
+        }
+        if (XMLHttpRequest.prototype.open === capture.xhrOpenWrapper) {
+            XMLHttpRequest.prototype.open = capture.origXhrOpen;
+        }
+        if (XMLHttpRequest.prototype.send === capture.xhrSendWrapper) {
+            XMLHttpRequest.prototype.send = capture.origXhrSend;
+        }
+        try {
+            delete window.__bossApiCapture;
+        } catch(e) {
+            window.__bossApiCapture = null;
+        }
+    })();
     '''
 
     def __init__(self):
@@ -1511,9 +1774,19 @@ class _ApiCapture:
         candidates: list[dict[str, str]] = []
         api_url = ""
         for item in items:
-            if not api_url:
-                api_url = item.get("url", "")
+            item_url = item.get("url", "")
+            if not api_url and _looks_like_recommend_api_url(item_url):
+                api_url = item_url
             body = item.get("body", "")
+            _raise_for_boss_response(
+                item.get("status"),
+                body=body,
+                content_type=item.get("contentType", ""),
+                final_url=item.get("finalUrl", ""),
+                redirected=bool(item.get("redirected")),
+                source="Listener",
+                retry_after=item.get("retryAfter", ""),
+            )
             if body:
                 try:
                     payload = _json.loads(body)
@@ -1523,20 +1796,40 @@ class _ApiCapture:
         return candidates, api_url
 
     def stop(self):
-        """停止拦截（刷新页面后自动失效，无需显式还原）。"""
+        """Stop interception, clear captured bodies, and restore browser APIs."""
         self._active = False
+        targets = []
+        if self._iframe:
+            targets.append(self._iframe)
+        if self._page and self._page not in targets:
+            targets.append(self._page)
+        for target in targets:
+            try:
+                target.run_js(self._STOP_JS)
+                break
+            except Exception:
+                continue
+        self._page = None
+        self._iframe = None
 
 
 def _start_recommend_api_listener(page: ChromiumPage) -> Any | None:
-    """启动推荐列表接口监听，优先使用 DrissionPage 原生网络监听。"""
+    """Start a BOSS listener covering recommendation APIs and page documents."""
     try:
         listener = page.listen
         try:
             listener.stop()
         except Exception:
             pass
-        # BOSS 会调整推荐接口路径；宽监听 geek 相关 XHR，再由 payload parser 判定是否有候选人。
-        listener.start("geek", method=("GET", "POST"), res_type=("XHR", "Fetch"))
+        listener.start(
+            (
+                "/wapi/zpjob/",
+                "zhipin.com/web/chat/recommend",
+                "zhipin.com/web/frame/recommend",
+            ),
+            method=True,
+            res_type=("XHR", "Fetch", "Document"),
+        )
         return listener
     except Exception:
         pass
@@ -1564,22 +1857,58 @@ def _consume_recommend_api_candidates(listener: Any | None, timeout: float = 0.0
         try:
             packet = listener.wait(timeout=timeout, fit_count=False)
         except Exception as e:
-            logger.error("读取 API 监听数据失败：%s", e)
-            break
+            raise ApiClientError(
+                0,
+                0,
+                reason=f"读取监听数据失败：{e}",
+                source="Listener",
+                uncertain=True,
+            ) from e
         if not packet:
             break
 
         packets = packet if isinstance(packet, list) else [packet]
         for p in packets:
             try:
+                packet_url = getattr(p, "url", "") or ""
+                if not api_url and _looks_like_recommend_api_url(packet_url):
+                    api_url = packet_url
                 if getattr(p, "is_failed", False):
-                    continue
-                if not api_url:
-                    api_url = getattr(p, "url", "") or ""
-                payload = p.response.body
+                    fail_info = getattr(p, "fail_info", None)
+                    fail_text = getattr(fail_info, "errorText", "") or "网络请求失败"
+                    raise ApiClientError(
+                        0,
+                        0,
+                        reason=str(fail_text),
+                        source="Listener",
+                        uncertain=True,
+                    )
+                response = getattr(p, "response", None)
+                status = (
+                    getattr(response, "status", None)
+                    or getattr(response, "status_code", None)
+                    or getattr(p, "status", None)
+                )
+                headers = getattr(response, "headers", {}) or {}
+                content_type = _response_header(headers, "content-type")
+                payload = getattr(response, "body", "")
+                resource_type = str(getattr(p, "resourceType", "") or "")
+                response_url = getattr(response, "url", "") or packet_url
+                _raise_for_boss_response(
+                    status,
+                    body=payload,
+                    content_type=content_type,
+                    final_url=response_url,
+                    redirected=bool(response_url and packet_url and response_url != packet_url),
+                    source="Listener",
+                    retry_after=_response_header(headers, "retry-after"),
+                    expect_json=resource_type != "Document",
+                )
                 candidates.extend(_extract_candidates_from_api_payload(payload))
+            except (ApiRiskBlocked, ApiClientError):
+                raise
             except Exception as e:
-                logger.error("解析 API 监听数据失败：%s", e)
+                print(f"[WARN] 解析 BOSS Listener 响应失败：{redact_boss_sensitive_text(e)}")
                 continue
 
         timeout = 0.01
@@ -1589,7 +1918,19 @@ def _consume_recommend_api_candidates(listener: Any | None, timeout: float = 0.0
 
 def _looks_like_recommend_api_url(url: str) -> bool:
     """Best-effort match for BOSS recommendation API URLs."""
-    lowered = (url or "").lower()
+    from urllib.parse import urlparse
+
+    raw_url = str(url or "").strip()
+    lowered = raw_url.lower()
+    parsed = urlparse(raw_url)
+    if parsed.scheme or parsed.netloc:
+        hostname = (parsed.hostname or "").lower()
+        if parsed.scheme.lower() != "https" or not (
+            hostname == "zhipin.com" or hostname.endswith(".zhipin.com")
+        ):
+            return False
+    elif not lowered.startswith("/"):
+        return False
     return (
         "geek" in lowered
         and ("/wapi/" in lowered or "/api/" in lowered)
@@ -1647,8 +1988,17 @@ def _parse_api_pagination(url: str) -> dict[str, Any] | None:
     """
     if not url:
         return None
-    from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+    from urllib.parse import urljoin, urlparse, parse_qs, urlunparse
     parsed = urlparse(url)
+    if not parsed.scheme and not parsed.netloc and str(url).startswith("/"):
+        parsed = urlparse(urljoin("https://www.zhipin.com", str(url)))
+    hostname = (parsed.hostname or "").lower()
+    if parsed.scheme.lower() != "https" or not (
+        hostname == "zhipin.com" or hostname.endswith(".zhipin.com")
+    ):
+        return None
+    if "/wapi/" not in parsed.path.lower() and "/api/" not in parsed.path.lower():
+        return None
     params = parse_qs(parsed.query, keep_blank_values=True)
     # 扁平化单值参数
     flat_params = {k: v[0] for k, v in params.items()}
@@ -1657,10 +2007,18 @@ def _parse_api_pagination(url: str) -> dict[str, Any] | None:
     page_size = 20
     if 'page' in flat_params:
         page_param = 'page'
-        page_size = int(flat_params.get('pageSize', flat_params.get('page_size', 20)))
+        raw_page_size = flat_params.get('pageSize', flat_params.get('page_size', 20))
+        try:
+            page_size = min(20, max(1, int(raw_page_size)))
+        except (TypeError, ValueError):
+            page_size = 20
     elif 'cursor' in flat_params:
         page_param = 'cursor'
-        page_size = int(flat_params.get('pageSize', flat_params.get('page_size', 20)))
+        raw_page_size = flat_params.get('pageSize', flat_params.get('page_size', 20))
+        try:
+            page_size = min(20, max(1, int(raw_page_size)))
+        except (TypeError, ValueError):
+            page_size = 20
 
     if page_param is None:
         return None
@@ -1683,6 +2041,11 @@ def _build_recommend_api_pagination_from_page(target: Any) -> dict[str, Any] | N
 
     from urllib.parse import urlparse, parse_qs, urlunparse
     parsed = urlparse(href)
+    hostname = (parsed.hostname or "").lower()
+    if parsed.scheme.lower() != "https" or not (
+        hostname == "zhipin.com" or hostname.endswith(".zhipin.com")
+    ):
+        return None
     params = parse_qs(parsed.query, keep_blank_values=True)
     job_id = (params.get('jobid') or params.get('jobId') or [""])[0]
     if not job_id:
@@ -1737,7 +2100,8 @@ def _read_recommend_page_identity(target: Any) -> dict[str, str]:
     title = ""
     if job_id:
         try:
-            title = target.run_js(r'''
+            _ensure_boss_access_allowed("岗位身份读取")
+            raw_identity = target.run_js(r'''
                 return (function() {
                     const currentJobId = new URL(location.href).searchParams.get('jobid')
                         || new URL(location.href).searchParams.get('jobId')
@@ -1748,35 +2112,123 @@ def _read_recommend_page_identity(target: Any) -> dict[str, str]:
                     }
                     window.__bossResumeFilterJobTitles = window.__bossResumeFilterJobTitles || {};
                     if (window.__bossResumeFilterJobTitles[currentJobId]) {
-                        return window.__bossResumeFilterJobTitles[currentJobId];
+                        return JSON.stringify({
+                            cached: true,
+                            title: window.__bossResumeFilterJobTitles[currentJobId]
+                        });
                     }
                     try {
                         const request = new XMLHttpRequest();
                         request.open('GET', '/wapi/zpjob/job/chatted/jobList', false);
                         request.send(null);
-                        if (request.status < 200 || request.status >= 300) return '';
-                        const payload = JSON.parse(request.responseText || '{}');
-                        const data = payload.zpData;
-                        const jobs = Array.isArray(data)
-                            ? data
-                            : (Array.isArray(data && data.jobList)
-                                ? data.jobList
-                                : (Array.isArray(data && data.jobs) ? data.jobs : []));
-                        const current = jobs.find(job =>
-                            String(job.encryptJobId || job.jobId || '') === currentJobId
-                        );
-                        const jobTitle = current && String(
-                            current.jobName || current.name || current.positionName || ''
-                        ).trim();
-                        if (jobTitle) {
-                            window.__bossResumeFilterJobTitles[currentJobId] = jobTitle;
-                        }
-                        return jobTitle || '';
-                    } catch (_error) {
-                        return '';
+                        return JSON.stringify({
+                            cached: false,
+                            status: request.status,
+                            contentType: request.getResponseHeader('content-type') || '',
+                            retryAfter: request.getResponseHeader('retry-after') || '',
+                            finalUrl: request.responseURL || '',
+                            redirected: !!(
+                                request.responseURL
+                                && !request.responseURL.includes('/wapi/zpjob/job/chatted/jobList')
+                            ),
+                            body: request.responseText || ''
+                        });
+                    } catch (error) {
+                        return JSON.stringify({
+                            cached: false,
+                            status: 0,
+                            error: String(error)
+                        });
                     }
                 })()
             ''') or ""
+            try:
+                envelope = json.loads(raw_identity) if isinstance(raw_identity, str) else raw_identity
+            except (TypeError, json.JSONDecodeError):
+                # Compatibility with test doubles and older injected scripts.
+                envelope = None
+                title = raw_identity
+
+            if isinstance(envelope, dict):
+                if envelope.get("cached"):
+                    title = envelope.get("title", "")
+                else:
+                    if envelope.get("error") and not envelope.get("status"):
+                        raise ApiClientError(
+                            0,
+                            0,
+                            reason=f"岗位身份请求失败：{envelope['error']}",
+                            source="岗位身份读取",
+                            uncertain=True,
+                        )
+                    body = envelope.get("body", "")
+                    _raise_for_boss_response(
+                        envelope.get("status"),
+                        body=body,
+                        content_type=envelope.get("contentType", ""),
+                        final_url=envelope.get("finalUrl", ""),
+                        redirected=bool(envelope.get("redirected")),
+                        source="岗位身份读取",
+                        retry_after=envelope.get("retryAfter", ""),
+                    )
+                    try:
+                        payload = json.loads(body or "{}")
+                    except (TypeError, json.JSONDecodeError):
+                        raise ApiClientError(
+                            envelope.get("status", "响应格式"),
+                            0,
+                            reason="岗位身份接口返回无法解析的数据",
+                            source="岗位身份读取",
+                        )
+                    data = payload.get("zpData") if isinstance(payload, dict) else None
+                    jobs = (
+                        data
+                        if isinstance(data, list)
+                        else (
+                            data.get("jobList")
+                            if isinstance(data, dict) and isinstance(data.get("jobList"), list)
+                            else (
+                                data.get("jobs")
+                                if isinstance(data, dict) and isinstance(data.get("jobs"), list)
+                                else []
+                            )
+                        )
+                    )
+                    current = next(
+                        (
+                            job
+                            for job in jobs
+                            if str(job.get("encryptJobId") or job.get("jobId") or "") == job_id
+                        ),
+                        None,
+                    )
+                    if current:
+                        title = str(
+                            current.get("jobName")
+                            or current.get("name")
+                            or current.get("positionName")
+                            or ""
+                        ).strip()
+                    if title:
+                        try:
+                            target.run_js(
+                                "window.__bossResumeFilterJobTitles = "
+                                "window.__bossResumeFilterJobTitles || {}; "
+                                "window.__bossResumeFilterJobTitles[arguments[0]] = arguments[1];",
+                                str(job_id),
+                                str(title),
+                            )
+                        except Exception:
+                            pass
+        except ApiRiskBlocked:
+            raise
+        except ApiClientError as exc:
+            print(
+                f"[WARN] BOSS 返回 "
+                f"{'HTTP ' + str(exc.status) if isinstance(exc.status, int) else exc.status}"
+                f"（岗位身份读取）：{exc.reason}。已跳过本次岗位名称核对。"
+            )
+            title = ""
         except Exception:
             title = ""
 
@@ -1866,17 +2318,257 @@ def _confirm_page_job_match(page, expected_job_name, confirm_callback=None) -> b
 
 
 def _is_api_risk_status(status: Any) -> bool:
-    """判断接口错误是否应视为风控熔断，而不是普通接口失败。"""
+    """判断 HTTP 状态是否要求停止本轮全部后续 BOSS 访问。"""
     try:
         status_int = int(status)
     except (TypeError, ValueError):
         return False
-    return status_int in {403, 412, 429}
+    if status_int in {401, 403, 408, 412, 418, 423, 425, 428, 429, 503}:
+        return True
+    return 430 <= status_int <= 499 and status_int not in {431, 451}
+
+
+_BOSS_SENSITIVE_VALUE_RE = re.compile(
+    r"(?i)([\"']?\b(?:securityId|encryptJid|encryptExpectId|encryptJobId|"
+    r"expectId|geekId|jobId|lid|jid|access_token|authorization|api[_-]?key|"
+    r"token|password)[\"']?\s*(?:[=:]|%3d)\s*[\"']?)[^&\s,;\"'}]+"
+)
+_AUTHORIZATION_VALUE_RE = re.compile(
+    r"(?i)([\"']?\bauthorization[\"']?\s*(?:[=:]|%3d)\s*[\"']?)"
+    r"(?:(?:bearer|basic)\s+)?[^&\s,;\"'}]+"
+)
+_BEARER_VALUE_RE = re.compile(r"(?i)(\bBearer\s+)[A-Za-z0-9._~+/=-]+")
+
+
+def redact_boss_sensitive_text(value: Any) -> str:
+    """Remove BOSS request identifiers and common credentials from log text."""
+    text = str(value or "")
+    text = _AUTHORIZATION_VALUE_RE.sub(r"\1***", text)
+    text = _BOSS_SENSITIVE_VALUE_RE.sub(r"\1***", text)
+    return _BEARER_VALUE_RE.sub(r"\1***", text)
+
+
+def _parse_retry_after_seconds(value: Any) -> int | None:
+    """Parse Retry-After seconds or HTTP date into a bounded cooldown."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        seconds = int(float(raw))
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(raw)
+            now = datetime.now(retry_at.tzinfo) if retry_at.tzinfo else datetime.now()
+            seconds = int((retry_at - now).total_seconds() + 0.999)
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return max(1, min(seconds, BOSS_RISK_MAX_COOLDOWN_SECONDS))
+
+
+def _boss_response_message(payload: Any) -> tuple[Any, str]:
+    """Extract a business code and sanitized response message."""
+    if not isinstance(payload, dict):
+        return None, ""
+    code = payload.get("code")
+    message = payload.get("message") or payload.get("msg") or payload.get("errorMessage")
+    error = payload.get("error")
+    if not message and isinstance(error, dict):
+        message = error.get("message") or error.get("msg") or error.get("errorMessage")
+        if code is None:
+            code = error.get("code") or error.get("status")
+    elif not message and isinstance(error, str):
+        message = error
+    if isinstance(message, dict):
+        message = message.get("message") or message.get("msg") or ""
+    return code, redact_boss_sensitive_text(str(message or "").strip())[:160]
+
+
+def _response_header(headers: Any, name: str) -> str:
+    """Read one response header without relying on mapping key casing."""
+    if not hasattr(headers, "items"):
+        return ""
+    target = str(name or "").lower()
+    try:
+        for key, value in headers.items():
+            if str(key).lower() == target:
+                return str(value or "")
+    except (AttributeError, TypeError, ValueError):
+        return ""
+    return ""
+
+
+def _classify_boss_response(
+    status: Any,
+    *,
+    body: Any = "",
+    content_type: str = "",
+    final_url: str = "",
+    redirected: bool = False,
+    expect_json: bool = True,
+) -> tuple[str, int | str, str]:
+    """Classify one BOSS response as ok, client_error, or global block."""
+    try:
+        status_int = int(status)
+    except (TypeError, ValueError):
+        status_int = 0
+
+    payload = body
+    if isinstance(body, str):
+        stripped = body.strip()
+        if stripped.startswith(("{", "[")):
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError:
+                payload = body
+
+    code, message = _boss_response_message(payload)
+    if (
+        not message
+        and expect_json
+        and isinstance(payload, str)
+        and payload.strip()
+        and not payload.lstrip().lower().startswith(("<!doctype html", "<html"))
+    ):
+        message = redact_boss_sensitive_text(payload.strip())[:160]
+    lowered_message = message.lower()
+    auth_keywords = (
+        "请登录", "未登录", "登录失效", "登录过期", "重新登录",
+        "认证失败", "无权限", "unauthorized", "login",
+    )
+    risk_keywords = (
+        "安全验证", "行为验证", "请完成验证", "异常操作", "操作频繁",
+        "请求频繁", "访问频繁", "访问受限", "禁止访问", "风控",
+        "稍后再试", "too many", "rate limit", "captcha", "verify",
+    )
+    redirect_keywords = ("login", "passport", "verify", "captcha", "security")
+
+    final_url_lower = str(final_url or "").lower()
+    if redirected and any(token in final_url_lower for token in redirect_keywords):
+        safe_url = redact_boss_sensitive_text(final_url)[:160]
+        return "block", "页面跳转", f"接口被重定向到登录或验证页面：{safe_url}"
+
+    content_type_lower = str(content_type or "").lower()
+    body_text = body.strip().lower() if isinstance(body, str) else ""
+    if (
+        status_int == 200
+        and expect_json
+        and ("text/html" in content_type_lower or body_text.startswith(("<!doctype html", "<html")))
+    ):
+        return "block", "HTML 响应", "接口返回了登录页或验证页，而不是候选人数据"
+
+    # Explicit response semantics take precedence over otherwise ordinary 4xx codes.
+    if message and any(token in lowered_message for token in auth_keywords):
+        signal = (
+            status_int
+            if status_int >= 400
+            else f"业务码 {code}" if code is not None else "业务响应"
+        )
+        return "block", signal, message
+    if message and any(token in lowered_message for token in risk_keywords):
+        signal = (
+            status_int
+            if status_int >= 400
+            else f"业务码 {code}" if code is not None else "业务响应"
+        )
+        return "block", signal, message
+
+    try:
+        business_status = int(code)
+    except (TypeError, ValueError):
+        business_status = 0
+    if _is_api_risk_status(business_status):
+        return (
+            "block",
+            f"业务码 {business_status}",
+            message or "业务响应要求停止访问",
+        )
+
+    if _is_api_risk_status(status_int):
+        if status_int == 401:
+            reason = "登录状态失效或未授权"
+        elif status_int in {408, 425, 503}:
+            reason = "服务要求暂停访问或稍后重试"
+        else:
+            reason = "疑似触发平台访问保护"
+        if message:
+            reason = f"{reason}：{message}"
+        return "block", status_int, reason
+
+    if 400 <= status_int < 500:
+        return "client_error", status_int, message or "请求未成功"
+    if 500 <= status_int < 600:
+        return "client_error", status_int, message or "服务暂时不可用"
+    if 300 <= status_int < 400:
+        return "client_error", status_int, message or "请求发生未处理的重定向"
+    if status not in (None, "") and status_int == 0:
+        return "client_error", 0, message or "网络请求未取得响应"
+    if code not in (None, 0, "0"):
+        return "client_error", f"业务码 {code}", message or "接口返回业务错误"
+
+    return "ok", status_int, ""
+
+
+def _raise_for_boss_response(
+    status: Any,
+    *,
+    body: Any = "",
+    content_type: str = "",
+    final_url: str = "",
+    redirected: bool = False,
+    page_num: int = 0,
+    source: str = "API 直调",
+    retry_after: Any = "",
+    expect_json: bool = True,
+) -> None:
+    """Raise a deterministic control-flow exception for a failed BOSS response."""
+    action, signal, reason = _classify_boss_response(
+        status,
+        body=body,
+        content_type=content_type,
+        final_url=final_url,
+        redirected=redirected,
+        expect_json=expect_json,
+    )
+    if action == "block":
+        exc = ApiRiskBlocked(
+            signal,
+            page_num,
+            reason=redact_boss_sensitive_text(reason),
+            source=source,
+            cooldown_seconds=_parse_retry_after_seconds(retry_after),
+        )
+        BOSS_ACCESS_GUARD.block(exc)
+        raise exc
+    if action == "client_error":
+        try:
+            status_int = int(signal)
+        except (TypeError, ValueError):
+            status_int = -1
+        uncertain = status_int == 0 or 300 <= status_int < 400 or status_int >= 500
+        raise ApiClientError(
+            signal,
+            page_num,
+            reason=redact_boss_sensitive_text(reason),
+            source=source,
+            uncertain=uncertain,
+        )
 
 
 def _fetch_api_page_result(page: Any, pagination: dict[str, Any], page_num: int) -> tuple[list[dict[str, str]], bool | None]:
     """通过浏览器 fetch 直接调用 BOSS 推荐接口分页，返回候选人和 hasMore。"""
-    from urllib.parse import urlencode
+    _ensure_boss_access_allowed("API 直调")
+    from urllib.parse import urlencode, urlparse
+    parsed_base = urlparse(str(pagination.get("base_url") or ""))
+    base_hostname = (parsed_base.hostname or "").lower()
+    if parsed_base.scheme.lower() != "https" or not (
+        base_hostname == "zhipin.com" or base_hostname.endswith(".zhipin.com")
+    ):
+        raise ApiClientError(
+            "请求地址",
+            page_num,
+            reason="API 直调地址不是受信任的 BOSS HTTPS 地址",
+            source="API 直调",
+        )
     params = dict(pagination['query_params'])
     if pagination['page_param'] == 'page':
         params['page'] = str(page_num)
@@ -1892,10 +2584,19 @@ def _fetch_api_page_result(page: Any, pagination: dict[str, Any], page_num: int)
     return (async () => {{
         try {{
             const resp = await fetch("{full_url}", {{credentials: "include"}});
-            if (!resp.ok) return JSON.stringify({{error: resp.status}});
-            return await resp.text();
+            const body = await resp.text();
+            return JSON.stringify({{
+                __bossResponse: true,
+                ok: resp.ok,
+                status: resp.status,
+                contentType: resp.headers.get("content-type") || "",
+                retryAfter: resp.headers.get("retry-after") || "",
+                finalUrl: resp.url || "",
+                redirected: !!resp.redirected,
+                body: body
+            }});
         }} catch(e) {{
-            return JSON.stringify({{error: e.message}});
+            return JSON.stringify({{__bossResponse: true, status: 0, error: e.message}});
         }}
     }})()
     '''
@@ -1903,21 +2604,68 @@ def _fetch_api_page_result(page: Any, pagination: dict[str, Any], page_num: int)
     try:
         result = page.run_js(js_code)
         if not result:
-            return [], None
+            raise ApiClientError(
+                0,
+                page_num,
+                reason="API 直调未取得响应",
+                source="API 直调",
+                uncertain=True,
+            )
         import json as _json
         payload = _json.loads(result)
-        if isinstance(payload, dict) and 'error' in payload:
-            if _is_api_risk_status(payload['error']):
-                raise ApiRiskBlocked(payload['error'], page_num)
+        if isinstance(payload, dict) and payload.get("__bossResponse"):
+            if payload.get("error") and not payload.get("status"):
+                raise ApiClientError(
+                    0,
+                    page_num,
+                    reason=f"网络请求失败：{payload['error']}",
+                    source="API 直调",
+                    uncertain=True,
+                )
+            body = payload.get("body", "")
+            _raise_for_boss_response(
+                payload.get("status"),
+                body=body,
+                content_type=payload.get("contentType", ""),
+                final_url=payload.get("finalUrl", ""),
+                redirected=bool(payload.get("redirected")),
+                page_num=page_num,
+                source="API 直调",
+                retry_after=payload.get("retryAfter", ""),
+            )
+            try:
+                payload = _json.loads(body)
+            except (TypeError, _json.JSONDecodeError):
+                raise ApiClientError(
+                    payload.get("status", "响应格式"),
+                    page_num,
+                    reason="接口返回无法解析的数据",
+                    source="API 直调",
+                )
+        elif isinstance(payload, dict) and 'error' in payload:
+            _raise_for_boss_response(
+                payload['error'],
+                page_num=page_num,
+                source="API 直调",
+            )
             logger.error("  API 分页直调失败 (page=%d): %s", page_num, payload['error'])
             return [], None
+        _raise_for_boss_response(
+            200,
+            body=payload,
+            page_num=page_num,
+            source="API 直调",
+        )
         zp_data = payload.get('zpData') if isinstance(payload, dict) else {}
         has_more = zp_data.get('hasMore') if isinstance(zp_data, dict) else None
         return _extract_candidates_from_api_payload(payload), has_more
-    except ApiRiskBlocked:
+    except (ApiRiskBlocked, ApiClientError):
         raise
     except Exception as e:
-        logger.error("  API 分页直调异常 (page=%d): %s", page_num, e)
+        print(
+            f"[WARN] API 分页直调异常（第 {page_num} 页）："
+            f"{redact_boss_sensitive_text(e)}"
+        )
         return [], None
 
 
@@ -1951,6 +2699,7 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
         extraction_mode: 提取模式，api=listener+refresh+DOM+API补全，listener=listener+refresh+DOM补全，dom=仅DOM滚动
         scan_stats: 可选字典，写入扫描完整性、停止原因和轮次统计
     """
+    _ensure_boss_access_allowed("扫描候选人")
     print("正在提取候选人...")
     time.sleep(_human_delay(1.0, 0.5))
 
@@ -1979,6 +2728,10 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
     rounds_completed = 0
     scan_status = "partial"
     scan_reason = "尚未完成扫描"
+    boss_access_blocked = False
+    boss_block_status: int | str = ""
+    boss_block_stage = ""
+    api_chain_stopped = False
 
     def _record_scan_outcome(status, reason):
         if scan_stats is not None:
@@ -1988,13 +2741,49 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
                 'scan_rounds': rounds_completed,
                 'scan_candidate_count': len(all_candidates),
                 'scan_last_new_count': last_round_new_count,
+                'boss_access_blocked': boss_access_blocked,
+                'boss_block_status': boss_block_status,
+                'boss_block_stage': boss_block_stage,
+                'boss_cooldown_seconds': int(
+                    get_boss_access_block_state().get('remaining_seconds', 0)
+                ),
             })
+
+    def _status_text(status: int | str) -> str:
+        return f"HTTP {status}" if isinstance(status, int) else str(status)
+
+    def _mark_boss_access_blocked(exc: ApiRiskBlocked, stage: str) -> None:
+        nonlocal scan_status, scan_reason
+        nonlocal boss_access_blocked, boss_block_status, boss_block_stage
+        boss_access_blocked = True
+        boss_block_status = exc.status
+        boss_block_stage = stage
+        signal = _status_text(exc.status)
+        guard_state = get_boss_access_block_state()
+        if not guard_state["blocked"]:
+            guard_state = BOSS_ACCESS_GUARD.block(exc)
+        cooldown = max(1, int(guard_state["remaining_seconds"] + 0.999))
+        scan_status = "interrupted"
+        scan_reason = f"BOSS 访问保护触发（{stage}，{signal}）"
+        print(
+            f"[访问保护] BOSS 返回 {signal}（{stage}）：{exc.reason}。"
+            f"已停止后续 BOSS 访问，冷却约 {cooldown} 秒；"
+            "将继续规则筛选、AI 评估和保存已有结果。"
+        )
+
+    def _log_api_client_error(exc: ApiClientError, stage: str) -> None:
+        nonlocal api_chain_stopped
+        api_chain_stopped = True
+        print(
+            f"[WARN] BOSS 返回 {_status_text(exc.status)}（{stage}）：{exc.reason}。"
+            "已停止本轮 API 补全，后续仅使用已获取的页面数据。"
+        )
 
     # listener 启动后刷新一次，让首屏 API 请求被监听器捕获（结构化字段来源）。
     # 刷新会使页面恢复默认岗位，用 identity 校验检测是否跑偏。
     if api_listener:
-        identity_before = _read_recommend_page_identity(target)
         try:
+            identity_before = _read_recommend_page_identity(target)
             page.refresh()
             # 轮询等待 iframe 内容就绪（候选人卡片出现），最多 10 秒
             for _wait in range(20):
@@ -2012,6 +2801,9 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
             else:
                 iframe = get_iframe(page)
             target = iframe if iframe else page
+            if isinstance(api_listener, _ApiCapture) and not api_listener.start(page):
+                print("[WARN] 页面刷新后无法恢复降级 Listener，将仅使用 DOM 提取")
+                api_listener = None
             identity_after = _read_recommend_page_identity(target)
             # 刷新后完全读不到身份标识 → 页面未加载完，跳过校验
             if not identity_after.get("job_id") and not identity_after.get("job_title"):
@@ -2041,12 +2833,23 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
             if not observed_api_url:
                 observed_api_url = _find_recent_recommend_api_url(target, page)
             print(f"listener + refresh 捕获: {len(pending_listener_candidates)} 条")
+        except ApiRiskBlocked as e:
+            _mark_boss_access_blocked(e, "Listener 首屏")
+        except ApiClientError as e:
+            _log_api_client_error(e, "Listener 首屏")
+            try:
+                api_listener.stop()
+            except Exception:
+                pass
+            api_listener = None
         except Exception as e:
             print(f"刷新页面失败，将继续使用当前页面：{e}")
 
     try:
         next_dom_scroll_pause_after = random.randint(DOM_SCROLL_BATCH_MIN, DOM_SCROLL_BATCH_MAX)
         for scroll_round in range(max_rounds):
+            if boss_access_blocked:
+                break
             rounds_completed = scroll_round + 1
             bottom_reached = False
             # 检查停止信号
@@ -2055,8 +2858,13 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
                 raise StopRequested()
 
             if not _ensure_recommend_page(page, notice_callback=notice_callback, context="扫描候选人"):
-                scan_status = "interrupted"
-                scan_reason = "页面已离开推荐牛人页面"
+                try:
+                    _ensure_boss_access_allowed("扫描候选人")
+                except ApiRiskBlocked as exc:
+                    _mark_boss_access_blocked(exc, "页面跳转")
+                else:
+                    scan_status = "interrupted"
+                    scan_reason = "页面已离开推荐牛人页面"
                 break
 
             # 验证码检测：每 3 轮一次（降低调用频率，弹窗一旦出现 1.5s 内必然可见）
@@ -2064,10 +2872,26 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
                 is_captcha, captcha_msg = _detect_captcha(page)
                 if is_captcha:
                     print(f"\n⚠️  检测到安全验证弹窗 ({captcha_msg})")
-                    if not _wait_for_captcha_resolution(page, stop_event, captcha_callback=captcha_callback, detail=captcha_msg, stage="scan"):
-                        scan_status = "interrupted"
-                        scan_reason = "安全验证未完成"
-                        break
+                    resolved = _wait_for_captcha_resolution(
+                        page,
+                        stop_event,
+                        captcha_callback=captcha_callback,
+                        detail=captcha_msg,
+                        stage="scan",
+                    )
+                    reason = (
+                        "安全验证已完成，本轮仍停止自动访问"
+                        if resolved else "安全验证未完成"
+                    )
+                    captcha_block = ApiRiskBlocked(
+                        "安全验证",
+                        0,
+                        reason=reason,
+                        source="页面检测",
+                    )
+                    BOSS_ACCESS_GUARD.block(captcha_block)
+                    _mark_boss_access_blocked(captcha_block, "页面安全验证")
+                    break
 
             # 进度上报
             if progress_callback:
@@ -2186,8 +3010,21 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
                     if api_candidates or _api_url:
                         print(f"listener 滚动合并(第 {scroll_round + 1} 轮): 命中 DOM {matched} 条")
 
+            except ApiRiskBlocked as e:
+                _mark_boss_access_blocked(e, f"Listener 第 {scroll_round + 1} 轮")
+                break
+            except ApiClientError as e:
+                _log_api_client_error(e, f"Listener 第 {scroll_round + 1} 轮")
+                try:
+                    api_listener.stop()
+                except Exception:
+                    pass
+                api_listener = None
             except Exception as e:
-                logger.error("提取候选人元素失败(轮次%d): %s", scroll_round + 1, e)
+                print(
+                    f"[WARN] 提取候选人元素失败（第 {scroll_round + 1} 轮）："
+                    f"{redact_boss_sensitive_text(e)}"
+                )
 
             new_count = len(candidates_in_round)
             last_round_new_count = new_count
@@ -2250,9 +3087,12 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
             except Exception:
                 pass
 
-    _record_scan_outcome(scan_status, scan_reason)
-
-    if scan_status != "interrupted" and api_enrichment_enabled and all_candidates:
+    if (
+        scan_status != "interrupted"
+        and api_enrichment_enabled
+        and not api_chain_stopped
+        and all_candidates
+    ):
         missing_ids = {
             c.get('geek_id') for c in all_candidates
             if c.get('geek_id') and not c.get('structured')
@@ -2279,7 +3119,10 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
                     try:
                         api_candidates, has_more = _fetch_api_page_result(target, pagination, page_num)
                     except ApiRiskBlocked as e:
-                        print(f"API 返回疑似风控状态码 {e.status}（第 {e.page_num} 页），停止 API 补全。")
+                        _mark_boss_access_blocked(e, f"API 直调第 {e.page_num} 页")
+                        break
+                    except ApiClientError as e:
+                        _log_api_client_error(e, f"API 直调第 {e.page_num} 页")
                         break
                     matched = _merge_api_enrichment_into_existing(
                         api_candidates, all_candidates, candidate_index_by_id,
@@ -2315,6 +3158,8 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
                         f"[WARN] API 补全已达到 {page_limit} 页上限，最后一页仍命中 "
                         f"DOM 候选人，仍有 {len(missing_ids)} 人缺少结构化信息"
                     )
+
+    _record_scan_outcome(scan_status, scan_reason)
 
     # 统计 API 结构化数据覆盖率
     _api_count = sum(1 for c in all_candidates if c.get('structured'))
@@ -2511,6 +3356,79 @@ def _extract_detail_url_from_packet(packet: Any) -> str:
         return ""
 
 
+def _start_detail_api_listener(page: ChromiumPage) -> Any | None:
+    """Start a narrow listener so detail context is saved only after a verified response."""
+    try:
+        listener = page.listen
+        try:
+            listener.stop()
+        except Exception:
+            pass
+        listener.start(
+            "/wapi/zpjob/",
+            method=("GET", "POST"),
+            res_type=("XHR", "Fetch"),
+        )
+        return listener
+    except Exception:
+        return None
+
+
+def _wait_for_detail_api_url(listener: Any, timeout: float) -> str:
+    """Wait for one detail response, classify it, and return its verified URL."""
+    deadline = time.monotonic() + max(0.1, timeout)
+    while time.monotonic() < deadline:
+        try:
+            packet = listener.wait(
+                timeout=max(0.05, deadline - time.monotonic()),
+                fit_count=False,
+            )
+        except Exception as exc:
+            raise ApiClientError(
+                0,
+                0,
+                reason=f"读取详情响应失败：{exc}",
+                source="联系信息获取",
+                uncertain=True,
+            ) from exc
+        packets = packet if isinstance(packet, list) else [packet] if packet else []
+        if not packets:
+            return ""
+        for item in packets:
+            url = _extract_detail_url_from_packet(item)
+            if getattr(item, "is_failed", False):
+                fail_info = getattr(item, "fail_info", None)
+                fail_text = getattr(fail_info, "errorText", "") or "详情请求失败"
+                raise ApiClientError(
+                    0,
+                    0,
+                    reason=str(fail_text),
+                    source="联系信息获取",
+                    uncertain=True,
+                )
+            response = getattr(item, "response", None)
+            status = (
+                getattr(response, "status", None)
+                or getattr(response, "status_code", None)
+                or getattr(item, "status", None)
+            )
+            headers = getattr(response, "headers", {}) or {}
+            body = getattr(response, "body", "")
+            response_url = getattr(response, "url", "") or url
+            _raise_for_boss_response(
+                status,
+                body=body,
+                content_type=_response_header(headers, "content-type"),
+                final_url=response_url,
+                redirected=bool(response_url and response_url != url),
+                source="联系信息获取",
+                retry_after=_response_header(headers, "retry-after"),
+            )
+            if "/wapi/zpjob/view/geek/info" in url:
+                return url
+    return ""
+
+
 def _recent_detail_api_urls(*targets: Any) -> list[str]:
     """Read recent candidate detail API URLs from browser performance entries."""
     urls: list[str] = []
@@ -2638,11 +3556,16 @@ def _capture_greet_context_from_list_page(
     This is a best-effort enrichment step. It must not be treated as required for
     scanning or filtering because BOSS page structure and account state can drift.
     """
+    _ensure_boss_access_allowed("联系信息获取")
     if stop_event and stop_event.is_set():
         return {}, "已停止"
+    detail_listener = None
     try:
         iframe = get_iframe(page)
         target = iframe if iframe else page
+        detail_listener = _start_detail_api_listener(page)
+        if not detail_listener:
+            return {}, "无法监听详情响应，为避免误判已跳过"
         card_css = _sel('candidate_card', 'card_by_id_css',
                         'css:[data-geekid="{geek_id}"]').format(geek_id=geek_id)
         card = target.ele(card_css, timeout=1)
@@ -2656,19 +3579,23 @@ def _capture_greet_context_from_list_page(
         if not _click_candidate_card_for_detail(target, geek_id):
             return {}, "打开详情失败"
 
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if stop_event and stop_event.is_set():
-                break
-            for url in _recent_detail_api_urls(page):
-                context = _parse_greet_context_from_detail_url(url)
-                if context:
-                    return context, "成功"
-            time.sleep(0.25)
+        detail_url = _wait_for_detail_api_url(detail_listener, timeout)
+        if stop_event and stop_event.is_set():
+            return {}, "已停止"
+        context = _parse_greet_context_from_detail_url(detail_url)
+        if context:
+            return context, "成功"
         return {}, "未捕获详情接口"
+    except (ApiRiskBlocked, ApiClientError):
+        raise
     except Exception as exc:
         return {}, f"异常: {str(exc)[:50]}"
     finally:
+        if detail_listener:
+            try:
+                detail_listener.stop()
+            except Exception:
+                pass
         try:
             _close_detail_drawer(page)
         except Exception:
@@ -2698,7 +3625,21 @@ def enrich_greet_contexts_for_candidates(
             print(f"  已补抓 {attempted - 1} 人上下文，暂停 {int(pause)} 秒降低访问频率...")
             time.sleep(pause)
         had_context = bool(candidate.get("greet_context"))
-        context, msg = _capture_greet_context_from_list_page(page, str(geek_id), stop_event=stop_event)
+        try:
+            context, msg = _capture_greet_context_from_list_page(
+                page,
+                str(geek_id),
+                stop_event=stop_event,
+            )
+        except ApiRiskBlocked:
+            raise
+        except ApiClientError as exc:
+            print(
+                f"[WARN] BOSS 返回 "
+                f"{'HTTP ' + str(exc.status) if isinstance(exc.status, int) else exc.status}"
+                f"（联系信息获取）：{exc.reason}。已停止本轮联系信息获取。"
+            )
+            break
         if context:
             candidate["greet_context"] = context
             candidate["greet_context_updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -2713,19 +3654,38 @@ def enrich_greet_contexts_for_candidates(
 
 def _ensure_zhipin_origin_for_fetch(page: ChromiumPage) -> tuple[bool, str]:
     """Ensure browser JavaScript runs under zhipin.com so same-origin fetch works."""
+    _ensure_boss_access_allowed("发起沟通")
     try:
         current_url = str(getattr(page, "url", "") or "")
     except Exception:
         current_url = ""
+    if _is_boss_auth_or_verification_url(current_url):
+        raise activate_boss_access_block(
+            "页面跳转",
+            "发起沟通前 BOSS 页面已进入登录或安全验证流程",
+            "发起沟通",
+        )
     if "zhipin.com" in current_url.lower():
         return True, ""
     try:
         page.get("https://www.zhipin.com/")
         time.sleep(_human_delay(0.6, 0.3))
         current_url = str(getattr(page, "url", "") or "")
+        current_lower = current_url.lower()
+        if any(token in current_lower for token in ("login", "passport", "verify", "captcha", "security")):
+            exc = ApiRiskBlocked(
+                "页面跳转",
+                0,
+                reason="打开 BOSS 页面时进入登录或安全验证页面",
+                source="发起沟通",
+            )
+            BOSS_ACCESS_GUARD.block(exc)
+            raise exc
         if "zhipin.com" in current_url.lower():
             return True, ""
         return False, f"无法打开 BOSS 同源页面: {current_url or '未知页面'}"
+    except ApiRiskBlocked:
+        raise
     except Exception as exc:
         return False, f"无法打开 BOSS 同源页面: {str(exc)[:50]}"
 
@@ -2735,8 +3695,9 @@ def send_greeting_with_context(
     greet_context: dict[str, Any],
     stop_event=None,
     captcha_callback=None,
-) -> tuple[bool, str]:
+) -> tuple[bool | None, str]:
     """Send a detail-context greeting through /wapi/zpjob/chat/start."""
+    _ensure_boss_access_allowed("发起沟通")
     if stop_event and stop_event.is_set():
         return False, "已停止"
     chat_start = (greet_context or {}).get("chat_start") or {}
@@ -2772,11 +3733,14 @@ def send_greeting_with_context(
             return JSON.stringify({
                 ok: xhr.status >= 200 && xhr.status < 300,
                 status: xhr.status,
-                code: payload && payload.code,
-                message: payload && (payload.message || payload.msg),
-                zpDataKeys: payload && payload.zpData && typeof payload.zpData === 'object'
-                    ? Object.keys(payload.zpData).slice(0, 50)
-                    : []
+                contentType: xhr.getResponseHeader('content-type') || '',
+                retryAfter: xhr.getResponseHeader('retry-after') || '',
+                finalUrl: xhr.responseURL || '',
+                redirected: !!(
+                    xhr.responseURL
+                    && !xhr.responseURL.includes('/wapi/zpjob/chat/start')
+                ),
+                body: xhr.responseText || ''
             });
         } catch (err) {
             return JSON.stringify({ok:false, status:xhr.status || 0, error:String(err)});
@@ -2786,9 +3750,40 @@ def send_greeting_with_context(
         raw = page.run_js(script, body, timeout=15)
         result = json.loads(raw or "{}") if isinstance(raw, str) else (raw or {})
     except Exception as exc:
-        return False, f"上下文打招呼异常: {str(exc)[:50]}"
+        safe_error = redact_boss_sensitive_text(exc)[:80]
+        return None, f"上下文打招呼结果待核实: {safe_error}"
 
-    if result.get("status") == 200 and result.get("code") == 0:
+    if result.get("error") and not result.get("status"):
+        safe_error = redact_boss_sensitive_text(result.get("error"))[:80]
+        return None, f"上下文打招呼结果待核实: {safe_error}"
+
+    response_body = result.get("body", "")
+    try:
+        response_payload = json.loads(response_body or "{}")
+    except (TypeError, json.JSONDecodeError):
+        response_payload = {}
+
+    response_error = None
+    try:
+        _raise_for_boss_response(
+            result.get("status"),
+            body=response_body,
+            content_type=result.get("contentType", ""),
+            final_url=result.get("finalUrl", ""),
+            redirected=bool(result.get("redirected")),
+            source="发起沟通",
+            retry_after=result.get("retryAfter", ""),
+        )
+    except ApiRiskBlocked:
+        raise
+    except ApiClientError as exc:
+        response_error = exc
+
+    if (
+        result.get("status") == 200
+        and isinstance(response_payload, dict)
+        and response_payload.get("code") == 0
+    ):
         return True, "成功"
 
     is_limited, limit_msg = _detect_limit_popup(page)
@@ -2797,12 +3792,39 @@ def send_greeting_with_context(
         return False, f"沟通次数已达上限: {limit_msg}"
     if is_captcha:
         print(f"\n   打招呼时检测到安全验证弹窗 ({captcha_msg})")
-        if _wait_for_captcha_resolution(page, stop_event, captcha_callback=captcha_callback, detail=captcha_msg, stage="greeting"):
-            return False, "安全验证已完成，请重新发起本次手工打招呼"
-        return False, f"安全验证未完成: {captcha_msg}"
+        resolved = _wait_for_captcha_resolution(
+            page,
+            stop_event,
+            captcha_callback=captcha_callback,
+            detail=captcha_msg,
+            stage="greeting",
+        )
+        captcha_exc = ApiRiskBlocked(
+            "安全验证",
+            0,
+            reason=(
+                "安全验证已完成，本轮仍停止自动访问"
+                if resolved else f"安全验证未完成：{captcha_msg}"
+            ),
+            source="发起沟通",
+        )
+        BOSS_ACCESS_GUARD.block(captcha_exc)
+        raise captcha_exc
 
-    message = result.get("message") or result.get("error") or "未知响应"
-    return False, f"上下文打招呼失败: HTTP {result.get('status')} code={result.get('code')} {message}"
+    if response_error:
+        signal = (
+            f"HTTP {response_error.status}"
+            if isinstance(response_error.status, int)
+            else str(response_error.status)
+        )
+        message = f"上下文打招呼失败: {signal} {response_error.reason}"
+        return (None, message) if response_error.uncertain else (False, message)
+
+    code, message = _boss_response_message(response_payload)
+    return None, (
+        f"上下文打招呼结果待核实: HTTP {result.get('status')} "
+        f"code={code} {message or '响应状态无法确认'}"
+    )
 
 
 def _dispatch_greeting(page, candidate, stop_event=None, captcha_callback=None, method_prefix="auto"):
@@ -2818,6 +3840,8 @@ def _dispatch_greeting(page, candidate, stop_event=None, captcha_callback=None, 
             page, context, stop_event=stop_event, captcha_callback=captcha_callback)
         if success:
             return True, msg, f"{method_prefix}_context"
+        if success is None:
+            return None, msg, f"{method_prefix}_context"
         # 字段缺失等配置问题可回退 DOM；风控/API 问题直接返回
         if "缺少" not in msg and "字段" not in msg:
             return False, msg, f"{method_prefix}_context"
@@ -2845,10 +3869,42 @@ def send_greeting_on_list_page(
     - 合并按钮文本查询为单次 XPath OR 表达式，消灭循环等待叠加
     - 所有 ele() 调用设短超时，不再死等默认 10s
     - 点击后检测升级套餐/次数上限弹窗，防止假成功
-    - 检测到安全验证弹窗时暂停等待用户处理，验证完成后自动重试
+    - 检测到安全验证弹窗时暂停等待用户处理，本轮不再自动重试
 
     返回：(是否成功，消息)
     """
+    _ensure_boss_access_allowed("列表页发起沟通")
+    try:
+        current_url = str(getattr(page, "url", "") or "")
+    except Exception:
+        current_url = ""
+    if _is_boss_auth_or_verification_url(current_url):
+        raise activate_boss_access_block(
+            "页面跳转",
+            "列表页发起沟通前 BOSS 页面已进入登录或安全验证流程",
+            "列表页发起沟通",
+        )
+    is_captcha, captcha_msg = _detect_captcha(page)
+    if is_captcha:
+        resolved = _wait_for_captcha_resolution(
+            page,
+            stop_event,
+            captcha_callback=captcha_callback,
+            detail=captcha_msg,
+            stage="greeting",
+        )
+        captcha_exc = ApiRiskBlocked(
+            "安全验证",
+            0,
+            reason=(
+                "安全验证已完成，本轮仍停止自动访问"
+                if resolved else f"安全验证未完成：{captcha_msg}"
+            ),
+            source="列表页发起沟通",
+        )
+        BOSS_ACCESS_GUARD.block(captcha_exc)
+        raise captcha_exc
+    click_executed = False
     try:
         iframe = get_iframe(page)
         target = iframe if iframe else page
@@ -2889,8 +3945,10 @@ def send_greeting_on_list_page(
             greet_btn.scroll.to_see(center=True)
             time.sleep(_human_delay(0.1, 0.08))
             greet_btn.click()
+            click_executed = True
         except Exception:
             greet_btn.run_js('this.click()')
+            click_executed = True
 
         time.sleep(_human_delay(0.3, 0.3))  # 等待按钮点击生效
 
@@ -2907,19 +3965,24 @@ def send_greeting_on_list_page(
             return False, f"沟通次数已达上限: {limit_msg}"
         if is_captcha:
             print(f"\n   打招呼时检测到安全验证弹窗 ({captcha_msg})")
-            if _wait_for_captcha_resolution(page, stop_event, captcha_callback=captcha_callback, detail=captcha_msg, stage="greeting"):
-                # 验证完成后重新检测弹窗状态。验证码出现说明当前账号/环境已被风控关注，
-                # 不继续自动点击下一批，避免刚解除验证又触发更严格的拦截。
-                time.sleep(_human_delay(0.5, 0.3))
-                is_limited, limit_msg = _detect_limit_popup(page)
-                is_captcha, captcha_msg = _detect_captcha(page)
-                if is_limited:
-                    return False, f"沟通次数已达上限: {limit_msg}"
-                if is_captcha:
-                    return False, f"验证后仍存在安全弹窗: {captcha_msg}"
-                return False, "安全验证已完成，为降低风控风险已停止本轮自动打招呼"
-            else:
-                return False, f"安全验证未完成: {captcha_msg}"
+            resolved = _wait_for_captcha_resolution(
+                page,
+                stop_event,
+                captcha_callback=captcha_callback,
+                detail=captcha_msg,
+                stage="greeting",
+            )
+            captcha_exc = ApiRiskBlocked(
+                "安全验证",
+                0,
+                reason=(
+                    "安全验证已完成，本轮仍停止自动访问"
+                    if resolved else f"安全验证未完成：{captcha_msg}"
+                ),
+                source="列表页发起沟通",
+            )
+            BOSS_ACCESS_GUARD.block(captcha_exc)
+            raise captcha_exc
 
         return verify_greeting_success(
             target,
@@ -2928,8 +3991,13 @@ def send_greeting_on_list_page(
             stop_event=stop_event,
         )
 
+    except ApiRiskBlocked:
+        raise
     except Exception as e:
-        return False, f"异常: {str(e)[:50]}"
+        message = f"异常: {redact_boss_sensitive_text(e)[:80]}"
+        if click_executed:
+            return None, f"点击已执行，但发送结果待核实（{message}）"
+        return False, message
 
 
 
@@ -3615,6 +4683,7 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
     scan_state = stats if stats is not None else {}
     raw_candidates = extract_candidates_by_comprehensive_analysis(page, max_rounds=max_rounds, progress_callback=progress_callback, stop_event=stop_event, captcha_callback=captcha_callback, notice_callback=notice_callback, blocking_notice_callback=blocking_notice_callback, max_candidates=max_candidates, use_api_extraction=use_api_extraction, extraction_mode=extraction_mode, scan_stats=scan_state)
     print(f"原始提取到 {len(raw_candidates)} 个唯一候选人")
+    boss_access_blocked = bool(scan_state.get('boss_access_blocked'))
     if scan_state.get('scan_status') == 'interrupted' and auto_greet:
         auto_greet = False
         print("[WARN] 扫描已中断，本轮仅保存已提取结果，不自动打招呼")
@@ -3992,7 +5061,9 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
     )
 
     context_candidates: list[dict[str, Any]] = []
-    if greet_context_capture:
+    if boss_access_blocked and greet_context_capture:
+        print("已跳过联系信息准备：本轮已触发 BOSS 访问保护")
+    elif greet_context_capture:
         try:
             effective_context_limit = max(0, int(greet_context_limit))
         except (TypeError, ValueError):
@@ -4014,12 +5085,36 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
             )
     if context_candidates and not list_candidates and hasattr(page, "listen"):
         print(f"\n=== 阶段 1.6: 捕获打招呼上下文（共 {len(context_candidates)} 人，最佳努力）===")
-        enriched_count = enrich_greet_contexts_for_candidates(
-            page,
-            context_candidates,
-            stop_event=stop_event,
-            max_count=None,
-        )
+        try:
+            enriched_count = enrich_greet_contexts_for_candidates(
+                page,
+                context_candidates,
+                stop_event=stop_event,
+                max_count=None,
+            )
+        except ApiRiskBlocked as exc:
+            guard_state = get_boss_access_block_state()
+            cooldown = max(1, int(guard_state["remaining_seconds"] + 0.999))
+            boss_access_blocked = True
+            auto_greet = False
+            scan_state.update({
+                "scan_status": "interrupted",
+                "scan_reason": (
+                    f"BOSS 访问保护触发（联系信息获取，"
+                    f"{'HTTP ' + str(exc.status) if isinstance(exc.status, int) else exc.status}）"
+                ),
+                "boss_access_blocked": True,
+                "boss_block_status": exc.status,
+                "boss_block_stage": "联系信息获取",
+                "boss_cooldown_seconds": cooldown,
+            })
+            print(
+                f"[访问保护] BOSS 返回 "
+                f"{'HTTP ' + str(exc.status) if isinstance(exc.status, int) else exc.status}"
+                f"（联系信息获取）：{exc.reason}。已停止后续 BOSS 访问，"
+                f"冷却约 {cooldown} 秒；AI 评估结果和已有候选人仍会保存。"
+            )
+            enriched_count = 0
         if enriched_count:
             merge_candidates_all(context_candidates)
         print(f"打招呼上下文捕获完成：成功 {enriched_count}/{len(context_candidates)} 人")
@@ -4133,6 +5228,33 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                 if stop_event and stop_event.is_set():
                     raise StopRequested()
                 if not _ensure_recommend_page(page, notice_callback=notice_callback, context="打招呼"):
+                    try:
+                        _ensure_boss_access_allowed("发起沟通")
+                    except ApiRiskBlocked as exc:
+                        guard_state = get_boss_access_block_state()
+                        cooldown = max(
+                            1,
+                            int(guard_state["remaining_seconds"] + 0.999),
+                        )
+                        signal = (
+                            f"HTTP {exc.status}"
+                            if isinstance(exc.status, int)
+                            else str(exc.status)
+                        )
+                        scan_state.update({
+                            "scan_status": "interrupted",
+                            "scan_reason": (
+                                f"BOSS 访问保护触发（页面跳转，{signal}）"
+                            ),
+                            "boss_access_blocked": True,
+                            "boss_block_status": exc.status,
+                            "boss_block_stage": "页面跳转",
+                            "boss_cooldown_seconds": cooldown,
+                        })
+                        print(
+                            f"\n[访问保护] BOSS 页面进入登录或验证流程。"
+                            f"已停止本轮后续发送，冷却约 {cooldown} 秒。"
+                        )
                     break
                 action = "补打招呼" if candidate['geek_id'] in all_existing_ids else "打招呼"
 
@@ -4162,9 +5284,35 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                     (iframe if iframe else page).run_js('window.scrollBy(0, 400)')
                     time.sleep(_human_delay(0.2, 0.15))
 
-                success, msg, greet_method = _dispatch_greeting(
-                    page, candidate, stop_event=stop_event,
-                    captcha_callback=captcha_callback, method_prefix="auto")
+                try:
+                    success, msg, greet_method = _dispatch_greeting(
+                        page,
+                        candidate,
+                        stop_event=stop_event,
+                        captcha_callback=captcha_callback,
+                        method_prefix="auto",
+                    )
+                except ApiRiskBlocked as exc:
+                    guard_state = get_boss_access_block_state()
+                    cooldown = max(1, int(guard_state["remaining_seconds"] + 0.999))
+                    signal = (
+                        f"HTTP {exc.status}"
+                        if isinstance(exc.status, int)
+                        else str(exc.status)
+                    )
+                    scan_state.update({
+                        "scan_status": "interrupted",
+                        "scan_reason": f"BOSS 访问保护触发（发起沟通，{signal}）",
+                        "boss_access_blocked": True,
+                        "boss_block_status": exc.status,
+                        "boss_block_stage": "发起沟通",
+                        "boss_cooldown_seconds": cooldown,
+                    })
+                    print(
+                        f"\n[访问保护] BOSS 返回 {signal}（发起沟通）：{exc.reason}。"
+                        f"已停止本轮后续发送，冷却约 {cooldown} 秒。"
+                    )
+                    break
 
                 if success is None:
                     candidate['greet_sent'] = False
@@ -4194,6 +5342,41 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                     candidate.setdefault('followup_status', "未沟通")
                     candidates_all.append(candidate)
                     print(f"失败：{msg}")
+
+                    client_status = _client_error_status_from_message(msg)
+                    if client_status is not None:
+                        if _is_api_risk_status(client_status):
+                            risk_exc = activate_boss_access_block(
+                                client_status,
+                                str(msg),
+                                "发起沟通",
+                            )
+                            guard_state = get_boss_access_block_state()
+                            cooldown = max(
+                                1,
+                                int(guard_state["remaining_seconds"] + 0.999),
+                            )
+                            scan_state.update({
+                                "scan_status": "interrupted",
+                                "scan_reason": (
+                                    "BOSS 访问保护触发"
+                                    f"（发起沟通，HTTP {client_status}）"
+                                ),
+                                "boss_access_blocked": True,
+                                "boss_block_status": risk_exc.status,
+                                "boss_block_stage": "发起沟通",
+                                "boss_cooldown_seconds": cooldown,
+                            })
+                            print(
+                                f"[访问保护] BOSS 返回 HTTP {client_status}，"
+                                f"已停止本轮后续发送，冷却约 {cooldown} 秒。"
+                            )
+                        else:
+                            print(
+                                f"[BOSS接口] 发起沟通返回 HTTP {client_status}，"
+                                "已停止本轮后续发送。"
+                            )
+                        break
 
                     # 沟通次数上限是终端条件：达到上限后所有后续打招呼都不会成功
                     if "上限" in msg or "次数" in msg:
@@ -4381,7 +5564,7 @@ def _format_scan_summary(
         lines.append("AI 复核：未执行")
     lines.extend([
         f"最终保留：{total_passed} 人",
-        f"本轮打招呼：{total_greeted} 人",
+        f"本轮已联系：{total_greeted} 人",
     ])
     if detail:
         lines.extend(["", detail])
@@ -4618,9 +5801,30 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                             else:
                                 time.sleep(_human_delay(GREET_DELAY_CENTER, GREET_DELAY_SPREAD))
                         print(f"[{i+1}/{len(to_greet)}] 正在向 {name} 打招呼...", end=" ")
-                        success, msg, greet_method = _dispatch_greeting(
-                            page, c, stop_event=stop_event,
-                            captcha_callback=captcha_callback, method_prefix="regreet")
+                        try:
+                            success, msg, greet_method = _dispatch_greeting(
+                                page,
+                                c,
+                                stop_event=stop_event,
+                                captcha_callback=captcha_callback,
+                                method_prefix="regreet",
+                            )
+                        except ApiRiskBlocked as exc:
+                            guard_state = get_boss_access_block_state()
+                            cooldown = max(
+                                1,
+                                int(guard_state["remaining_seconds"] + 0.999),
+                            )
+                            signal = (
+                                f"HTTP {exc.status}"
+                                if isinstance(exc.status, int)
+                                else str(exc.status)
+                            )
+                            print(
+                                f"\n[访问保护] BOSS 返回 {signal}（补打招呼）："
+                                f"{exc.reason}。已停止后续发送，冷却约 {cooldown} 秒。"
+                            )
+                            break
                         if success is None:
                             skip_count += 1
                             persist_candidate_greeting_pending(c, msg)
@@ -4639,6 +5843,34 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                             fail_count += 1
                             consecutive_uncertain = 0
                             print(f"失败：{msg}")
+                            client_status = _client_error_status_from_message(msg)
+                            if client_status is not None:
+                                if _is_api_risk_status(client_status):
+                                    risk_exc = activate_boss_access_block(
+                                        client_status,
+                                        str(msg),
+                                        "补打招呼",
+                                    )
+                                    guard_state = get_boss_access_block_state()
+                                    cooldown = max(
+                                        1,
+                                        int(
+                                            guard_state["remaining_seconds"]
+                                            + 0.999
+                                        ),
+                                    )
+                                    print(
+                                        f"[访问保护] BOSS 返回 "
+                                        f"HTTP {risk_exc.status}，已停止后续发送，"
+                                        f"冷却约 {cooldown} 秒。"
+                                    )
+                                else:
+                                    print(
+                                        f"[BOSS接口] 补打招呼返回 "
+                                        f"HTTP {client_status}，"
+                                        "已停止本轮后续发送。"
+                                    )
+                                break
                             # 沟通次数上限是终端条件
                             if "上限" in msg or "次数" in msg:
                                 print(f"\n{'='*60}")
@@ -4821,6 +6053,9 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                 'status': job_stats.get('scan_status', 'partial'),
                 'reason': job_stats.get('scan_reason', '未取得扫描停止原因'),
             })
+            if job_stats.get('boss_access_blocked'):
+                print("已停止后续岗位处理：本轮已触发 BOSS 访问保护")
+                break
 
         # 最后生成 Excel 文件
         existing_all = load_candidates_all()
@@ -4858,6 +6093,31 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
             )
             progress_callback(100, msg)
         return all_candidates
+
+    except ApiRiskBlocked as exc:
+        guard_state = get_boss_access_block_state()
+        cooldown = max(1, int(guard_state["remaining_seconds"] + 0.999))
+        signal = f"HTTP {exc.status}" if isinstance(exc.status, int) else str(exc.status)
+        print(
+            f"[访问保护] BOSS 返回 {signal}（{exc.source}）：{exc.reason}。"
+            f"已停止后续 BOSS 访问，冷却约 {cooldown} 秒。"
+        )
+        _save_progress_on_exit()
+        if progress_callback:
+            progress_callback(
+                100,
+                _format_scan_summary(
+                    "扫描中断",
+                    total_rule_passed,
+                    total_raw,
+                    total_ai_evaluated,
+                    total_ai_downgraded,
+                    total_passed,
+                    total_greeted,
+                    f"扫描范围\nBOSS 访问保护已触发（{signal}），已有结果已保存",
+                    total_ai_failed=total_ai_failed,
+                ),
+            )
 
     except StopRequested:
         print(f"\n\n⏹ 用户停止，保存当前进度...")

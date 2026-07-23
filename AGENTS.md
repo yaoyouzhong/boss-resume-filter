@@ -16,7 +16,7 @@ boss-resume-filter/
 ├── release_user_audit.py # 用户视角发布审计模块
 ├── storage.py            # 候选人数据持久化模块（去重、原子写入、备份恢复）
 ├── contact_queue.py      # GUI 候选人联系清单持久化与恢复模块
-├── gui_main.py           # 图形界面主程序（v2.24）
+├── gui_main.py           # 图形界面主程序（v2.24.1）
 ├── gui_dialogs.py        # 独立对话框模块（更新日志、关于弹窗、CHANGELOG 渲染）
 ├── ui_messagebox.py      # 统一居中提示与确认弹窗（兼容 tkinter.messagebox）
 ├── changelog_parser.py   # CHANGELOG 解析模块（版本段落提取、标题解析）
@@ -193,8 +193,8 @@ boss-resume-filter/
 ### 反爬对抗
 
 - **随机延迟**：`_human_delay(center, spread)` 所有 sleep 带随机抖动
-- **验证码检测**：`_detect_captcha()` 关键词 + CSS 选择器检测，暂停等待用户完成验证（5 分钟超时）
-- **API 熔断**：`ApiRiskBlocked` 异常，BOSS API 返回 403/412/429 时立即停止扫描，不降级 DOM
+- **验证码检测**：`_detect_captcha()` 关键词 + CSS 选择器检测，暂停等待用户完成验证（5 分钟超时）；无论验证是否完成，本轮都停止后续自动访问
+- **BOSS 访问熔断**：所有推荐页 Document、XHR/fetch、岗位身份、详情读取和联系入口共用会话级冷却。HTTP/业务码返回 401/403/408/412/418/423/425/428/429/503、未知自定义 4xx，或响应正文/跳转页面出现登录失效、安全验证、操作频繁等信号时，立即停止本轮后续 BOSS 访问；优先采用 `Retry-After`，缺失时默认冷却 15 分钟。保留已取得的 DOM 候选人，继续本地规则筛选、AI 评估、保存和 Excel 导出，但禁止详情补抓、自动联系、后续岗位访问和自动生成联系清单。普通请求错误类 4xx 不触发全局冷却，但立即停止当前 API 补全或联系批次
 - **API 读取限速**：API 直调默认约 3-7 秒随机间隔；单次最多读取 `API_CANDIDATE_LIMIT_DEFAULT`（默认 160，对应最多补全 8 页）人，达到上限停止继续翻页
 - **打招呼限速**：每 `GREET_BATCH_SIZE` 人暂停随机间隔；每轮上限 `AUTO_GREET_RUN_LIMIT`（默认 50）
 

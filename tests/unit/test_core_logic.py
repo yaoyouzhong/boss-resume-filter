@@ -82,7 +82,7 @@ def test_scan_summary_separates_rule_passed_and_ai_final_counts():
         "AI 复核：成功 4 人\n"
         "AI 淘汰：1 人\n"
         "最终保留：12 人\n"
-        "本轮打招呼：0 人"
+        "本轮已联系：0 人"
     )
 
 
@@ -102,7 +102,7 @@ def test_scan_summary_without_ai_does_not_repeat_final_count():
         "规则筛选：12 / 100 人通过\n"
         "AI 复核：未执行\n"
         "最终保留：12 人\n"
-        "本轮打招呼：3 人"
+        "本轮已联系：3 人"
     )
 
 
@@ -124,7 +124,7 @@ def test_scan_summary_exposes_ai_failures_even_when_all_evaluations_fail():
         "AI 复核：成功 0 人，失败 13 人（按规则结果保留）\n"
         "AI 淘汰：0 人\n"
         "最终保留：13 人\n"
-        "本轮打招呼：0 人"
+        "本轮已联系：0 人"
     )
 
 
@@ -335,7 +335,6 @@ def test_recommend_page_identity_maps_job_id_to_real_boss_job_name():
                     "?jobid=encrypted-job-1&status=0"
                 )
             assert "/wapi/zpjob/job/chatted/jobList" in script
-            assert "encryptJobId" in script
             return "AI-AGENT开发（出差南宁）"
 
     assert bossmaster._read_recommend_page_identity(Target()) == {
@@ -508,6 +507,65 @@ def test_run_smart_scan_includes_ai_failures_in_final_summary():
 
     assert progress[-1][0] == 100
     assert "AI 复核：成功 0 人，失败 3 人（按规则结果保留）" in progress[-1][1]
+
+
+def test_run_smart_scan_stops_remaining_jobs_after_boss_access_block():
+    class Args:
+        clear = False
+        keep_greeted = False
+        job = None
+        greet = False
+        re_greet = False
+        greet_level = "normal"
+        greet_names = None
+        list_candidates = False
+        rounds = 30
+        max_candidates = 160
+        dom_only = False
+        listener_first = False
+        verbose = False
+        ai_eval = False
+
+    job_rules = {
+        "Java工程师": {"min_exp": 0, "edu": "不限", "keywords": ["Java"]},
+        "Python工程师": {"min_exp": 0, "edu": "不限", "keywords": ["Python"]},
+    }
+    progress = []
+
+    def fake_scan(*_args, stats=None, **_kwargs):
+        stats.update({
+            "raw_count": 10,
+            "rule_passed_count": 2,
+            "passed_count": 2,
+            "greeted_count": 0,
+            "ai_eval_count": 0,
+            "ai_downgraded": 0,
+            "ai_failed_count": 0,
+            "scan_status": "interrupted",
+            "scan_reason": "BOSS 访问保护触发（API 直调第 1 页，HTTP 429）",
+            "boss_access_blocked": True,
+        })
+        return []
+
+    with patch.object(bossmaster.time, "sleep"), \
+         patch.object(bossmaster, "_human_delay", return_value=0), \
+         patch.object(bossmaster, "load_job_config", return_value=(job_rules, None)), \
+         patch.object(bossmaster, "_confirm_run_job_configs", return_value=True), \
+         patch.object(bossmaster, "_confirm_page_job_match", return_value=True), \
+         patch.object(bossmaster, "_show_job_navigation_prompt") as mock_navigation, \
+         patch.object(bossmaster, "smart_scan_candidates", side_effect=fake_scan) as mock_scan, \
+         patch.object(bossmaster, "load_candidates_all", return_value=[]), \
+         patch.object(bossmaster, "export_to_excel", return_value=True):
+        bossmaster.run_smart_scan(
+            Args(),
+            existing_page=object(),
+            progress_callback=lambda percentage, description: progress.append((percentage, description)),
+        )
+
+    assert mock_scan.call_count == 1
+    mock_navigation.assert_not_called()
+    assert progress[-1][0] == 100
+    assert progress[-1][1].startswith("[扫描中断]")
 
 
 def test_run_job_config_diagnostics_ignores_info_only():
@@ -1068,6 +1126,50 @@ def test_recommend_api_pagination_builds_from_current_iframe_jobid():
     assert pagination["query_params"]["page"] == "1"
 
 
+def test_recommend_api_pagination_rejects_untrusted_hosts_and_clamps_page_size():
+    assert bossmaster._looks_like_recommend_api_url(
+        "https://evil.example/wapi/zpjob/rec/geek/list?page=1"
+    ) is False
+    assert bossmaster._parse_api_pagination(
+        "https://evil.example/wapi/zpjob/rec/geek/list?page=1"
+    ) is None
+
+    pagination = bossmaster._parse_api_pagination(
+        "/wapi/zpjob/rec/geek/list?page=1&pageSize=500"
+    )
+    assert pagination is not None
+    assert pagination["base_url"] == (
+        "https://www.zhipin.com/wapi/zpjob/rec/geek/list"
+    )
+    assert pagination["page_size"] == 20
+
+    invalid_size = bossmaster._parse_api_pagination(
+        "https://www.zhipin.com/wapi/zpjob/rec/geek/list"
+        "?page=1&pageSize=invalid"
+    )
+    assert invalid_size is not None
+    assert invalid_size["page_size"] == 20
+
+
+def test_direct_api_rejects_untrusted_base_url_before_browser_fetch():
+    class FakePage:
+        def run_js(self, *_args, **_kwargs):
+            assert False, "untrusted URLs must not reach browser fetch"
+
+    pagination = {
+        "base_url": "https://evil.example/wapi/zpjob/rec/geek/list",
+        "query_params": {},
+        "page_param": "page",
+        "page_size": 20,
+    }
+    try:
+        bossmaster._fetch_api_page_result(FakePage(), pagination, 1)
+        assert False, "untrusted direct API URL should be rejected"
+    except bossmaster.ApiClientError as exc:
+        assert exc.status == "请求地址"
+        assert "受信任" in exc.reason
+
+
 def test_api_enrichment_keeps_dom_candidates_only():
     class FakeFrame:
         def __init__(self):
@@ -1477,7 +1579,7 @@ def test_default_scan_uses_dom_with_listener_enrichment():
     mock_dom_extract.assert_called_once()
 
 
-def test_api_risk_status_stops_enrichment_without_dropping_dom_candidates():
+def test_api_risk_status_interrupts_boss_access_without_dropping_dom_candidates():
     class FakePage:
         def __init__(self):
             self.refresh_count = 0
@@ -1492,25 +1594,542 @@ def test_api_risk_status_stops_enrichment_without_dropping_dom_candidates():
 
     page = FakePage()
     dom_batch = [{"geek_id": "g-dom-risk", "name": "张三", "text": "本科，5年 Java"}]
+    scan_stats = {}
+    output = io.StringIO()
 
-    with patch('bossmaster.time.sleep'), \
+    with contextlib.redirect_stdout(output), \
+            patch('bossmaster.time.sleep'), \
             patch('bossmaster._human_delay', return_value=0), \
             patch('bossmaster.get_iframe', return_value=None), \
-            patch('bossmaster._fetch_api_page_result', side_effect=bossmaster.ApiRiskBlocked(429, 1)) as mock_fetch, \
+            patch(
+                'bossmaster._fetch_api_page_result',
+                side_effect=bossmaster.ApiRiskBlocked(
+                    429, 1, reason="请求过于频繁", source="API 直调"
+                ),
+            ) as mock_fetch, \
             patch('bossmaster._start_recommend_api_listener', return_value=None) as mock_start_listener, \
             patch('bossmaster._consume_recommend_api_candidates') as mock_consume_api, \
             patch('bossmaster._detect_captcha', return_value=(False, "")), \
             patch('bossmaster._extract_cards_batch', return_value=dom_batch) as mock_dom_extract:
         candidates = bossmaster.extract_candidates_by_comprehensive_analysis(
-            page, max_rounds=1, extraction_mode="api"
+            page, max_rounds=1, extraction_mode="api", scan_stats=scan_stats
         )
 
     assert [c["geek_id"] for c in candidates] == ["g-dom-risk"]
+    assert scan_stats["scan_status"] == "interrupted"
+    assert scan_stats["boss_access_blocked"] is True
+    assert scan_stats["boss_block_status"] == 429
+    assert "API 直调第 1 页" in scan_stats["scan_reason"]
+    assert "[访问保护] BOSS 返回 HTTP 429" in output.getvalue()
+    assert "将继续规则筛选、AI 评估和保存已有结果" in output.getvalue()
     assert page.refresh_count == 0
     mock_fetch.assert_called_once()
     mock_start_listener.assert_called_once()
     mock_consume_api.assert_not_called()
     mock_dom_extract.assert_called_once()
+
+
+def test_boss_response_classifier_separates_global_block_and_client_errors():
+    assert bossmaster._classify_boss_response(401)[0] == "block"
+    assert bossmaster._classify_boss_response(418)[0] == "block"
+    assert bossmaster._classify_boss_response(430)[0] == "block"
+    assert bossmaster._classify_boss_response(404)[0] == "client_error"
+    assert bossmaster._classify_boss_response(422)[0] == "client_error"
+    assert bossmaster._classify_boss_response(503)[0] == "block"
+
+
+def test_boss_response_classifier_detects_business_and_html_protection():
+    action, signal, reason = bossmaster._classify_boss_response(
+        200,
+        body={"code": 37, "message": "检测到异常操作，请完成安全验证"},
+        content_type="application/json",
+    )
+    assert action == "block"
+    assert signal == "业务码 37"
+    assert "安全验证" in reason
+
+    action, signal, reason = bossmaster._classify_boss_response(
+        200,
+        body="<html><title>登录</title></html>",
+        content_type="text/html",
+    )
+    assert action == "block"
+    assert signal == "HTML 响应"
+    assert "验证页" in reason
+
+
+def test_boss_response_classifier_checks_body_before_ordinary_4xx():
+    action, signal, reason = bossmaster._classify_boss_response(
+        400,
+        body={"code": 37, "message": "检测到异常操作，请完成安全验证"},
+        content_type="application/json",
+    )
+    assert action == "block"
+    assert signal == 400
+    assert "安全验证" in reason
+
+    action, signal, reason = bossmaster._classify_boss_response(
+        422,
+        body={"message": "登录已过期，请重新登录"},
+        content_type="application/json",
+    )
+    assert action == "block"
+    assert signal == 422
+    assert "重新登录" in reason
+
+
+def test_boss_response_classifier_detects_plain_text_risk_response():
+    action, signal, reason = bossmaster._classify_boss_response(
+        200,
+        body="操作频繁，请稍后再试",
+        content_type="text/plain",
+    )
+
+    assert action == "block"
+    assert signal == "业务响应"
+    assert "操作频繁" in reason
+
+
+def test_boss_response_classifier_handles_nested_errors_and_server_failures():
+    action, signal, reason = bossmaster._classify_boss_response(
+        200,
+        body={"error": {"code": "rate_limited", "message": "rate limit exceeded"}},
+        content_type="application/json",
+    )
+    assert action == "block"
+    assert signal == "业务码 rate_limited"
+    assert "rate limit" in reason
+
+    for status in (500, 502, 504, 511):
+        action, signal, reason = bossmaster._classify_boss_response(status)
+        assert action == "client_error"
+        assert signal == status
+        assert reason == "服务暂时不可用"
+
+
+def test_boss_response_classifier_applies_risk_table_to_business_codes():
+    action, signal, reason = bossmaster._classify_boss_response(
+        200,
+        body={"code": 403, "message": "forbidden"},
+        content_type="application/json",
+    )
+
+    assert action == "block"
+    assert signal == "业务码 403"
+    assert reason == "forbidden"
+
+
+def test_retry_after_activates_process_guard_for_followup_boss_access():
+    try:
+        bossmaster._raise_for_boss_response(
+            429,
+            body={"message": "操作频繁"},
+            retry_after="7",
+            source="专项测试",
+        )
+        assert False, "429 should activate the process-wide access guard"
+    except bossmaster.ApiRiskBlocked as exc:
+        assert exc.cooldown_seconds == 7
+
+    state = bossmaster.get_boss_access_block_state()
+    assert state["blocked"] is True
+    assert 0 < state["remaining_seconds"] <= 7
+
+    try:
+        bossmaster._ensure_boss_access_allowed("后续访问")
+        assert False, "follow-up BOSS access should be blocked during cooldown"
+    except bossmaster.ApiRiskBlocked as exc:
+        assert exc.from_guard is True
+        assert exc.source == "后续访问"
+
+
+def test_boss_control_flow_exceptions_redact_sensitive_reasons_at_source():
+    client_error = bossmaster.ApiClientError(
+        404,
+        0,
+        reason="request securityId=secret-value failed",
+    )
+    risk_error = bossmaster.ApiRiskBlocked(
+        429,
+        0,
+        reason='{"expectId":"expect-secret","message":"blocked"}',
+    )
+
+    assert "secret-value" not in client_error.reason
+    assert "securityId=***" in client_error.reason
+    assert "expect-secret" not in risk_error.reason
+    assert '"expectId":"***"' in risk_error.reason
+
+
+def test_fetch_api_page_raises_client_error_for_non_risk_4xx():
+    class FakePage:
+        def run_js(self, _script):
+            return json.dumps({
+                "__bossResponse": True,
+                "status": 404,
+                "contentType": "application/json",
+                "body": json.dumps({"message": "接口不存在"}),
+            })
+
+    pagination = {
+        "base_url": "https://www.zhipin.com/wapi/zpjob/rec/geek/list",
+        "query_params": {},
+        "page_param": "page",
+        "page_size": "20",
+    }
+    try:
+        bossmaster._fetch_api_page_result(FakePage(), pagination, 1)
+        assert False, "404 should stop the API enrichment chain"
+    except bossmaster.ApiClientError as exc:
+        assert exc.status == 404
+        assert "接口不存在" in exc.reason
+
+
+def test_listener_capture_raises_global_block_for_risk_response():
+    class FakeTarget:
+        def run_js(self, _script):
+            return json.dumps([{
+                "url": "/wapi/zpjob/rec/geek/list",
+                "body": json.dumps({"message": "操作频繁，请稍后再试"}),
+                "status": 429,
+                "contentType": "application/json",
+                "finalUrl": "https://www.zhipin.com/wapi/zpjob/rec/geek/list",
+                "redirected": False,
+            }])
+
+    capture = bossmaster._ApiCapture()
+    capture._page = FakeTarget()
+    capture._active = True
+    try:
+        capture.consume()
+        assert False, "listener risk response should trigger a global block"
+    except bossmaster.ApiRiskBlocked as exc:
+        assert exc.status == 429
+        assert exc.source == "Listener"
+
+
+def test_fallback_listener_stop_restores_browser_hooks_and_clears_references():
+    scripts = []
+
+    class FakeTarget:
+        def run_js(self, script):
+            scripts.append(script)
+
+    target = FakeTarget()
+    capture = bossmaster._ApiCapture()
+    capture._page = target
+    capture._active = True
+
+    capture.stop()
+
+    assert capture._active is False
+    assert capture._page is None
+    assert capture._iframe is None
+    assert len(scripts) == 1
+    assert "capture.requests = []" in scripts[0]
+    assert "window.fetch = capture.origFetch" in scripts[0]
+    assert "XMLHttpRequest.prototype.send = capture.origXhrSend" in scripts[0]
+
+
+def test_listener_client_error_stops_direct_api_fallback():
+    class FakeListener:
+        def stop(self):
+            pass
+
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def __init__(self):
+            self.refresh_count = 0
+
+        def refresh(self):
+            self.refresh_count += 1
+
+        def run_js(self, *_args, **_kwargs):
+            return None
+
+    listener_error = bossmaster.ApiClientError(
+        404,
+        0,
+        reason="接口不存在",
+        source="Listener",
+    )
+    with patch("bossmaster.time.sleep"), \
+            patch("bossmaster._human_delay", return_value=0), \
+            patch("bossmaster.get_iframe", return_value=None), \
+            patch("bossmaster._read_recommend_page_identity", return_value={
+                "job_id": "job-1",
+                "job_title": "Java",
+                "href": "https://www.zhipin.com/web/chat/recommend?jobid=job-1",
+            }), \
+            patch("bossmaster._start_recommend_api_listener", return_value=FakeListener()), \
+            patch("bossmaster._consume_recommend_api_candidates", side_effect=listener_error), \
+            patch("bossmaster._detect_captcha", return_value=(False, "")), \
+            patch("bossmaster._extract_cards_batch", return_value=[{
+                "geek_id": "g-listener-404",
+                "name": "候选人",
+                "text": "本科，5年 Java",
+            }]), \
+            patch("bossmaster._fetch_api_page_result") as fetch_api:
+        candidates = bossmaster.extract_candidates_by_comprehensive_analysis(
+            FakePage(),
+            max_rounds=1,
+            extraction_mode="api",
+        )
+
+    assert [candidate["geek_id"] for candidate in candidates] == ["g-listener-404"]
+    fetch_api.assert_not_called()
+
+
+def test_listener_identity_risk_uses_scan_block_path_before_refresh():
+    class FakeListener:
+        def stop(self):
+            pass
+
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def __init__(self):
+            self.refresh_count = 0
+
+        def refresh(self):
+            self.refresh_count += 1
+
+    risk = bossmaster.ApiRiskBlocked(
+        429,
+        0,
+        reason="岗位身份请求过于频繁",
+        source="岗位身份读取",
+    )
+    scan_stats = {}
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output), \
+            patch("bossmaster.time.sleep"), \
+            patch("bossmaster._human_delay", return_value=0), \
+            patch("bossmaster.get_iframe", return_value=None), \
+            patch("bossmaster._start_recommend_api_listener", return_value=FakeListener()), \
+            patch("bossmaster._read_recommend_page_identity", side_effect=risk), \
+            patch("bossmaster._extract_cards_batch") as extract_cards:
+        candidates = bossmaster.extract_candidates_by_comprehensive_analysis(
+            FakePage(),
+            max_rounds=1,
+            extraction_mode="listener",
+            scan_stats=scan_stats,
+        )
+
+    assert candidates == []
+    assert scan_stats["scan_status"] == "interrupted"
+    assert scan_stats["boss_access_blocked"] is True
+    assert scan_stats["boss_block_stage"] == "Listener 首屏"
+    assert "[访问保护]" in output.getvalue()
+    extract_cards.assert_not_called()
+
+
+def test_detail_listener_requires_a_verified_success_response():
+    detail_url = (
+        "https://www.zhipin.com/wapi/zpjob/view/geek/info"
+        "?jid=j1&lid=l1&securityId=s1"
+    )
+
+    class Response:
+        status = 429
+        headers = {
+            "Content-Type": "application/json",
+            "Retry-After": "9",
+        }
+        body = {"message": "操作频繁，请稍后再试"}
+        url = detail_url
+
+    class Packet:
+        url = detail_url
+        response = Response()
+        is_failed = False
+
+    class Listener:
+        def wait(self, **_kwargs):
+            return Packet()
+
+    try:
+        bossmaster._wait_for_detail_api_url(Listener(), timeout=0.1)
+        assert False, "detail context must reject a risk response"
+    except bossmaster.ApiRiskBlocked as exc:
+        assert exc.status == 429
+        assert exc.source == "联系信息获取"
+        assert exc.cooldown_seconds == 9
+
+
+def test_detail_listener_returns_url_only_after_successful_response():
+    detail_url = (
+        "https://www.zhipin.com/wapi/zpjob/view/geek/info"
+        "?jid=j1&lid=l1&securityId=s1"
+    )
+
+    class Response:
+        status = 200
+        headers = {"content-type": "application/json"}
+        body = {"code": 0, "zpData": {}}
+        url = detail_url
+
+    class Packet:
+        url = detail_url
+        response = Response()
+        is_failed = False
+
+    class Listener:
+        def wait(self, **_kwargs):
+            return Packet()
+
+    assert bossmaster._wait_for_detail_api_url(Listener(), timeout=0.1) == detail_url
+
+
+def test_context_greeting_risk_response_activates_guard():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def run_js(self, *_args, **_kwargs):
+            return json.dumps({
+                "ok": False,
+                "status": 403,
+                "contentType": "application/json",
+                "body": json.dumps({"code": 37, "message": "操作频繁，请稍后再试"}),
+            })
+
+    context = {
+        "chat_start": {
+            "jid": "j1",
+            "lid": "l1",
+            "securityId": "secret",
+        }
+    }
+    try:
+        bossmaster.send_greeting_with_context(FakePage(), context)
+        assert False, "greeting risk response should stop all BOSS access"
+    except bossmaster.ApiRiskBlocked as exc:
+        assert exc.status == 403
+        assert exc.source == "发起沟通"
+    assert bossmaster.get_boss_access_block_state()["blocked"] is True
+
+
+def test_context_greeting_timeout_is_pending_verification():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def run_js(self, *_args, **_kwargs):
+            raise TimeoutError("request timeout")
+
+    context = {
+        "chat_start": {
+            "jid": "j1",
+            "lid": "l1",
+            "securityId": "secret",
+        }
+    }
+    success, message = bossmaster.send_greeting_with_context(FakePage(), context)
+    assert success is None
+    assert "待核实" in message
+
+
+def test_context_greeting_pending_reason_is_redacted_before_persistence():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def run_js(self, *_args, **_kwargs):
+            raise TimeoutError("request securityId=secret-value timed out")
+
+    context = {
+        "chat_start": {
+            "jid": "j1",
+            "lid": "l1",
+            "securityId": "secret",
+        }
+    }
+    success, message = bossmaster.send_greeting_with_context(FakePage(), context)
+    assert success is None
+    assert "secret-value" not in message
+    assert "securityId=***" in message
+
+
+def test_context_greeting_stops_on_existing_boss_verification_page():
+    class FakePage:
+        url = "https://www.zhipin.com/web/user/verify?security-check=1"
+
+        def run_js(self, *_args, **_kwargs):
+            assert False, "verification pages must not issue greeting requests"
+
+    context = {
+        "chat_start": {
+            "jid": "j1",
+            "lid": "l1",
+            "securityId": "secret",
+        }
+    }
+    try:
+        bossmaster.send_greeting_with_context(FakePage(), context)
+        assert False, "existing verification page must stop context greeting"
+    except bossmaster.ApiRiskBlocked as exc:
+        assert exc.status == "页面跳转"
+        assert exc.source == "发起沟通"
+
+
+def test_list_greeting_stops_before_card_search_when_captcha_already_visible():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+    with patch("bossmaster._detect_captcha", return_value=(True, "安全验证")), \
+            patch("bossmaster._wait_for_captcha_resolution", return_value=True), \
+            patch("bossmaster.get_iframe") as get_iframe:
+        try:
+            bossmaster.send_greeting_on_list_page(FakePage(), "g1")
+            assert False, "visible captcha must stop before candidate card access"
+        except bossmaster.ApiRiskBlocked as exc:
+            assert exc.status == "安全验证"
+            assert "本轮仍停止" in exc.reason
+
+    get_iframe.assert_not_called()
+
+
+def test_boss_auth_url_and_client_status_detection_are_strict():
+    assert bossmaster._is_boss_auth_or_verification_url(
+        "https://www.zhipin.com/web/user/verify?security-check=1"
+    )
+    assert not bossmaster._is_boss_auth_or_verification_url(
+        "https://zhipin.com.evil.example/web/user/verify"
+    )
+    assert bossmaster._client_error_status_from_message(
+        "上下文打招呼失败: HTTP 422 请求未成功"
+    ) == 422
+    assert bossmaster._client_error_status_from_message(
+        "上下文打招呼失败: 业务码 422 请求未成功"
+    ) == 422
+
+
+def test_scan_stops_after_captcha_even_when_user_completes_it():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def run_js(self, *_args, **_kwargs):
+            return None
+
+    scan_stats = {}
+    with patch("bossmaster.time.sleep"), \
+            patch("bossmaster._human_delay", return_value=0), \
+            patch("bossmaster.get_iframe", return_value=None), \
+            patch("bossmaster._ensure_recommend_page", return_value=True), \
+            patch("bossmaster._detect_captcha", return_value=(True, "安全验证")), \
+            patch("bossmaster._wait_for_captcha_resolution", return_value=True), \
+            patch("bossmaster._extract_cards_batch") as extract_cards:
+        candidates = bossmaster.extract_candidates_by_comprehensive_analysis(
+            FakePage(),
+            max_rounds=1,
+            extraction_mode="dom",
+            scan_stats=scan_stats,
+        )
+
+    assert candidates == []
+    assert scan_stats["scan_status"] == "interrupted"
+    assert scan_stats["boss_access_blocked"] is True
+    assert scan_stats["boss_block_stage"] == "页面安全验证"
+    extract_cards.assert_not_called()
 
 
 def test_collect_captcha_diagnostic_writes_json_without_screenshot():
@@ -2001,6 +2620,61 @@ def test_auto_greet_is_disabled_when_scan_is_interrupted():
     mock_greet.assert_not_called()
 
 
+def test_boss_access_block_keeps_ai_eval_but_skips_contact_context():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+    job_info = {
+        "job_id": "job-risk",
+        "job_name": "Java 工程师",
+        "rule_key": "java",
+        "rule": {"min_exp": 0, "edu": "不限", "keywords": ["Java"]},
+    }
+    raw_candidates = [{
+        "geek_id": "g-risk",
+        "name": "张三",
+        "summary": "本科，5 年 Java",
+    }]
+    stats = {}
+
+    def fake_extract(*_args, **kwargs):
+        kwargs["scan_stats"].update({
+            "scan_status": "interrupted",
+            "scan_reason": "BOSS 访问保护触发（API 直调第 1 页，HTTP 429）",
+            "boss_access_blocked": True,
+            "boss_block_status": 429,
+            "boss_block_stage": "API 直调第 1 页",
+        })
+        return raw_candidates
+
+    def fake_ai(candidates, *_args, **_kwargs):
+        result = [dict(candidate) for candidate in candidates]
+        result[0]["llm_evaluated"] = True
+        return result
+
+    with patch.object(bossmaster, "load_candidates_all", return_value=[]), \
+         patch.object(bossmaster, "extract_candidates_by_comprehensive_analysis", side_effect=fake_extract), \
+         patch.object(bossmaster, "filter_candidate", return_value=(True, 80, {"skill_matches": ["Java"]})), \
+         patch("llm_eval.evaluate_batch", side_effect=fake_ai) as mock_ai, \
+         patch.object(bossmaster, "_select_greet_context_candidates") as mock_select_context, \
+         patch.object(bossmaster, "merge_candidates_all"):
+        result = bossmaster.smart_scan_candidates(
+            FakePage(),
+            job_info,
+            max_rounds=1,
+            ai_eval=True,
+            api_config={"model": "test"},
+            api_key="test-key",
+            greet_context_capture=True,
+            stats=stats,
+        )
+
+    assert len(result) == 1
+    assert result[0]["llm_evaluated"] is True
+    mock_ai.assert_called_once()
+    mock_select_context.assert_not_called()
+
+
 def test_pending_snapshot_prunes_only_after_complete_scan():
     class FakePage:
         url = "https://www.zhipin.com/web/chat/recommend"
@@ -2451,6 +3125,53 @@ def test_ensure_recommend_page_stops_when_url_empty():
     assert ok is False
     assert notices
     assert "无法读取当前页面 URL" in notices[0][1]
+
+
+def test_boss_verification_navigation_activates_shared_access_guard():
+    class FakePage:
+        url = "https://www.zhipin.com/web/user/verify?security-check=1"
+
+    notices = []
+    ok = bossmaster._ensure_recommend_page(
+        FakePage(),
+        notice_callback=lambda title, message: notices.append((title, message)),
+        context="扫描候选人",
+    )
+
+    assert ok is False
+    state = bossmaster.get_boss_access_block_state()
+    assert state["blocked"] is True
+    assert state["status"] == "页面跳转"
+    assert state["source"] == "扫描候选人"
+    assert notices
+
+
+def test_dom_scan_records_verification_navigation_as_access_block():
+    class FakePage:
+        url = "https://www.zhipin.com/web/user/verify?security-check=1"
+
+        def run_js(self, *_args, **_kwargs):
+            return None
+
+    scan_stats = {}
+    with patch("bossmaster.time.sleep"), \
+            patch("bossmaster._human_delay", return_value=0), \
+            patch("bossmaster.get_iframe", return_value=None), \
+            patch("bossmaster._detect_captcha") as detect_captcha, \
+            patch("bossmaster._extract_cards_batch") as extract_cards:
+        candidates = bossmaster.extract_candidates_by_comprehensive_analysis(
+            FakePage(),
+            max_rounds=1,
+            extraction_mode="dom",
+            scan_stats=scan_stats,
+        )
+
+    assert candidates == []
+    assert scan_stats["scan_status"] == "interrupted"
+    assert scan_stats["boss_access_blocked"] is True
+    assert scan_stats["boss_block_stage"] == "页面跳转"
+    detect_captcha.assert_not_called()
+    extract_cards.assert_not_called()
 
 
 def test_filter_candidate_age_boundaries_are_stable():

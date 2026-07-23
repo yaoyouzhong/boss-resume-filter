@@ -44,6 +44,10 @@ def _run_test(
     captured_stdout = StringIO()
     captured_stderr = StringIO()
     try:
+        # Process-wide BOSS cooldown is production state; each unit test must start clean.
+        bossmaster = sys.modules.get("bossmaster")
+        if bossmaster and hasattr(bossmaster, "clear_boss_access_block"):
+            bossmaster.clear_boss_access_block()
         with redirect_stdout(captured_stdout), redirect_stderr(captured_stderr):
             fn()
         return None, captured_stdout.getvalue(), captured_stderr.getvalue(), ""
