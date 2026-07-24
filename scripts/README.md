@@ -11,8 +11,9 @@ python tests/test_import.py
 
 ## 活跃脚本
 
-- `release_ci.py`：正式发布的确定性规则实现；Actions 只调用严格门禁和 GitHub Draft 暂存，本机驱动器校验附件后先公开 GitHub 主源，再镜像 Gitee、同步清单并完成线上验收；行为测试在 `tests/unit/test_release_ci.py`。
-- `release_flow.py`：正常发布唯一入口；支持单分支和显式多分支聚合，把候选 PR、内容确认、Squash tree 校验、正式发布与断点续跑串成一个状态机；行为测试在 `tests/unit/test_release_flow.py`。
+- `release_ci.py`：正式发布的确定性规则实现；Actions 只调用严格门禁和 GitHub Draft 暂存，本机核对 GitHub 附件完整性元数据后立即公开主源，再自动清理 Gitee 历史版本附件、下载并镜像本次版本、同步清单和完成一次权威线上验收；阶段耗时、Actions run、附件进度和脱敏错误同时写入状态文件与发布日志；行为测试在 `tests/unit/test_release_ci.py`。
+- `release_flow.py`：正常发布唯一入口；支持单分支和显式多分支聚合，把候选 PR、内容确认、Squash tree 校验、正式发布与断点续跑串成一个状态机；发布失败保留候选分支，完整线上验收后才清理；行为测试在 `tests/unit/test_release_flow.py`。
+- `product_fingerprint.py`：计算排除公开发布文案后的产品代码指纹；本机门禁和 PR Checks 仅在同一指纹已经成功回归时复用测试证据。
 - `release_content_review.py`：对最终标题和正文做固定用户视角审核；确认前绑定候选 tree，合并后绑定正式发布提交。
 - `release_delivery.py`：旧版版本准备与 PR 组合入口，仅保留为分阶段恢复入口；行为测试在 `tests/unit/test_release_delivery.py`。
 - `release_prepare.py`：版本号、CHANGELOG、README 与项目版本注释的本地准备和严格门禁，保留为分阶段执行及故障恢复入口。

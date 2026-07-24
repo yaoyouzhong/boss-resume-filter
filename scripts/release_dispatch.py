@@ -4,9 +4,9 @@ The default mode runs a local, mutation-free release preview.  Execution
 requires ``--execute`` plus the exact authorization text ``确认正式发布 vX.Y``.
 The driver dispatches the GitHub staging workflow, binds to the exact run it
 created (or safely reuses an active matching run), waits for completion, then
-downloads the staged artifacts and mirrors them to Gitee from this machine.
-Only after both stores are complete does it publish GitHub, synchronize
-``latest.json`` and run the public release verifier.
+publishes the verified GitHub source and mirrors its artifacts to Gitee from
+this machine.  It then synchronizes ``latest.json`` and runs the public release
+verifier.
 
 ``scripts/release_ci.py`` remains the single deterministic mutation contract;
 this driver decides whether its hosted staging or local finalization phase is
@@ -18,6 +18,7 @@ import argparse
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,9 +37,9 @@ import release_retry  # noqa: E402
 
 
 DEFAULT_RUN_DISCOVERY_TIMEOUT = 90
-DEFAULT_RELEASE_TIMEOUT = 3 * 60 * 60
-DEFAULT_POLL_INTERVAL = 15
-DEFAULT_ACTION_STALL_TIMEOUT = 30 * 60
+DEFAULT_RELEASE_TIMEOUT = 60 * 60
+DEFAULT_POLL_INTERVAL = 5
+DEFAULT_ACTION_STALL_TIMEOUT = 10 * 60
 ACTIVE_RUN_STATES = {"queued", "in_progress", "pending", "requested", "waiting"}
 
 
@@ -105,7 +106,8 @@ def _list_release_runs() -> list[dict[str, Any]]:
             "--event", "workflow_dispatch",
             "--limit", "30",
             "--json",
-            "databaseId,displayTitle,headSha,status,conclusion,url,createdAt",
+            "databaseId,displayTitle,headSha,status,conclusion,url,"
+            "createdAt,startedAt,updatedAt",
         ],
         "读取 GitHub 暂存工作流运行列表",
     )
@@ -135,6 +137,41 @@ def _active_run(runs: list[dict[str, Any]]) -> dict[str, Any] | None:
         ),
         None,
     )
+
+
+def _completed_run(
+    runs: list[dict[str, Any]],
+    conclusion: str,
+) -> dict[str, Any] | None:
+    expected = conclusion.lower()
+    return next(
+        (
+            run for run in runs
+            if str(run.get("status") or "").lower() == "completed"
+            and str(run.get("conclusion") or "").lower() == expected
+        ),
+        None,
+    )
+
+
+def _rerun_failed_jobs(run: dict[str, Any]) -> dict[str, Any]:
+    run_id = int(run.get("databaseId") or 0)
+    if run_id <= 0:
+        _fail("失败的 GitHub 暂存任务缺少 run ID")
+    _run_external(
+        ["gh", "run", "rerun", str(run_id), "--failed"],
+        f"重跑 Actions run #{run_id} 的失败 job",
+    )
+    deadline = time.monotonic() + 60
+    while True:
+        current = _run_view(run_id)
+        status = str(current.get("status") or "").lower()
+        conclusion = str(current.get("conclusion") or "").lower()
+        if status != "completed" or conclusion != "failure":
+            return {**run, **current}
+        if time.monotonic() >= deadline:
+            _fail(f"Actions run #{run_id} 已接受重跑，但状态未刷新")
+        time.sleep(2)
 
 
 def _working_tree_clean() -> bool:
@@ -185,8 +222,16 @@ def preflight(version: str, *, approved_content_sha: str = "") -> dict[str, Any]
         and gate["needs_macos"] == "false"
     )
     published = False
+    verification: dict[str, Any] = {}
     if staged:
         published = bool(build._verify_release_remote_state(version))
+        if published:
+            endpoint_result = release_ci.verify_public_endpoints(version)
+            verification = {
+                "manifest_sha": origin_master,
+                "verified_at": datetime.now().isoformat(timespec="seconds"),
+                **endpoint_result,
+            }
     return {
         "version": version,
         "release_sha": gate["release_sha"],
@@ -199,6 +244,7 @@ def preflight(version: str, *, approved_content_sha: str = "") -> dict[str, Any]
         "content_sha": gate["content_sha"],
         "staged": staged,
         "published": published,
+        "verification": verification,
         "runs": runs,
     }
 
@@ -413,9 +459,14 @@ def _finish_success(
     run: dict[str, Any] | None,
     *,
     already_published: bool = False,
+    verification: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     master_sha = _synchronize_local_master()
-    _verify_public_release(version)
+    verification = verification or {}
+    if verification.get("manifest_sha") == master_sha:
+        print("  [复用] 已保存的完整公开验收凭证与当前 master 一致")
+    else:
+        _verify_public_release(version)
     print(f"\n[OK] v{version} 正式发布已完成并通过公开验收")
     print(f"  master: {master_sha}")
     if run:
@@ -425,6 +476,7 @@ def _finish_success(
         "version": version,
         "master_sha": master_sha,
         "run": run,
+        "verification": verification,
     }
 
 
@@ -458,7 +510,12 @@ def dispatch_release(
         _fail(str(exc))
 
     if plan["published"]:
-        return _finish_success(version, None, already_published=True)
+        return _finish_success(
+            version,
+            _completed_run(plan["runs"], "success"),
+            already_published=True,
+            verification=plan["verification"],
+        )
 
     # Fail before spending hosted build minutes when the local mirror cannot
     # possibly complete. This check is read-only and never prints the token.
@@ -468,31 +525,56 @@ def dispatch_release(
     if run:
         print(f"\n[续跑] 复用已在运行的 GitHub 暂存任务：{run.get('url', '')}")
     elif not plan["staged"]:
-        previous_ids = {
-            int(item.get("databaseId") or 0)
-            for item in _list_release_runs()
-        }
-        print("\n>>> 触发 Build & Stage GitHub Release")
-        _dispatch_workflow(version, authorization, approved_content_sha)
-        run = _discover_new_run(version, plan["release_sha"], previous_ids)
-        print(f"  [OK] 已定位 Actions run：{run.get('url', '')}")
+        failed = _completed_run(plan["runs"], "failure")
+        if failed:
+            print(
+                "\n[续跑] 复用同版本、同提交的成功构建，"
+                "仅重跑上次失败的 Actions job"
+            )
+            run = _rerun_failed_jobs(failed)
+        else:
+            previous_ids = {
+                int(item.get("databaseId") or 0)
+                for item in _list_release_runs()
+            }
+            print("\n>>> 触发 Build & Stage GitHub Release")
+            _dispatch_workflow(version, authorization, approved_content_sha)
+            run = _discover_new_run(version, plan["release_sha"], previous_ids)
+            print(f"  [OK] 已定位 Actions run：{run.get('url', '')}")
     else:
         print("\n[续跑] GitHub Draft 与三个附件已完整，跳过 Actions")
+        run = _completed_run(plan["runs"], "success")
 
     completed = None
     if run:
-        completed = wait_for_run(
-            int(run["databaseId"]),
-            timeout=timeout,
-            poll_interval=poll_interval,
-            stall_timeout=stall_timeout,
-        )
+        release_ci.record_actions_run(version, plan["release_sha"], run)
+        try:
+            completed = wait_for_run(
+                int(run["databaseId"]),
+                timeout=timeout,
+                poll_interval=poll_interval,
+                stall_timeout=stall_timeout,
+            )
+        except BaseException:
+            try:
+                current = _run_view(int(run["databaseId"]))
+                release_ci.record_actions_run(
+                    version, plan["release_sha"], current,
+                )
+            except Exception:
+                pass
+            raise
+        release_ci.record_actions_run(version, plan["release_sha"], completed)
 
     print("\n>>> 本机校验并公开 GitHub 主源，随后镜像 Gitee")
-    release_ci.finalize_release_local(
+    verification = release_ci.finalize_release_local(
         version, authorization, plan["release_sha"], approved_content_sha,
     )
-    return _finish_success(version, completed)
+    return _finish_success(
+        version,
+        completed or run,
+        verification=verification,
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:

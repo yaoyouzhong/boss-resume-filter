@@ -104,6 +104,32 @@ def test_status_paths_preserves_the_first_porcelain_status_prefix():
     }
 
 
+def test_strict_gate_reuses_tests_only_for_matching_product_fingerprint():
+    with (
+        patch.object(
+            release_prepare,
+            "product_code_fingerprint",
+            return_value="fingerprint",
+        ),
+        patch.object(
+            release_prepare,
+            "_test_evidence_matches",
+            return_value=True,
+        ),
+        patch.object(release_prepare.build, "_preflight_checks") as preflight,
+        patch.object(release_prepare, "_run"),
+        patch.object(release_prepare, "_write_test_evidence") as write_evidence,
+    ):
+        release_prepare._run_strict_gate()
+
+    preflight.assert_called_once_with(
+        require_clean=False,
+        strict_changelog=True,
+        run_tests=False,
+    )
+    write_evidence.assert_not_called()
+
+
 def test_release_notes_require_ordered_project_categories_and_entry_format():
     title, body = release_prepare.parse_release_notes(VALID_NOTES, "2.22")
     assert title == "v2.22 — 候选人跟进闭环"

@@ -83,10 +83,10 @@ boss-resume-filter/
 - 低风险文档、测试和局部文案可在当前工作区修改；普通代码任务使用 `codex/<task>` 短期分支，并行、脏工作区、长周期或高风险任务才创建独立 worktree
 - PR 不作统一要求；核心筛选、自动打招呼、存储、更新器、发布脚本、CI/CD 或大范围修改应使用 PR；面向 `master` 的 PR 由 `PR Checks` 验证，PR 合并始终是独立授权，合并不会触发发布
 - 普通分支推送、PR 合并、删除分支/worktree/临时文件默认须分别获得用户授权。用户准确授权“`一键交付分支 <branch>`”后，该一次授权仅覆盖指定分支的本地门禁、普通 push、创建/复用 PR、等待 `PR Checks`、Squash 合并、同步 GitHub/Gitee `master`、删除本地和远端分支、快进本地 `master`；不覆盖 rebase、force push、worktree 删除、冲突处理或正式发布。任一门禁/CI/一致性检查失败必须停止且不得清理分支
-- 用户准确授权“`一键发布版本 vX.Y`”后，统一入口允许提交当前 `codex/*` 开发分支、同步版本材料、运行严格门禁、普通 push、创建/复用发布候选 PR 并等待 `PR Checks`；随后必须完整展示最终标题、正文、候选提交和内容审核结果并停在内容确认阶段，不得合并、创建 tag、构建安装包或公开 Release。用户可在该阶段反复调整版本内容；每次修改都必须在同一候选 PR 重跑门禁和 CI，并使旧确认自动失效
+- 用户准确授权“`一键发布版本 vX.Y`”后，统一入口允许提交当前 `codex/*` 开发分支、同步版本材料、先完成用户视角内容审核，再运行严格门禁、普通 push、创建/复用发布候选 PR 并等待 `PR Checks`；随后必须完整展示最终标题、正文、候选提交和内容审核结果并停在内容确认阶段，不得合并、创建 tag、构建安装包或公开 Release。用户可在该阶段反复调整版本内容；产品代码指纹未变化且已有同指纹成功回归凭证时，纯发布文案调整只重跑文档、版本和发布内容门禁，否则必须重跑完整回归和 CI；任一修改都使旧确认自动失效
 - 用户准确授权“`一键发布版本 vX.Y，包含 <branch-a>、<branch-b>...`”时，统一入口可从双远端一致的 `master` 创建 `codex/release-vX.Y` 聚合分支，按声明顺序合入显式列出的干净分支并验证每个分支记录的 GUI 实测提交；不得自动纳入未列出的分支。各分支测试与最终聚合测试都必须通过，冲突、来源不明、实测提交变化或组合回归失败立即停止，不自动解决冲突
-- 只有用户在候选 PR、CI 和最终内容展示完成后准确授权“`确认发布 vX.Y`”，才允许核验内容与候选 tree 凭证、Squash 合并、同步 GitHub/Gitee `master`、触发双平台构建、创建不可变 tag、公开 GitHub/Gitee Release、同步 `latest.json`、完成线上验收并在全部成功后清理已授权分支。候选 tree、版本、标题、正文、PR head、目标分支或测试凭证变化后旧确认自动失效；确认不覆盖 rebase、force push、冲突处理、移动公开 tag 或删除 worktree
-- `release_flow.py` 是正常发布的唯一用户入口；`release_prepare.py`、`release_delivery.py`、`pr_delivery.py` 和 `release_dispatch.py` 仅作为确定性底层与故障恢复入口。任一阶段失败必须保留可恢复状态；GitHub 已公开后不得回滚，只能幂等续跑 Gitee、清单同步和公开验收
+- 只有用户在候选 PR、CI 和最终内容展示完成后准确授权“`确认发布 vX.Y`”，才允许核验内容与候选 tree 凭证、Squash 合并、同步 GitHub/Gitee `master`、触发双平台构建、创建不可变 tag、公开 GitHub/Gitee Release、同步 `latest.json`、完成线上验收并在全部成功后清理已授权分支。正式发布失败或中断时必须保留本地和远端候选分支；候选 tree、版本、标题、正文、PR head、目标分支或测试凭证变化后旧确认自动失效；确认不覆盖 rebase、force push、冲突处理、移动公开 tag 或删除 worktree
+- `release_flow.py` 是正常发布的唯一用户入口；`release_prepare.py`、`release_delivery.py`、`pr_delivery.py` 和 `release_dispatch.py` 仅作为确定性底层与故障恢复入口。任一阶段失败必须保留可恢复状态；发布状态必须记录 Actions run、每阶段开始/结束/耗时/尝试次数和脱敏错误。续跑时先验证已完成阶段的后置条件，满足则跳过，不能从头重复所有远端操作；GitHub 已公开后不得回滚，只能幂等续跑 Gitee、清单同步和公开验收
 - 发布准备 PR 合并前执行 `/neat-freak`、文案润色和风险相关实测；授权后由工作流重跑严格门禁并核验公开下载、自动更新和双远端状态
 - 已公开 tag 不得移动或覆盖，修复必须发布更高补丁版本；同一提交允许断点续跑
 - `candidates_all.json`、本地 API 配置、Chrome profile 和登录状态不属于任务临时文件，禁止收尾时自动清理
@@ -326,9 +326,12 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 - **Windows**：下载 EXE → 校验 SHA256 → `update.bat` 替换重启；脚本须清理 `_PYI_*` 环境变量 + `PYINSTALLER_RESET_ENVIRONMENT=1` 防 DLL 缺失
 - **macOS**：.app 运行→下载 ZIP 替换重启；源码→`git pull`
 - `latest.json` 的 `assets` 记录产物 `size`/`sha256` 供校验
-- **Gitee Release 上传**：Actions 只暂存 GitHub Draft 和双平台产物；本机 `release_dispatch.py` 下载并校验后，按 EXE→ZIP→DMG 串行镜像到 Gitee。任一附件失败立即中止，重跑时复用已验证附件并跳过 Actions
+- **Gitee Release 上传**：Actions 只暂存 GitHub Draft 和双平台产物；本机 `release_dispatch.py` 核对 GitHub 附件 size/SHA256 元数据后立即公开 GitHub 主源，再删除其他历史版本的 Gitee 附件（保留 Release 页面和 tag），并按 EXE→ZIP→DMG 下载、校验和串行镜像本次版本。清理或任一附件失败立即中止，重跑时复用阶段凭证、已验证附件和成功 Actions 构建
 - **Gitee 完整性校验**：发布主流程只校验附件齐全和 size 与 GitHub 一致，不回下载大文件；需要逐文件 SHA256 时手动运行 `python build.py --verify-gitee-integrity X.Y.Z`
 - **Gitee Token**：只从本机环境变量读取 `GITEE_TOKEN`（需 projects 权限）；Actions 不保存、不读取该 Token，也禁止上传 Gitee 大文件
+- **发布验收复用**：GitHub/Gitee/`latest.json` 的完整远端验收每轮正式发布只执行一次并保存验收凭证；后续收尾只核对凭证对应的远端提交，不得立即重复整套公开验收
+- **Actions 失败恢复**：GitHub 暂存失败时优先复用同版本、同发布提交的成功构建产物或重跑失败 job，不得因 Stage 失败自动重建已经成功的双平台安装包
+- **公开资源验收**：下载地址必须核对状态码、最终地址、文件名、响应类型、Content-Length 和可识别文件头；双远端在线 `latest.json` 必须与本机规范化完整内容一致，不能只比较版本号
 ## 低频专项说明
 
 低频踩坑、平台差异和专项背景放在 `.agent/notes.md`。这是项目级稳定说明，可以进 git；不要把会话记忆、临时调试日志或自动生成的 agent 记忆放进去。

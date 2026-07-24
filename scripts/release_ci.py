@@ -12,9 +12,9 @@ The GitHub Actions workflow calls this module in two hosted phases:
     Draft, upload and verify all three cross-platform artifacts, then stop.
 
 The local release driver calls ``finalize-local`` after hosted staging.  That
-phase downloads and verifies the staged GitHub artifacts, mirrors them to
-Gitee from the user's machine, publishes the GitHub Release, updates
-``latest.json`` on both remotes, and performs public acceptance checks.
+phase publishes the verified GitHub Release, downloads the same artifacts for
+the local Gitee mirror, updates ``latest.json`` on both remotes, and performs
+public acceptance checks.
 
 The implementation deliberately reuses ``build.py`` for version, changelog,
 artifact, upload, and integrity contracts.  YAML remains orchestration only.
@@ -55,6 +55,8 @@ RESUME_ONLY_MASTER_CHANGES = frozenset({"latest.json"})
 GITEE_OWNER = "yaoyouzhong"
 GITEE_REPO = "boss-resume-filter"
 RELEASE_STATE_PATH = BASE_DIR / ".release_state.json"
+RELEASE_STATE_SCHEMA = 2
+RELEASE_LOG_DIR = BASE_DIR / "logs"
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 DOWNLOAD_CONNECT_TIMEOUT = 15
 DOWNLOAD_STALL_TIMEOUT = 45
@@ -88,27 +90,95 @@ def _write_release_state(
     downloaded_bytes: int | None = None,
     expected_bytes: int | None = None,
     error_type: str = "",
+    error_message: str = "",
+    details: dict | None = None,
+    actions_run: dict | None = None,
 ) -> None:
-    """Atomically persist safe local checkpoints without credentials or URLs."""
+    """Atomically persist safe checkpoints, phase timings, and diagnostics."""
     previous = _read_release_state()
     if (
         previous.get("version") != version
         or previous.get("release_sha") != release_sha
     ):
         previous = {}
+    now = datetime.now()
+    now_text = now.isoformat(timespec="seconds")
+    previous_phase = previous.get("phase")
+    previous_status = previous.get("status")
     state = {
         **previous,
+        "schema": RELEASE_STATE_SCHEMA,
         "version": version,
         "tag": f"v{version}",
         "release_sha": release_sha,
         "phase": phase,
         "status": status,
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "started_at": previous.get("started_at") or now_text,
+        "updated_at": now_text,
     }
+
+    phases = dict(state.get("phases") or {})
+    phase_state = dict(phases.get(phase) or {})
+    phase_started = (
+        status == "in_progress"
+        and (previous_phase != phase or previous_status != "in_progress")
+    )
+    if phase_started:
+        phase_state["started_at"] = now_text
+        phase_state["attempts"] = int(phase_state.get("attempts") or 0) + 1
+        phase_state.pop("finished_at", None)
+        phase_state.pop("duration_seconds", None)
+        phase_state.pop("error_type", None)
+        phase_state.pop("error_message", None)
+    phase_state["status"] = status
+    if status in {"complete", "failed"}:
+        phase_state["finished_at"] = now_text
+        started_text = str(phase_state.get("started_at") or now_text)
+        try:
+            started = datetime.fromisoformat(started_text)
+        except ValueError:
+            started = now
+        phase_state["duration_seconds"] = round(
+            max(0.0, (now - started).total_seconds()),
+            3,
+        )
+    if details:
+        phase_state["details"] = {
+            **dict(phase_state.get("details") or {}),
+            **details,
+        }
     if error_type:
         state["error_type"] = error_type
+        phase_state["error_type"] = error_type
     else:
         state.pop("error_type", None)
+        if status != "failed":
+            phase_state.pop("error_type", None)
+    if error_message:
+        safe_error = release_retry.redact_sensitive_text(error_message)
+        state["error_message"] = safe_error
+        phase_state["error_message"] = safe_error
+    else:
+        state.pop("error_message", None)
+        if status != "failed":
+            phase_state.pop("error_message", None)
+    if actions_run:
+        safe_run = {
+            key: actions_run.get(key)
+            for key in (
+                "databaseId",
+                "url",
+                "status",
+                "conclusion",
+                "createdAt",
+                "startedAt",
+                "updatedAt",
+                "headSha",
+            )
+            if actions_run.get(key) is not None
+        }
+        state["actions_run"] = safe_run
+        phase_state["actions_run"] = safe_run
     if artifact:
         artifacts = dict(state.get("artifacts") or {})
         item = dict(artifacts.get(artifact) or {})
@@ -120,6 +190,18 @@ def _write_release_state(
             item["expected_bytes"] = max(0, int(expected_bytes))
         artifacts[artifact] = item
         state["artifacts"] = artifacts
+    phases[phase] = phase_state
+    state["phases"] = phases
+    if status == "complete" and phase == "public_verification":
+        state["completed_at"] = now_text
+        try:
+            run_started = datetime.fromisoformat(str(state["started_at"]))
+        except ValueError:
+            run_started = now
+        state["total_duration_seconds"] = round(
+            max(0.0, (now - run_started).total_seconds()),
+            3,
+        )
 
     temp_path = RELEASE_STATE_PATH.with_suffix(RELEASE_STATE_PATH.suffix + ".tmp")
     temp_path.write_text(
@@ -141,6 +223,102 @@ def _write_release_state(
                 f"（{delay:g}s 后）"
             )
             release_retry.time.sleep(delay)
+    event_changed = (
+        previous_phase != phase
+        or previous_status != status
+        or bool(error_type)
+        or bool(artifact_status)
+        or bool(actions_run)
+    )
+    if event_changed:
+        _append_release_event(
+            version,
+            now_text,
+            phase,
+            status,
+            phase_state,
+            artifact=artifact,
+            artifact_status=artifact_status,
+        )
+
+
+def _append_release_event(
+    version: str,
+    timestamp: str,
+    phase: str,
+    status: str,
+    phase_state: dict,
+    *,
+    artifact: str = "",
+    artifact_status: str = "",
+) -> None:
+    """Append one credential-free, human-readable release event."""
+    parts = [f"[{timestamp}]", phase, status]
+    if artifact:
+        parts.append(f"artifact={artifact}")
+    if artifact_status:
+        parts.append(f"artifact_status={artifact_status}")
+    if status in {"complete", "failed"}:
+        parts.append(f"duration={phase_state.get('duration_seconds', 0):g}s")
+    if phase_state.get("error_type"):
+        parts.append(f"error_type={phase_state['error_type']}")
+    if phase_state.get("error_message"):
+        parts.append(f"error={phase_state['error_message']}")
+    try:
+        log_dir = (
+            RELEASE_LOG_DIR
+            if RELEASE_STATE_PATH.parent == BASE_DIR
+            else RELEASE_STATE_PATH.parent / "logs"
+        )
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with open(
+            log_dir / f"release-v{version}.log",
+            "a",
+            encoding="utf-8",
+        ) as output:
+            output.write(" ".join(parts) + "\n")
+    except OSError as exc:
+        print(f"  [WARN] 发布事件日志写入失败: {type(exc).__name__}")
+
+
+def record_actions_run(version: str, release_sha: str, run: dict) -> None:
+    """Persist the exact hosted run used by this release or resume."""
+    run_status = str(run.get("status") or "").lower()
+    conclusion = str(run.get("conclusion") or "").lower()
+    if run_status == "completed":
+        status = "complete" if conclusion == "success" else "failed"
+    else:
+        status = "in_progress"
+    _write_release_state(
+        version,
+        release_sha,
+        "github_actions",
+        status,
+        actions_run=run,
+        details={"conclusion": run.get("conclusion")},
+    )
+
+
+def _print_release_timing_summary(version: str, release_sha: str) -> None:
+    """Print the persisted timing ledger for one release attempt."""
+    state = _read_release_state()
+    if (
+        state.get("version") != version
+        or state.get("release_sha") != release_sha
+    ):
+        return
+    print("\n>>> 发布阶段耗时")
+    for name, item in (state.get("phases") or {}).items():
+        status = item.get("status") or "unknown"
+        duration = float(item.get("duration_seconds") or 0)
+        attempts = int(item.get("attempts") or 0)
+        print(
+            f"  - {name}: {status}, {duration:.1f}s, "
+            f"尝试 {attempts} 次"
+        )
+    if state.get("total_duration_seconds") is not None:
+        print(f"  总耗时: {float(state['total_duration_seconds']):.1f}s")
+    print(f"  详细日志: logs/release-v{version}.log")
 
 
 def _report_previous_release_state(version: str, release_sha: str) -> None:
@@ -157,6 +335,24 @@ def _report_previous_release_state(version: str, release_sha: str) -> None:
             "  [续跑] 上次本机发布停在 "
             f"{state.get('phase', 'unknown')} / {state.get('status', 'unknown')}"
         )
+
+
+def _completed_phase_details(
+    version: str,
+    release_sha: str,
+    phase: str,
+) -> dict:
+    """Return saved details only for a completed phase of the same release."""
+    state = _read_release_state()
+    if (
+        state.get("version") != version
+        or state.get("release_sha") != release_sha
+    ):
+        return {}
+    phase_state = (state.get("phases") or {}).get(phase) or {}
+    if phase_state.get("status") != "complete":
+        return {}
+    return dict(phase_state.get("details") or {})
 
 
 def _run(
@@ -875,14 +1071,33 @@ def _canonical_downloads_cn(version: str) -> dict[str, str]:
     }
 
 
+def _prune_gitee_old_assets(version: str, token: str) -> None:
+    """Keep Release records and tags, but remove every older Gitee attachment."""
+    if not build._gitee_clean_old_assets(
+        version,
+        apply=True,
+        token=token,
+        skip_ping=True,
+    ):
+        _fail("Gitee 旧版本附件清理失败")
+
+
 def _publish_gitee_artifacts(
     version: str,
     title: str,
     body: str,
     artifacts: list[Path],
     github_assets: dict,
+    release_cache: dict | None = None,
+    token: str | None = None,
 ) -> dict[str, str]:
-    cache = build._gitee_get_release_cache(version, title, body)
+    cache = release_cache or build._gitee_get_release_cache(
+        version,
+        title,
+        body,
+        token=token,
+        skip_ping=bool(token),
+    )
     if cache is None:
         _fail("无法创建或读取 Gitee Release")
 
@@ -1024,12 +1239,15 @@ def _commit_and_sync_manifest(
     return current_master
 
 
-def _request_ok(url: str) -> bool:
-    headers = {"Range": "bytes=0-0"}
+def _public_asset_probe(
+    url: str,
+    expected_name: str,
+    expected_size: int,
+) -> tuple[bool, str]:
+    """Validate one public file without downloading the complete artifact."""
+    headers = {"Range": "bytes=0-511"}
+    response = None
     try:
-        response = build.requests.head(url, allow_redirects=True, timeout=30)
-        if response.status_code < 400:
-            return True
         response = build.requests.get(
             url,
             headers=headers,
@@ -1037,23 +1255,72 @@ def _request_ok(url: str) -> bool:
             stream=True,
             timeout=30,
         )
-        try:
-            return response.status_code < 400
-        finally:
+        if response.status_code not in {200, 206}:
+            return False, f"HTTP {response.status_code}"
+        final_url = str(response.url or url)
+        if not final_url.lower().startswith("https://"):
+            return False, "final download URL is not HTTPS"
+        content_type = str(response.headers.get("Content-Type") or "").lower()
+        if "text/html" in content_type or "application/json" in content_type:
+            return False, f"unexpected Content-Type {content_type!r}"
+        disposition = str(response.headers.get("Content-Disposition") or "")
+        requested_name = url.rstrip("/").rsplit("/", 1)[-1]
+        if expected_name not in disposition and requested_name != expected_name:
+            return False, "filename mismatch"
+
+        actual_size = 0
+        content_range = str(response.headers.get("Content-Range") or "")
+        range_match = re.search(r"/(\d+)$", content_range)
+        if range_match:
+            actual_size = int(range_match.group(1))
+        else:
+            try:
+                actual_size = int(response.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                actual_size = 0
+        if actual_size != expected_size:
+            return False, f"size {actual_size}, expected {expected_size}"
+
+        prefix = b""
+        for chunk in response.iter_content(chunk_size=512):
+            if chunk:
+                prefix = chunk[:512]
+                break
+        if expected_name.endswith(".exe") and not prefix.startswith(b"MZ"):
+            return False, "missing PE MZ header"
+        if expected_name.endswith(".zip") and not prefix.startswith(b"PK"):
+            return False, "missing ZIP PK header"
+        if not prefix:
+            return False, "empty response body"
+        return True, final_url
+    except build.requests.exceptions.RequestException as exc:
+        return False, type(exc).__name__
+    finally:
+        if response is not None:
             response.close()
-    except build.requests.exceptions.RequestException:
-        return False
 
 
-def verify_public_endpoints(version: str, attempts: int = 6, delay: int = 10) -> None:
+def verify_public_endpoints(version: str, attempts: int = 6, delay: int = 10) -> dict:
     """Verify public downloads plus both remotely served manifests."""
     version = _normalize_version(version)
     latest = json.loads((BASE_DIR / "latest.json").read_text(encoding="utf-8"))
-    urls = [
-        *latest.get("downloads", {}).values(),
-        *latest.get("downloads_cn", {}).values(),
-    ]
-    if len(urls) != 6:
+    asset_names = {
+        "windows": "BOSS_ResumeFilter.exe",
+        "macos": "BOSS_ResumeFilter_mac.zip",
+        "macos_dmg": "BOSS_ResumeFilter.dmg",
+    }
+    probes: list[tuple[str, str, int]] = []
+    for source in ("downloads", "downloads_cn"):
+        downloads = latest.get(source) or {}
+        for key, name in asset_names.items():
+            try:
+                size = int(((latest.get("assets") or {}).get(key) or {}).get("size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            url = str(downloads.get(key) or "")
+            if url and size > 0:
+                probes.append((url, name, size))
+    if len(probes) != 6:
         _fail("latest.json 未包含六个双源公开下载地址")
 
     manifest_urls = (
@@ -1062,19 +1329,26 @@ def verify_public_endpoints(version: str, attempts: int = 6, delay: int = 10) ->
     )
     last_errors: list[str] = []
     for attempt in range(1, attempts + 1):
-        last_errors = [url for url in urls if not _request_ok(url)]
+        last_errors = []
+        for url, name, size in probes:
+            ok, detail = _public_asset_probe(url, name, size)
+            if not ok:
+                last_errors.append(f"{url} -> {detail}")
         for url in manifest_urls:
             try:
                 response = build.requests.get(url, timeout=30)
                 response.raise_for_status()
                 remote = response.json()
-                if remote.get("version") != version:
-                    last_errors.append(f"{url} -> {remote.get('version')!r}")
+                if remote != latest:
+                    last_errors.append(f"{url} -> 完整内容不一致")
             except (build.requests.exceptions.RequestException, ValueError) as exc:
                 last_errors.append(f"{url} -> {type(exc).__name__}")
         if not last_errors:
             print("  [OK] 六个公开下载地址和双远端在线清单均可用")
-            return
+            return {
+                "downloads_checked": len(probes),
+                "manifests_checked": len(manifest_urls),
+            }
         if attempt < attempts:
             print(f"  [等待] 公开资源尚未全部生效（{attempt}/{attempts}）")
             time.sleep(delay)
@@ -1131,7 +1405,7 @@ def finalize_release_local(
     authorization: str,
     release_sha: str,
     approved_content_sha: str,
-) -> None:
+) -> dict:
     """Mirror staged artifacts from local machine, publish, and verify."""
     version = _normalize_version(version)
     validate_authorization(version, authorization)
@@ -1155,6 +1429,12 @@ def finalize_release_local(
 
         review = release_content_review.review_release_content(version, release_sha)
         release_content_review.require_approved_content(review, approved_content_sha)
+        _write_release_state(
+            version, release_sha, phase, "complete",
+        )
+
+        phase = "github_staged"
+        _write_release_state(version, release_sha, phase, "in_progress")
         tag = f"v{version}"
         if build._remote_tag_commit("origin", tag) != release_sha:
             _fail("GitHub 暂存未完成：远端 tag 缺失或指向不一致")
@@ -1166,7 +1446,15 @@ def finalize_release_local(
         github_assets = build._verify_github_release_assets_complete(tag)
         if github_assets is None:
             _fail("GitHub 暂存未完成：三个附件不完整")
-        phase = "github_staged"
+        _write_release_state(version, release_sha, phase, "complete")
+
+        # The hosted stage already verifies local build bytes against GitHub's
+        # size/SHA256 digest. Publish the primary source before downloading the
+        # same bytes again for the local Gitee mirror.
+        phase = "github_public"
+        _write_release_state(version, release_sha, phase, "in_progress")
+        _fetch_and_assert_current_master_compatible(release_sha)
+        _publish_github_release(tag)
         _write_release_state(version, release_sha, phase, "complete")
 
         phase = "download_github_artifacts"
@@ -1180,30 +1468,40 @@ def finalize_release_local(
         )
         _write_release_state(version, release_sha, phase, "complete")
 
-        # GitHub is the primary release source. Publish it as soon as its staged
-        # artifacts have passed local SHA256 verification; Gitee remains an
-        # idempotent secondary mirror that can be resumed independently.
-        phase = "github_public"
-        _write_release_state(version, release_sha, phase, "in_progress")
-        _fetch_and_assert_current_master_compatible(release_sha)
-        _publish_github_release(tag)
-        _write_release_state(version, release_sha, phase, "complete")
-
         phase = "gitee_tag"
         _write_release_state(version, release_sha, phase, "in_progress")
         _ensure_gitee_tag(tag, release_sha, gitee_token)
         _write_release_state(version, release_sha, phase, "complete")
 
+        phase = "gitee_prune_old_assets"
+        if _completed_phase_details(version, release_sha, phase):
+            print("  [续跑] Gitee 历史附件已经清理，跳过重复扫描和删除")
+        else:
+            _write_release_state(version, release_sha, phase, "in_progress")
+            _prune_gitee_old_assets(version, gitee_token)
+            _write_release_state(
+                version,
+                release_sha,
+                phase,
+                "complete",
+                details={"keep_tag": tag},
+            )
+
         phase = "gitee_artifacts"
         _write_release_state(version, release_sha, phase, "in_progress")
         downloads_cn = _publish_gitee_artifacts(
-            version, title, body, artifacts, github_assets
+            version,
+            title,
+            body,
+            artifacts,
+            github_assets,
+            token=gitee_token,
         )
         _write_release_state(version, release_sha, phase, "complete")
 
         phase = "manifest_sync"
         _write_release_state(version, release_sha, phase, "in_progress")
-        _commit_and_sync_manifest(
+        manifest_sha = _commit_and_sync_manifest(
             version,
             body,
             downloads_cn,
@@ -1211,22 +1509,59 @@ def finalize_release_local(
             release_sha,
             gitee_token,
         )
-        _write_release_state(version, release_sha, phase, "complete")
+        _write_release_state(
+            version,
+            release_sha,
+            phase,
+            "complete",
+            details={"manifest_sha": manifest_sha},
+        )
 
         phase = "public_verification"
-        _write_release_state(version, release_sha, phase, "in_progress")
-        if not build._verify_release_remote_state(version):
-            _fail("双远端发布状态核验失败")
-        verify_public_endpoints(version)
-        _write_release_state(version, release_sha, phase, "complete")
+        previous_verification = _completed_phase_details(
+            version, release_sha, phase,
+        )
+        if previous_verification.get("manifest_sha") == manifest_sha:
+            print("  [续跑] 当前清单提交已经完成公开验收，跳过重复整套核验")
+            verification = previous_verification
+        else:
+            _write_release_state(version, release_sha, phase, "in_progress")
+            if not build._verify_release_remote_state(version):
+                _fail("双远端发布状态核验失败")
+            endpoint_result = verify_public_endpoints(version)
+            verification = {
+                "manifest_sha": manifest_sha,
+                "verified_at": datetime.now().isoformat(timespec="seconds"),
+                **endpoint_result,
+            }
+            _write_release_state(
+                version,
+                release_sha,
+                phase,
+                "complete",
+                details=verification,
+            )
+        _print_release_timing_summary(version, release_sha)
         print(f"\n[OK] {tag} 正式发布、自动更新清单和线上验收全部完成")
-    except Exception as exc:
+        return {
+            "version": version,
+            "release_sha": release_sha,
+            **verification,
+        }
+    except BaseException as exc:
+        secrets = (locals().get("gitee_token") or "",)
+        safe_error = release_retry.redact_sensitive_text(exc, secrets)
         _write_release_state(
             version,
             release_sha,
             phase,
             "failed",
             error_type=type(exc).__name__,
+            error_message=safe_error,
+        )
+        print(
+            f"\n[失败] 正式发布停在 {phase}，"
+            f"详见 logs/release-v{version}.log"
         )
         raise
 
@@ -1256,6 +1591,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     verify = subparsers.add_parser("verify-public", help="核验公开下载和在线清单")
     verify.add_argument("--version", required=True)
+
     return parser
 
 

@@ -281,8 +281,13 @@ def test_confirm_verifies_tree_then_merges_syncs_and_publishes():
         patch.object(release_flow, "_tree_sha", return_value="t" * 40),
         patch.object(
             release_flow.pr_delivery,
-            "finalize_delivery",
-            side_effect=lambda *_: events.append("sync"),
+            "synchronize_merged_delivery",
+            side_effect=lambda *_args, **_kwargs: events.append("sync"),
+        ),
+        patch.object(
+            release_flow.pr_delivery,
+            "cleanup_delivered_branch",
+            side_effect=lambda *_: events.append("cleanup"),
         ),
         patch.object(
             release_flow,
@@ -304,7 +309,10 @@ def test_confirm_verifies_tree_then_merges_syncs_and_publishes():
             "2.24", "确认发布 v2.24", approved_content_sha="c" * 64,
         )
 
-    assert events == ["merge", "fetch", "state", "sync", "state", "publish", "state"]
+    assert events == [
+        "merge", "fetch", "state", "sync", "state",
+        "publish", "state", "cleanup", "state",
+    ]
     assert result["phase"] == "complete"
 
 
@@ -318,7 +326,14 @@ def test_confirm_stops_if_squash_tree_differs_from_approved_candidate():
         patch.object(release_flow.pr_delivery, "_merge_pr", return_value=merged),
         patch.object(release_flow.pr_delivery, "_run_external"),
         patch.object(release_flow, "_tree_sha", return_value="x" * 40),
-        patch.object(release_flow.pr_delivery, "finalize_delivery") as finalize,
+        patch.object(
+            release_flow.pr_delivery,
+            "synchronize_merged_delivery",
+        ) as synchronize,
+        patch.object(
+            release_flow.pr_delivery,
+            "cleanup_delivered_branch",
+        ) as cleanup,
         patch.object(release_flow, "_dispatch_formal_release") as dispatch,
         _raises(release_flow.ReleaseFlowError, "文件树与已确认候选不一致"),
     ):
@@ -326,7 +341,8 @@ def test_confirm_stops_if_squash_tree_differs_from_approved_candidate():
             "2.24", "确认发布 v2.24", approved_content_sha="c" * 64,
         )
 
-    finalize.assert_not_called()
+    synchronize.assert_not_called()
+    cleanup.assert_not_called()
     dispatch.assert_not_called()
 
 
@@ -339,7 +355,14 @@ def test_confirm_resumes_sync_after_merge_without_remerging_pr():
     with (
         patch.object(release_flow, "_read_state", return_value=state),
         patch.object(release_flow.pr_delivery, "_merge_pr") as merge,
-        patch.object(release_flow.pr_delivery, "finalize_delivery") as finalize,
+        patch.object(
+            release_flow.pr_delivery,
+            "synchronize_merged_delivery",
+        ) as synchronize,
+        patch.object(
+            release_flow.pr_delivery,
+            "cleanup_delivered_branch",
+        ) as cleanup,
         patch.object(release_flow, "_write_state"),
         patch.object(
             release_flow.release_content_review,
@@ -357,7 +380,81 @@ def test_confirm_resumes_sync_after_merge_without_remerging_pr():
         )
 
     merge.assert_not_called()
-    finalize.assert_called_once_with("codex/feature-a", "m" * 40)
+    synchronize.assert_called_once_with(
+        "m" * 40,
+        origin_already_fetched=False,
+    )
+    cleanup.assert_called_once_with("codex/feature-a", "m" * 40)
+
+
+def test_formal_release_failure_preserves_candidate_branch():
+    state = {
+        **_candidate_state(),
+        "phase": "merged_synced",
+        "merge_sha": "m" * 40,
+    }
+    with (
+        patch.object(release_flow, "_read_state", return_value=state),
+        patch.object(
+            release_flow.release_content_review,
+            "review_release_content",
+            return_value={"content_sha": "f" * 64},
+        ),
+        patch.object(
+            release_flow,
+            "_dispatch_formal_release",
+            side_effect=release_flow.ReleaseFlowError("Gitee 上传失败"),
+        ),
+        patch.object(
+            release_flow.pr_delivery,
+            "cleanup_delivered_branch",
+        ) as cleanup,
+        _raises(release_flow.ReleaseFlowError, "Gitee 上传失败"),
+    ):
+        release_flow.confirm_release(
+            "2.24", "确认发布 v2.24", approved_content_sha="c" * 64,
+        )
+
+    cleanup.assert_not_called()
+
+
+def test_completed_state_runs_fast_remote_receipt_check_only():
+    state = {
+        **_candidate_state(),
+        "phase": "complete",
+        "merge_sha": "m" * 40,
+        "formal_release": {"master_sha": "z" * 40},
+    }
+    with (
+        patch.object(release_flow, "_read_state", return_value=state),
+        patch.object(
+            release_flow.build,
+            "_remote_ref_commit",
+            side_effect=["z" * 40, "z" * 40],
+        ),
+        patch.object(
+            release_flow.build,
+            "_remote_tag_commit",
+            side_effect=["m" * 40, "m" * 40],
+        ),
+        patch.object(
+            release_flow.build,
+            "_get_github_release_info",
+            return_value={"isDraft": False},
+        ),
+        patch.object(
+            release_flow.build,
+            "_get_gitee_release_read_only",
+            return_value=({"name": "release"}, {"existing": {}}),
+        ),
+        patch.object(release_flow, "_dispatch_formal_release") as dispatch,
+    ):
+        result = release_flow.confirm_release(
+            "2.24", "确认发布 v2.24", approved_content_sha="c" * 64,
+        )
+
+    assert result["phase"] == "complete"
+    dispatch.assert_not_called()
 
 
 def test_formal_release_uses_master_worktree_when_current_is_detached():

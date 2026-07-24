@@ -60,6 +60,16 @@ def review_release_content(version: str, release_sha: str) -> dict[str, Any]:
     }
 
 
+def review_release_worktree(version: str) -> dict[str, Any]:
+    """Review release prose before spending time on tests, push, or CI."""
+    title, body, warnings = _review_user_facing_content(version)
+    return {
+        "release_title": title,
+        "release_body": body,
+        "review_warnings": warnings,
+    }
+
+
 def review_release_candidate(
     version: str,
     candidate_sha: str,

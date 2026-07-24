@@ -12,9 +12,12 @@ starts the formal release workflow.
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +29,7 @@ for import_path in (BASE_DIR, SCRIPTS_DIR):
         sys.path.insert(0, str(import_path))
 
 import build  # noqa: E402
+from product_fingerprint import product_code_fingerprint  # noqa: E402
 import release_retry  # noqa: E402
 
 
@@ -63,6 +67,8 @@ VERSION_ASSIGNMENT_PATTERN = re.compile(
     r'^__version__\s*=\s*["\']([^"\']+)["\']',
     re.MULTILINE,
 )
+TEST_EVIDENCE_PATH = BASE_DIR / ".release_test_evidence.json"
+TEST_EVIDENCE_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
 class ReleasePreparationError(RuntimeError):
@@ -463,12 +469,64 @@ def apply_release_materials(version: str, title: str, body: str) -> None:
         )
 
 
-def _run_strict_gate() -> None:
+def _read_test_evidence() -> dict[str, Any]:
     try:
-        build._preflight_checks(require_clean=False, strict_changelog=True)
+        data = json.loads(TEST_EVIDENCE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _test_evidence_matches(fingerprint: str) -> bool:
+    evidence = _read_test_evidence()
+    try:
+        age = time.time() - float(evidence.get("created_at_epoch") or 0)
+    except (TypeError, ValueError):
+        age = TEST_EVIDENCE_MAX_AGE_SECONDS + 1
+    return (
+        evidence.get("status") == "passed"
+        and evidence.get("product_fingerprint") == fingerprint
+        and evidence.get("python") == (
+            f"{sys.version_info.major}.{sys.version_info.minor}"
+        )
+        and evidence.get("platform") == sys.platform
+        and 0 <= age <= TEST_EVIDENCE_MAX_AGE_SECONDS
+    )
+
+
+def _write_test_evidence(fingerprint: str) -> None:
+    payload = {
+        "schema": 1,
+        "status": "passed",
+        "product_fingerprint": fingerprint,
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "platform": sys.platform,
+        "created_at_epoch": int(time.time()),
+    }
+    temporary = TEST_EVIDENCE_PATH.with_suffix(
+        TEST_EVIDENCE_PATH.suffix + ".tmp"
+    )
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, TEST_EVIDENCE_PATH)
+
+
+def _run_strict_gate(*, allow_test_reuse: bool = True) -> None:
+    fingerprint = product_code_fingerprint()
+    reuse_tests = allow_test_reuse and _test_evidence_matches(fingerprint)
+    try:
+        build._preflight_checks(
+            require_clean=False,
+            strict_changelog=True,
+            run_tests=not reuse_tests,
+        )
     except SystemExit as exc:
         _fail(f"严格发布门禁未通过（退出码 {exc.code}）")
     _run(["git", "diff", "--check"])
+    if not reuse_tests:
+        _write_test_evidence(fingerprint)
 
 
 def _print_plan(plan: dict[str, Any]) -> None:

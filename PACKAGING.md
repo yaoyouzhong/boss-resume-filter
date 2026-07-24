@@ -39,10 +39,12 @@ python scripts/release_flow.py --version 2.24 \
 2. 锁定不可变的发布提交，执行 `build.py --check --strict-changelog` 等价的完整严格门禁。
 3. Windows 和 macOS 独立并行构建，任一构建失败都不进入发布任务。
 4. 两端产物齐全后创建不可移动的 GitHub tag，建立 GitHub Draft Release，上传并校验 EXE、ZIP 和 DMG；Actions 到此结束。
-5. 本机下载三个 GitHub 附件并逐个核对 size 和 SHA256，确认主源产物完整后立即将 GitHub Draft Release 转为正式版本。
-6. 按 EXE→ZIP→DMG 串行镜像到 Gitee；GitHub Actions 禁止上传 Gitee 大文件。Gitee 中断不回退已经公开的 GitHub 主发布，同一命令重跑时幂等补齐镜像。
+5. 本机核对 GitHub Draft 的三个附件均具备 Actions 已验证的 size 和 SHA256 元数据，随后立即将 GitHub Draft Release 转为正式版本；不再等待本机重复下载同一批附件后才公开主源。
+6. Gitee tag 就绪后自动删除其他历史版本的附件，仅保留 Release 页面和 tag；随后本机按 EXE→ZIP→DMG 下载、校验并串行镜像本次版本。GitHub Actions 禁止上传 Gitee 大文件。清理或上传中断不回退已经公开的 GitHub 主发布，同一命令按阶段凭证续跑。
 7. Gitee Release 附件齐全且 size 与 GitHub 一致后，本机生成 `latest.json` 的双源下载地址和 SHA256，提交并推送到 GitHub/Gitee `master`。
 8. 只读核验双远端分支/tag/Release/附件/清单，并实际请求六个公开下载地址和两份在线清单。
+
+发布状态写入 `.release_state.json`，记录 Actions run、每个阶段的开始/结束时间、耗时、尝试次数、附件进度和脱敏错误；同一份可读时间线追加到 `logs/release-vX.Y.log`。正式发布失败时保留候选分支，只有最终线上验收通过后才清理。相同产品代码指纹已经通过回归时，纯发布文案调整复用该测试证据；代码、依赖、测试或构建输入变化时自动恢复完整回归。
 
 **断点续跑：**`.release_flow_state.json` 记录候选分支、PR、候选提交、tree、内容摘要和当前阶段，`.release_state.json` 记录正式发布阶段和附件下载进度；两者都不保存 Token。候选内容变化后重新执行准备命令会更新同一 PR、重跑 CI 并产生新摘要。GitHub Draft 的三个附件已经完整时，确认命令重跑会跳过 Actions，直接从本机 Gitee 镜像阶段继续；本机下载使用 `.part` 文件续传。已存在的同提交 tag 不重建，同名 tag 指向其他提交时立即中止。
 

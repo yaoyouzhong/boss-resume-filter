@@ -568,7 +568,7 @@ def _update_local_master(expected_sha: str) -> bool:
     if master_worktree is not None:
         _assert_clean_worktree(master_worktree, "本地 master 工作区")
         _run_external(
-            ["git", "pull", "--ff-only", "origin", "master"],
+            ["git", "merge", "--ff-only", "origin/master"],
             "快进本地 master",
             cwd=master_worktree,
         )
@@ -579,10 +579,15 @@ def _update_local_master(expected_sha: str) -> bool:
     return master_worktree is not None
 
 
-def finalize_delivery(branch: str, merge_sha: str) -> dict[str, str]:
-    """Sync both masters, then remove only the delivered topic branch."""
+def synchronize_merged_delivery(
+    merge_sha: str,
+    *,
+    origin_already_fetched: bool = False,
+) -> dict[str, str]:
+    """Synchronize one merged commit to both masters without branch cleanup."""
     _assert_delivery_worktrees_clean("PR 合并后当前工作区")
-    _run_external(["git", "fetch", "origin"], "拉取 GitHub 合并结果")
+    if not origin_already_fetched:
+        _run_external(["git", "fetch", "origin"], "拉取 GitHub 合并结果")
     origin_master = _remote_ref("origin", "refs/heads/master")
     if origin_master != merge_sha:
         _fail("GitHub master 与 PR 合并提交不一致，拒绝同步和清理")
@@ -592,8 +597,27 @@ def finalize_delivery(branch: str, merge_sha: str) -> dict[str, str]:
         _fail("Gitee master 与 GitHub master 不一致，拒绝清理分支")
 
     master_checked_out_elsewhere = _update_local_master(merge_sha)
-    _assert_delivery_worktrees_clean("分支清理前当前工作区")
+    _assert_delivery_worktrees_clean("双远端同步后当前工作区")
+    print("  [OK] GitHub/Gitee master 已同步，本地 master 已更新")
+    return {
+        "merge_sha": merge_sha,
+        "origin_master": origin_master,
+        "gitee_master": gitee_master,
+        "master_checked_out_elsewhere": str(master_checked_out_elsewhere).lower(),
+    }
 
+
+def cleanup_delivered_branch(branch: str, merge_sha: str) -> None:
+    """Remove a delivered topic branch only after its merge remains reachable."""
+    _assert_delivery_worktrees_clean("分支清理前当前工作区")
+    origin_master = _remote_ref("origin", "refs/heads/master")
+    gitee_master = _remote_ref("gitee", "refs/heads/master")
+    if not origin_master or origin_master != gitee_master:
+        _fail("分支清理前 GitHub/Gitee master 不一致")
+    if merge_sha != origin_master and not _is_ancestor(merge_sha, origin_master):
+        _fail("分支清理前发布合并提交已不在当前 master 历史中")
+
+    master_checked_out_elsewhere = _worktree_for_branch("master") is not None
     if _remote_branch_exists("origin", branch):
         _run_external(
             ["git", "push", "origin", "--delete", branch],
@@ -610,12 +634,14 @@ def finalize_delivery(branch: str, merge_sha: str) -> dict[str, str]:
 
     if _remote_branch_exists("origin", branch) or _local_branch_exists(branch):
         _fail("交付分支清理后仍然存在")
-    print("  [OK] GitHub/Gitee master 已同步，本地 master 已更新，交付分支已清理")
-    return {
-        "merge_sha": merge_sha,
-        "origin_master": origin_master,
-        "gitee_master": gitee_master,
-    }
+    print("  [OK] 已在正式发布验收后清理交付分支")
+
+
+def finalize_delivery(branch: str, merge_sha: str) -> dict[str, str]:
+    """Sync both masters, then remove only the delivered topic branch."""
+    result = synchronize_merged_delivery(merge_sha)
+    cleanup_delivered_branch(branch, merge_sha)
+    return result
 
 
 def deliver(
