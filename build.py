@@ -1674,7 +1674,12 @@ def _check_project_docs_version_sync(version):
     print(f"  [OK] CLAUDE.md / AGENTS.md 项目结构版本注释已同步 v{version}")
 
 
-def _preflight_checks(require_clean=True, strict_changelog=False):
+def _preflight_checks(
+    require_clean=True,
+    strict_changelog=False,
+    *,
+    run_tests=True,
+):
     """发布/打包前检查"""
     print("\n>>> 发布前检查")
     if require_clean:
@@ -1699,7 +1704,10 @@ def _preflight_checks(require_clean=True, strict_changelog=False):
     )
     _run_preflight_step("TODO 时效检查", _check_todo_not_stale)
     _run_preflight_step("CLAUDE.md 尺寸检查", _check_claude_md_size)
-    _run_preflight_step("稳定单元回归与导入烟测", _run_unit_checks)
+    if run_tests:
+        _run_preflight_step("稳定单元回归与导入烟测", _run_unit_checks)
+    else:
+        print("  [复用] 产品代码指纹未变化，跳过重复单元回归与导入烟测")
     current_version = _read_version()
     _run_preflight_step("Release 说明提取检查", _extract_changelog_release, current_version)
     _run_preflight_step(
@@ -4090,9 +4098,9 @@ def _gitee_fetch_releases(api_base, token):
     return releases
 
 
-def _gitee_clean_old_assets(keep_version, apply=False):
+def _gitee_clean_old_assets(keep_version, apply=False, *, token=None, skip_ping=False):
     """清理 Gitee 旧版本附件，仅保留 keep_version 对应 Release 的产物。"""
-    token = os.environ.get("GITEE_TOKEN")
+    token = token or os.environ.get("GITEE_TOKEN")
     if not token:
         print("  [跳过] Gitee Release: 未设置 GITEE_TOKEN 环境变量")
         return False
@@ -4101,7 +4109,7 @@ def _gitee_clean_old_assets(keep_version, apply=False):
         keep_version = keep_version[1:]
     keep_tag = f"v{keep_version}"
 
-    if not _gitee_ping(token):
+    if not skip_ping and not _gitee_ping(token):
         print("  [失败] Gitee API 不可达")
         return False
 
@@ -4110,13 +4118,33 @@ def _gitee_clean_old_assets(keep_version, apply=False):
     api_base = f"https://gitee.com/api/v5/repos/{owner}/{repo}"
 
     releases = _gitee_fetch_releases(api_base, token)
-    stale = []
+    candidates = []
     for release in releases:
         tag = release.get("tag_name") or ""
         release_id = release.get("id")
         if not release_id or tag == keep_tag:
             continue
-        assets = _gitee_fetch_assets(api_base, token, release_id)
+        candidates.append((tag, release_id))
+
+    def _fetch_candidate(item):
+        tag, release_id = item
+        return tag, release_id, _gitee_fetch_assets(api_base, token, release_id)
+
+    fetched = []
+    if len(candidates) <= 1:
+        fetched = [_fetch_candidate(item) for item in candidates]
+    else:
+        workers = min(8, len(candidates))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_fetch_candidate, item): item
+                for item in candidates
+            }
+            for future in as_completed(futures):
+                fetched.append(future.result())
+
+    stale = []
+    for tag, release_id, assets in fetched:
         for name, asset in assets.items():
             stale.append({
                 "tag": tag,
@@ -4265,18 +4293,25 @@ def _gitee_delete_asset(api_base, token, release_id, asset_id, filename):
                 raise sanitized from None
 
 
-def _gitee_get_release_cache(version, release_title, release_notes):
+def _gitee_get_release_cache(
+    version,
+    release_title,
+    release_notes,
+    *,
+    token=None,
+    skip_ping=False,
+):
     """获取 Gitee Release 缓存信息（API 连通性、release_id、existing assets）。
 
     返回 dict 或 None（失败时）。调用方应将此 dict 传递给后续的上传函数以避免重复 API 调用。
     """
-    token = os.environ.get("GITEE_TOKEN")
+    token = token or os.environ.get("GITEE_TOKEN")
     if not token:
         print("  [跳过] Gitee Release: 未设置 GITEE_TOKEN 环境变量")
         return None
 
     # 连通性预检：避免批量操作时才发现 API 不可达
-    if not _gitee_ping(token):
+    if not skip_ping and not _gitee_ping(token):
         print(f"\n{'!'*60}")
         print(f"  [!!]  Gitee API 不可达，跳过 Gitee 上传")
         print(f"  手动补传: python build.py --gitee-upload {version}")

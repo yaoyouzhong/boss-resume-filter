@@ -39,6 +39,10 @@ def _plan(*, published: bool = False, staged: bool | None = None, runs=None):
         "content_sha": "c" * 64,
         "staged": staged,
         "published": published,
+        "verification": (
+            {"manifest_sha": "a" * 40, "verified_at": "test"}
+            if published else {}
+        ),
         "runs": runs or [],
     }
 
@@ -158,6 +162,60 @@ def test_preflight_reuses_hosted_prepare_contract_after_local_remote_checks():
     assert run.call_count == 3
 
 
+def test_preflight_public_resume_checks_all_downloads_before_issuing_receipt():
+    gate = {
+        "release_sha": "a" * 40,
+        "tag": "v2.22",
+        "resume": "true",
+        "needs_windows": "false",
+        "needs_macos": "false",
+        "release_title": "v2.22 — Test",
+        "release_body": "### 新增功能\n\n- **Test**：Description",
+        "content_sha": "c" * 64,
+    }
+
+    def fake_git_text(*args):
+        if args == ("branch", "--show-current"):
+            return "master"
+        if args == ("status", "--porcelain"):
+            return ""
+        if args in {
+            ("rev-parse", "HEAD"),
+            ("rev-parse", "origin/master"),
+            ("rev-parse", "gitee/master"),
+        }:
+            return "a" * 40
+        raise AssertionError(args)
+
+    with (
+        patch.object(release_dispatch, "_git_text", side_effect=fake_git_text),
+        patch.object(
+            release_dispatch,
+            "_run",
+            return_value=release_dispatch.subprocess.CompletedProcess([], 0, "", ""),
+        ),
+        patch.object(release_dispatch.release_ci, "prepare_release", return_value=gate),
+        patch.object(release_dispatch, "_list_release_runs", return_value=[]),
+        patch.object(
+            release_dispatch.build,
+            "_verify_release_remote_state",
+            return_value=True,
+        ),
+        patch.object(
+            release_dispatch.release_ci,
+            "verify_public_endpoints",
+            return_value={"downloads_checked": 6, "manifests_checked": 2},
+        ) as verify_public,
+    ):
+        result = release_dispatch.preflight("2.22")
+
+    assert result["published"] is True
+    assert result["verification"]["manifest_sha"] == "a" * 40
+    assert result["verification"]["downloads_checked"] == 6
+    assert result["verification"]["manifests_checked"] == 2
+    verify_public.assert_called_once_with("2.22")
+
+
 def test_preview_never_dispatches_or_waits():
     plan = _plan()
     with (
@@ -204,7 +262,12 @@ def test_completed_public_release_is_verified_without_dispatching_again():
         )
 
     assert result == finished
-    finish.assert_called_once_with("2.22", None, already_published=True)
+    finish.assert_called_once_with(
+        "2.22",
+        None,
+        already_published=True,
+        verification=plan["verification"],
+    )
     dispatch.assert_not_called()
 
 
@@ -216,13 +279,18 @@ def test_execute_reuses_active_matching_run_instead_of_dispatching_duplicate():
         patch.object(release_dispatch, "preflight", return_value=plan),
         patch.object(release_dispatch.release_ci, "require_local_gitee_access"),
         patch.object(release_dispatch, "_dispatch_workflow") as dispatch,
+        patch.object(release_dispatch.release_ci, "record_actions_run"),
         patch.object(release_dispatch, "wait_for_run", return_value=completed) as wait,
         patch.object(
             release_dispatch,
             "_finish_success",
             return_value={"mode": "published"},
         ) as finish,
-        patch.object(release_dispatch.release_ci, "finalize_release_local") as finalize,
+        patch.object(
+            release_dispatch.release_ci,
+            "finalize_release_local",
+            return_value={},
+        ) as finalize,
     ):
         result = release_dispatch.dispatch_release(
             "2.22",
@@ -236,13 +304,56 @@ def test_execute_reuses_active_matching_run_instead_of_dispatching_duplicate():
     wait.assert_called_once_with(
         101,
         timeout=release_dispatch.DEFAULT_RELEASE_TIMEOUT,
-        poll_interval=15,
+        poll_interval=release_dispatch.DEFAULT_POLL_INTERVAL,
         stall_timeout=release_dispatch.DEFAULT_ACTION_STALL_TIMEOUT,
     )
     finalize.assert_called_once_with(
         "2.22", "确认正式发布 v2.22", "a" * 40, "c" * 64,
     )
-    finish.assert_called_once_with("2.22", completed)
+    finish.assert_called_once_with("2.22", completed, verification={})
+
+
+def test_execute_reruns_only_failed_jobs_for_matching_release():
+    failed = _run(101, status="completed", conclusion="failure")
+    restarted = _run(101, status="in_progress")
+    completed = _run(101, status="completed", conclusion="success")
+    plan = _plan(runs=[failed])
+    with (
+        patch.object(release_dispatch, "preflight", return_value=plan),
+        patch.object(release_dispatch.release_ci, "require_local_gitee_access"),
+        patch.object(
+            release_dispatch,
+            "_rerun_failed_jobs",
+            return_value=restarted,
+        ) as rerun,
+        patch.object(release_dispatch, "_dispatch_workflow") as dispatch,
+        patch.object(
+            release_dispatch,
+            "wait_for_run",
+            return_value=completed,
+        ),
+        patch.object(release_dispatch.release_ci, "record_actions_run"),
+        patch.object(
+            release_dispatch.release_ci,
+            "finalize_release_local",
+            return_value={},
+        ),
+        patch.object(
+            release_dispatch,
+            "_finish_success",
+            return_value={"mode": "published"},
+        ),
+    ):
+        result = release_dispatch.dispatch_release(
+            "2.22",
+            execute=True,
+            authorization="确认正式发布 v2.22",
+            approved_content_sha="c" * 64,
+        )
+
+    assert result["mode"] == "published"
+    rerun.assert_called_once_with(failed)
+    dispatch.assert_not_called()
 
 
 def test_execute_snapshots_runs_dispatches_discovers_waits_and_finishes():
@@ -277,8 +388,10 @@ def test_execute_snapshots_runs_dispatches_discovers_waits_and_finishes():
         patch.object(
             release_dispatch,
             "_finish_success",
-            side_effect=lambda *_args: events.append("finish") or {"mode": "published"},
+            side_effect=lambda *_args, **_kwargs: events.append("finish")
+            or {"mode": "published"},
         ),
+        patch.object(release_dispatch.release_ci, "record_actions_run"),
         patch.object(
             release_dispatch.release_ci,
             "finalize_release_local",
@@ -318,7 +431,8 @@ def test_staged_github_release_skips_actions_and_finalizes_locally():
         patch.object(
             release_dispatch,
             "_finish_success",
-            side_effect=lambda *_: events.append("finish") or {"mode": "published"},
+            side_effect=lambda *_args, **_kwargs: events.append("finish")
+            or {"mode": "published"},
         ),
     ):
         result = release_dispatch.dispatch_release(

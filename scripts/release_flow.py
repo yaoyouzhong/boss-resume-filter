@@ -26,6 +26,7 @@ for import_path in (BASE_DIR, SCRIPTS_DIR):
         sys.path.insert(0, str(import_path))
 
 import pr_delivery  # noqa: E402
+import build  # noqa: E402
 import release_content_review  # noqa: E402
 import release_dispatch  # noqa: E402
 import release_prepare  # noqa: E402
@@ -230,6 +231,10 @@ def _apply_release_materials(version: str, notes_path: Path) -> None:
     unexpected = changed - release_prepare.RELEASE_FILES
     if unexpected:
         _fail("发布材料阶段出现意外修改：" + ", ".join(sorted(unexpected)))
+    review = release_content_review.review_release_worktree(version)
+    print("\n>>> 严格门禁前版本内容预审")
+    print(f"  标题: {review['release_title']}")
+    print(review["release_body"])
     if changed:
         release_prepare._run_strict_gate()
         _run(["git", "add", *sorted(release_prepare.RELEASE_FILES)])
@@ -256,6 +261,33 @@ def _print_candidate(state: dict[str, Any]) -> None:
     print(state["release_body"])
     print(f"\n  内部内容凭证: {state['content_sha'][:12]}")
     print(f"  确认口令: {expected_confirm_authorization(state['version'])}")
+
+
+def _verify_completed_release_receipt(state: dict[str, Any]) -> None:
+    """Reject a stale local complete marker without repeating full acceptance."""
+    version = str(state["version"])
+    formal = dict(state.get("formal_release") or {})
+    verification = dict(formal.get("verification") or {})
+    expected_master = str(
+        verification.get("manifest_sha")
+        or formal.get("master_sha")
+        or ""
+    )
+    origin_master = build._remote_ref_commit("origin", "refs/heads/master")
+    gitee_master = build._remote_ref_commit("gitee", "refs/heads/master")
+    if not expected_master or origin_master != expected_master or gitee_master != expected_master:
+        _fail("本地发布完成凭证与当前 GitHub/Gitee master 不一致")
+    tag = f"v{version}"
+    origin_tag = build._remote_tag_commit("origin", tag)
+    gitee_tag = build._remote_tag_commit("gitee", tag)
+    if origin_tag != state.get("merge_sha") or gitee_tag != state.get("merge_sha"):
+        _fail("本地发布完成凭证与当前双远端 tag 不一致")
+    github_release = build._get_github_release_info(tag)
+    if not github_release or github_release.get("isDraft"):
+        _fail("本地发布完成凭证对应的 GitHub Release 不存在或仍为草稿")
+    if not build._get_gitee_release_read_only(version):
+        _fail("本地发布完成凭证对应的 Gitee Release 不存在")
+    print("  [OK] 本地完成凭证与双远端 master、tag 和 Release 一致")
 
 
 def prepare_candidate(
@@ -296,6 +328,12 @@ def prepare_candidate(
 
     with _timed_step("同步发布材料并运行严格门禁"):
         _apply_release_materials(version, notes_path)
+    candidate_sha = _git_text("rev-parse", "HEAD")
+    candidate_tree = _tree_sha(candidate_sha)
+    with _timed_step("生成版本内容审核"):
+        review = release_content_review.review_release_candidate(
+            version, candidate_sha, candidate_tree,
+        )
     with _timed_step("本地 PR 预检"):
         gate = pr_delivery.preflight(candidate_branch, run_tests=False)
     with _timed_step("推送并创建或复用 PR"):
@@ -312,11 +350,8 @@ def prepare_candidate(
             expected_head_sha=gate["head_sha"],
         )
     candidate_sha = gate["head_sha"]
-    with _timed_step("生成版本内容审核"):
-        candidate_tree = _tree_sha(candidate_sha)
-        review = release_content_review.review_release_candidate(
-            version, candidate_sha, candidate_tree,
-        )
+    if candidate_sha != review["candidate_sha"]:
+        _fail("版本内容审核后候选提交发生变化")
     state = {
         "phase": "awaiting_content_approval",
         "version": version,
@@ -400,7 +435,25 @@ def _dispatch_formal_release(
     )
     if result.returncode != 0:
         _fail(f"master 工作区正式发布失败（退出码 {result.returncode}）")
-    return {"mode": "published_from_master_worktree", "path": str(master_worktree)}
+    release_state: dict[str, Any] = {}
+    release_state_path = master_worktree / ".release_state.json"
+    try:
+        parsed = json.loads(release_state_path.read_text(encoding="utf-8"))
+        if isinstance(parsed, dict):
+            release_state = parsed
+    except (OSError, json.JSONDecodeError):
+        pass
+    verification = (
+        ((release_state.get("phases") or {}).get("public_verification") or {})
+        .get("details")
+        or {}
+    )
+    return {
+        "mode": "published_from_master_worktree",
+        "path": str(master_worktree),
+        "actions_run": release_state.get("actions_run"),
+        "verification": verification,
+    }
 
 
 def confirm_release(
@@ -421,7 +474,9 @@ def confirm_release(
         _fail("待确认状态与目标版本不一致")
     release_content_review.require_approved_content(state, approved_content_sha)
     if state.get("phase") == "complete":
+        _verify_completed_release_receipt(state)
         return state
+    origin_fetched_after_merge = False
     if state.get("phase") == "awaiting_content_approval":
         pr = _verify_candidate(
             state, timeout=timeout, poll_interval=poll_interval,
@@ -431,21 +486,36 @@ def confirm_release(
         if not merge_sha:
             _fail("候选 PR 合并后缺少提交信息")
         pr_delivery._run_external(["git", "fetch", "origin"], "拉取 GitHub 合并结果")
+        origin_fetched_after_merge = True
         if _tree_sha(merge_sha) != state["candidate_tree_sha"]:
             _fail("Squash 合并后的文件树与已确认候选不一致，禁止正式发布")
         state.update({"phase": "merged_pending_sync", "merge_sha": merge_sha})
         _write_state(state)
     if state.get("phase") == "merged_pending_sync":
-        pr_delivery.finalize_delivery(state["candidate_branch"], state["merge_sha"])
-        state["phase"] = "merged"
+        pr_delivery.synchronize_merged_delivery(
+            state["merge_sha"],
+            origin_already_fetched=origin_fetched_after_merge,
+        )
+        state["phase"] = "merged_synced"
         _write_state(state)
 
-    formal_review = release_content_review.review_release_content(
-        version, state["merge_sha"],
-    )
-    result = _dispatch_formal_release(version, formal_review["content_sha"])
-    state.update({"phase": "complete", "formal_release": result})
-    _write_state(state)
+    if state.get("phase") in {"merged", "merged_synced"}:
+        formal_review = release_content_review.review_release_content(
+            version, state["merge_sha"],
+        )
+        result = _dispatch_formal_release(version, formal_review["content_sha"])
+        state.update({
+            "phase": "published_pending_cleanup",
+            "formal_release": result,
+        })
+        _write_state(state)
+
+    if state.get("phase") == "published_pending_cleanup":
+        pr_delivery.cleanup_delivered_branch(
+            state["candidate_branch"], state["merge_sha"],
+        )
+        state["phase"] = "complete"
+        _write_state(state)
     return state
 
 

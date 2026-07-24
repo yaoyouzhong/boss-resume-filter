@@ -132,8 +132,39 @@ def test_release_state_is_atomic_and_contains_no_credentials():
         state = json.loads(state_path.read_text(encoding="utf-8"))
 
     assert state["phase"] == "download_github_artifacts"
+    assert state["schema"] == release_ci.RELEASE_STATE_SCHEMA
+    assert state["phases"]["download_github_artifacts"]["attempts"] == 1
     assert state["artifacts"]["BOSS_ResumeFilter.exe"]["downloaded_bytes"] == 10
     assert "token" not in json.dumps(state).lower()
+
+
+def test_release_state_records_phase_duration_and_redacted_error_log():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_path = Path(temp_dir) / ".release_state.json"
+        with patch.object(release_ci, "RELEASE_STATE_PATH", state_path):
+            release_ci._write_release_state(
+                "2.21", "a" * 40, "gitee_artifacts", "in_progress"
+            )
+            release_ci._write_release_state(
+                "2.21",
+                "a" * 40,
+                "gitee_artifacts",
+                "failed",
+                error_type="HTTPError",
+                error_message="https://gitee.test?access_token=secret-value",
+            )
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        log_text = (
+            Path(temp_dir) / "logs" / "release-v2.21.log"
+        ).read_text(encoding="utf-8")
+
+    phase = state["phases"]["gitee_artifacts"]
+    assert phase["status"] == "failed"
+    assert phase["duration_seconds"] >= 0
+    assert phase["attempts"] == 1
+    assert "secret-value" not in json.dumps(state)
+    assert "secret-value" not in log_text
+    assert "[REDACTED]" in log_text
 
 
 def test_release_state_retries_three_windows_sharing_violations():
@@ -183,6 +214,55 @@ def test_publish_github_release_accepts_lost_response_when_state_changed():
 
     run.assert_called_once()
     sleep.assert_not_called()
+
+
+def test_public_asset_probe_checks_size_type_filename_and_magic():
+    class Response:
+        status_code = 206
+        headers = {
+            "Content-Type": "application/octet-stream",
+            "Content-Disposition": 'attachment; filename="BOSS_ResumeFilter.exe"',
+            "Content-Range": "bytes 0-511/123",
+        }
+        url = "https://download.test/BOSS_ResumeFilter.exe"
+
+        @staticmethod
+        def iter_content(chunk_size):
+            assert chunk_size == 512
+            yield b"MZ" + b"\0" * 510
+
+        @staticmethod
+        def close():
+            return None
+
+    with patch.object(
+        release_ci.build.requests,
+        "get",
+        return_value=Response(),
+    ):
+        ok, detail = release_ci._public_asset_probe(
+            "https://example.test/BOSS_ResumeFilter.exe",
+            "BOSS_ResumeFilter.exe",
+            123,
+        )
+
+    assert ok is True
+    assert detail.endswith("BOSS_ResumeFilter.exe")
+
+    Response.url = "http://download.test/BOSS_ResumeFilter.exe"
+    with patch.object(
+        release_ci.build.requests,
+        "get",
+        return_value=Response(),
+    ):
+        ok, detail = release_ci._public_asset_probe(
+            "https://example.test/BOSS_ResumeFilter.exe",
+            "BOSS_ResumeFilter.exe",
+            123,
+        )
+
+    assert ok is False
+    assert detail == "final download URL is not HTTPS"
 
 
 def test_github_release_query_retries_transient_cli_failure():
@@ -483,8 +563,13 @@ def test_finalize_local_publishes_github_before_gitee_mirror():
             patch.object(release_ci, "_ensure_gitee_tag", side_effect=lambda *_: events.append("gitee_tag")),
             patch.object(
                 release_ci,
+                "_prune_gitee_old_assets",
+                side_effect=lambda *_: events.append("gitee_prune"),
+            ),
+            patch.object(
+                release_ci,
                 "_publish_gitee_artifacts",
-                side_effect=lambda *_: events.append("gitee_assets")
+                side_effect=lambda *_args, **_kwargs: events.append("gitee_assets")
                 or release_ci._canonical_downloads_cn("2.21"),
             ),
             patch.object(
@@ -505,7 +590,8 @@ def test_finalize_local_publishes_github_before_gitee_mirror():
             patch.object(
                 release_ci,
                 "verify_public_endpoints",
-                side_effect=lambda *_: events.append("public_verify"),
+                side_effect=lambda *_: events.append("public_verify")
+                or {"downloads_checked": 6, "manifests_checked": 2},
             ),
         ):
             release_ci.finalize_release_local(
@@ -513,11 +599,29 @@ def test_finalize_local_publishes_github_before_gitee_mirror():
             )
 
         assert events.count("master_safe") == 2
-        assert events.index("download_verify") < events.index("github_public")
-        assert events.index("github_public") < events.index("gitee_tag")
-        assert events.index("gitee_tag") < events.index("gitee_assets")
+        assert events.index("github_public") < events.index("download_verify")
+        assert events.index("download_verify") < events.index("gitee_tag")
+        assert events.index("gitee_tag") < events.index("gitee_prune")
+        assert events.index("gitee_prune") < events.index("gitee_assets")
         assert events.index("gitee_assets") < events.index("manifest")
         assert events[-2:] == ["remote_verify", "public_verify"]
+
+
+def test_gitee_prune_failure_stops_before_upload():
+    with patch.object(
+        release_ci.build,
+        "_gitee_clean_old_assets",
+        return_value=False,
+    ) as clean:
+        with _raises(release_ci.ReleaseAutomationError, "旧版本附件清理失败"):
+            release_ci._prune_gitee_old_assets("2.21", "token")
+
+    clean.assert_called_once_with(
+        "2.21",
+        apply=True,
+        token="token",
+        skip_ping=True,
+    )
 
 
 def test_gitee_large_upload_is_rejected_on_github_actions():
