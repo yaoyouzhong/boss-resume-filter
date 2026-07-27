@@ -11,3 +11,4 @@
 - 会话基线：`init=206ms`；`create home/config/run/result/stats=47/267/199/126/48ms`。
 - 会话基线：`show r0 home/config/run/result/stats=268/317/3/18/7ms`；`show r1=7/7/6/2/1ms`。
 - 基线三重页合计 `592ms`，总账 `893ms`；目标分别为 `≤325.6ms` 与 `≤714.4ms`，`init≤113.3ms`。
+- 2026-07-27：七页递归控件树基线建立并自检全绿：`home/config/run/result/education/stats/settings=35/142/105/56/54/31/63`。
