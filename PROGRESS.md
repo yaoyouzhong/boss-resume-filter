@@ -21,3 +21,5 @@
 - 循环 4（已回滚）：分片预建三重页时完成回调缺少 `_pending_page_ready_callbacks`，四次均 `AttributeError` 后超时；原基准中位数总账仍为基线 98.7%，且 stats 热切换劣化，未保留。
 - 循环 5（已回滚）：修正预建生命周期后完整预建中位数 `2789ms`，但 `show_config=575ms`，为 config create 基线 215%，远高于 30% 目标；隐藏页首次映射仍同步布局，不搬移该卡顿。
 - 循环 6（已回滚）：把配置详情容器提前登记布局后 `show_config=13ms`，但 `create_config=461ms`（基线 +72.7%），属于成本搬移；任务 2 三连败，已写入 `BLOCKED.md`。
+- 2026-07-27：控件树反向验证通过：内存销毁 result 叶子后红灯 `expected 56, actual 55`（退出码 1），新进程恢复后七页全绿。
+- 2026-07-27：七页逐一打开、`refresh_results(force=True)`、更新日志对话框冒烟全部 PASS，无异常输出。
