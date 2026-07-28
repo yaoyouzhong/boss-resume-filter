@@ -1,29 +1,29 @@
 {
-  "version": "2.24.1",
-  "release_date": "2026-07-23",
+  "version": "2.24.2",
+  "release_date": "2026-07-28",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.1/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.1/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.1/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.2/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.2/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.2/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "macos_dmg": {
-      "size": 33618032,
-      "sha256": "e59e4c4c529a6544417e74c8927c2b1534b12c2aaca9ab90e3b3eda64d0b3f4a"
+      "size": 33621061,
+      "sha256": "ab994e2cdabdaad74f6a5088e03b6fa6e2fb97aaf86d3a572a274fc2cf63fc49"
     },
     "windows": {
-      "size": 35855557,
-      "sha256": "c1c2f4e34f27394fedec0ab66d8b79010ac4520f5c7e04707c346a7867f9edc5"
+      "size": 35864521,
+      "sha256": "8c157dc3408a28dfc8a09b5edf3f9250416acfd7c0d50bdf6df27c3cc20732dd"
     },
     "macos": {
-      "size": 34400706,
-      "sha256": "ac976ecfad2cd19150416428afff085c4a08f4bbff3b12e7608d3719e65d9389"
+      "size": 34406866,
+      "sha256": "1bc5d9237250f2a9b61ee8ccb77c26bdcebe53b4fc7113f133fc6af0783a7c17"
     }
   },
-  "release_notes": "### 新增功能\n\n- **统一访问保护**：BOSS 页面读取、API 直调、资料补充、岗位核对和联系候选人共用访问保护状态；触发后进入冷却并阻止本轮继续自动访问。\n\n### 体验优化\n\n- **异常处理更加稳妥**：遇到登录失效、安全验证、操作频繁或平台限制时，立即停止后续页面读取和联系操作；已经取得的候选人仍会继续规则筛选、AI 评估和保存。\n- **运行记录更加完整**：当日运行记录覆盖扫描、AI 评估、联系准备、逐人发送、失败、待核实、暂停和最终汇总，方便完整回看本轮过程。\n\n### 问题修复\n\n- **平台异常识别更完整**：补充多类访问限制、请求拒绝、未知响应、沟通次数限制和异常跳转识别，避免出现异常后仍继续补充资料、切换岗位、联系候选人或补打招呼。\n- **联系异常不再漏记**：联系候选人时的普通失败、发送异常和最终结果都会写入运行记录，必须立即处理的访问保护信息仍会同步显示在运行界面。\n- **本轮结果摘要更准确**：扫描完成后显示实际加入联系清单的人数，不再把尚未发送的候选人表述为已经联系或打招呼。\n- **运行记录自动隐藏敏感信息**：请求凭据和候选人接口标识写入记录前会自动隐藏，并定期清理过期记录。",
+  "release_notes": "### 体验优化\n\n- **候选人状态更加清晰**：筛选结论、复核状态和沟通状态分别显示，人工确认通过的候选人可以单独查看，后续处理入口保持一致。\n\n### 问题修复\n\n- **待定候选人可以人工加入联系清单**：修正待定及 AI 评估失败的候选人完成复核后仍无法加入联系清单的问题；人工确认后可以继续联系，同时保留原匹配分和推荐指数。\n- **联系状态保持一致**：修正跟进、屏蔽和人工反馈变化后候选人状态未及时同步的问题；更新为已回复、待约面或已约面时同步记录为已打招呼，加入黑名单后统一更新为不合适并清除后续提醒。\n- **反馈窗口完整显示**：修正部分 1080p 显示环境中反馈窗口底部按钮显示不完整的问题。",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.1/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.1/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.1/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.2/BOSS_ResumeFilter.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.2/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.2/BOSS_ResumeFilter.dmg"
   }
 }
