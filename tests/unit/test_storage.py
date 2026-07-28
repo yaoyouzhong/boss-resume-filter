@@ -297,6 +297,29 @@ def test_dedupe_preserves_feedback_from_new_to_old():
     assert result[0]["feedback_note"] == "可约面"
 
 
+def test_dedupe_preserves_manual_contact_approval_across_rescan():
+    result = _dedupe_candidates([
+        {
+            "geek_id": "g1",
+            "job_name": "Java",
+            "match_score": 64,
+            "batch_timestamp": "20260701_100000",
+            "contact_approved_at": "20260701_120000",
+            "contact_approval_reason": "人工确认待定候选人可联系",
+        },
+        {
+            "geek_id": "g1",
+            "job_name": "Java",
+            "match_score": 62,
+            "batch_timestamp": "20260702_100000",
+        },
+    ])
+
+    assert result[0]["match_score"] == 62
+    assert result[0]["contact_approved_at"] == "20260701_120000"
+    assert result[0]["contact_approval_reason"] == "人工确认待定候选人可联系"
+
+
 def test_dedupe_preserves_followup_from_old_to_new():
     """高分新记录替换旧记录时，保留旧记录上的跟进状态。"""
     result = _dedupe_candidates([

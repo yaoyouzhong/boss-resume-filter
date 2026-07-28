@@ -63,6 +63,13 @@ contact_queue.json     # GUI 联系清单意图（仅候选人/岗位标识、�
 | feedback_note | 反馈备注（自由文本） |
 | feedback_updated_at | 反馈更新时间（YYYYMMDD_HHMMSS） |
 
+**人工联系批准字段**（人工确认待定或 AI 评估失败候选人可联系后写入）：
+
+| 字段 | 说明 |
+|------|------|
+| contact_approved_at | 人工确认可联系的时间（YYYYMMDD_HHMMSS） |
+| contact_approval_reason | 人工确认可联系的原因 |
+
 **跟进状态字段**（GUI 右键标记后写入）：
 
 | 字段 | 说明 |

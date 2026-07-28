@@ -31,6 +31,8 @@ ACTION_TIMING_ORDER = (
 
 FOLLOWUP_TERMINAL_STATUSES = {"未沟通", "不合适", "已归档"}
 FOLLOWUP_SCHEDULED_STATUSES = {"已打招呼", "待约面", "已约面"}
+CONTACTED_FOLLOWUP_STATUSES = {"已打招呼", "已回复", "待约面", "已约面"}
+NEGATIVE_CONTACT_FEEDBACK = {"误推", "放弃"}
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,7 @@ def derive_candidate_decision(candidate: dict[str, Any]) -> CandidateDecision:
     score = score_value or 0
     qualification = str(candidate.get("qualification_status") or "qualified")
     communication = _communication_status(candidate)
+    manually_approved = candidate_has_manual_contact_approval(candidate)
 
     if qualification == "rejected":
         reasons = tuple(_unique_texts(candidate.get("qualification_reasons") or []))
@@ -83,11 +86,12 @@ def derive_candidate_decision(candidate: dict[str, Any]) -> CandidateDecision:
     review_reasons: list[str] = []
     if qualification == "manual_review" or candidate.get("manual_review_required"):
         review_reasons.extend(_manual_review_reasons(candidate))
-    if candidate.get("llm_error"):
+    if candidate.get("llm_error") and not manually_approved:
         review_reasons.append("AI 评估失败，需人工判断或重试")
     if score_value is not None and score < SCORE_THRESHOLD_RECOMMEND:
         if score >= SCORE_THRESHOLD_PASS:
-            review_reasons.append(f"评分处于待定区间（{score} 分）")
+            if not manually_approved:
+                review_reasons.append(f"评分处于待定区间（{score} 分）")
         else:
             review_reasons.append(f"评分低于通过线（{score} 分）")
     review_reasons = _unique_texts(review_reasons)
@@ -95,6 +99,9 @@ def derive_candidate_decision(candidate: dict[str, Any]) -> CandidateDecision:
     if review_reasons:
         next_action = _review_next_action(candidate, review_reasons)
         result_view = "待复核"
+    elif score_value is not None and score < SCORE_THRESHOLD_RECOMMEND:
+        result_view = "人工确认"
+        next_action = _recommended_next_action(candidate, communication)
     else:
         result_view = "推荐候选人"
         next_action = _recommended_next_action(candidate, communication)
@@ -112,7 +119,7 @@ def filter_candidates_by_result_view(
     candidates: list[dict[str, Any]], view: str
 ) -> list[dict[str, Any]]:
     """Filter candidates by their derived decision view."""
-    if view not in {"推荐候选人", "待复核", "淘汰记录"}:
+    if view not in {"推荐候选人", "人工确认", "待复核", "淘汰记录"}:
         return list(candidates)
     return [
         candidate for candidate in candidates
@@ -154,6 +161,11 @@ def candidate_greet_skip_reason(candidate: dict[str, Any]) -> str:
         return "已打招呼"
     if candidate.get("greet_confirmation_pending"):
         return "发送结果待核实"
+    feedback = str(candidate.get("feedback_status") or "").strip()
+    if feedback == "误推":
+        return "人工反馈为误推"
+    if feedback == "放弃":
+        return "人工已放弃"
     followup = _followup_status(candidate)
     if followup in {"已打招呼", "已回复", "待约面", "已约面", "不合适", "已归档"}:
         return f"跟进状态为{followup}"
@@ -163,9 +175,45 @@ def candidate_greet_skip_reason(candidate: dict[str, Any]) -> str:
     if decision.result_view == "待复核":
         return decision.primary_review_reason or "需先完成复核"
     score = _as_int(candidate.get("match_score"))
-    if score is None or score < SCORE_THRESHOLD_RECOMMEND:
+    if score is None:
         return "评分未达到推荐标准"
+    if score < SCORE_THRESHOLD_PASS:
+        return "评分低于通过线"
     return ""
+
+
+def candidate_has_manual_contact_approval(candidate: dict[str, Any]) -> bool:
+    """Return whether the user has explicitly approved contacting this candidate."""
+    return bool(
+        candidate.get("contact_approved_at")
+        or str(candidate.get("feedback_status") or "").strip() == "合适"
+    )
+
+
+def candidate_can_manual_approve_contact(candidate: dict[str, Any]) -> bool:
+    """Return whether one explicit approval can resolve the current contact blocker."""
+    if not candidate.get("geek_id"):
+        return False
+    if candidate.get("blacklisted") or candidate.get("greet_sent"):
+        return False
+    if candidate.get("greet_confirmation_pending"):
+        return False
+    if str(candidate.get("feedback_status") or "").strip() in NEGATIVE_CONTACT_FEEDBACK:
+        return False
+    if _followup_status(candidate) != "未沟通":
+        return False
+    if str(candidate.get("qualification_status") or "qualified") in {
+        "rejected", "manual_review",
+    }:
+        return False
+    if candidate.get("manual_review_required"):
+        return False
+    score = _as_int(candidate.get("match_score"))
+    if score is None or score < SCORE_THRESHOLD_PASS:
+        return False
+    if candidate_has_manual_contact_approval(candidate):
+        return False
+    return score < SCORE_THRESHOLD_RECOMMEND or bool(candidate.get("llm_error"))
 
 
 def build_daily_candidate_actions(
@@ -191,6 +239,8 @@ def build_daily_candidate_actions(
     }
     for candidate in candidates:
         if candidate.get("blacklisted"):
+            continue
+        if str(candidate.get("feedback_status") or "").strip() in NEGATIVE_CONTACT_FEEDBACK:
             continue
         score = _as_int(candidate.get("match_score")) or 0
         if score < SCORE_THRESHOLD_PASS and not _has_business_state(candidate):

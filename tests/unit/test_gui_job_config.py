@@ -75,6 +75,12 @@ def test_result_view_separates_recommended_review_and_rejected_without_limit():
         for i in range(125)
     ] + [
         {"geek_id": "pending", "qualification_status": "qualified", "match_score": 60},
+        {
+            "geek_id": "approved",
+            "qualification_status": "qualified",
+            "match_score": 60,
+            "contact_approved_at": "20260728_100000",
+        },
         {"geek_id": "manual", "qualification_status": "manual_review", "match_score": 72},
         {"geek_id": "ai-failed", "qualification_status": "qualified", "match_score": 72, "llm_error": "timeout"},
         {"geek_id": "send-pending", "qualification_status": "qualified", "match_score": 72, "greet_confirmation_pending": True},
@@ -85,8 +91,11 @@ def test_result_view_separates_recommended_review_and_rejected_without_limit():
     assert {
         c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "待复核")
     } == {"pending", "manual", "ai-failed"}
+    assert {
+        c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "人工确认")
+    } == {"approved"}
     assert [c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "淘汰记录")] == ["rejected"]
-    assert len(_filter_candidates_by_result_view(candidates, "全部记录")) == 130
+    assert len(_filter_candidates_by_result_view(candidates, "全部记录")) == 131
 
 
 def test_run_job_config_warning_is_acknowledged_until_diagnostics_change():
@@ -1612,6 +1621,7 @@ def test_result_page_defaults_to_all_records_and_offers_today():
 
     assert 'values=("全部时间", "今天", "近7天", "近30天", "自定义")' in result_block
     assert 'self.result_view_var = tk.StringVar(value="全部记录")' in result_block
+    assert '"推荐候选人", "人工确认", "待复核", "淘汰记录", "全部记录"' in result_block
 
 
 def test_result_blacklist_check_blends_with_page_background_in_every_state():
@@ -3729,10 +3739,138 @@ def test_update_candidate_followup_persists_due_date_for_only_matching_job():
         saved = json.loads(candidates_path.read_text(encoding="utf-8"))
         assert updated is True
         assert saved[0]["followup_status"] == "待约面"
+        assert saved[0]["greet_sent"] is True
+        assert saved[0]["greet_method"] == "manual_status"
         assert saved[0]["next_followup_at"] == "20260723_090000"
         assert saved[0]["followup_updated_at"] == "20260718_100000"
         assert saved[1]["followup_status"] == "已打招呼"
         assert "next_followup_at" not in saved[1]
+
+
+def test_manual_contact_approval_is_persisted_for_only_matching_job():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        candidates_path = Path(tmp_dir) / "candidates.json"
+        candidates_path.write_text(json.dumps([
+            {
+                "geek_id": "same-geek",
+                "job_name": "Java 工程师",
+                "match_score": 64,
+            },
+            {
+                "geek_id": "same-geek",
+                "job_name": "Python 工程师",
+                "match_score": 64,
+            },
+        ], ensure_ascii=False), encoding="utf-8")
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+
+        with patch("gui_main.CANDIDATES_PATH", candidates_path):
+            updated = gui._update_candidate_contact_approval(
+                "same-geek",
+                "Java 工程师",
+                "人工确认待定候选人可联系",
+                "20260728_100000",
+            )
+
+        saved = json.loads(candidates_path.read_text(encoding="utf-8"))
+        assert updated is True
+        assert saved[0]["contact_approved_at"] == "20260728_100000"
+        assert saved[0]["contact_approval_reason"] == "人工确认待定候选人可联系"
+        assert "contact_approved_at" not in saved[1]
+
+
+def test_manual_contact_confirmation_persists_before_queue_without_changing_score():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._update_candidate_contact_approval = Mock(return_value=True)
+    gui._add_candidates_to_greet_queue = Mock(return_value=1)
+    gui.refresh_results = Mock()
+    parent = Mock()
+    candidate = {
+        "geek_id": "g1",
+        "name": "候选人",
+        "job_name": "Java 工程师",
+        "match_score": 64,
+    }
+
+    with patch("gui_main.messagebox.askyesno", return_value=True):
+        added = gui._approve_candidate_contact_and_queue(
+            candidate,
+            parent=parent,
+        )
+
+    assert added == 1
+    assert candidate["match_score"] == 64
+    assert candidate["contact_approval_reason"] == "人工确认待定候选人可联系"
+    gui._update_candidate_contact_approval.assert_called_once()
+    gui._add_candidates_to_greet_queue.assert_called_once_with(
+        [candidate],
+        parent=parent,
+    )
+    gui.refresh_results.assert_called_once_with(force=True)
+
+
+def test_negative_feedback_clears_prior_contact_approval():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        candidates_path = Path(tmp_dir) / "candidates.json"
+        candidates_path.write_text(json.dumps([{
+            "geek_id": "g1",
+            "job_name": "Java 工程师",
+            "match_score": 64,
+            "contact_approved_at": "20260728_100000",
+            "contact_approval_reason": "人工确认待定候选人可联系",
+        }], ensure_ascii=False), encoding="utf-8")
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+
+        with patch("gui_main.CANDIDATES_PATH", candidates_path):
+            updated = gui._update_candidate_feedback(
+                "g1", "Java 工程师", "放弃", [], ""
+            )
+
+        saved = json.loads(candidates_path.read_text(encoding="utf-8"))
+        assert updated is True
+        assert saved[0]["feedback_status"] == "放弃"
+        assert "contact_approved_at" not in saved[0]
+        assert "contact_approval_reason" not in saved[0]
+
+
+def test_blacklist_ends_active_followup_and_clears_reminder():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        candidates_path = Path(tmp_dir) / "candidates.json"
+        candidates_path.write_text(json.dumps([{
+            "geek_id": "g1",
+            "job_name": "Java 工程师",
+            "match_score": 80,
+            "greet_sent": True,
+            "followup_status": "待约面",
+            "next_followup_at": "20260730_090000",
+        }], ensure_ascii=False), encoding="utf-8")
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+
+        with patch("gui_main.CANDIDATES_PATH", candidates_path):
+            updated = gui._update_candidate_blacklist(
+                "g1", "不再考虑", "20260728_100000"
+            )
+
+        saved = json.loads(candidates_path.read_text(encoding="utf-8"))
+        assert updated == 1
+        assert saved[0]["blacklisted"] is True
+        assert saved[0]["followup_status"] == "不合适"
+        assert saved[0]["followup_updated_at"] == "20260728_100000"
+        assert "next_followup_at" not in saved[0]
+
+
+def test_suitable_pending_status_is_resolved_without_changing_recommendation():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidate = {
+        "geek_id": "pending",
+        "match_score": 64,
+        "feedback_status": "合适",
+    }
+
+    status = gui._format_candidate_status(candidate)
+
+    assert status == "未沟通｜人工确认合适"
+    assert "待复核" not in status
 
 
 def test_candidate_review_workbench_exposes_flat_switch_and_direct_actions():
@@ -3821,6 +3959,7 @@ def test_candidate_context_menu_uses_review_workbench_wording():
     assert "self.icons.button('ai_spark', self.colors['primary'])" in block
     assert 'label=" 查看详情"' not in block
     assert 'label=" 加入联系清单"' in block
+    assert 'label=" 确认并加入联系清单"' in block
     assert 'label=" 打招呼"' not in block
     assert "candidate_greet_skip_reason(candidate)" in block
     assert "not _candidate_has_ai_eval(candidate)" in block
@@ -5356,6 +5495,8 @@ def test_workflow_context_menu_opens_review_and_uses_shared_decision_rules():
     assert 'label=" 查看详情"' not in menu_block
     assert "self._open_candidate_review_workbench(candidate)" in menu_block
     assert "candidate_greet_skip_reason(candidate)" in menu_block
+    assert "candidate_can_manual_approve_contact(candidate)" in menu_block
+    assert 'label=" 确认并加入联系清单"' in menu_block
     assert "candidate.get('qualification_status') == 'manual_review'" in menu_block
     assert 'label=" 核实发送结果"' in menu_block
     assert "self._focus_candidate_in_greet_queue(candidate)" in menu_block
@@ -6407,6 +6548,19 @@ def test_feedback_dialog_status_control_stays_inside_form_content():
     assert "note_text.pack(anchor='w', fill='x'" in feedback_block
     assert 'text="结构化原因（可多选）",\n            font=(FONT_FAMILY, int(12 * self.font_scale))' in feedback_block
     assert 'status in {"误推", "误杀"} and not reasons' in feedback_block
+
+
+def test_feedback_dialog_height_expands_to_keep_buttons_visible():
+    """反馈弹窗必须服从实际内容请求高度，避免 1080p 缩放下裁掉底部按钮。"""
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    feedback_block = source[source.index("def _mark_candidate_feedback"):]
+    feedback_block = feedback_block[:feedback_block.index("\n    def _format_candidate_detail")]
+
+    assert "win.update_idletasks()" in feedback_block
+    assert "win.winfo_reqheight() + int(12 * scale)" in feedback_block
+    assert "dialog_height = max(" in feedback_block
+    assert "_place_window_centered(win, int(440 * scale), dialog_height" in feedback_block
+    assert "_place_window_centered(win, int(440 * scale), int(485 * scale)" not in feedback_block
 
 
 def test_job_review_text_aggregates_structured_feedback_reasons():
