@@ -5,7 +5,11 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from candidate_workflow import normalize_followup_at
+from candidate_workflow import (
+    CONTACTED_FOLLOWUP_STATUSES,
+    NEGATIVE_CONTACT_FEEDBACK,
+    normalize_followup_at,
+)
 from constants import SCORE_THRESHOLD_PASS
 
 
@@ -138,6 +142,16 @@ def _diagnose_individual_candidates(candidates: Iterable[dict[str, Any]]) -> lis
                     "如果是历史数据，可以暂不处理；以后通过本程序发送成功时会自动记录。",
                 ))
 
+        if (
+            followup_status in CONTACTED_FOLLOWUP_STATUSES
+            and candidate.get("greet_sent") is not True
+        ):
+            issues.append(_issue(
+                candidate, "error", "沟通进度与已打招呼记录不一致",
+                f"跟进状态为“{followup_status}”，但没有已打招呼记录。",
+                "核实实际沟通情况；如果确实已经沟通，重新保存当前跟进状态。",
+            ))
+
         if candidate.get("greet_confirmation_pending") and candidate.get("greet_sent") is True:
             issues.append(_issue(
                 candidate, "error", "已发送与待核实并存",
@@ -150,6 +164,43 @@ def _diagnose_individual_candidates(candidates: Iterable[dict[str, Any]]) -> lis
                 candidate, "warning", "需要人工确认",
                 "系统标记这个人需要人工确认，但候选人结论没有显示为待人工确认。",
                 "如果已经看过并认可，右键点“确认通过”；如果还没确认，先不要自动打招呼。",
+            ))
+
+        if (
+            feedback_status == "合适"
+            and (
+                qualification_status in {"rejected", "manual_review"}
+                or candidate.get("manual_review_required")
+            )
+        ):
+            issues.append(_issue(
+                candidate, "warning", "人工合适结论仍有资格阻断",
+                "人工反馈为“合适”，但资格审查仍是淘汰或待人工确认。",
+                "核对硬性条件；确认无误后执行“确认通过”，淘汰结论有误则标记为误杀。",
+            ))
+
+        if (
+            feedback_status in NEGATIVE_CONTACT_FEEDBACK
+            and candidate.get("contact_approved_at")
+        ):
+            issues.append(_issue(
+                candidate, "error", "人工负面反馈与联系批准并存",
+                f"人工反馈为“{feedback_status}”，但仍保留联系批准记录。",
+                "以最新人工判断为准；重新保存该反馈会清除旧的联系批准。",
+            ))
+
+        if (
+            candidate.get("contact_approved_at")
+            and (
+                match_score < SCORE_THRESHOLD_PASS
+                or qualification_status in {"rejected", "manual_review"}
+                or candidate.get("manual_review_required")
+            )
+        ):
+            issues.append(_issue(
+                candidate, "warning", "人工联系批准当前不可用",
+                "候选人的分数或资格结论已经不再满足人工联系条件。",
+                "先处理当前筛选或资格问题；系统不会使用这条批准记录发送。",
             ))
 
         if qualification_status == "rejected":

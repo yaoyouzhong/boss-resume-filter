@@ -49,6 +49,8 @@ _FEEDBACK_FIELDS = (
     'greet_confirmation_pending',
     'greet_confirmation_reason',
     'greet_confirmation_updated_at',
+    'contact_approved_at',
+    'contact_approval_reason',
 )
 
 # 有时间戳的字段组：(时间戳字段, (关联数据字段...))
@@ -63,6 +65,7 @@ _TIMESTAMP_FIELD_GROUPS = (
         'greet_confirmation_updated_at',
         ('greet_confirmation_pending', 'greet_confirmation_reason'),
     ),
+    ('contact_approved_at', ('contact_approval_reason',)),
 )
 _TIMESTAMPED_FIELDS = frozenset(
     f for ts_f, related in _TIMESTAMP_FIELD_GROUPS for f in (ts_f, *related)

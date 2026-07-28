@@ -145,3 +145,31 @@ def test_diagnose_legacy_active_followup_is_non_blocking_schedule_info():
 
     issue = next(item for item in issues if item.title == "跟进时间待安排")
     assert issue.severity == "info"
+    assert any(
+        item.title == "沟通进度与已打招呼记录不一致"
+        and item.severity == "error"
+        for item in issues
+    )
+
+
+def test_diagnose_manual_contact_approval_conflicts():
+    issues = diagnose_candidate_states([
+        _candidate(
+            geek_id="negative",
+            feedback_status="放弃",
+            contact_approved_at="20260728_100000",
+        ),
+        _candidate(
+            geek_id="hard",
+            match_score=64,
+            feedback_status="合适",
+            qualification_status="manual_review",
+            manual_review_required=True,
+            contact_approved_at="20260728_100000",
+        ),
+    ])
+
+    titles = {issue.title for issue in issues}
+    assert "人工负面反馈与联系批准并存" in titles
+    assert "人工合适结论仍有资格阻断" in titles
+    assert "人工联系批准当前不可用" in titles

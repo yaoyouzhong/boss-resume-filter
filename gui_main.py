@@ -59,10 +59,13 @@ tk.Toplevel = _EscCloseToplevel
 from collections import Counter
 from candidate_workflow import (
     ACTION_TIMING_ORDER,
+    CONTACTED_FOLLOWUP_STATUSES,
     REVIEW_CATEGORY_ORDER,
     apply_followup_state,
     build_daily_candidate_actions,
+    candidate_can_manual_approve_contact,
     candidate_greet_skip_reason,
+    candidate_has_manual_contact_approval,
     candidate_review_category,
     default_next_followup_at,
     derive_candidate_decision,
@@ -5634,7 +5637,7 @@ class BossFilterGUI:
         self.result_view_combo = ttk.Combobox(
             search_frame,
             textvariable=self.result_view_var,
-            values=("推荐候选人", "待复核", "淘汰记录", "全部记录"),
+            values=("推荐候选人", "人工确认", "待复核", "淘汰记录", "全部记录"),
             width=11,
             state="readonly",
             font=self.font_label,
@@ -16439,6 +16442,18 @@ class BossFilterGUI:
                 ),
             )
 
+        def add_approve_queue():
+            menu.add_command(
+                label=" 确认并加入联系清单",
+                image=icon_queue,
+                compound=tk.LEFT,
+                command=lambda: self._approve_candidate_contact_and_queue(
+                    candidate,
+                    parent=parent,
+                    on_saved=refresh_later,
+                ),
+            )
+
         def add_verify_sent():
             menu.add_command(
                 label=" 核实发送结果",
@@ -16511,12 +16526,16 @@ class BossFilterGUI:
         )
         needs_send_verification = bool(candidate.get('greet_confirmation_pending'))
         can_queue = not candidate_greet_skip_reason(candidate)
+        can_approve_queue = candidate_can_manual_approve_contact(candidate)
 
         if needs_send_verification:
             add_verify_sent()
             menu.add_separator()
         elif primary_action == "confirm" and needs_review:
             add_confirm()
+            menu.add_separator()
+        elif primary_action == "confirm" and can_approve_queue:
+            add_approve_queue()
             menu.add_separator()
         elif primary_action == "queue" and can_queue:
             add_queue()
@@ -16540,6 +16559,10 @@ class BossFilterGUI:
 
         if can_queue and primary_action != "queue":
             add_queue()
+        elif can_approve_queue and not (
+            primary_action == "confirm" and not needs_review
+        ):
+            add_approve_queue()
 
         if primary_action != "followup":
             add_followup()
@@ -17386,6 +17409,16 @@ class BossFilterGUI:
                     [candidate], parent=parent
                 ),
             )
+        elif candidate_can_manual_approve_contact(candidate):
+            menu.add_command(
+                label=" 确认并加入联系清单",
+                image=icon_greet,
+                compound=tk.LEFT,
+                command=lambda: self._approve_candidate_contact_and_queue(
+                    candidate,
+                    parent=parent,
+                ),
+            )
 
         menu.add_command(label=" 更新跟进", image=icon_followup, compound=tk.LEFT,
                          command=lambda: self._mark_candidate_followup(
@@ -17540,9 +17573,19 @@ class BossFilterGUI:
         elif decision.result_view == "淘汰记录":
             rejection_reason = decision.primary_review_reason or "淘汰记录"
             status_parts.append(rejection_reason)
+        elif decision.result_view == "人工确认":
+            status_parts.append(
+                "人工确认合适"
+                if candidate.get('feedback_status') == "合适"
+                else "人工确认"
+            )
         if candidate.get('feedback_status'):
             feedback_status = candidate.get('feedback_status')
-            status_parts.append(feedback_status)
+            if not (
+                decision.result_view == "人工确认"
+                and feedback_status == "合适"
+            ):
+                status_parts.append(feedback_status)
         if candidate.get('blacklisted'):
             status_parts.append("已屏蔽")
         display = "｜".join(status_parts)
@@ -17730,7 +17773,7 @@ class BossFilterGUI:
         else:
             win.focus_set()
 
-    def _update_candidate_blacklist(self, geek_id, reason):
+    def _update_candidate_blacklist(self, geek_id, reason, timestamp=None):
         """按 geek_id 标记候选人黑名单，跨岗位生效。"""
         if not CANDIDATES_PATH.exists():
             return 0
@@ -17738,14 +17781,19 @@ class BossFilterGUI:
             candidates = json.load(f)
 
         updated = 0
-        blacklisted_at = datetime.now().strftime("%Y%m%d_%H%M%S")
+        blacklisted_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
         for c in candidates:
             if str(c.get('geek_id')) == str(geek_id):
                 c['blacklisted'] = True
                 c['blacklist_reason'] = reason.strip()
                 c['blacklisted_at'] = blacklisted_at
-                if not c.get('followup_status'):
-                    c['followup_status'] = "不合适"
+                if c.get('followup_status') not in {"不合适", "已归档"}:
+                    apply_followup_state(
+                        c,
+                        "不合适",
+                        c.get('followup_note', ''),
+                        timestamp=blacklisted_at,
+                    )
                 updated += 1
 
         if updated:
@@ -18578,13 +18626,23 @@ class BossFilterGUI:
 
         def save_blacklist(reason):
             try:
-                updated = self._update_candidate_blacklist(candidate.get('geek_id'), reason)
+                blacklisted_at = datetime.now().strftime("%Y%m%d_%H%M%S")
+                updated = self._update_candidate_blacklist(
+                    candidate.get('geek_id'), reason, blacklisted_at
+                )
                 if not updated:
                     messagebox.showerror("错误", "加入黑名单失败：未找到候选人")
                     return
                 candidate['blacklisted'] = True
                 candidate['blacklist_reason'] = reason.strip()
-                candidate['blacklisted_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
+                candidate['blacklisted_at'] = blacklisted_at
+                if candidate.get('followup_status') not in {"不合适", "已归档"}:
+                    apply_followup_state(
+                        candidate,
+                        "不合适",
+                        candidate.get('followup_note', ''),
+                        timestamp=blacklisted_at,
+                    )
                 self._regenerate_excel()
                 self.refresh_home_stats()
                 self.refresh_stats()
@@ -18664,7 +18722,10 @@ class BossFilterGUI:
         followup_time = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
         for c in candidates:
             if c.get('geek_id') == geek_id and c.get('job_name', '').replace(" ", "") == job_name.replace(" ", ""):
-                if status == "已打招呼":
+                if (
+                    status in CONTACTED_FOLLOWUP_STATUSES
+                    and not c.get('greet_sent')
+                ):
                     mark_candidate_greeted(c, "manual_status", followup_time)
                 apply_followup_state(
                     c,
@@ -18708,6 +18769,11 @@ class BossFilterGUI:
                     "更新跟进", "保存失败：未找到候选人", parent=parent or self.root
                 )
                 return
+            if (
+                status in CONTACTED_FOLLOWUP_STATUSES
+                and not candidate.get('greet_sent')
+            ):
+                mark_candidate_greeted(candidate, "manual_status", followup_time)
             apply_followup_state(
                 candidate,
                 status,
@@ -18751,6 +18817,101 @@ class BossFilterGUI:
         if updated:
             save_candidates_all(candidates, CANDIDATES_PATH)
         return updated
+
+    def _update_candidate_contact_approval(
+        self,
+        geek_id,
+        job_name,
+        reason,
+        timestamp=None,
+    ):
+        """Persist one explicit approval to contact a pending candidate."""
+        if not geek_id or not CANDIDATES_PATH.exists():
+            return False
+        with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
+            candidates = json.load(f)
+
+        approved_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+        updated = False
+        normalized_job = str(job_name or '').replace(" ", "")
+        for candidate in candidates:
+            if (
+                str(candidate.get('geek_id') or '') == str(geek_id)
+                and candidate.get('job_name', '').replace(" ", "") == normalized_job
+            ):
+                candidate['contact_approved_at'] = approved_at
+                candidate['contact_approval_reason'] = str(reason or '').strip()
+                updated = True
+                break
+
+        if updated:
+            save_candidates_all(candidates, CANDIDATES_PATH)
+        return updated
+
+    def _approve_candidate_contact_and_queue(
+        self,
+        candidate,
+        *,
+        parent=None,
+        on_saved=None,
+    ):
+        """Confirm, persist, and queue one manually reviewed pending candidate."""
+        if not candidate_can_manual_approve_contact(candidate):
+            reason = candidate_greet_skip_reason(candidate) or "当前状态无需人工批准"
+            messagebox.showwarning(
+                "确认联系候选人",
+                f"当前不能执行人工批准：{reason}",
+                parent=parent or self.root,
+            )
+            return 0
+
+        name = candidate.get('name') or '该候选人'
+        score = candidate.get('match_score', 0)
+        review_reason = (
+            "AI 评估失败，需要以现有资料人工判断"
+            if candidate.get('llm_error')
+            else f"匹配分为 {score}，处于待定区间"
+        )
+        if not messagebox.askyesno(
+            "确认联系候选人",
+            f"{name} 当前{review_reason}。\n\n"
+            "确认你已完成复核，并认为可以联系？\n\n"
+            "确认后会记录人工批准并加入联系清单；"
+            "不会修改匹配分或推荐指数。",
+            parent=parent or self.root,
+        ):
+            return 0
+
+        approved_at = datetime.now().strftime("%Y%m%d_%H%M%S")
+        approval_reason = (
+            "人工确认 AI 评估失败候选人可联系"
+            if candidate.get('llm_error')
+            else "人工确认待定候选人可联系"
+        )
+        updated = self._update_candidate_contact_approval(
+            candidate.get('geek_id'),
+            candidate.get('job_name', ''),
+            approval_reason,
+            approved_at,
+        )
+        if not updated:
+            messagebox.showerror(
+                "确认联系候选人",
+                "保存人工批准失败：未找到候选人",
+                parent=parent or self.root,
+            )
+            return 0
+
+        candidate['contact_approved_at'] = approved_at
+        candidate['contact_approval_reason'] = approval_reason
+        added = self._add_candidates_to_greet_queue(
+            [candidate],
+            parent=parent or self.root,
+        )
+        self.refresh_results(force=True)
+        if on_saved:
+            on_saved()
+        return added
 
     def _confirm_manual_review(self, item, candidate=None, parent=None, on_saved=None):
         """清除候选人的需人工确认标记。"""
@@ -19008,7 +19169,10 @@ class BossFilterGUI:
                         "错误", "保存跟进状态失败：未找到候选人", parent=win
                     )
                     return
-                if status == "已打招呼":
+                if (
+                    status in CONTACTED_FOLLOWUP_STATUSES
+                    and not candidate.get('greet_sent')
+                ):
                     mark_candidate_greeted(
                         candidate,
                         "manual_status",
@@ -19065,6 +19229,9 @@ class BossFilterGUI:
                 c['feedback_reasons'] = reasons
                 c['feedback_note'] = note.strip()
                 c['feedback_updated_at'] = feedback_time
+                if status in {"误推", "放弃"}:
+                    c.pop('contact_approved_at', None)
+                    c.pop('contact_approval_reason', None)
                 updated = True
                 break
 
@@ -19224,6 +19391,9 @@ class BossFilterGUI:
                 candidate['feedback_reasons'] = reasons
                 candidate['feedback_note'] = note
                 candidate['feedback_updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
+                if status in {"误推", "放弃"}:
+                    candidate.pop('contact_approved_at', None)
+                    candidate.pop('contact_approval_reason', None)
                 self._regenerate_excel()
                 self.refresh_results()
                 if on_saved:
@@ -19236,7 +19406,12 @@ class BossFilterGUI:
         ttk.Button(btn_frame, text="取消", command=close).pack(side='left')
 
         win.protocol("WM_DELETE_WINDOW", close)
-        _place_window_centered(win, int(440 * scale), int(485 * scale), parent=_parent)
+        win.update_idletasks()
+        dialog_height = max(
+            int(485 * scale),
+            win.winfo_reqheight() + int(12 * scale),
+        )
+        _place_window_centered(win, int(440 * scale), dialog_height, parent=_parent)
         win.deiconify()
 
     def _format_candidate_detail(self, c):
@@ -21974,6 +22149,7 @@ class BossFilterGUI:
         self.candidate_review_communication_var.set(decision.communication_status)
         result_color = {
             '推荐候选人': self.colors['success'],
+            '人工确认': self.colors['success'],
             '待复核': self.colors['warning'],
             '淘汰记录': self.colors['danger'],
         }.get(decision.result_view, self.colors['text_primary'])
@@ -22047,6 +22223,19 @@ class BossFilterGUI:
                 lambda: self._confirm_manual_review(
                     None,
                     candidate=candidate,
+                    parent=self.candidate_review_window,
+                    on_saved=on_saved,
+                ),
+            )
+        elif candidate_can_manual_approve_contact(candidate):
+            primary_action = "approve_contact"
+            self._add_candidate_review_action(
+                self.candidate_review_primary_actions,
+                "确认并加入联系清单",
+                'chat',
+                self.colors['success'],
+                lambda: self._approve_candidate_contact_and_queue(
+                    candidate,
                     parent=self.candidate_review_window,
                     on_saved=on_saved,
                 ),

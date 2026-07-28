@@ -2,7 +2,9 @@ from candidate_workflow import (
     ACTION_TIMING_ORDER,
     apply_followup_state,
     build_daily_candidate_actions,
+    candidate_can_manual_approve_contact,
     candidate_greet_skip_reason,
+    candidate_has_manual_contact_approval,
     candidate_review_category,
     classify_followup_timing,
     default_next_followup_at,
@@ -59,6 +61,7 @@ def test_result_views_form_disjoint_decision_partitions():
         {"geek_id": "recommended", "match_score": 70},
         {"geek_id": "send-pending", "match_score": 70, "greet_confirmation_pending": True},
         {"geek_id": "pending", "match_score": 60},
+        {"geek_id": "approved", "match_score": 60, "contact_approved_at": "20260728_100000"},
         {"geek_id": "manual", "match_score": 80, "manual_review_required": True},
         {"geek_id": "rejected", "match_score": 90, "qualification_status": "rejected"},
     ]
@@ -69,6 +72,9 @@ def test_result_views_form_disjoint_decision_partitions():
     assert {c["geek_id"] for c in filter_candidates_by_result_view(candidates, "待复核")} == {
         "pending", "manual"
     }
+    assert [c["geek_id"] for c in filter_candidates_by_result_view(candidates, "人工确认")] == [
+        "approved"
+    ]
     assert [c["geek_id"] for c in filter_candidates_by_result_view(candidates, "淘汰记录")] == [
         "rejected"
     ]
@@ -91,6 +97,88 @@ def test_greeting_queue_requires_completed_review():
         "match_score": 80,
         "followup_status": "待约面",
     }) == "跟进状态为待约面"
+
+
+def test_pending_candidate_can_be_manually_approved_without_changing_score():
+    pending = {"geek_id": "pending", "match_score": 60}
+
+    assert candidate_can_manual_approve_contact(pending) is True
+    pending["contact_approved_at"] = "20260728_100000"
+
+    decision = derive_candidate_decision(pending)
+    assert candidate_has_manual_contact_approval(pending) is True
+    assert decision.screening_result == "待定"
+    assert decision.result_view == "人工确认"
+    assert decision.review_reasons == ()
+    assert candidate_greet_skip_reason(pending) == ""
+
+
+def test_suitable_feedback_resolves_only_non_hard_pending_review():
+    approved = {
+        "geek_id": "approved",
+        "match_score": 64,
+        "feedback_status": "合适",
+    }
+    hard_review = dict(
+        approved,
+        geek_id="hard",
+        qualification_status="manual_review",
+        qualification_reasons=["学历形式待确认"],
+    )
+
+    assert derive_candidate_decision(approved).result_view == "人工确认"
+    assert candidate_greet_skip_reason(approved) == ""
+    assert derive_candidate_decision(hard_review).result_view == "待复核"
+    assert candidate_greet_skip_reason(hard_review) == "学历形式待确认"
+
+
+def test_rule_qualified_ai_failure_can_be_acknowledged_without_retrying_ai():
+    candidate = {
+        "geek_id": "ai-failed",
+        "match_score": 70,
+        "qualification_status": "qualified",
+        "llm_error": "timeout",
+    }
+
+    assert derive_candidate_decision(candidate).result_view == "待复核"
+    assert candidate_can_manual_approve_contact(candidate) is True
+
+    candidate["contact_approved_at"] = "20260728_100000"
+    decision = derive_candidate_decision(candidate)
+    assert decision.screening_result == "推荐"
+    assert decision.result_view == "推荐候选人"
+    assert decision.review_reasons == ()
+    assert candidate_greet_skip_reason(candidate) == ""
+
+
+def test_negative_feedback_blocks_contact_and_closes_daily_action():
+    for feedback, reason in (("误推", "人工反馈为误推"), ("放弃", "人工已放弃")):
+        candidate = {
+            "geek_id": feedback,
+            "match_score": 80,
+            "feedback_status": feedback,
+        }
+        assert candidate_greet_skip_reason(candidate) == reason
+        assert build_daily_candidate_actions([candidate]) == []
+
+
+def test_manual_contact_approval_does_not_override_low_score_or_rejection():
+    low_score = {
+        "geek_id": "low",
+        "match_score": 54,
+        "contact_approved_at": "20260728_100000",
+    }
+    rejected = {
+        "geek_id": "rejected",
+        "match_score": 80,
+        "qualification_status": "rejected",
+        "contact_approved_at": "20260728_100000",
+    }
+
+    assert candidate_greet_skip_reason(low_score) == "评分低于通过线（54 分）"
+    assert candidate_greet_skip_reason(rejected) == "已淘汰"
+    assert candidate_can_manual_approve_contact(low_score) is False
+    assert candidate_can_manual_approve_contact(rejected) is False
 
 
 def test_daily_actions_prioritize_pending_manual_and_greet_targets():
