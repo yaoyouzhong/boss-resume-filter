@@ -51,6 +51,10 @@ _FEEDBACK_FIELDS = (
     'greet_confirmation_updated_at',
     'contact_approved_at',
     'contact_approval_reason',
+    'review_passed_at',
+    'review_passed_reasons',
+    'review_rejected_at',
+    'review_rejected_reasons',
 )
 
 # 有时间戳的字段组：(时间戳字段, (关联数据字段...))
@@ -66,6 +70,8 @@ _TIMESTAMP_FIELD_GROUPS = (
         ('greet_confirmation_pending', 'greet_confirmation_reason'),
     ),
     ('contact_approved_at', ('contact_approval_reason',)),
+    ('review_passed_at', ('review_passed_reasons',)),
+    ('review_rejected_at', ('review_rejected_reasons',)),
 )
 _TIMESTAMPED_FIELDS = frozenset(
     f for ts_f, related in _TIMESTAMP_FIELD_GROUPS for f in (ts_f, *related)
@@ -158,6 +164,8 @@ def _has_candidate_history(candidate: dict[str, Any]) -> bool:
         or candidate.get('followup_note')
         or candidate.get('resume_file')
         or candidate.get('resume_eval_adjustment') is not None
+        or candidate.get('review_passed_at')
+        or candidate.get('review_rejected_at')
     )
 
 
@@ -167,7 +175,6 @@ def is_recommended_candidate(candidate: dict[str, Any]) -> bool:
         candidate.get('qualification_status', 'qualified') == 'qualified'
         and candidate.get('match_score', 0) >= SCORE_THRESHOLD_RECOMMEND
         and not candidate.get('manual_review_required')
-        and not candidate.get('llm_error')
         and not candidate.get('greet_confirmation_pending')
     )
 
@@ -212,6 +219,7 @@ def save_candidates_all(candidates_all: list[dict[str, Any]], path: Optional[str
         # 兼容旧数据：batch_timestamp 继续表示首次发现时间，避免重复扫描
         # 把历史候选人重新计入”今天/本周”统计。仅在缺少字段时回填。
         for candidate in unique_candidates:
+            _normalize_candidate_state_fields(candidate)
             first_seen_at = get_first_seen(candidate)
             if first_seen_at:
                 candidate['first_seen_at'] = first_seen_at
@@ -226,7 +234,8 @@ def save_candidates_all(candidates_all: list[dict[str, Any]], path: Optional[str
                 if not should_retain_rejected_candidate(candidate):
                     continue
                 candidate = dict(candidate)
-                candidate['match_score'] = 0
+                if not candidate.get('review_rejected_at'):
+                    candidate['match_score'] = 0
                 candidate['recommend_level'] = '未通过'
                 retained_candidates.append(candidate)
                 continue
@@ -292,6 +301,23 @@ def clear_candidate_greeting_pending(candidate: dict[str, Any]) -> None:
         candidate['followup_status'] = "未沟通"
         candidate['followup_updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
         candidate.pop('next_followup_at', None)
+
+
+def mark_candidate_not_greeted(
+    candidate: dict[str, Any],
+    timestamp: Optional[str] = None,
+) -> None:
+    """Correct an incorrectly recorded greeting and restore an uncontacted state."""
+    corrected_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate['greet_sent'] = False
+    candidate.pop('greet_sent_at', None)
+    candidate.pop('greet_method', None)
+    candidate.pop('greet_confirmation_pending', None)
+    candidate.pop('greet_confirmation_reason', None)
+    candidate.pop('greet_confirmation_updated_at', None)
+    candidate['followup_status'] = "未沟通"
+    candidate['followup_updated_at'] = corrected_at
+    candidate.pop('next_followup_at', None)
 
 
 def merge_candidates_all(
@@ -455,6 +481,83 @@ def _merge_manual_fields(target: dict[str, Any], source: dict[str, Any]) -> None
         if field not in _TIMESTAMPED_FIELDS:
             if source.get(field) and not target.get(field):
                 target[field] = source[field]
+    _apply_latest_review_outcome(target)
+
+
+def merge_candidate_business_state(
+    candidate: dict[str, Any],
+    persisted_candidate: dict[str, Any],
+) -> dict[str, Any]:
+    """Overlay persisted human and communication state without replacing scan results."""
+    merged = dict(candidate)
+    _merge_manual_fields(merged, persisted_candidate)
+    return merged
+
+
+def _normalize_candidate_state_fields(candidate: dict[str, Any]) -> None:
+    """Normalize legacy qualification flags to one persisted authoritative value."""
+    _apply_latest_review_outcome(candidate)
+    qualification = str(candidate.get('qualification_status') or '').strip()
+    manual_required = bool(candidate.get('manual_review_required'))
+    if qualification != 'rejected' and (
+        qualification == 'manual_review' or manual_required
+    ):
+        candidate['qualification_status'] = 'manual_review'
+        candidate['manual_review_required'] = True
+
+
+def _apply_latest_review_outcome(candidate: dict[str, Any]) -> None:
+    """Apply the latest explicit human review without masking newly discovered risks."""
+    passed_at = str(candidate.get('review_passed_at') or '')
+    rejected_at = str(candidate.get('review_rejected_at') or '')
+    if not passed_at and not rejected_at:
+        return
+
+    if rejected_at and rejected_at >= passed_at:
+        candidate.pop('review_passed_at', None)
+        candidate.pop('review_passed_reasons', None)
+        candidate.pop('contact_approved_at', None)
+        candidate.pop('contact_approval_reason', None)
+        candidate['qualification_status'] = 'rejected'
+        candidate['manual_review_required'] = False
+        rejected_reasons = candidate.get('review_rejected_reasons') or []
+        if rejected_reasons:
+            candidate['qualification_reasons'] = list(rejected_reasons)
+        return
+
+    candidate.pop('review_rejected_at', None)
+    candidate.pop('review_rejected_reasons', None)
+    qualification = str(candidate.get('qualification_status') or 'qualified').strip()
+    if qualification != 'manual_review' and not candidate.get('manual_review_required'):
+        return
+    current_values = candidate.get('qualification_reasons') or []
+    if isinstance(current_values, str):
+        current_values = [current_values]
+    if not current_values and candidate.get('auto_greet_blocked_reason'):
+        current_values = [candidate.get('auto_greet_blocked_reason')]
+    if not current_values and candidate.get('risk_flags'):
+        current_values = candidate.get('risk_flags')
+        if isinstance(current_values, str):
+            current_values = [current_values]
+    passed_values = candidate.get('review_passed_reasons') or []
+    if isinstance(passed_values, str):
+        passed_values = [passed_values]
+    current_reasons = {
+        str(reason).strip()
+        for reason in current_values
+        if str(reason).strip()
+    }
+    passed_reasons = {
+        str(reason).strip()
+        for reason in passed_values
+        if str(reason).strip()
+    }
+    if current_reasons and not current_reasons.issubset(passed_reasons):
+        return
+    candidate['qualification_status'] = 'qualified'
+    candidate['manual_review_required'] = False
+    candidate['qualification_reasons'] = []
+    candidate.pop('auto_greet_blocked_reason', None)
 
 
 def _should_replace_candidate(

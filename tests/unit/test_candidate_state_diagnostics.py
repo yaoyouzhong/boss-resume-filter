@@ -46,7 +46,7 @@ def test_diagnose_manual_review_flag_must_match_qualification_status():
         _candidate(manual_review_required=True, qualification_status="qualified"),
     ])
 
-    assert any(issue.title == "需要人工确认" for issue in issues)
+    assert any(issue.title == "人工复核字段待归一" for issue in issues)
 
 
 def test_diagnose_rejected_candidate_must_not_stay_active():
@@ -62,6 +62,19 @@ def test_diagnose_rejected_candidate_must_not_stay_active():
     titles = {issue.title for issue in issues}
     assert "淘汰候选人仍处于沟通状态" in titles
     assert "淘汰候选人仍保留打招呼上下文" in titles
+
+
+def test_diagnose_low_score_rejected_history_has_valid_retention_reason():
+    issues = diagnose_candidate_states([
+        _candidate(
+            match_score=0,
+            qualification_status="rejected",
+            qualification_reasons=["最新扫描未通过筛选"],
+            rejection_source="previously_recommended",
+        ),
+    ])
+
+    assert all(issue.title != "低分候选人缺少保留理由" for issue in issues)
 
 
 def test_diagnose_incomplete_resume_eval_and_greet_context():
@@ -126,6 +139,10 @@ def test_diagnose_followup_schedule_conflicts_and_missing_dates():
             followup_status="待约面",
         ),
         _candidate(
+            geek_id="interviewed",
+            followup_status="已约面",
+        ),
+        _candidate(
             geek_id="invalid",
             followup_status="已打招呼",
             next_followup_at="下周一",
@@ -135,7 +152,33 @@ def test_diagnose_followup_schedule_conflicts_and_missing_dates():
     titles = {issue.title for issue in issues}
     assert "结束状态仍有跟进提醒" in titles
     assert "待约面未安排时间" in titles
+    assert "已约面未安排时间" in titles
     assert "下次跟进日期无效" in titles
+
+
+def test_diagnose_unknown_enums_missing_score_and_conflicting_review_results():
+    issues = diagnose_candidate_states([
+        _candidate(
+            geek_id="invalid",
+            match_score="unknown",
+            qualification_status="mystery",
+            followup_status="unknown",
+            feedback_status="unknown",
+            review_passed_at="20260729_100000",
+            review_rejected_at="20260729_110000",
+        ),
+    ])
+
+    error_titles = {
+        issue.title for issue in issues if issue.severity == "error"
+    }
+    assert {
+        "匹配分缺失或无效",
+        "未知资格审查状态",
+        "未知跟进状态",
+        "未知人工反馈",
+        "复核通过与不通过并存",
+    } <= error_titles
 
 
 def test_diagnose_legacy_active_followup_is_non_blocking_schedule_info():

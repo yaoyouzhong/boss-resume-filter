@@ -5,6 +5,7 @@ from candidate_workflow import (
     candidate_can_manual_approve_contact,
     candidate_greet_skip_reason,
     candidate_has_manual_contact_approval,
+    candidate_has_review_passed,
     candidate_review_category,
     classify_followup_timing,
     default_next_followup_at,
@@ -38,10 +39,10 @@ def test_candidate_decision_exposes_deterministic_review_reason():
     })
 
     assert decision.result_view == "待复核"
+    assert decision.review_status == "pending"
     assert decision.primary_review_reason == "工作年限证据不足"
     assert decision.review_reasons == (
         "工作年限证据不足",
-        "AI 评估失败，需人工判断或重试",
         "评分处于待定区间（60 分）",
     )
 
@@ -56,25 +57,34 @@ def test_candidate_decision_keeps_legacy_string_reason_intact():
     assert decision.review_reasons == ("工作年限证据不足",)
 
 
-def test_result_views_form_disjoint_decision_partitions():
+def test_result_views_keep_screening_and_review_scopes_independent():
     candidates = [
         {"geek_id": "recommended", "match_score": 70},
         {"geek_id": "send-pending", "match_score": 70, "greet_confirmation_pending": True},
         {"geek_id": "pending", "match_score": 60},
         {"geek_id": "approved", "match_score": 60, "contact_approved_at": "20260728_100000"},
+        {
+            "geek_id": "hard-passed",
+            "match_score": 80,
+            "review_passed_at": "20260728_110000",
+            "review_passed_reasons": ["学历形式待确认"],
+        },
+        {"geek_id": "ai-failed", "match_score": 70, "llm_error": "timeout"},
         {"geek_id": "manual", "match_score": 80, "manual_review_required": True},
         {"geek_id": "rejected", "match_score": 90, "qualification_status": "rejected"},
     ]
 
     assert {c["geek_id"] for c in filter_candidates_by_result_view(candidates, "推荐候选人")} == {
-        "recommended", "send-pending"
+        "recommended", "send-pending", "hard-passed", "ai-failed"
     }
     assert {c["geek_id"] for c in filter_candidates_by_result_view(candidates, "待复核")} == {
         "pending", "manual"
     }
-    assert [c["geek_id"] for c in filter_candidates_by_result_view(candidates, "人工确认")] == [
-        "approved"
-    ]
+    assert {
+        c["geek_id"] for c in filter_candidates_by_result_view(
+            candidates, "复核通过"
+        )
+    } == {"approved", "hard-passed"}
     assert [c["geek_id"] for c in filter_candidates_by_result_view(candidates, "淘汰记录")] == [
         "rejected"
     ]
@@ -107,10 +117,27 @@ def test_pending_candidate_can_be_manually_approved_without_changing_score():
 
     decision = derive_candidate_decision(pending)
     assert candidate_has_manual_contact_approval(pending) is True
+    assert candidate_has_review_passed(pending) is True
     assert decision.screening_result == "待定"
-    assert decision.result_view == "人工确认"
+    assert decision.result_view == "复核通过"
+    assert decision.review_status == "passed"
     assert decision.review_reasons == ()
     assert candidate_greet_skip_reason(pending) == ""
+
+
+def test_prior_hard_condition_review_does_not_approve_a_new_pending_score():
+    candidate = {
+        "geek_id": "rescored",
+        "match_score": 60,
+        "review_passed_at": "20260728_100000",
+        "review_passed_reasons": ["学历形式待确认"],
+    }
+
+    decision = derive_candidate_decision(candidate)
+
+    assert decision.review_status == "pending"
+    assert decision.review_reasons == ("评分处于待定区间（60 分）",)
+    assert candidate_can_manual_approve_contact(candidate) is True
 
 
 def test_suitable_feedback_resolves_only_non_hard_pending_review():
@@ -126,13 +153,13 @@ def test_suitable_feedback_resolves_only_non_hard_pending_review():
         qualification_reasons=["学历形式待确认"],
     )
 
-    assert derive_candidate_decision(approved).result_view == "人工确认"
+    assert derive_candidate_decision(approved).result_view == "复核通过"
     assert candidate_greet_skip_reason(approved) == ""
     assert derive_candidate_decision(hard_review).result_view == "待复核"
     assert candidate_greet_skip_reason(hard_review) == "学历形式待确认"
 
 
-def test_rule_qualified_ai_failure_can_be_acknowledged_without_retrying_ai():
+def test_rule_qualified_ai_failure_does_not_require_review_or_approval():
     candidate = {
         "geek_id": "ai-failed",
         "match_score": 70,
@@ -140,14 +167,13 @@ def test_rule_qualified_ai_failure_can_be_acknowledged_without_retrying_ai():
         "llm_error": "timeout",
     }
 
-    assert derive_candidate_decision(candidate).result_view == "待复核"
-    assert candidate_can_manual_approve_contact(candidate) is True
-
-    candidate["contact_approved_at"] = "20260728_100000"
     decision = derive_candidate_decision(candidate)
     assert decision.screening_result == "推荐"
     assert decision.result_view == "推荐候选人"
+    assert decision.review_status == "not_required"
+    assert decision.review_status == "not_required"
     assert decision.review_reasons == ()
+    assert candidate_can_manual_approve_contact(candidate) is False
     assert candidate_greet_skip_reason(candidate) == ""
 
 
@@ -179,6 +205,146 @@ def test_manual_contact_approval_does_not_override_low_score_or_rejection():
     assert candidate_greet_skip_reason(rejected) == "已淘汰"
     assert candidate_can_manual_approve_contact(low_score) is False
     assert candidate_can_manual_approve_contact(rejected) is False
+
+
+def test_low_score_hard_review_is_not_requested_twice_after_confirmation():
+    candidate = {
+        "geek_id": "low-hard-review",
+        "match_score": 53,
+        "qualification_status": "manual_review",
+        "manual_review_required": True,
+        "qualification_reasons": ["学历形式待确认"],
+    }
+    assert derive_candidate_decision(candidate).review_status == "pending"
+
+    candidate.update({
+        "qualification_status": "qualified",
+        "manual_review_required": False,
+        "qualification_reasons": [],
+        "review_passed_at": "20260729_100000",
+        "review_passed_reasons": ["学历形式待确认"],
+    })
+    decision = derive_candidate_decision(candidate)
+
+    assert decision.review_status == "passed"
+    assert decision.result_view == "淘汰记录"
+    assert decision.review_reasons == ("评分低于通过线（53 分）",)
+    assert candidate_greet_skip_reason(candidate) == "评分低于通过线（53 分）"
+
+
+def test_negative_business_state_closes_pending_review_without_hiding_send_verification():
+    abandoned = {
+        "geek_id": "abandoned",
+        "match_score": 60,
+        "feedback_status": "放弃",
+    }
+    decision = derive_candidate_decision(abandoned)
+    assert decision.review_status == "cancelled"
+    assert decision.result_view == "淘汰记录"
+
+    pending_send = dict(
+        abandoned,
+        geek_id="pending-send",
+        greet_confirmation_pending=True,
+    )
+    assert candidate_greet_skip_reason(pending_send) == "发送结果待核实"
+    items = build_daily_candidate_actions([pending_send])
+    assert [item.group for item in items] == ["发送结果待核实"]
+
+
+def test_invalid_candidate_state_fails_closed_and_enters_daily_actions():
+    candidate = {
+        "geek_id": "invalid-state",
+        "match_score": "unknown",
+        "qualification_status": "mystery",
+        "followup_status": "unknown",
+    }
+
+    decision = derive_candidate_decision(candidate)
+    assert decision.screening_result == "数据异常"
+    assert decision.review_status == "pending"
+    assert candidate_greet_skip_reason(candidate) == "跟进状态异常（unknown）"
+    items = build_daily_candidate_actions([candidate])
+    assert [item.group for item in items] == ["状态异常待处理"]
+
+
+def test_candidate_state_matrix_is_closed_across_screening_review_and_contact():
+    cases = [
+        (
+            {"geek_id": "recommended", "match_score": 70},
+            ("推荐候选人", "not_required", ""),
+        ),
+        (
+            {"geek_id": "ai-failed", "match_score": 70, "llm_error": "timeout"},
+            ("推荐候选人", "not_required", ""),
+        ),
+        (
+            {
+                "geek_id": "hard-review",
+                "match_score": 70,
+                "qualification_status": "manual_review",
+                "qualification_reasons": ["学历形式待确认"],
+            },
+            ("待复核", "pending", "学历形式待确认"),
+        ),
+        (
+            {"geek_id": "pending-score", "match_score": 60},
+            ("待复核", "pending", "评分处于待定区间（60 分）"),
+        ),
+        (
+            {
+                "geek_id": "approved-score",
+                "match_score": 60,
+                "contact_approved_at": "20260729_100000",
+            },
+            ("复核通过", "passed", ""),
+        ),
+        (
+            {"geek_id": "low-score", "match_score": 54},
+            ("淘汰记录", "not_required", "评分低于通过线（54 分）"),
+        ),
+        (
+            {
+                "geek_id": "rejected",
+                "match_score": 80,
+                "qualification_status": "rejected",
+            },
+            ("淘汰记录", "not_passed", "已淘汰"),
+        ),
+        (
+            {"geek_id": "blacklisted", "match_score": 80, "blacklisted": True},
+            ("推荐候选人", "not_required", "已加入黑名单"),
+        ),
+        (
+            {
+                "geek_id": "send-pending",
+                "match_score": 80,
+                "greet_confirmation_pending": True,
+                "blacklisted": True,
+            },
+            ("推荐候选人", "not_required", "发送结果待核实"),
+        ),
+        (
+            {"geek_id": "greeted", "match_score": 80, "greet_sent": True},
+            ("推荐候选人", "not_required", "已打招呼"),
+        ),
+        (
+            {
+                "geek_id": "abandoned",
+                "match_score": 60,
+                "feedback_status": "放弃",
+            },
+            ("淘汰记录", "cancelled", "人工已放弃"),
+        ),
+    ]
+
+    for candidate, expected in cases:
+        decision = derive_candidate_decision(candidate)
+        assert (
+            decision.result_view,
+            decision.review_status,
+            candidate_greet_skip_reason(candidate),
+        ) == expected
 
 
 def test_daily_actions_prioritize_pending_manual_and_greet_targets():
@@ -239,10 +405,17 @@ def test_daily_actions_reuse_all_pending_review_decisions_without_default_limit(
     items = build_daily_candidate_actions(candidates)
 
     assert len(items) == 14
-    assert {item.group for item in items} == {"待复核"}
-    assert {item.candidate["geek_id"] for item in items} == {
-        candidate["geek_id"] for candidate in candidates
-    }
+    assert {item.group for item in items} == {"待复核", "待打招呼"}
+    assert {
+        item.candidate["geek_id"]
+        for item in items
+        if item.group == "待复核"
+    } == {f"score-{index}" for index in range(12)} | {"manual"}
+    assert [
+        item.candidate["geek_id"]
+        for item in items
+        if item.group == "待打招呼"
+    ] == ["ai-failed"]
 
 
 def test_review_categories_normalize_primary_reasons_without_duplicate_people():
@@ -274,7 +447,7 @@ def test_review_categories_normalize_primary_reasons_without_duplicate_people():
         "学历形式待确认",
         "求职状态待确认",
         "评分待确认",
-        "AI评估失败",
+        "",
     ]
     assert candidate_review_category({"geek_id": "ready", "match_score": 70}) == ""
 
@@ -398,7 +571,7 @@ def test_existing_followup_status_is_not_requeued_when_legacy_greet_flag_is_miss
     assert by_id["legacy-greeted"].timing_group == "待安排"
 
 
-def test_completed_interview_only_returns_to_actions_when_followup_is_scheduled():
+def test_completed_interview_without_schedule_remains_visible_until_resolved():
     unscheduled = {
         "geek_id": "interviewed",
         "match_score": 80,
@@ -406,7 +579,12 @@ def test_completed_interview_only_returns_to_actions_when_followup_is_scheduled(
         "followup_status": "已约面",
     }
 
-    assert build_daily_candidate_actions([unscheduled], today="2026-07-18") == []
+    unscheduled_items = build_daily_candidate_actions(
+        [unscheduled], today="2026-07-18"
+    )
+    assert len(unscheduled_items) == 1
+    assert unscheduled_items[0].group == "面试后待反馈"
+    assert unscheduled_items[0].timing_group == "待安排"
 
     scheduled = dict(unscheduled, next_followup_at="20260720_090000")
     items = build_daily_candidate_actions([scheduled], today="2026-07-18")
@@ -467,6 +645,7 @@ def test_default_next_followup_at_uses_status_specific_offsets():
     assert default_next_followup_at("已打招呼", "20260718_100000") == "20260719_100000"
     assert default_next_followup_at("已回复", "20260718_100000") == "20260718_100000"
     assert default_next_followup_at("待约面", "20260718_100000") == "20260719_100000"
+    assert default_next_followup_at("已约面", "20260718_100000") == "20260719_100000"
     assert default_next_followup_at("已归档", "20260718_100000") == ""
 
 

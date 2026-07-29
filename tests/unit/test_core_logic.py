@@ -723,6 +723,31 @@ def test_context_capture_keeps_auto_greet_candidates_beyond_run_limit():
     assert [c["geek_id"] for c in selected] == ["g50", "g51"]
 
 
+def test_bind_latest_candidate_states_keeps_new_score_and_restores_manual_state():
+    fresh = [{
+        "geek_id": "g1",
+        "job_name": "Java",
+        "match_score": 80,
+        "recommend_level": "强烈推荐",
+        "followup_status": "未沟通",
+    }]
+    persisted = [{
+        "geek_id": "g1",
+        "job_name": "Java",
+        "match_score": 60,
+        "recommend_level": "待定",
+        "feedback_status": "放弃",
+        "feedback_updated_at": "20260729_100000",
+    }]
+
+    rebound = bossmaster._bind_latest_candidate_states(fresh, persisted)
+
+    assert rebound[0]["match_score"] == 80
+    assert rebound[0]["recommend_level"] == "强烈推荐"
+    assert rebound[0]["feedback_status"] == "放弃"
+    assert bossmaster.candidate_greet_skip_reason(rebound[0]) == "人工已放弃"
+
+
 def test_context_capture_priority_selects_value_then_executes_page_order():
     candidates = [
         {
@@ -2379,6 +2404,67 @@ def test_auto_greet_skips_manual_review_candidates():
     assert result[0]["manual_review_required"] is True
     assert result[0]["greet_sent"] is False
     mock_greet.assert_not_called()
+
+
+def test_auto_greet_reuses_persisted_feedback_gate_after_rescan():
+    class FakePage:
+        def run_js(self, *_args, **_kwargs):
+            return None
+
+    existing = [{
+        "geek_id": "g-abandoned",
+        "name": "已放弃候选人",
+        "job_name": "Java工程师",
+        "match_score": 70,
+        "feedback_status": "放弃",
+        "feedback_updated_at": "20260729_100000",
+    }]
+    raw_candidates = [{
+        "geek_id": "g-abandoned",
+        "name": "已放弃候选人",
+        "summary": "本科，5 年 Java",
+    }]
+    job_info = {
+        "job_id": "job-java",
+        "job_name": "Java工程师",
+        "rule_key": "java",
+        "rule": {"min_exp": 0, "edu": "不限", "keywords": ["Java"]},
+    }
+
+    with patch.object(bossmaster, "load_candidates_all", return_value=existing), \
+         patch.object(
+             bossmaster,
+             "extract_candidates_by_comprehensive_analysis",
+             return_value=raw_candidates,
+         ), \
+         patch.object(
+             bossmaster,
+             "filter_candidate",
+             return_value=(True, 80, {"skill_matches": ["Java"]}),
+         ), \
+         patch.object(bossmaster, "_select_greet_context_candidates", return_value=[]), \
+         patch.object(bossmaster, "merge_candidates_all"), \
+         patch.object(bossmaster, "get_iframe", return_value=None), \
+         patch.object(bossmaster, "send_greeting_on_list_page") as send_greeting, \
+         patch.object(bossmaster.time, "sleep"):
+        result = bossmaster.smart_scan_candidates(
+            FakePage(),
+            job_info,
+            auto_greet=True,
+            max_rounds=1,
+        )
+
+    assert result[0]["match_score"] == 80
+    assert result[0]["feedback_status"] == "放弃"
+    send_greeting.assert_not_called()
+
+
+def test_regreet_point_and_level_filters_share_the_candidate_contact_gate():
+    source = Path("bossmaster.py").read_text(encoding="utf-8")
+    block = source[source.index("# 补打招呼模式：直接处理"):]
+    block = block[:block.index("\n    page = None")]
+
+    assert block.count("not candidate_greet_skip_reason(c)") >= 2
 
 
 def test_smart_scan_records_filter_audit_stats():

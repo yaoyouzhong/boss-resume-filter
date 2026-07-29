@@ -1479,7 +1479,10 @@ def _check_code_to_changelog_coverage(strict=False):
                     r"^\s*['\"][A-Za-z_][A-Za-z0-9_]{2,}['\"]\s*:", line
                 ):
                     continue
-                field_match = re.search(r"['\"]([A-Za-z_][A-Za-z0-9_]{2,})['\"]\s*:", line)
+                field_match = re.search(
+                    r"(?:^|[{,])\s*['\"]([A-Za-z_][A-Za-z0-9_]{2,})['\"]\s*:",
+                    line,
+                )
                 if (
                     field_match
                     and field_match.group(1) in {
