@@ -17611,18 +17611,13 @@ class BossFilterGUI:
             rejection_reason = decision.primary_review_reason or "淘汰记录"
             status_parts.append(rejection_reason)
         elif decision.result_view == "人工确认":
-            status_parts.append(
-                "人工确认合适"
-                if candidate.get('feedback_status') == "合适"
-                else "人工确认"
+            status_parts.append("复核通过")
+            tooltip_text = (
+                "已完成人工复核，可以加入联系清单；"
+                "原评分和推荐指数不变。"
             )
         if candidate.get('feedback_status'):
-            feedback_status = candidate.get('feedback_status')
-            if not (
-                decision.result_view == "人工确认"
-                and feedback_status == "合适"
-            ):
-                status_parts.append(feedback_status)
+            status_parts.append(candidate.get('feedback_status'))
         if candidate.get('blacklisted'):
             status_parts.append("已屏蔽")
         display = "｜".join(status_parts)

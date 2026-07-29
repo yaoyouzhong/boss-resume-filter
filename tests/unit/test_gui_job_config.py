@@ -3777,7 +3777,7 @@ def test_confirm_manual_review_once_approves_pending_contact_without_changing_sc
     _args, kwargs = gui._clear_manual_review.call_args
     assert kwargs["contact_approval_reason"] == "人工确认复核通过并可联系"
     assert kwargs["timestamp"] == candidate["contact_approved_at"]
-    assert gui._format_candidate_status(candidate) == "未沟通｜人工确认"
+    assert gui._format_candidate_status(candidate) == "未沟通｜复核通过"
     on_saved.assert_called_once_with()
 
 
@@ -4005,8 +4005,27 @@ def test_suitable_pending_status_is_resolved_without_changing_recommendation():
 
     status = gui._format_candidate_status(candidate)
 
-    assert status == "未沟通｜人工确认合适"
+    assert status == "未沟通｜复核通过｜合适"
     assert "待复核" not in status
+    assert candidate["_full_status"] == (
+        "已完成人工复核，可以加入联系清单；原评分和推荐指数不变。"
+    )
+
+
+def test_manually_approved_pending_status_is_review_passed():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidate = {
+        "geek_id": "pending",
+        "match_score": 64,
+        "contact_approved_at": "20260729_100000",
+    }
+
+    status = gui._format_candidate_status(candidate)
+
+    assert status == "未沟通｜复核通过"
+    assert candidate["_full_status"] == (
+        "已完成人工复核，可以加入联系清单；原评分和推荐指数不变。"
+    )
 
 
 def test_candidate_review_workbench_exposes_flat_switch_and_direct_actions():
