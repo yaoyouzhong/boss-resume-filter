@@ -120,6 +120,7 @@ from constants import (
 from storage import (
     load_candidates_all,
     mark_candidate_greeted,
+    mark_candidate_not_greeted,
     persist_candidate_greeted,
     persist_candidate_greeting_pending,
     resolve_candidate_greeting_confirmation,
@@ -1008,6 +1009,9 @@ class BossFilterGUI:
         self.greet_queue_thread = None
         self._greet_queue_loaded = False
         self._greet_queue_status_vars = {}
+        self.result_greet_queue_button = None
+        self.result_greet_queue_badge = None
+        self._result_contact_pending_count = 0
 
         # 浏览器状态
         self.browser_connected = False
@@ -1883,7 +1887,7 @@ class BossFilterGUI:
             foreground=self.colors['text_secondary'], background=footer_bg,
             anchor='w', padx=12, pady=3,
         ).pack(side="left", fill="x", expand=True)
-        self._refresh_nav_badges()
+        self._refresh_contact_queue_badge()
 
         # 默认显示首页（current_page_index 在 show_page_home 中已设置为 0）
         self.show_page_home()
@@ -4857,6 +4861,29 @@ class BossFilterGUI:
         control_container = ttk.Frame(content, style='Card.TFrame')
         control_container.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
 
+        # 浏览器操作与运行参数共用同一操作起始列。
+        _run_control_gap = int(15 * self.dpi_scale * self.zoom_factor)
+        _run_control_lead_width = (
+            font.Font(font=self.font_label).measure("0") * 12 + _run_control_gap
+        )
+
+        def _create_run_control_lead(parent, text=None, label_font=None):
+            lead = ttk.Frame(
+                parent, style='TFrame', width=_run_control_lead_width
+            )
+            lead.pack(side="left", fill="y")
+            lead.pack_propagate(False)
+            if text is None:
+                return lead
+            label = ttk.Label(
+                lead,
+                text=text,
+                font=label_font or self.font_label,
+                background=self.colors['bg_card'],
+            )
+            label.pack(side="left")
+            return label
+
         # === 浏览器连接状态检测 ===
         browser_frame = self._create_card(control_container, "浏览器状态",
             fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(20 * self.dpi_scale * self.zoom_factor))
@@ -4865,9 +4892,13 @@ class BossFilterGUI:
         browser_status_row.pack(fill="x")
 
         # 状态指示灯（交通灯图标 + 文本，由 _apply_lamp_status 统一渲染）
-        self.browser_status_indicator = ttk.Label(browser_status_row,
-                                                  font=(FONT_FAMILY, int(11 * self.font_scale)),
-                                                  foreground=self.colors['danger'])
+        browser_status_lead = _create_run_control_lead(browser_status_row)
+        self.browser_status_indicator = ttk.Label(
+            browser_status_lead,
+            font=(FONT_FAMILY, int(11 * self.font_scale)),
+            foreground=self.colors['danger'],
+            background=self.colors['bg_card'],
+        )
         self._apply_lamp_status(self.browser_status_indicator, "● 未连接", self.colors['danger'])
         self.browser_status_indicator.pack(side="left")
 
@@ -4875,9 +4906,7 @@ class BossFilterGUI:
         icon_browser = self.icons.button('search', self.colors['text_primary'])
         btn_browser = ttk.Button(browser_status_row, image=icon_browser, text=" 检测/连接浏览器", compound=tk.LEFT, command=self.check_browser_connection)
         btn_browser._icon_ref = icon_browser
-        btn_browser.pack(
-            side="left", padx=(int(20 * self.dpi_scale * self.zoom_factor), 0)
-        )
+        btn_browser.pack(side="left")
 
         # 状态说明
         self.browser_status_help = ttk.Label(browser_status_row, text="请点击按钮连接 BOSS 直聘页面",
@@ -4889,21 +4918,30 @@ class BossFilterGUI:
 
         # 运行参数
         param_frame = ttk.Frame(control_container, style='TFrame')
-        param_frame.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(20 * self.dpi_scale * self.zoom_factor))
+        _card_content_padding = int(
+            UI_CONFIG['label_frame_padding'] * self.dpi_scale * self.zoom_factor
+        )
+        _param_horizontal_padding = (
+            int(25 * self.dpi_scale * self.zoom_factor)
+            + _card_content_padding
+            + 1
+        )
+        param_frame.pack(
+            fill="x",
+            padx=_param_horizontal_padding,
+            pady=int(20 * self.dpi_scale * self.zoom_factor),
+        )
 
         # 滚动轮次
         row1 = ttk.Frame(param_frame, style='TFrame')
         row1.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
-        ttk.Label(row1, text="滚动轮次:", font=self.font_label, width=12,
-                 background=self.colors['bg_card']).pack(side="left")
+        _create_run_control_lead(row1, "滚动轮次:")
         self.rounds_var = tk.StringVar(value=str(MAX_ROUNDS_DEFAULT))
         self.rounds_spin = ttk.Spinbox(row1, from_=UI_CONFIG['spinbox_rounds_min'],
                                        to=UI_CONFIG['spinbox_rounds_max'],
                                        increment=10, textvariable=self.rounds_var,
                                        width=8, font=self.font_label)
-        self.rounds_spin.pack(
-            side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0)
-        )
+        self.rounds_spin.pack(side="left")
         # 鼠标滚轮绑定
         self.rounds_spin.bind('<Enter>',
             lambda e: self.rounds_spin.bind('<MouseWheel>', self._on_rounds_mousewheel))
@@ -4916,15 +4954,12 @@ class BossFilterGUI:
         # 选择岗位（多岗位运行时指定处理哪个岗位）
         row_job = ttk.Frame(param_frame, style='TFrame')
         row_job.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
-        ttk.Label(row_job, text="选择岗位:", font=self.font_label, width=12,
-                 background=self.colors['bg_card']).pack(side="left")
+        _create_run_control_lead(row_job, "选择岗位:")
         self.job_select_var = tk.StringVar(value="")
         self.job_combo = ttk.Combobox(row_job, textvariable=self.job_select_var,
                                        values=["全部岗位"], width=28, state="readonly",
                                        font=self.font_label)
-        self.job_combo.pack(
-            side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0)
-        )
+        self.job_combo.pack(side="left")
         self.job_combo.bind("<<ComboboxSelected>>", self.on_run_job_selected)
         self._sync_run_job_combo_values(self.job_rules, prefer_current=False)
         ttk.Label(row_job, text="建议每次选择一个岗位，\"全部岗位\"将依次处理",
@@ -4937,8 +4972,7 @@ class BossFilterGUI:
         # 筛选完成后的联系策略。GUI 发送统一进入联系清单。
         row2 = ttk.Frame(param_frame, style='TFrame')
         row2.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
-        ttk.Label(row2, text="筛选完成后:", font=self.font_label, width=12,
-                 background=self.colors['bg_card']).pack(side="left")
+        _create_run_control_lead(row2, "筛选完成后:")
         self.contact_after_scan_var = tk.StringVar(value="仅保存筛选结果")
         contact_combo = ttk.Combobox(
             row2,
@@ -4952,9 +4986,7 @@ class BossFilterGUI:
             state="readonly",
             font=self.font_label,
         )
-        contact_combo.pack(
-            side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0)
-        )
+        contact_combo.pack(side="left")
         self._contact_after_scan_note_label = ttk.Label(row2, text="",
                  font=(FONT_FAMILY, int(11 * self.font_scale)),
                  foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card'])
@@ -4978,23 +5010,27 @@ class BossFilterGUI:
         # 高级扫描设置：默认折叠，避免干扰普通扫描路径。
         row_advanced_header = ttk.Frame(param_frame, style='TFrame')
         row_advanced_header.pack(fill="x", pady=(int(6 * self.dpi_scale * self.zoom_factor), 0))
-        ttk.Label(row_advanced_header, text="", width=12, background=self.colors['bg_card']).pack(side="left")
+        _create_run_control_lead(row_advanced_header)
         self.scan_advanced_visible_var = tk.BooleanVar(value=False)
         self.scan_advanced_toggle_label = ttk.Label(
             row_advanced_header,
             text="高级扫描设置 ▸",
-            font=(FONT_FAMILY_SEMIBOLD, int(11 * self.font_scale)),
+            font=(FONT_FAMILY, int(11 * self.font_scale)),
             foreground=self.colors['text_secondary'],
             background=self.colors['bg_card'],
             cursor="hand2",
         )
-        self.scan_advanced_toggle_label.pack(side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0))
-        ttk.Label(
+        self.scan_advanced_toggle_label.pack(side="left")
+        tk.Label(
             row_advanced_header,
-            text="这些设置会增加访问频率，建议谨慎调高",
-            font=(FONT_FAMILY, int(11 * self.font_scale)),
-            foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
-            background=self.colors['bg_card'],
+            text="⚠ 调高会增加访问频率，请谨慎设置",
+            font=(FONT_FAMILY, max(8, int(10 * self.font_scale))),
+            foreground=self.colors.get('warning_text', ui_theme.WARNING_TEXT),
+            background=self.colors.get(
+                'banner_warning_bg', ui_theme.BANNER_WARNING_BG
+            ),
+            padx=max(6, int(8 * self.dpi_scale * self.zoom_factor)),
+            pady=max(2, int(3 * self.dpi_scale * self.zoom_factor)),
         ).pack(side="left", padx=(self.inline_note_gap, 0))
 
         self.scan_advanced_details_frame = ttk.Frame(param_frame, style='TFrame')
@@ -5140,8 +5176,7 @@ class BossFilterGUI:
         row_ai = ttk.Frame(param_frame, style='TFrame')
         self.ai_eval_row = row_ai
         row_ai.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
-        ttk.Label(row_ai, text="AI 评估:", font=self.font_label, width=12,
-                 background=self.colors['bg_card']).pack(side="left")
+        _create_run_control_lead(row_ai, "AI 评估:")
         # API Key 状态：先显示"检测中"，后台查 keyring 后更新（避免主线程阻塞）
         self.ai_eval_var = tk.BooleanVar(value=False)
         self.ai_eval_available_var = tk.BooleanVar(value=False)
@@ -5151,7 +5186,7 @@ class BossFilterGUI:
             enabled_variable=self.ai_eval_available_var,
         )
         self.ai_eval_switch = ai_switch
-        ai_switch.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
+        ai_switch.pack(side="left")
         ai_label = ttk.Label(
             row_ai, text="启用 AI 辅助评估", font=self.font_label,
             background=self.colors['bg_card'], cursor='arrow',
@@ -5228,7 +5263,6 @@ class BossFilterGUI:
         # AI 评估超时设置（紧跟 AI 评估行下方，缩进对齐）
         row_ai_timeout = ttk.Frame(param_frame, style='TFrame')
         row_ai_timeout.pack(fill="x", pady=(0, int(5 * self.dpi_scale * self.zoom_factor)))
-        ttk.Label(row_ai_timeout, text="", width=12, background=self.colors['bg_card']).pack(side="left")
         _spin_font = (FONT_FAMILY, int(12 * self.font_scale))
         _spin_w = 5
         _spin_pad = int(3 * self.dpi_scale * self.zoom_factor)
@@ -5240,12 +5274,13 @@ class BossFilterGUI:
         _init_read = self.api_config.get("llm_read_timeout") or _default_read
         self.llm_read_timeout_var = tk.IntVar(value=_init_read)
 
-        ttk.Label(row_ai_timeout, text="AI 响应超时:", font=_sub_font,
-                 background=self.colors['bg_card'],
-                 foreground=self.colors['text_secondary']).pack(side="left")
+        timeout_label = _create_run_control_lead(
+            row_ai_timeout, "AI 响应超时:", label_font=_sub_font
+        )
+        timeout_label.configure(foreground=self.colors['text_secondary'])
         ttk.Spinbox(row_ai_timeout, from_=10, to=300, increment=10, width=_spin_w,
                     textvariable=self.llm_read_timeout_var,
-                    font=_spin_font).pack(side="left", padx=(_spin_pad, 0))
+                    font=_spin_font).pack(side="left")
         ttk.Label(row_ai_timeout, text="秒", font=_sub_font,
                  background=self.colors['bg_card'],
                  foreground=self.colors['text_secondary']).pack(side="left", padx=(_spin_pad, 0))
@@ -5823,15 +5858,38 @@ class BossFilterGUI:
             side="left", padx=int(8 * self.dpi_scale * self.zoom_factor)
         )
         icon_greet_queue = self.icons.button('chat', self.colors['success'])
-        btn_greet_queue = ttk.Button(
-            btn_inner,
+        greet_queue_button_frame = ttk.Frame(btn_inner, style='Page.TFrame')
+        greet_queue_button_frame.pack(
+            side="left", padx=int(8 * self.dpi_scale * self.zoom_factor)
+        )
+        self.result_greet_queue_button = ttk.Button(
+            greet_queue_button_frame,
             image=icon_greet_queue,
             text=" 联系候选人",
             compound=tk.LEFT,
-            command=self._show_greet_queue_dialog,
+            command=self._open_greet_queue_from_result,
         )
-        btn_greet_queue._icon_ref = icon_greet_queue
-        btn_greet_queue.pack(side="left", padx=int(8 * self.dpi_scale * self.zoom_factor))
+        self.result_greet_queue_button._icon_ref = icon_greet_queue
+        self.result_greet_queue_button.pack()
+        self.result_greet_queue_badge = tk.Label(
+            greet_queue_button_frame,
+            text="",
+            font=(FONT_FAMILY, max(8, int(9 * self.font_scale)), 'bold'),
+            background=self.colors['danger'],
+            foreground='#FFFFFF',
+            padx=max(3, int(4 * self.dpi_scale * self.zoom_factor)),
+            pady=0,
+            cursor="hand2",
+        )
+        self.result_greet_queue_badge.bind(
+            "<Button-1>",
+            lambda _event: self._open_greet_queue_from_result(),
+        )
+        self.result_greet_queue_badge.bind(
+            "<Enter>", self._show_result_contact_badge_tooltip
+        )
+        self.result_greet_queue_badge.bind("<Leave>", self._hide_tooltip)
+        self._refresh_contact_queue_badge()
 
         icon_state_check = self.icons.button('health_shield', self.colors['primary'])
         icon_chart_excel = self.icons.button('export', self.colors['text_primary'])
@@ -8552,16 +8610,49 @@ class BossFilterGUI:
         else:
             badge.pack_forget()
 
-    def _refresh_nav_badges(self):
-        """刷新导航角标：「筛选结果」显示联系清单待核实数。"""
+    def _set_result_contact_badge(self, count):
+        """在“联系候选人”按钮右上角显示发送结果待核实数。"""
+        pending = max(0, int(count or 0))
+        self._result_contact_pending_count = pending
+        badge = getattr(self, 'result_greet_queue_badge', None)
+        if not badge or not badge.winfo_exists():
+            return
+        if pending:
+            badge.configure(text=str(pending if pending < 100 else '99+'))
+            badge.place(
+                relx=1.0,
+                rely=0.0,
+                x=-1,
+                y=-1,
+                anchor="ne",
+            )
+            badge.lift()
+        else:
+            badge.place_forget()
+
+    def _refresh_contact_queue_badge(self):
+        """刷新结果页“联系候选人”按钮上的待核实角标。"""
         try:
             if self._greet_queue_loaded:
                 pending = count_pending_contact_queue(self.greet_queue_items)
             else:
                 pending = load_pending_contact_queue_count(CONTACT_QUEUE_PATH)
-            self.set_nav_badge(PageIndex.RESULTS, pending)
+            self.set_nav_badge(PageIndex.RESULTS, 0)
+            self._set_result_contact_badge(pending)
         except Exception as exc:
             logger.warning("刷新联系清单角标失败：%s", exc)
+
+    def _show_result_contact_badge_tooltip(self, event):
+        """解释“联系候选人”按钮角标的业务含义。"""
+        pending = getattr(self, '_result_contact_pending_count', 0)
+        if pending <= 0:
+            return
+        self._show_tooltip(
+            f"{pending} 人发送结果待核实",
+            event.x_root + int(12 * self.dpi_scale * self.zoom_factor),
+            event.y_root + int(12 * self.dpi_scale * self.zoom_factor),
+            ("result_contact_pending",),
+        )
 
     # ===== 右键菜单功能 =====
     def bind_entry_context_menu(self, entry_widget):
@@ -16445,6 +16536,16 @@ class BossFilterGUI:
                 ),
             )
 
+        def add_reject():
+            menu.add_command(
+                label=" 确认不通过",
+                image=icon_blacklist,
+                compound=tk.LEFT,
+                command=lambda: self._confirm_review_rejection(
+                    None, candidate=candidate, parent=parent, on_saved=refresh_later
+                ),
+            )
+
         def add_focus_queue():
             menu.add_command(
                 label=" 查看联系清单",
@@ -16531,7 +16632,8 @@ class BossFilterGUI:
                     ),
                 )
 
-        needs_review = (
+        needs_review = derive_candidate_decision(candidate).review_status == "pending"
+        can_confirm_review = needs_review and (
             candidate.get('manual_review_required')
             or candidate.get('qualification_status') == 'manual_review'
         )
@@ -16548,7 +16650,7 @@ class BossFilterGUI:
         if needs_send_verification:
             add_verify_sent()
             menu.add_separator()
-        elif primary_action == "confirm" and needs_review:
+        elif primary_action == "confirm" and can_confirm_review:
             add_confirm()
             menu.add_separator()
         elif primary_action == "confirm" and can_approve_queue:
@@ -16571,15 +16673,17 @@ class BossFilterGUI:
             command=lambda: self._open_candidate_review_workbench(candidate),
         )
 
-        if needs_review and primary_action != "confirm":
+        if can_confirm_review and primary_action != "confirm":
             add_confirm()
+        if needs_review:
+            add_reject()
 
         if active_queue_item is not None:
             add_focus_queue()
         elif can_queue and primary_action != "queue":
             add_queue()
         elif can_approve_queue and not (
-            primary_action == "confirm" and not needs_review
+            primary_action == "confirm" and not can_confirm_review
         ):
             add_approve_queue()
 
@@ -17419,15 +17523,30 @@ class BossFilterGUI:
                              command=lambda: self._revert_resume_eval(
                                  None, candidate=candidate, parent=parent))
 
+        decision = derive_candidate_decision(candidate)
         if (
-            candidate.get('manual_review_required')
-            or candidate.get('qualification_status') == 'manual_review'
+            decision.review_status == "pending"
+            and (
+                candidate.get('manual_review_required')
+                or candidate.get('qualification_status') == 'manual_review'
+            )
         ):
             icon_confirm = self.icons.button('stamp_check', self.colors['success'])
             menu._icon_refs.append(icon_confirm)
             menu.add_command(label=" 确认通过", image=icon_confirm, compound=tk.LEFT,
                              command=lambda: self._confirm_manual_review(
                                  None, candidate=candidate, parent=parent))
+        if decision.review_status == "pending":
+            icon_reject = self.icons.button('close', self.colors['danger'])
+            menu._icon_refs.append(icon_reject)
+            menu.add_command(
+                label=" 确认不通过",
+                image=icon_reject,
+                compound=tk.LEFT,
+                command=lambda: self._confirm_review_rejection(
+                    None, candidate=candidate, parent=parent
+                ),
+            )
 
         active_queue_item = self._greet_queue_item_for_candidate(
             candidate, active_only=True
@@ -17607,11 +17726,9 @@ class BossFilterGUI:
         if decision.review_status == "pending":
             status_parts.append("待复核")
             tooltip_text = (
-                f"复核原因：{decision.primary_review_reason or '请人工确认'}"
+                "复核原因："
+                + "；".join(decision.review_reasons or ("请人工确认",))
             )
-        elif decision.result_view == "淘汰记录":
-            rejection_reason = decision.primary_review_reason or "淘汰记录"
-            status_parts.append(rejection_reason)
         elif decision.review_status == "passed":
             status_parts.append("复核通过")
             passed_reasons = [
@@ -17627,6 +17744,26 @@ class BossFilterGUI:
                 f"{reason_text}人工复核结论已通过；原评分和推荐指数不变。"
                 "是否可联系仍以当前沟通、反馈和屏蔽状态为准。"
             )
+        elif decision.review_status == "cancelled":
+            status_parts.append("复核已结束")
+            tooltip_text = (
+                "候选人已因放弃、不合适或屏蔽结束处理；"
+                "如需恢复，请先调整对应的反馈、跟进或屏蔽状态。"
+            )
+        elif candidate.get('review_rejected_at'):
+            status_parts.append("复核未通过")
+            rejected_reasons = [
+                str(reason).strip()
+                for reason in (candidate.get('review_rejected_reasons') or [])
+                if str(reason).strip()
+            ]
+            tooltip_text = (
+                "复核结论：不通过"
+                + (f"\n复核事项：{'；'.join(rejected_reasons)}" if rejected_reasons else "")
+            )
+        elif decision.result_view == "淘汰记录":
+            rejection_reason = decision.primary_review_reason or "淘汰记录"
+            status_parts.append(rejection_reason)
         if candidate.get('feedback_status'):
             status_parts.append(candidate.get('feedback_status'))
         if candidate.get('blacklisted'):
@@ -18686,6 +18823,7 @@ class BossFilterGUI:
                         candidate.get('followup_note', ''),
                         timestamp=blacklisted_at,
                     )
+                self._sync_greet_queue_candidate_state(candidate)
                 self._regenerate_excel()
                 self.refresh_home_stats()
                 self.refresh_stats()
@@ -18765,7 +18903,9 @@ class BossFilterGUI:
         followup_time = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
         for c in candidates:
             if c.get('geek_id') == geek_id and c.get('job_name', '').replace(" ", "") == job_name.replace(" ", ""):
-                if (
+                if status == "未沟通":
+                    mark_candidate_not_greeted(c, followup_time)
+                elif (
                     status in CONTACTED_FOLLOWUP_STATUSES
                     and not c.get('greet_sent')
                 ):
@@ -18812,7 +18952,9 @@ class BossFilterGUI:
                     "更新跟进", "保存失败：未找到候选人", parent=parent or self.root
                 )
                 return
-            if (
+            if status == "未沟通":
+                mark_candidate_not_greeted(candidate, followup_time)
+            elif (
                 status in CONTACTED_FOLLOWUP_STATUSES
                 and not candidate.get('greet_sent')
             ):
@@ -18824,6 +18966,7 @@ class BossFilterGUI:
                 timestamp=followup_time,
                 next_followup_at=next_due,
             )
+            self._sync_greet_queue_candidate_state(candidate)
             self._regenerate_excel()
             self.refresh_home_stats()
             self.refresh_stats()
@@ -18882,10 +19025,59 @@ class BossFilterGUI:
                     c.pop('auto_greet_blocked_reason', None)
                     c['review_passed_at'] = approved_at
                     c['review_passed_reasons'] = passed_reasons
+                    c.pop('review_rejected_at', None)
+                    c.pop('review_rejected_reasons', None)
                     if contact_approval_reason:
                         c['contact_approved_at'] = approved_at
                         c['contact_approval_reason'] = contact_approval_reason
                     updated += 1
+
+        if updated:
+            save_candidates_all(candidates, CANDIDATES_PATH)
+        return updated
+
+    def _reject_candidate_review(
+        self,
+        geek_id,
+        job_name,
+        review_rejected_reasons=None,
+        timestamp=None,
+    ):
+        """Persist one explicit human decision that the candidate did not pass review."""
+        if not geek_id or not CANDIDATES_PATH.exists():
+            return 0
+        with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
+            candidates = json.load(f)
+
+        updated = 0
+        rejected_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+        normalized_job = str(job_name or '').replace(" ", "")
+        for candidate in candidates:
+            if (
+                str(candidate.get('geek_id') or '') == str(geek_id)
+                and candidate.get('job_name', '').replace(" ", "") == normalized_job
+            ):
+                decision = derive_candidate_decision(candidate)
+                if decision.review_status != "pending":
+                    continue
+                rejected_reasons = list(
+                    review_rejected_reasons
+                    or decision.review_reasons
+                    or ["人工复核不通过"]
+                )
+                candidate['manual_review_required'] = False
+                candidate['qualification_status'] = 'rejected'
+                candidate['qualification_reasons'] = rejected_reasons
+                candidate['review_rejected_at'] = rejected_at
+                candidate['review_rejected_reasons'] = rejected_reasons
+                candidate['recommend_level'] = '未通过'
+                candidate.pop('review_passed_at', None)
+                candidate.pop('review_passed_reasons', None)
+                candidate.pop('contact_approved_at', None)
+                candidate.pop('contact_approval_reason', None)
+                candidate.pop('auto_greet_blocked_reason', None)
+                updated += 1
+                break
 
         if updated:
             save_candidates_all(candidates, CANDIDATES_PATH)
@@ -18920,6 +19112,8 @@ class BossFilterGUI:
                 candidate['contact_approval_reason'] = str(reason or '').strip()
                 candidate['review_passed_at'] = approved_at
                 candidate['review_passed_reasons'] = review_reasons
+                candidate.pop('review_rejected_at', None)
+                candidate.pop('review_rejected_reasons', None)
                 updated = True
                 break
 
@@ -19035,6 +19229,8 @@ class BossFilterGUI:
             candidate.pop('auto_greet_blocked_reason', None)
             candidate['review_passed_at'] = confirmed_at
             candidate['review_passed_reasons'] = list(review_reasons)
+            candidate.pop('review_rejected_at', None)
+            candidate.pop('review_rejected_reasons', None)
             if contact_approval_reason:
                 candidate['contact_approved_at'] = confirmed_at
                 candidate['contact_approval_reason'] = contact_approval_reason
@@ -19048,6 +19244,69 @@ class BossFilterGUI:
         except Exception as exc:
             messagebox.showerror("错误", f"操作失败：{exc}",
                                  parent=parent or self.root)
+
+    def _confirm_review_rejection(self, item, candidate=None, parent=None, on_saved=None):
+        """Confirm and persist that a pending candidate did not pass human review."""
+        candidate = self._resolve_candidate(item, candidate)
+        if not candidate:
+            messagebox.showerror("错误", "未找到候选人", parent=parent or self.root)
+            return
+        decision = derive_candidate_decision(candidate)
+        if decision.review_status != "pending":
+            self._status_flash("该候选人当前已不处于待复核状态")
+            return
+
+        name = candidate.get('name') or '该候选人'
+        reasons = list(decision.review_reasons or ["人工复核不通过"])
+        reason_text = "\n".join(f"- {reason}" for reason in reasons)
+        if not messagebox.askyesno(
+            "确认不通过",
+            f"确认 {name} 未通过人工复核？\n\n"
+            f"复核事项：\n{reason_text}\n\n"
+            "确认后将结束待复核并禁止联系；候选人会保留在淘汰记录中。",
+            parent=parent or self.root,
+        ):
+            return
+
+        try:
+            rejected_at = datetime.now().strftime("%Y%m%d_%H%M%S")
+            updated = self._reject_candidate_review(
+                candidate.get('geek_id'),
+                candidate.get('job_name', ''),
+                review_rejected_reasons=reasons,
+                timestamp=rejected_at,
+            )
+            if not updated:
+                messagebox.showerror(
+                    "确认不通过",
+                    "保存失败：候选人已不处于待复核状态",
+                    parent=parent or self.root,
+                )
+                return
+            candidate['manual_review_required'] = False
+            candidate['qualification_status'] = 'rejected'
+            candidate['qualification_reasons'] = reasons
+            candidate['review_rejected_at'] = rejected_at
+            candidate['review_rejected_reasons'] = reasons
+            candidate['recommend_level'] = '未通过'
+            candidate.pop('review_passed_at', None)
+            candidate.pop('review_passed_reasons', None)
+            candidate.pop('contact_approved_at', None)
+            candidate.pop('contact_approval_reason', None)
+            self._sync_greet_queue_candidate_state(candidate)
+            self._regenerate_excel()
+            self.refresh_home_stats()
+            self.refresh_stats()
+            self.refresh_results(force=True)
+            if on_saved:
+                on_saved()
+            self._status_flash(f"复核不通过：{name}")
+        except Exception as exc:
+            messagebox.showerror(
+                "确认不通过",
+                f"操作失败：{exc}",
+                parent=parent or self.root,
+            )
 
     def _batch_confirm_manual_review(self, candidates, parent=None):
         """批量清除候选人的需人工确认标记。"""
@@ -19283,10 +19542,24 @@ class BossFilterGUI:
                     error_text = "下次跟进日期格式不正确，请使用 YYYY-MM-DD"
                 messagebox.showerror("日期错误", error_text, parent=win)
                 return
-            if status == "待约面" and not next_due:
+            if status in {"待约面", "已约面"} and not next_due:
                 messagebox.showerror(
-                    "错误", "待约面状态必须安排下次跟进日期", parent=win
+                    "错误", f"{status}状态必须安排下次跟进日期", parent=win
                 )
+                return
+            if (
+                status == "未沟通"
+                and (
+                    candidate.get('greet_sent')
+                    or candidate.get('followup_status') in CONTACTED_FOLLOWUP_STATUSES
+                )
+                and not messagebox.askyesno(
+                    "纠正沟通状态",
+                    "将状态改为“未沟通”会同时清除本地的已打招呼事实、"
+                    "发送方式和跟进日期。\n\n仅在先前记录确实有误时继续。",
+                    parent=win,
+                )
+            ):
                 return
             followup_time = datetime.now().strftime("%Y%m%d_%H%M%S")
             try:
@@ -19303,7 +19576,9 @@ class BossFilterGUI:
                         "错误", "保存跟进状态失败：未找到候选人", parent=win
                     )
                     return
-                if (
+                if status == "未沟通":
+                    mark_candidate_not_greeted(candidate, followup_time)
+                elif (
                     status in CONTACTED_FOLLOWUP_STATUSES
                     and not candidate.get('greet_sent')
                 ):
@@ -19319,6 +19594,7 @@ class BossFilterGUI:
                     timestamp=followup_time,
                     next_followup_at=next_due,
                 )
+                self._sync_greet_queue_candidate_state(candidate)
                 self._regenerate_excel()
                 self.refresh_results()
                 if on_saved:
@@ -19333,7 +19609,7 @@ class BossFilterGUI:
                             candidate=candidate,
                             parent=_parent,
                             on_saved=on_saved,
-                            default_status="误推",
+                            default_status="放弃",
                         ),
                     )
             except Exception as exc:
@@ -19553,6 +19829,7 @@ class BossFilterGUI:
                 if status in {"误推", "放弃"}:
                     candidate.pop('contact_approved_at', None)
                     candidate.pop('contact_approval_reason', None)
+                self._sync_greet_queue_candidate_state(candidate)
                 self._regenerate_excel()
                 self.refresh_results()
                 if on_saved:
@@ -19995,7 +20272,7 @@ class BossFilterGUI:
         if changed:
             self._persist_greet_queue()
         else:
-            self._refresh_nav_badges()
+            self._refresh_contact_queue_badge()
 
     def _persist_greet_queue(self):
         """Persist active queue intent; completed rows remain session-local."""
@@ -20003,9 +20280,56 @@ class BossFilterGUI:
             return
         try:
             save_contact_queue(self.greet_queue_items, CONTACT_QUEUE_PATH)
-            self._refresh_nav_badges()
+            self._refresh_contact_queue_badge()
         except Exception as exc:
             self.append_log(f"[联系候选人] 保存联系清单失败：{exc}")
+
+    def _sync_greet_queue_candidate_state(self, candidate):
+        """Immediately apply a candidate state change to its active queue row."""
+        if not getattr(self, '_greet_queue_loaded', False):
+            return
+        key = self._greet_queue_key(candidate)
+        geek_id = str(candidate.get('geek_id') or '')
+        items = [
+            row for row in getattr(self, 'greet_queue_items', [])
+            if (row.get('status') or "待发送") in ACTIVE_STATUSES
+            and (
+                row.get('key') == key
+                or (
+                    candidate.get('blacklisted')
+                    and geek_id
+                    and str((row.get('candidate') or {}).get('geek_id') or '') == geek_id
+                )
+            )
+        ]
+        if not items:
+            return
+        updated_at = datetime.now().strftime("%Y%m%d_%H%M%S")
+        for item in items:
+            item_candidate = candidate
+            if item.get('key') != key:
+                item_candidate = dict(item.get('candidate') or {})
+                item_candidate.update({
+                    'blacklisted': True,
+                    'blacklist_reason': candidate.get('blacklist_reason', ''),
+                    'blacklisted_at': candidate.get('blacklisted_at', updated_at),
+                    'followup_status': "不合适",
+                    'followup_updated_at': updated_at,
+                })
+                item_candidate.pop('next_followup_at', None)
+            status, message = self._revalidate_greet_queue_candidate(item_candidate)
+            item['candidate'] = item_candidate
+            item['status'] = status
+            item['message'] = message
+            item['updated_at'] = updated_at
+        self._persist_greet_queue()
+        window = getattr(self, 'greet_queue_window', None)
+        if window is not None:
+            try:
+                if window.winfo_exists():
+                    self._refresh_greet_queue_dialog()
+            except tk.TclError:
+                pass
 
     @staticmethod
     def _has_direct_send_context(candidate):
@@ -20387,6 +20711,17 @@ class BossFilterGUI:
         self._refresh_greet_queue_dialog()
         _place_window_centered(win, int(1220 * scale), int(680 * scale), parent=_parent)
         win.deiconify()
+
+    def _open_greet_queue_from_result(self):
+        """从结果页进入联系工作台；有待核实时直接定位对应分组。"""
+        self._ensure_greet_queue_loaded()
+        if any(
+            item.get('status') == "待核实"
+            or (item.get('candidate') or {}).get('greet_confirmation_pending')
+            for item in self.greet_queue_items
+        ):
+            self.greet_queue_selected_group = "待核实"
+        self._show_greet_queue_dialog(parent=self.root)
 
     def _on_greet_queue_group_selected(self):
         if not self.greet_queue_group_tree or not self.greet_queue_group_tree.winfo_exists():
@@ -21611,9 +21946,22 @@ class BossFilterGUI:
             self.greet_queue_paused = False
             for item in self.greet_queue_items:
                 if item.get('status') == "发送中":
+                    candidate = item.get('candidate') or {}
+                    pending_message = "发送流程意外中断，请先到 BOSS 沟通列表核实"
                     item['status'] = "待核实"
-                    item['message'] = "发送流程意外中断，请先到 BOSS 沟通列表核实"
+                    item['message'] = pending_message
                     item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    try:
+                        persist_candidate_greeting_pending(
+                            candidate,
+                            pending_message,
+                            CANDIDATES_PATH,
+                        )
+                    except Exception as exc:
+                        self.append_operation_log(
+                            "[联系候选人] 中断后的待核实状态未能写入候选人记录："
+                            f"{self._sanitize_runtime_log_message(exc)}"
+                        )
                     pending_count += 1
             if connection_lock_acquired:
                 self._browser_connection_lock.release()
@@ -21746,7 +22094,7 @@ class BossFilterGUI:
             f"  筛选结论：{decision.screening_result}（{score} 分）",
         ]
 
-        if decision.review_reasons:
+        if decision.review_status == "pending":
             lines.append("  复核原因：")
             lines.extend(f"  - {reason}" for reason in decision.review_reasons)
         elif decision.review_status == "passed":
@@ -21759,6 +22107,19 @@ class BossFilterGUI:
             if passed_reasons:
                 lines.append("  通过前复核事项：")
                 lines.extend(f"  - {reason}" for reason in passed_reasons)
+        elif decision.review_status == "cancelled":
+            lines.append("  复核状态：已结束")
+            if decision.review_reasons:
+                lines.append("  结束前待复核事项：")
+                lines.extend(f"  - {reason}" for reason in decision.review_reasons)
+        elif candidate.get('review_rejected_at'):
+            lines.append("  复核状态：未通过")
+            rejected_reasons = candidate.get('review_rejected_reasons') or []
+            if rejected_reasons:
+                lines.append("  未通过事项：")
+                lines.extend(f"  - {reason}" for reason in rejected_reasons)
+        elif decision.result_view == "淘汰记录":
+            lines.append("  复核状态：无需复核（筛选未通过）")
         else:
             lines.append("  复核状态：无需复核")
 
@@ -22336,8 +22697,15 @@ class BossFilterGUI:
         self.candidate_review_position_var.set(f"{index + 1} / {len(candidates)}")
         self.candidate_review_result_var.set(decision.screening_result)
         self.candidate_review_reason_var.set(
-            decision.primary_review_reason
-            or ("复核已通过" if decision.review_status == "passed" else "无需复核")
+            (
+                decision.primary_review_reason or "请人工确认"
+                if decision.review_status == "pending"
+                else {
+                    "passed": "复核已通过",
+                    "not_passed": "复核未通过",
+                    "cancelled": "复核已结束",
+                }.get(decision.review_status, "无需复核")
+            )
         )
         self.candidate_review_communication_var.set(decision.communication_status)
         result_color = {
@@ -22351,7 +22719,11 @@ class BossFilterGUI:
             fg=(
                 self.colors['warning']
                 if decision.review_status == "pending"
-                else self.colors['success']
+                else (
+                    self.colors['danger']
+                    if decision.review_status in {"not_passed", "cancelled"}
+                    else self.colors['success']
+                )
             )
         )
         self.candidate_review_state_labels[2].configure(fg=self.colors['primary'])
@@ -22413,7 +22785,13 @@ class BossFilterGUI:
                 self.colors['warning'],
                 lambda: self._focus_candidate_in_greet_queue(candidate),
             )
-        elif candidate.get('manual_review_required') or candidate.get('qualification_status') == 'manual_review':
+        elif (
+            decision.review_status == "pending"
+            and (
+                candidate.get('manual_review_required')
+                or candidate.get('qualification_status') == 'manual_review'
+            )
+        ):
             primary_action = "confirm"
             self._add_candidate_review_action(
                 self.candidate_review_primary_actions,
@@ -22489,6 +22867,19 @@ class BossFilterGUI:
                 ),
             )
 
+        if decision.review_status == "pending":
+            self._add_candidate_review_action(
+                self.candidate_review_secondary_actions,
+                "确认不通过",
+                'close',
+                self.colors['danger'],
+                lambda: self._confirm_review_rejection(
+                    None,
+                    candidate=candidate,
+                    parent=self.candidate_review_window,
+                    on_saved=on_saved,
+                ),
+            )
         if primary_action != "followup":
             self._add_candidate_review_action(
                 self.candidate_review_secondary_actions,

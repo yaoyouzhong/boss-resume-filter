@@ -16,6 +16,7 @@ from storage import (
     is_recommended_candidate,
     load_candidates_all,
     mark_candidate_greeted,
+    mark_candidate_not_greeted,
     merge_candidates_all,
     persist_candidate_greeted,
     persist_candidate_greeting_pending,
@@ -52,6 +53,30 @@ def test_resolve_greeting_confirmation_as_not_sent_allows_safe_retry():
         assert saved["greet_sent"] is False
         assert "greet_confirmation_pending" not in saved
         assert "greet_confirmation_reason" not in saved
+
+
+def test_mark_candidate_not_greeted_clears_contact_fact_and_schedule():
+    candidate = {
+        "greet_sent": True,
+        "greet_sent_at": "20260728_100000",
+        "greet_method": "manual_status",
+        "greet_confirmation_pending": True,
+        "followup_status": "已回复",
+        "next_followup_at": "20260729_100000",
+    }
+
+    mark_candidate_not_greeted(candidate, "20260729_120000")
+
+    assert candidate["greet_sent"] is False
+    assert candidate["followup_status"] == "未沟通"
+    assert candidate["followup_updated_at"] == "20260729_120000"
+    for field in (
+        "greet_sent_at",
+        "greet_method",
+        "greet_confirmation_pending",
+        "next_followup_at",
+    ):
+        assert field not in candidate
 
 
 # ========== _dedupe_candidates ==========
@@ -793,6 +818,96 @@ def test_save_keeps_rejected_candidate_that_required_manual_review():
 
     assert len(loaded) == 1
     assert loaded[0]["geek_id"] == "manual-rejected"
+
+
+def test_save_preserves_score_for_explicit_human_review_rejection():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        save_candidates_all([{
+            "geek_id": "human-rejected",
+            "job_name": "Java",
+            "match_score": 64,
+            "qualification_status": "rejected",
+            "manual_review_required": False,
+            "review_rejected_at": "20260729_100000",
+            "review_rejected_reasons": ["评分处于待定区间（64 分）"],
+        }], target)
+        loaded = load_candidates_all(target)
+
+    assert len(loaded) == 1
+    assert loaded[0]["match_score"] == 64
+    assert loaded[0]["recommend_level"] == "未通过"
+
+
+def test_rescan_does_not_revive_explicit_human_review_rejection():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        save_candidates_all([{
+            "geek_id": "human-rejected",
+            "job_name": "Java",
+            "match_score": 64,
+            "last_evaluated_at": "20260728_100000",
+            "qualification_status": "rejected",
+            "review_rejected_at": "20260728_110000",
+            "review_rejected_reasons": ["人工判断不合适"],
+        }], target)
+
+        merge_candidates_all([{
+            "geek_id": "human-rejected",
+            "job_name": "Java",
+            "match_score": 80,
+            "last_evaluated_at": "20260729_100000",
+            "qualification_status": "qualified",
+        }], target)
+        loaded = load_candidates_all(target)[0]
+
+    assert loaded["match_score"] == 80
+    assert loaded["qualification_status"] == "rejected"
+    assert loaded["manual_review_required"] is False
+    assert loaded["review_rejected_reasons"] == ["人工判断不合适"]
+    assert "review_passed_at" not in loaded
+
+
+def test_rescan_keeps_hard_review_pass_only_for_the_same_review_reason():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        save_candidates_all([{
+            "geek_id": "hard-passed",
+            "job_name": "Java",
+            "match_score": 53,
+            "last_evaluated_at": "20260728_100000",
+            "qualification_status": "qualified",
+            "review_passed_at": "20260728_110000",
+            "review_passed_reasons": ["学历形式待确认"],
+        }], target)
+
+        merge_candidates_all([{
+            "geek_id": "hard-passed",
+            "job_name": "Java",
+            "match_score": 53,
+            "last_evaluated_at": "20260729_100000",
+            "qualification_status": "manual_review",
+            "manual_review_required": True,
+            "qualification_reasons": ["学历形式待确认"],
+        }], target)
+        same_reason = load_candidates_all(target)[0]
+
+        merge_candidates_all([{
+            "geek_id": "hard-passed",
+            "job_name": "Java",
+            "match_score": 53,
+            "last_evaluated_at": "20260730_100000",
+            "qualification_status": "manual_review",
+            "manual_review_required": True,
+            "qualification_reasons": ["工作经验待确认"],
+        }], target)
+        new_reason = load_candidates_all(target)[0]
+
+    assert same_reason["qualification_status"] == "qualified"
+    assert same_reason["manual_review_required"] is False
+    assert new_reason["qualification_status"] == "manual_review"
+    assert new_reason["manual_review_required"] is True
+    assert new_reason["qualification_reasons"] == ["工作经验待确认"]
 
 
 def test_merge_candidates_all_archives_previous_pass_when_latest_scan_fails():

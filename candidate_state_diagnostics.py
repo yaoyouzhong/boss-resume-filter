@@ -8,14 +8,17 @@ from typing import Any, Iterable
 from candidate_workflow import (
     CONTACTED_FOLLOWUP_STATUSES,
     NEGATIVE_CONTACT_FEEDBACK,
+    SUPPORTED_FEEDBACK_STATUSES,
+    SUPPORTED_FOLLOWUP_STATUSES,
+    SUPPORTED_QUALIFICATION_STATUSES,
     normalize_followup_at,
 )
-from constants import SCORE_THRESHOLD_PASS
+from constants import SCORE_THRESHOLD_PASS, SCORE_THRESHOLD_RECOMMEND, SCORE_THRESHOLD_STRONG
 
 
-FOLLOWUP_STATUS_OPTIONS = {"未沟通", "已打招呼", "已回复", "待约面", "已约面", "不合适", "已归档"}
-FEEDBACK_STATUS_OPTIONS = {"合适", "误推", "误杀", "放弃"}
-QUALIFICATION_STATUS_OPTIONS = {"qualified", "rejected", "manual_review"}
+FOLLOWUP_STATUS_OPTIONS = SUPPORTED_FOLLOWUP_STATUSES
+FEEDBACK_STATUS_OPTIONS = SUPPORTED_FEEDBACK_STATUSES
+QUALIFICATION_STATUS_OPTIONS = SUPPORTED_QUALIFICATION_STATUSES
 ACTIVE_FOLLOWUP_STATUSES = {"已打招呼", "已回复", "待约面", "已约面"}
 
 
@@ -80,25 +83,32 @@ def _diagnose_individual_candidates(candidates: Iterable[dict[str, Any]]) -> lis
         followup_status = _clean_text(candidate.get("followup_status"))
         feedback_status = _clean_text(candidate.get("feedback_status"))
         qualification_status = _clean_text(candidate.get("qualification_status")) or "qualified"
-        match_score = _as_int(candidate.get("match_score")) or 0
+        match_score_value = _as_int(candidate.get("match_score"))
+        match_score = match_score_value or 0
         next_followup_raw = _clean_text(candidate.get("next_followup_at"))
         next_followup_at = normalize_followup_at(next_followup_raw)
 
+        if match_score_value is None:
+            issues.append(_issue(
+                candidate, "error", "匹配分缺失或无效",
+                "候选人的匹配分缺失，或不是系统可以识别的整数。",
+                "重新扫描或重新评估该候选人；修复分数前系统将禁止联系。",
+            ))
         if followup_status and followup_status not in FOLLOWUP_STATUS_OPTIONS:
             issues.append(_issue(
-                candidate, "warning", "未知跟进状态",
+                candidate, "error", "未知跟进状态",
                 f"当前跟进状态为“{followup_status}”，不在系统支持范围内。",
                 "打开“更新跟进”，重新选择一个列表里已有的状态。",
             ))
         if feedback_status and feedback_status not in FEEDBACK_STATUS_OPTIONS:
             issues.append(_issue(
-                candidate, "warning", "未知人工反馈",
+                candidate, "error", "未知人工反馈",
                 f"当前人工反馈为“{feedback_status}”，不在系统支持范围内。",
                 "打开“标记反馈”，重新选择一个列表里已有的反馈。",
             ))
         if qualification_status not in QUALIFICATION_STATUS_OPTIONS:
             issues.append(_issue(
-                candidate, "warning", "未知资格审查状态",
+                candidate, "error", "未知资格审查状态",
                 f"当前资格审查状态为“{qualification_status}”。",
                 "重新做 AI 评估，或人工确认这个人到底是通过、淘汰还是待确认。",
             ))
@@ -115,11 +125,12 @@ def _diagnose_individual_candidates(candidates: Iterable[dict[str, Any]]) -> lis
                 f"跟进状态为“{followup_status}”，但仍安排了下次跟进。",
                 "确认状态；如果已经结束，将下次跟进日期设为不设置。",
             ))
-        if followup_status == "待约面" and not next_followup_at:
+        if followup_status in {"待约面", "已约面"} and not next_followup_at:
+            title = "待约面未安排时间" if followup_status == "待约面" else "已约面未安排时间"
             issues.append(_issue(
-                candidate, "warning", "待约面未安排时间",
-                "候选人已进入待约面，但没有下次跟进日期。",
-                "打开“更新跟进”，安排下一次确认面试时间的日期。",
+                candidate, "warning", title,
+                f"候选人已进入{followup_status}，但没有下次跟进日期。",
+                "打开“更新跟进”，安排下一次确认面试安排或结果的日期。",
             ))
         elif followup_status == "已打招呼" and not next_followup_at:
             issues.append(_issue(
@@ -160,10 +171,33 @@ def _diagnose_individual_candidates(candidates: Iterable[dict[str, Any]]) -> lis
             ))
 
         if candidate.get("manual_review_required") and qualification_status != "manual_review":
+            if qualification_status == "rejected":
+                issues.append(_issue(
+                    candidate, "error", "淘汰与待复核标记并存",
+                    "候选人同时被标记为淘汰和需要人工复核，两个结论互相冲突。",
+                    "以最新证据为准，重新确认淘汰或待复核状态。",
+                ))
+            else:
+                issues.append(_issue(
+                    candidate, "warning", "人工复核字段待归一",
+                    "候选人仍使用旧的人工复核标记；当前界面会按待复核安全处理。",
+                    "下次保存时系统会自动归一为待复核资格状态。",
+                ))
+
+        if candidate.get("review_passed_at") and candidate.get("review_rejected_at"):
             issues.append(_issue(
-                candidate, "warning", "需要人工确认",
-                "系统标记这个人需要人工确认，但候选人结论没有显示为待人工确认。",
-                "如果已经看过并认可，右键点“确认通过”；如果还没确认，先不要自动打招呼。",
+                candidate, "error", "复核通过与不通过并存",
+                "同一候选人同时保留复核通过和复核不通过记录。",
+                "核对最近一次人工结论，只保留最新的复核结果。",
+            ))
+
+        recommend_level = _clean_text(candidate.get("recommend_level"))
+        expected_level = _expected_recommend_level(match_score_value, qualification_status)
+        if recommend_level and expected_level and recommend_level != expected_level:
+            issues.append(_issue(
+                candidate, "warning", "推荐指数与分数不一致",
+                f"当前推荐指数为“{recommend_level}”，按分数应为“{expected_level}”。",
+                "重新评估候选人；实际联系将以统一状态门禁为准。",
             ))
 
         if (
@@ -308,7 +342,16 @@ def _has_low_score_retention_reason(candidate: dict[str, Any]) -> bool:
         candidate.get("feedback_status")
         or candidate.get("blacklisted")
         or candidate.get("llm_evaluated")
+        or candidate.get("llm_error")
         or candidate.get("resume_eval_adjustment") is not None
+        or candidate.get("qualification_status") in {"manual_review", "rejected"}
+        or candidate.get("manual_review_required")
+        or candidate.get("review_passed_at")
+        or candidate.get("review_rejected_at")
+        or candidate.get("rejection_source")
+        or candidate.get("greet_sent")
+        or candidate.get("greet_confirmation_pending")
+        or candidate.get("followup_status") not in {None, "", "未沟通"}
     )
 
 
@@ -347,3 +390,17 @@ def _as_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _expected_recommend_level(score: int | None, qualification_status: str) -> str:
+    if score is None:
+        return ""
+    if qualification_status == "rejected":
+        return "未通过"
+    if score >= SCORE_THRESHOLD_STRONG:
+        return "强烈推荐"
+    if score >= SCORE_THRESHOLD_RECOMMEND:
+        return "推荐"
+    if score >= SCORE_THRESHOLD_PASS:
+        return "待定"
+    return "未通过"

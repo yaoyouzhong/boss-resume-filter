@@ -32,6 +32,11 @@ FOLLOWUP_TERMINAL_STATUSES = {"未沟通", "不合适", "已归档"}
 FOLLOWUP_SCHEDULED_STATUSES = {"已打招呼", "待约面", "已约面"}
 CONTACTED_FOLLOWUP_STATUSES = {"已打招呼", "已回复", "待约面", "已约面"}
 NEGATIVE_CONTACT_FEEDBACK = {"误推", "放弃"}
+SUPPORTED_QUALIFICATION_STATUSES = {"qualified", "manual_review", "rejected"}
+SUPPORTED_FOLLOWUP_STATUSES = {
+    "未沟通", "已打招呼", "已回复", "待约面", "已约面", "不合适", "已归档",
+}
+SUPPORTED_FEEDBACK_STATUSES = {"合适", "误推", "误杀", "放弃"}
 
 
 @dataclass(frozen=True)
@@ -68,7 +73,7 @@ def derive_candidate_decision(candidate: dict[str, Any]) -> CandidateDecision:
     """Derive orthogonal decision states without changing persisted candidate data."""
     score_value = _as_int(candidate.get("match_score"))
     score = score_value or 0
-    qualification = str(candidate.get("qualification_status") or "qualified")
+    qualification = str(candidate.get("qualification_status") or "qualified").strip()
     communication = _communication_status(candidate)
     manually_approved = candidate_has_manual_contact_approval(candidate)
     review_passed = candidate_has_review_passed(candidate)
@@ -86,20 +91,32 @@ def derive_candidate_decision(candidate: dict[str, Any]) -> CandidateDecision:
 
     screening_result = _screening_result(score)
     review_reasons: list[str] = []
+    if qualification not in SUPPORTED_QUALIFICATION_STATUSES:
+        review_reasons.append(f"资格审查状态异常（{qualification}）")
     if qualification == "manual_review" or candidate.get("manual_review_required"):
         review_reasons.extend(_manual_review_reasons(candidate))
-    if score_value is not None and score < SCORE_THRESHOLD_RECOMMEND:
-        if score >= SCORE_THRESHOLD_PASS:
-            if not manually_approved:
-                review_reasons.append(f"评分处于待定区间（{score} 分）")
-        else:
-            review_reasons.append(f"评分低于通过线（{score} 分）")
+    if score_value is None:
+        screening_result = "数据异常"
+        review_reasons.append("匹配分缺失或格式无效")
+    elif SCORE_THRESHOLD_PASS <= score < SCORE_THRESHOLD_RECOMMEND:
+        if not manually_approved:
+            review_reasons.append(f"评分处于待定区间（{score} 分）")
     review_reasons = _unique_texts(review_reasons)
 
     if review_reasons:
-        next_action = _review_next_action(candidate, review_reasons)
-        result_view = "待复核"
-        review_status = "pending"
+        if _review_is_closed(candidate):
+            next_action = "当前候选人已结束处理；如需恢复，请先调整反馈、跟进或屏蔽状态。"
+            result_view = "淘汰记录"
+            review_status = "cancelled"
+        else:
+            next_action = _review_next_action(candidate, review_reasons)
+            result_view = "待复核"
+            review_status = "pending"
+    elif score_value is not None and score < SCORE_THRESHOLD_PASS:
+        result_view = "淘汰记录"
+        review_status = "passed" if review_passed else "not_required"
+        review_reasons = [f"评分低于通过线（{score} 分）"]
+        next_action = "当前评分未通过；如认为存在误杀，请补充反馈或导入完整简历重新评估。"
     elif score_value is not None and score < SCORE_THRESHOLD_RECOMMEND:
         result_view = "复核通过"
         review_status = "passed"
@@ -163,23 +180,29 @@ def candidate_greet_skip_reason(candidate: dict[str, Any]) -> str:
     """Return why a candidate cannot enter the manual greeting queue."""
     if not candidate.get("geek_id"):
         return "缺少候选人标识"
-    if candidate.get("blacklisted"):
-        return "已加入黑名单"
-    if candidate.get("greet_sent"):
-        return "已打招呼"
     if candidate.get("greet_confirmation_pending"):
         return "发送结果待核实"
+    if candidate.get("greet_sent"):
+        return "已打招呼"
+    if candidate.get("blacklisted"):
+        return "已加入黑名单"
     feedback = str(candidate.get("feedback_status") or "").strip()
     if feedback == "误推":
         return "人工反馈为误推"
     if feedback == "放弃":
         return "人工已放弃"
+    if feedback and feedback not in SUPPORTED_FEEDBACK_STATUSES:
+        return f"人工反馈状态异常（{feedback}）"
     followup = _followup_status(candidate)
     if followup in {"已打招呼", "已回复", "待约面", "已约面", "不合适", "已归档"}:
         return f"跟进状态为{followup}"
+    if followup not in SUPPORTED_FOLLOWUP_STATUSES:
+        return f"跟进状态异常（{followup}）"
     decision = derive_candidate_decision(candidate)
     if decision.result_view == "淘汰记录":
-        return "已淘汰"
+        if decision.review_status == "cancelled":
+            return "候选人处理已结束"
+        return decision.primary_review_reason or "已淘汰"
     if decision.review_status == "pending":
         return decision.primary_review_reason or "需先完成复核"
     score = _as_int(candidate.get("match_score"))
@@ -222,9 +245,8 @@ def candidate_can_manual_approve_contact(candidate: dict[str, Any]) -> bool:
         return False
     if _followup_status(candidate) != "未沟通":
         return False
-    if str(candidate.get("qualification_status") or "qualified") in {
-        "rejected", "manual_review",
-    }:
+    qualification = str(candidate.get("qualification_status") or "qualified").strip()
+    if qualification != "qualified":
         return False
     if candidate.get("manual_review_required"):
         return False
@@ -249,6 +271,7 @@ def build_daily_candidate_actions(
     current_date = _coerce_date(today) or date.today()
     buckets: dict[str, list[CandidateActionItem]] = {
         "发送结果待核实": [],
+        "状态异常待处理": [],
         "已回复待推进": [],
         "待复核": [],
         "待完成简历评估": [],
@@ -258,14 +281,6 @@ def build_daily_candidate_actions(
         "面试后待反馈": [],
     }
     for candidate in candidates:
-        if candidate.get("blacklisted"):
-            continue
-        if str(candidate.get("feedback_status") or "").strip() in NEGATIVE_CONTACT_FEEDBACK:
-            continue
-        score = _as_int(candidate.get("match_score")) or 0
-        if score < SCORE_THRESHOLD_PASS and not _has_business_state(candidate):
-            continue
-
         if candidate.get("greet_confirmation_pending"):
             buckets["发送结果待核实"].append(_item(
                 10, "发送结果待核实", candidate,
@@ -273,6 +288,22 @@ def build_daily_candidate_actions(
                 "先去 BOSS 沟通列表核实，确认后再继续发送。",
                 timing_group="立即处理",
             ))
+            continue
+        if candidate.get("blacklisted"):
+            continue
+        if str(candidate.get("feedback_status") or "").strip() in NEGATIVE_CONTACT_FEEDBACK:
+            continue
+        state_error = candidate_state_error_reason(candidate)
+        if state_error:
+            buckets["状态异常待处理"].append(_item(
+                15, "状态异常待处理", candidate,
+                state_error,
+                "打开候选人详情或状态体检，修正异常状态后再继续处理。",
+                timing_group="立即处理",
+            ))
+            continue
+        score = _as_int(candidate.get("match_score")) or 0
+        if score < SCORE_THRESHOLD_PASS and not _has_business_state(candidate):
             continue
 
         followup = _followup_status(candidate)
@@ -314,10 +345,6 @@ def build_daily_candidate_actions(
             continue
 
         if followup in FOLLOWUP_SCHEDULED_STATUSES:
-            if followup == "已约面" and not normalize_followup_at(
-                candidate.get("next_followup_at")
-            ):
-                continue
             timing_group, due_at = classify_followup_timing(candidate, current_date)
             group, priority, reason, action = _scheduled_followup_action(followup, due_at)
             buckets[group].append(_item(
@@ -328,6 +355,7 @@ def build_daily_candidate_actions(
 
     ordered_groups = [
         "发送结果待核实",
+        "状态异常待处理",
         "已回复待推进",
         "待复核",
         "待完成简历评估",
@@ -431,6 +459,7 @@ def default_next_followup_at(
         "已打招呼": 1,
         "已回复": 0,
         "待约面": 1,
+        "已约面": 1,
     }.get(str(status or "").strip())
     if days is None:
         return ""
@@ -554,6 +583,32 @@ def _communication_status(candidate: dict[str, Any]) -> str:
     if followup:
         return followup
     return "已打招呼" if candidate.get("greet_sent") else "未沟通"
+
+
+def candidate_state_error_reason(candidate: dict[str, Any]) -> str:
+    """Return one fail-closed persisted-state error that requires correction."""
+    if _as_int(candidate.get("match_score")) is None:
+        return "匹配分缺失或格式无效"
+    qualification = str(candidate.get("qualification_status") or "qualified").strip()
+    if qualification not in SUPPORTED_QUALIFICATION_STATUSES:
+        return f"资格审查状态异常（{qualification}）"
+    followup = _followup_status(candidate)
+    if followup not in SUPPORTED_FOLLOWUP_STATUSES:
+        return f"跟进状态异常（{followup}）"
+    feedback = str(candidate.get("feedback_status") or "").strip()
+    if feedback and feedback not in SUPPORTED_FEEDBACK_STATUSES:
+        return f"人工反馈状态异常（{feedback}）"
+    return ""
+
+
+def _review_is_closed(candidate: dict[str, Any]) -> bool:
+    feedback = str(candidate.get("feedback_status") or "").strip()
+    followup = _followup_status(candidate)
+    return bool(
+        candidate.get("blacklisted")
+        or feedback in NEGATIVE_CONTACT_FEEDBACK
+        or followup in {"不合适", "已归档"}
+    )
 
 
 def _manual_review_reasons(candidate: dict[str, Any]) -> list[str]:

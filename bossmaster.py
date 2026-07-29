@@ -66,6 +66,7 @@ from filtering import (
     filter_candidate,
     parse_experience_years,
 )
+from candidate_workflow import candidate_greet_skip_reason
 from paths import BASE_DIR, SELECTORS_PATH, CONFIG_PATH, CANDIDATES_PATH, CANDIDATES_XLSX_PATH
 from storage import (
     build_blacklist_index,
@@ -77,6 +78,7 @@ from storage import (
     is_already_greeted,
     is_recommended_candidate,
     load_candidates_all,
+    merge_candidate_business_state,
     merge_candidates_all,
     persist_candidate_greeting_pending,
     persist_candidate_greeted,
@@ -4498,13 +4500,14 @@ def _select_greet_context_candidates(
             c for c in passed_candidates
             if c.get('name') in (greet_names_list or [])
             and c.get('geek_id') not in existing_greeted_ids
+            and not candidate_greet_skip_reason(c)
         ]
     else:
         planned_auto_greet = [
             c for c in passed_candidates
             if c.get('recommend_level') in greet_levels_allowed
             and c.get('geek_id') not in existing_greeted_ids
-            and not c.get('manual_review_required')
+            and not candidate_greet_skip_reason(c)
         ]
     planned_auto_greet.sort(
         key=lambda x: raw_order_by_geek_id.get(
@@ -4522,6 +4525,28 @@ def _select_greet_context_candidates(
         and c.get('geek_id') not in planned_ids
         and c.get('match_score', 0) >= GREET_CONTEXT_MIN_SCORE
         and c.get('qualification_status') != 'rejected'
+    ]
+
+
+def _bind_latest_candidate_states(
+    candidates: list[dict[str, Any]],
+    persisted_candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Rebind scan results to records containing the latest persisted business state."""
+    latest_by_key = {
+        candidate_key(item.get('geek_id'), item.get('job_name', '')): item
+        for item in persisted_candidates
+        if item.get('geek_id')
+    }
+    return [
+        merge_candidate_business_state(
+            candidate,
+            latest_by_key.get(
+                candidate_key(candidate.get('geek_id'), candidate.get('job_name', '')),
+                {},
+            ),
+        )
+        for candidate in candidates
     ]
 
 
@@ -5004,7 +5029,10 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
             f"成功率 {success_rate:.1f}%"
         )
         if llm_failed_count and llm_failed_count / rule_pool_count >= 0.3:
-            print("[WARN] AI 评估失败率过高，本轮结果主要依据规则评分，请人工复核失败候选人")
+            print(
+                "[WARN] AI 评估失败率过高，本轮结果主要依据规则评分；"
+                "AI 失败本身不阻断联系，仍以分数、资格和人工业务状态为准"
+            )
         ai_hard_rejected = sum(
             1 for c in passed_candidates if c.get('qualification_status') == 'rejected'
         )
@@ -5058,6 +5086,10 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
             if scan_state.get('scan_status') == 'complete'
             else None
         ),
+    )
+    passed_candidates = _bind_latest_candidate_states(
+        passed_candidates,
+        load_candidates_all(),
     )
 
     context_candidates: list[dict[str, Any]] = []
@@ -5144,10 +5176,13 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
         time.sleep(_human_delay(0.3, 0.25))
 
         # 筛选需要打招呼的候选人
+        manual_review_count = 0
+        pending_count = 0
         if point_to_point_mode:
             # 点对点模式：只筛选指定姓名的候选人
             to_greet_list = [c for c in passed_candidates
-                            if c.get('name') in greet_names_list]
+                            if c.get('name') in greet_names_list
+                            and not candidate_greet_skip_reason(c)]
             print(f"需要打招呼：{len(to_greet_list)} 人 (点对点)")
             if not to_greet_list:
                 print(f"  未找到匹配的候选人，姓名列表：{greet_names_list}")
@@ -5156,25 +5191,27 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
             to_greet_list = [c for c in passed_candidates
                             if c.get('recommend_level') in greet_levels_allowed
                             and c.get('geek_id') not in existing_ids_for_job_and_greeted
-                            and not c.get('greet_confirmation_pending')
-                            and not c.get('manual_review_required')]
-            blocked_count = sum(
-                1 for c in passed_candidates
-                if c.get('recommend_level') in greet_levels_allowed
-                and c.get('geek_id') not in existing_ids_for_job_and_greeted
-                and c.get('manual_review_required')
-            )
-            pending_count = sum(
-                1 for c in passed_candidates
-                if c.get('recommend_level') in greet_levels_allowed
-                and c.get('geek_id') not in existing_ids_for_job_and_greeted
-                and c.get('greet_confirmation_pending')
-            )
+                            and not candidate_greet_skip_reason(c)]
+            blocked_reasons: dict[str, int] = {}
+            for candidate in passed_candidates:
+                if (
+                    candidate.get('recommend_level') not in greet_levels_allowed
+                    or candidate.get('geek_id') in existing_ids_for_job_and_greeted
+                ):
+                    continue
+                reason = candidate_greet_skip_reason(candidate)
+                if reason:
+                    blocked_reasons[reason] = blocked_reasons.get(reason, 0) + 1
+                if (
+                    candidate.get('manual_review_required')
+                    or candidate.get('qualification_status') == 'manual_review'
+                ):
+                    manual_review_count += 1
+                if candidate.get('greet_confirmation_pending'):
+                    pending_count += 1
             print(f"需要打招呼：{len(to_greet_list)} 人 ({greet_level_text})")
-            if blocked_count:
-                print(f"  已跳过 {blocked_count} 人：需要人工确认后再打招呼")
-            if pending_count:
-                print(f"  已跳过 {pending_count} 人：上次发送结果待核实，请先在 BOSS 沟通列表核实")
+            for reason, count in blocked_reasons.items():
+                print(f"  已跳过 {count} 人：{reason}")
 
         # 点击顺序按扫描/页面顺序，减少虚拟列表反复回顶和跳跃滚动。
         to_greet_list.sort(key=lambda x: raw_order_by_geek_id.get(str(x.get('geek_id')), len(raw_order_by_geek_id)))
@@ -5207,7 +5244,7 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                 job_name,
                 to_greet_list,
                 greet_level_text if not point_to_point_mode else "点对点指定候选人",
-                manual_review_count=blocked_count if not point_to_point_mode else 0,
+                manual_review_count=manual_review_count if not point_to_point_mode else 0,
                 pending_count=pending_count if not point_to_point_mode else 0,
                 limited_remaining_count=limited_remaining_count,
                 scan_stats=stats,
@@ -5725,25 +5762,22 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                 # 点对点模式：只筛选指定姓名的候选人
                 to_greet = [c for c in candidates_all
                            if c.get('name') in greet_names_list
-                           and not c.get('greet_sent', False)
-                           and not c.get('blacklisted')]
+                           and not candidate_greet_skip_reason(c)]
                 filter_text = f" (姓名匹配：{greet_names_list})"
             else:
                 # 自动模式：根据推荐等级筛选
                 to_greet = [c for c in candidates_all
                            if c.get('recommend_level') in greet_levels_allowed
-                           and not c.get('greet_sent', False)
-                           and not c.get('greet_confirmation_pending')
-                           and not c.get('blacklisted')
-                           and not c.get('manual_review_required')]
-                blocked_count = sum(
-                    1 for c in candidates_all
-                    if c.get('recommend_level') in greet_levels_allowed
-                    and not c.get('greet_sent', False)
-                    and c.get('manual_review_required')
-                )
-                if blocked_count:
-                    print(f"已跳过 {blocked_count} 人：需要人工确认后再打招呼")
+                           and not candidate_greet_skip_reason(c)]
+                blocked_reasons: dict[str, int] = {}
+                for candidate in candidates_all:
+                    if candidate.get('recommend_level') not in greet_levels_allowed:
+                        continue
+                    reason = candidate_greet_skip_reason(candidate)
+                    if reason:
+                        blocked_reasons[reason] = blocked_reasons.get(reason, 0) + 1
+                for reason, count in blocked_reasons.items():
+                    print(f"已跳过 {count} 人：{reason}")
                 filter_text = f" ({greet_level_text})"
 
             if not to_greet:

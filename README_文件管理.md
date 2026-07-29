@@ -63,7 +63,18 @@ contact_queue.json     # GUI 联系清单意图（仅候选人/岗位标识、�
 | feedback_note | 反馈备注（自由文本） |
 | feedback_updated_at | 反馈更新时间（YYYYMMDD_HHMMSS） |
 
-**人工联系批准字段**（人工确认待定或 AI 评估失败候选人可联系后写入）：
+**人工复核字段**（待定分数或硬条件证据不足的候选人完成人工复核后写入）：
+
+| 字段 | 说明 |
+|------|------|
+| review_passed_at | 人工复核通过时间（YYYYMMDD_HHMMSS） |
+| review_passed_reasons | 本次复核通过对应的原因列表 |
+| review_rejected_at | 人工复核不通过时间（YYYYMMDD_HHMMSS） |
+| review_rejected_reasons | 本次复核不通过对应的原因列表 |
+
+AI 评估调用失败只表示辅助评估未完成，不写入人工复核结论，也不单独阻断规则分和资格已通过的候选人进入联系清单。
+
+**人工联系批准字段**（55-64 分待定候选人复核通过并获准联系后写入）：
 
 | 字段 | 说明 |
 |------|------|
