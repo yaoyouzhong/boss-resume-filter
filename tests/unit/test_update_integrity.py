@@ -88,6 +88,8 @@ diff --git a/gui_main.py b/gui_main.py
 --- a/gui_main.py
 +++ b/gui_main.py
 +        if resolution.status == \"confirmed\":
++        elif decision.review_status == \"passed\":
++        if decision.review_status != \"pending\":
 """
 
     class Result:
@@ -120,7 +122,7 @@ diff --git a/gui_main.py b/gui_main.py
             build.subprocess.run,
         ) = originals
 
-    assert "均已在 CHANGELOG 中体现" in output.getvalue()
+    assert "未检测到用户可见的新增代码信号" in output.getvalue()
     assert "未覆盖信号" not in output.getvalue()
 
 
