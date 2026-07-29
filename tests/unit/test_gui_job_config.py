@@ -5602,6 +5602,84 @@ def test_review_workbench_promotes_pending_send_verification():
     assert "self._focus_candidate_in_greet_queue(candidate)" in action_block
 
 
+def test_review_queue_add_refreshes_current_candidate_only_after_success():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.candidate_review_window = Mock()
+    gui._add_candidates_to_greet_queue = Mock(return_value=1)
+    on_saved = Mock()
+    candidate = {"geek_id": "queued", "job_name": "Java"}
+
+    added = gui._add_candidate_to_greet_queue_from_review(candidate, on_saved)
+
+    assert added == 1
+    gui._add_candidates_to_greet_queue.assert_called_once_with(
+        [candidate],
+        parent=gui.candidate_review_window,
+    )
+    on_saved.assert_called_once_with()
+
+    gui._add_candidates_to_greet_queue.reset_mock()
+    gui._add_candidates_to_greet_queue.return_value = 0
+    on_saved.reset_mock()
+
+    added = gui._add_candidate_to_greet_queue_from_review(candidate, on_saved)
+
+    assert added == 0
+    on_saved.assert_not_called()
+
+
+def test_review_workbench_queued_candidate_offers_view_instead_of_duplicate_add():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.candidate_review_primary_actions = Mock()
+    gui.candidate_review_secondary_actions = Mock()
+    gui.candidate_review_window = Mock()
+    gui.colors = {
+        "primary": "#2563EB",
+        "success": "#16A34A",
+        "warning": "#D97706",
+    }
+    gui._clear_candidate_review_actions = Mock()
+    gui._greet_queue_item_for_candidate = Mock(
+        return_value={"status": "待发送"}
+    )
+    gui._add_candidate_review_action = Mock()
+    candidate = {
+        "geek_id": "queued",
+        "job_name": "Java",
+        "qualification_status": "qualified",
+        "match_score": 70,
+    }
+
+    gui._render_candidate_review_actions(candidate, Mock())
+
+    action_labels = [
+        item.args[1] for item in gui._add_candidate_review_action.call_args_list
+    ]
+    assert "查看联系清单" in action_labels
+    assert "加入联系清单" not in action_labels
+
+
+def test_focus_candidate_in_greet_queue_uses_actual_status_group():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.greet_queue_tree = None
+    item = {
+        "queue_id": "queue-1",
+        "status": "待发送",
+        "candidate": {"geek_id": "queued", "job_name": "Java"},
+    }
+    gui._greet_queue_item_for_candidate = Mock(return_value=item)
+    gui._show_greet_queue_dialog = Mock()
+    gui._refresh_greet_queue_dialog = Mock()
+    candidate = {"geek_id": "queued", "job_name": "Java"}
+
+    gui._focus_candidate_in_greet_queue(candidate)
+
+    assert gui.greet_queue_selected_group == "待发送"
+    gui._show_greet_queue_dialog.assert_called_once_with(parent=gui.root)
+    gui._refresh_greet_queue_dialog.assert_called_once_with()
+
+
 def test_daily_followup_action_promotes_followup_context_menu_entry():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     action_block = source[source.index("def _show_daily_candidate_actions_dialog"):]

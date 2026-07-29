@@ -87,6 +87,7 @@ from ai_adapter import (
 )
 from greeting_failure import diagnose_greeting_failure, format_greeting_failure_message
 from contact_queue import (
+    ACTIVE_STATUSES,
     build_contact_queue_item,
     candidate_identity as contact_queue_candidate_identity,
     count_pending_contact_queue,
@@ -16442,6 +16443,14 @@ class BossFilterGUI:
                 ),
             )
 
+        def add_focus_queue():
+            menu.add_command(
+                label=" 查看联系清单",
+                image=icon_queue,
+                compound=tk.LEFT,
+                command=lambda: self._focus_candidate_in_greet_queue(candidate),
+            )
+
         def add_approve_queue():
             menu.add_command(
                 label=" 确认并加入联系清单",
@@ -16525,7 +16534,13 @@ class BossFilterGUI:
             or candidate.get('qualification_status') == 'manual_review'
         )
         needs_send_verification = bool(candidate.get('greet_confirmation_pending'))
-        can_queue = not candidate_greet_skip_reason(candidate)
+        active_queue_item = self._greet_queue_item_for_candidate(
+            candidate, active_only=True
+        )
+        can_queue = (
+            active_queue_item is None
+            and not candidate_greet_skip_reason(candidate)
+        )
         can_approve_queue = candidate_can_manual_approve_contact(candidate)
 
         if needs_send_verification:
@@ -16557,7 +16572,9 @@ class BossFilterGUI:
         if needs_review and primary_action != "confirm":
             add_confirm()
 
-        if can_queue and primary_action != "queue":
+        if active_queue_item is not None:
+            add_focus_queue()
+        elif can_queue and primary_action != "queue":
             add_queue()
         elif can_approve_queue and not (
             primary_action == "confirm" and not needs_review
@@ -17400,7 +17417,17 @@ class BossFilterGUI:
                              command=lambda: self._confirm_manual_review(
                                  None, candidate=candidate, parent=parent))
 
-        if not candidate_greet_skip_reason(candidate):
+        active_queue_item = self._greet_queue_item_for_candidate(
+            candidate, active_only=True
+        )
+        if active_queue_item is not None:
+            menu.add_command(
+                label=" 查看联系清单",
+                image=icon_greet,
+                compound=tk.LEFT,
+                command=lambda: self._focus_candidate_in_greet_queue(candidate),
+            )
+        elif not candidate_greet_skip_reason(candidate):
             menu.add_command(
                 label=" 加入联系清单",
                 image=icon_greet,
@@ -19853,6 +19880,24 @@ class BossFilterGUI:
     def _greet_queue_key(candidate):
         return contact_queue_candidate_identity(candidate)
 
+    def _greet_queue_item_for_candidate(self, candidate, *, active_only=False):
+        """Return the candidate's current queue item, optionally only if active."""
+        self._ensure_greet_queue_loaded()
+        key = self._greet_queue_key(candidate)
+        return next(
+            (
+                item for item in self.greet_queue_items
+                if (
+                    item.get('key') == key
+                    and (
+                        not active_only
+                        or (item.get('status') or "待发送") in ACTIVE_STATUSES
+                    )
+                )
+            ),
+            None,
+        )
+
     def _ensure_greet_queue_loaded(self):
         """Lazily restore active queue intent against the latest candidate data."""
         if self._greet_queue_loaded:
@@ -19986,6 +20031,16 @@ class BossFilterGUI:
                 button_text="确定",
                 button_align="center",
             )
+        return added
+
+    def _add_candidate_to_greet_queue_from_review(self, candidate, on_saved):
+        """Add one review candidate and redraw the same candidate on success."""
+        added = self._add_candidates_to_greet_queue(
+            [candidate],
+            parent=self.candidate_review_window,
+        )
+        if added and on_saved:
+            on_saved()
         return added
 
     @staticmethod
@@ -20279,13 +20334,8 @@ class BossFilterGUI:
         self._refresh_greet_queue_dialog()
 
     def _focus_candidate_in_greet_queue(self, candidate):
-        """Open the contact workbench at a candidate awaiting verification."""
-        self._ensure_greet_queue_loaded()
-        key = self._greet_queue_key(candidate)
-        item = next(
-            (item for item in self.greet_queue_items if item.get('key') == key),
-            None,
-        )
+        """Open the contact workbench at the candidate's actual queue status."""
+        item = self._greet_queue_item_for_candidate(candidate)
         if item is None and candidate.get('greet_confirmation_pending'):
             item = self._build_greet_queue_item(candidate, source="candidate_state")
             item['status'] = "待核实"
@@ -20307,7 +20357,7 @@ class BossFilterGUI:
         self._show_greet_queue_dialog(parent=self.root)
         if item is None:
             return
-        self.greet_queue_selected_group = "待核实"
+        self.greet_queue_selected_group = item.get('status') or "待发送"
         self._refresh_greet_queue_dialog()
         if self.greet_queue_tree and self.greet_queue_tree.winfo_exists():
             queue_id = item.get('queue_id')
@@ -22265,6 +22315,9 @@ class BossFilterGUI:
         self._clear_candidate_review_actions()
         key = self._candidate_identity_key(candidate)
         on_saved = lambda: self._candidate_review_action_saved(key)
+        active_queue_item = self._greet_queue_item_for_candidate(
+            candidate, active_only=True
+        )
         primary_action = ""
 
         if candidate.get('greet_confirmation_pending'):
@@ -22303,6 +22356,15 @@ class BossFilterGUI:
                     on_saved=on_saved,
                 ),
             )
+        elif active_queue_item is not None:
+            primary_action = "contact_queue"
+            self._add_candidate_review_action(
+                self.candidate_review_primary_actions,
+                "查看联系清单",
+                'chat',
+                self.colors['primary'],
+                lambda: self._focus_candidate_in_greet_queue(candidate),
+            )
         elif not candidate_greet_skip_reason(candidate):
             primary_action = "greet"
             self._add_candidate_review_action(
@@ -22310,8 +22372,8 @@ class BossFilterGUI:
                 "加入联系清单",
                 'chat',
                 self.colors['success'],
-                lambda: self._add_candidates_to_greet_queue(
-                    [candidate], parent=self.candidate_review_window
+                lambda: self._add_candidate_to_greet_queue_from_review(
+                    candidate, on_saved
                 ),
             )
         elif candidate.get('greet_sent'):
