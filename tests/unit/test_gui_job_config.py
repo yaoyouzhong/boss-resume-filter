@@ -3637,20 +3637,30 @@ def test_candidate_decision_summary_leads_with_action_and_review_evidence():
     assert "Python：项目使用 Python" in summary
 
 
-def test_candidate_review_action_advances_after_refresh():
+def test_candidate_review_action_keeps_current_after_refresh_even_outside_result_scope():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     current = {"geek_id": "current", "job_name": "Java"}
+    refreshed_current = {
+        "geek_id": "current",
+        "job_name": "Java",
+        "contact_approved_at": "20260729_100000",
+    }
     next_candidate = {"geek_id": "next", "job_name": "Java"}
     gui._candidate_review_index = 0
-    gui.result_tree_data = [current, next_candidate]
+    gui._candidate_review_candidates = [current, next_candidate]
+    gui.result_tree_data = [next_candidate]
     gui.refresh_results = Mock()
     gui._render_candidate_review_workbench = Mock()
 
-    gui._candidate_review_action_saved(("current", "Java"))
+    with patch(
+        "gui_main.load_candidates_all",
+        return_value=[refreshed_current, next_candidate],
+    ):
+        gui._candidate_review_action_saved(("current", "Java"))
 
     gui.refresh_results.assert_called_once_with(force=True)
-    assert gui._candidate_review_candidates == [current, next_candidate]
-    assert gui._candidate_review_index == 1
+    assert gui._candidate_review_candidates == [refreshed_current, next_candidate]
+    assert gui._candidate_review_index == 0
     gui._render_candidate_review_workbench.assert_called_once()
 
 
@@ -3684,6 +3694,86 @@ def test_clear_manual_review_is_scoped_to_candidate_job():
         assert saved[0]["qualification_status"] == "qualified"
         assert saved[1]["manual_review_required"] is True
         assert saved[1]["qualification_status"] == "manual_review"
+
+
+def test_confirm_manual_review_once_approves_pending_contact_without_changing_score():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._clear_manual_review = Mock(return_value=1)
+    gui._regenerate_excel = Mock()
+    gui.refresh_home_stats = Mock()
+    gui.refresh_stats = Mock()
+    gui.refresh_results = Mock()
+    gui._status_flash = Mock()
+    on_saved = Mock()
+    candidate = {
+        "geek_id": "pending",
+        "name": "待定候选人",
+        "job_name": "Java 工程师",
+        "match_score": 60,
+        "manual_review_required": True,
+        "qualification_status": "manual_review",
+        "qualification_reasons": ["学历形式待确认"],
+    }
+
+    with patch("gui_main.messagebox.askyesno", return_value=True):
+        gui._confirm_manual_review(
+            None,
+            candidate=candidate,
+            parent=Mock(),
+            on_saved=on_saved,
+        )
+
+    assert candidate["match_score"] == 60
+    assert candidate["manual_review_required"] is False
+    assert candidate["qualification_status"] == "qualified"
+    assert candidate["contact_approval_reason"] == "人工确认复核通过并可联系"
+    assert candidate["contact_approved_at"]
+    _args, kwargs = gui._clear_manual_review.call_args
+    assert kwargs["contact_approval_reason"] == "人工确认复核通过并可联系"
+    assert kwargs["timestamp"] == candidate["contact_approved_at"]
+    assert gui._format_candidate_status(candidate) == "未沟通｜人工确认"
+    on_saved.assert_called_once_with()
+
+
+def test_clear_manual_review_persists_contact_approval_for_only_matching_job():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        candidates_path = Path(tmp_dir) / "candidates.json"
+        candidates_path.write_text(json.dumps([
+            {
+                "geek_id": "same-geek",
+                "job_name": "Java 工程师",
+                "match_score": 60,
+                "manual_review_required": True,
+                "qualification_status": "manual_review",
+            },
+            {
+                "geek_id": "same-geek",
+                "job_name": "Python 工程师",
+                "match_score": 60,
+                "manual_review_required": True,
+                "qualification_status": "manual_review",
+            },
+        ], ensure_ascii=False), encoding="utf-8")
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+
+        with patch("gui_main.CANDIDATES_PATH", candidates_path):
+            updated = gui._clear_manual_review(
+                "same-geek",
+                "Java 工程师",
+                contact_approval_reason="人工确认复核通过并可联系",
+                timestamp="20260729_100000",
+            )
+
+        saved = json.loads(candidates_path.read_text(encoding="utf-8"))
+        assert updated == 1
+        assert saved[0]["match_score"] == 60
+        assert saved[0]["manual_review_required"] is False
+        assert saved[0]["qualification_status"] == "qualified"
+        assert saved[0]["contact_approved_at"] == "20260729_100000"
+        assert saved[0]["contact_approval_reason"] == "人工确认复核通过并可联系"
+        assert saved[1]["manual_review_required"] is True
+        assert saved[1]["qualification_status"] == "manual_review"
+        assert "contact_approved_at" not in saved[1]
 
 
 def test_clear_manual_review_rejects_missing_candidate_id():

@@ -18792,14 +18792,32 @@ class BossFilterGUI:
                 "更新跟进", f"保存跟进状态失败：{exc}", parent=parent or self.root
             )
 
-    def _clear_manual_review(self, geek_id, job_name):
-        """按候选人和岗位清除人工确认标记。"""
+    @staticmethod
+    def _manual_review_contact_approval_reason(candidate):
+        """Return the contact approval implied by passing the displayed review."""
+        resolved = dict(candidate)
+        resolved['manual_review_required'] = False
+        resolved['qualification_status'] = 'qualified'
+        resolved.pop('auto_greet_blocked_reason', None)
+        if candidate_can_manual_approve_contact(resolved):
+            return "人工确认复核通过并可联系"
+        return ""
+
+    def _clear_manual_review(
+        self,
+        geek_id,
+        job_name,
+        contact_approval_reason="",
+        timestamp=None,
+    ):
+        """按候选人和岗位完成复核，并按需记录人工联系批准。"""
         if not geek_id or not CANDIDATES_PATH.exists():
             return 0
         with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
             candidates = json.load(f)
 
         updated = 0
+        approved_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
         for c in candidates:
             if (
                 str(c.get('geek_id')) == str(geek_id)
@@ -18812,6 +18830,9 @@ class BossFilterGUI:
                     c['manual_review_required'] = False
                     c['qualification_status'] = 'qualified'
                     c.pop('auto_greet_blocked_reason', None)
+                    if contact_approval_reason:
+                        c['contact_approved_at'] = approved_at
+                        c['contact_approval_reason'] = contact_approval_reason
                     updated += 1
 
         if updated:
@@ -18926,18 +18947,29 @@ class BossFilterGUI:
             "\n".join(f"- {reason}" for reason in review_reasons)
             if review_reasons else "无"
         )
+        contact_approval_reason = self._manual_review_contact_approval_reason(candidate)
+        confirmation_effect = (
+            "确认后将清除「需人工确认」标记，并记录为人工确认可联系；"
+            "不会修改匹配分或推荐指数。"
+            if contact_approval_reason
+            else "确认后将清除「需人工确认」标记。"
+        )
         if not messagebox.askyesno(
             "确认通过",
             f"确认 {name} 的人工审查已通过？\n\n"
             f"审查原因：\n{risk_text}\n\n"
-            f"确认后将清除「需人工确认」标记。如需联系此人，可加入联系清单。",
+            f"{confirmation_effect}\n\n如需联系此人，可加入联系清单。",
             parent=parent or self.root
         ):
             return
 
         try:
+            confirmed_at = datetime.now().strftime("%Y%m%d_%H%M%S")
             updated = self._clear_manual_review(
-                candidate.get('geek_id'), candidate.get('job_name', '')
+                candidate.get('geek_id'),
+                candidate.get('job_name', ''),
+                contact_approval_reason=contact_approval_reason,
+                timestamp=confirmed_at,
             )
             if not updated:
                 self._status_flash(f"{name} 当前已无需人工确认")
@@ -18945,6 +18977,9 @@ class BossFilterGUI:
             candidate['manual_review_required'] = False
             candidate['qualification_status'] = 'qualified'
             candidate.pop('auto_greet_blocked_reason', None)
+            if contact_approval_reason:
+                candidate['contact_approved_at'] = confirmed_at
+                candidate['contact_approval_reason'] = contact_approval_reason
             self._regenerate_excel()
             self.refresh_home_stats()
             self.refresh_stats()
@@ -18958,31 +18993,59 @@ class BossFilterGUI:
 
     def _batch_confirm_manual_review(self, candidates, parent=None):
         """批量清除候选人的需人工确认标记。"""
-        to_confirm = [c for c in candidates if c.get('manual_review_required')]
+        to_confirm = [
+            c for c in candidates
+            if (
+                c.get('manual_review_required')
+                or c.get('qualification_status') == 'manual_review'
+            )
+        ]
         if not to_confirm:
             self._status_flash("选中候选人中没有需确认的标记")
             return
         names = ", ".join(c.get('name', '?') for c in to_confirm[:5])
         if len(to_confirm) > 5:
             names += f" 等 {len(to_confirm)} 人"
+        approval_reasons = {
+            self._candidate_identity_key(c):
+            self._manual_review_contact_approval_reason(c)
+            for c in to_confirm
+        }
+        approval_count = sum(bool(reason) for reason in approval_reasons.values())
+        approval_text = (
+            f"\n其中 {approval_count} 名待定或 AI 评估失败候选人"
+            "将同时记录为人工确认可联系；不会修改匹配分或推荐指数。"
+            if approval_count else ""
+        )
         if not messagebox.askyesno(
             "批量确认通过",
             f"确认以下 {len(to_confirm)} 人的人工审查已通过？\n\n{names}\n\n"
-            f"确认后将清除「需人工确认」标记。如需联系，请加入联系清单。",
+            f"确认后将清除「需人工确认」标记。{approval_text}\n\n"
+            "如需联系，请加入联系清单。",
             parent=parent or self.root
         ):
             return
 
         confirmed = 0
+        confirmed_at = datetime.now().strftime("%Y%m%d_%H%M%S")
         for c in to_confirm:
             try:
+                contact_approval_reason = approval_reasons.get(
+                    self._candidate_identity_key(c), ""
+                )
                 updated = self._clear_manual_review(
-                    c.get('geek_id'), c.get('job_name', '')
+                    c.get('geek_id'),
+                    c.get('job_name', ''),
+                    contact_approval_reason=contact_approval_reason,
+                    timestamp=confirmed_at,
                 )
                 if updated:
                     c['manual_review_required'] = False
                     c['qualification_status'] = 'qualified'
                     c.pop('auto_greet_blocked_reason', None)
+                    if contact_approval_reason:
+                        c['contact_approved_at'] = confirmed_at
+                        c['contact_approval_reason'] = contact_approval_reason
                     confirmed += 1
             except Exception:
                 continue
@@ -22336,13 +22399,26 @@ class BossFilterGUI:
             self._render_candidate_review_workbench()
 
     def _candidate_review_action_saved(self, current_key):
-        """Refresh persisted data and advance to the next candidate after an action."""
+        """Refresh persisted data while keeping the current candidate selected."""
         old_index = getattr(self, '_candidate_review_index', 0)
+        session_candidates = list(
+            getattr(self, '_candidate_review_candidates', []) or []
+        )
         self.refresh_results(force=True)
-        if getattr(self, '_candidate_review_uses_result_scope', True):
-            candidates = list(getattr(self, 'result_tree_data', []) or [])
-        else:
-            candidates = list(getattr(self, '_candidate_review_candidates', []) or [])
+        try:
+            persisted_candidates = load_candidates_all(CANDIDATES_PATH)
+        except Exception as exc:
+            logger.warning("刷新候选人复核工作台数据失败：%s", exc)
+            persisted_candidates = []
+        persisted_by_key = {
+            self._candidate_identity_key(candidate): candidate
+            for candidate in persisted_candidates
+            if self._candidate_identity_key(candidate)[0]
+        }
+        candidates = [
+            persisted_by_key.get(self._candidate_identity_key(candidate), candidate)
+            for candidate in session_candidates
+        ]
         self._candidate_review_candidates = candidates
         if not candidates:
             self._candidate_review_index = 0
@@ -22359,7 +22435,7 @@ class BossFilterGUI:
         if current_index is None:
             self._candidate_review_index = min(old_index, len(candidates) - 1)
         else:
-            self._candidate_review_index = min(current_index + 1, len(candidates) - 1)
+            self._candidate_review_index = current_index
         self._render_candidate_review_workbench()
 
     def _show_candidate_detail(self, item):
