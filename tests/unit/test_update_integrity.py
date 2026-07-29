@@ -215,6 +215,49 @@ diff --git a/gui_main.py b/gui_main.py
     assert "未覆盖信号" not in output.getvalue()
 
 
+def test_changelog_coverage_ignores_ui_text_moved_within_one_file():
+    diff_text = """\
+diff --git a/gui_main.py b/gui_main.py
+--- a/gui_main.py
++++ b/gui_main.py
+-                "核实发送结果",
++                "核实发送结果",
+"""
+
+    class Result:
+        returncode = 0
+        stdout = diff_text
+
+    originals = (
+        build._read_version,
+        build._extract_changelog_release,
+        build._get_last_tag,
+        build.subprocess.run,
+    )
+    try:
+        build._read_version = lambda: "2.24.4"
+        build._extract_changelog_release = lambda _version: (
+            "v2.24.4 — 测试",
+            "### 体验优化\n\n- 测试",
+        )
+        build._get_last_tag = lambda: "v2.24.3"
+        build.subprocess.run = lambda *args, **kwargs: Result()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            build._check_code_to_changelog_coverage(strict=True)
+    finally:
+        (
+            build._read_version,
+            build._extract_changelog_release,
+            build._get_last_tag,
+            build.subprocess.run,
+        ) = originals
+
+    assert "未检测到用户可见的新增代码信号" in output.getvalue()
+    assert "未覆盖信号" not in output.getvalue()
+
+
 def _with_build_context(tmp_path, dist_dir, *, is_win, is_mac):
     class BuildContext:
         def __enter__(self):

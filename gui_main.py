@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.24.3"
+__version__ = "2.24.4"
 
 import json
 import logging
@@ -210,6 +210,7 @@ PAGE_SPECS = {
     ),
 }
 PRIMARY_NAV_PAGES = tuple(page for page in PageIndex if page is not PageIndex.SETTINGS)
+TRAFFIC_LIGHT_BASE_SIZE = 32
 
 # 服务商显示名称映射（内部键 -> 显示名称）
 PROVIDER_DISPLAY = {
@@ -3944,7 +3945,9 @@ class BossFilterGUI:
         self._updating_model_assignment_controls = False
         self._assigned_model_test_buttons = {}
         self._assigned_model_test_status_labels = {}
-        traffic_light_size = int(32 * self.dpi_scale * self.zoom_factor)
+        traffic_light_size = int(
+            TRAFFIC_LIGHT_BASE_SIZE * self.dpi_scale * self.zoom_factor
+        )
         self._assigned_model_test_icons = {
             "pending": self.icons.get('traffic_light_pending', traffic_light_size, self.colors['text_primary']),
             "success": self.icons.get('traffic_light_success', traffic_light_size, self.colors['text_primary']),
@@ -4972,7 +4975,7 @@ class BossFilterGUI:
         # 筛选完成后的联系策略。GUI 发送统一进入联系清单。
         row2 = ttk.Frame(param_frame, style='TFrame')
         row2.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
-        _create_run_control_lead(row2, "筛选完成后:")
+        _create_run_control_lead(row2, "筛选完成:")
         self.contact_after_scan_var = tk.StringVar(value="仅保存筛选结果")
         contact_combo = ttk.Combobox(
             row2,
@@ -10359,6 +10362,7 @@ class BossFilterGUI:
                 "base_url": (self.api_config or {}).get("base_url", ""),
                 "model": (self.api_config or {}).get("model", ""),
             }
+            current_api_key = str((self.api_config or {}).get("api_key") or "")
             has_saved_current = any(
                 self._model_ref_matches(model_config, current_ref)
                 for model_config in existing_saved_models
@@ -10371,9 +10375,13 @@ class BossFilterGUI:
                 top_provider = (self.api_config or {}).get("api_provider", provider)
                 top_base_url = (self.api_config or {}).get("base_url", base_url)
                 top_model = current_ref.get("model", "")
+            saved_key_identity = self._api_key_cache_identity(provider, base_url)
+            top_key_identity = self._api_key_cache_identity(top_provider, top_base_url)
+            top_api_key = api_key if top_key_identity == saved_key_identity else current_api_key
 
             self.api_config = {
                 "api_provider": top_provider,
+                "api_key": top_api_key,
                 "base_url": top_base_url,
                 "model": top_model,
                 "saved_models": existing_saved_models,
@@ -13664,7 +13672,11 @@ class BossFilterGUI:
         else:
             kind = 'pending'
         if kind not in cache:
-            size = int(16 * getattr(self, 'dpi_scale', 1.0) * getattr(self, 'zoom_factor', 1.0))
+            size = int(
+                TRAFFIC_LIGHT_BASE_SIZE
+                * getattr(self, 'dpi_scale', 1.0)
+                * getattr(self, 'zoom_factor', 1.0)
+            )
             cache[kind] = self.icons.get(
                 f'traffic_light_{kind}', size, self.colors.get('text_primary', ui_theme.TEXT_PRIMARY))
         return cache[kind]
@@ -22337,13 +22349,16 @@ class BossFilterGUI:
         actions.pack(side='bottom', fill='x', pady=(int(12 * scale), 0))
         actions.grid_columnconfigure(0, weight=1)
         self.candidate_review_primary_section = ttk.Frame(actions, style='Page.TFrame')
-        ttk.Label(
+        self.candidate_review_primary_label = ttk.Label(
             self.candidate_review_primary_section,
             text="建议下一步",
             font=(FONT_FAMILY, int(10 * self.font_scale)),
             foreground=self.colors['text_secondary'],
             background=self.colors['bg_main'],
-        ).pack(anchor='w', pady=(0, int(4 * scale)))
+        )
+        self.candidate_review_primary_label.pack(
+            anchor='w', pady=(0, int(4 * scale))
+        )
         self.candidate_review_primary_actions = ttk.Frame(
             self.candidate_review_primary_section, style='Page.TFrame'
         )
@@ -22774,25 +22789,23 @@ class BossFilterGUI:
         active_queue_item = self._greet_queue_item_for_candidate(
             candidate, active_only=True
         )
-        primary_action = ""
-
-        if candidate.get('greet_confirmation_pending'):
-            primary_action = "verify_sent"
-            self._add_candidate_review_action(
-                self.candidate_review_primary_actions,
-                "核实发送结果",
-                'stamp_check',
-                self.colors['warning'],
-                lambda: self._focus_candidate_in_greet_queue(candidate),
-            )
-        elif (
+        binary_review_actions = bool(
             decision.review_status == "pending"
+            and not candidate.get('greet_confirmation_pending')
             and (
                 candidate.get('manual_review_required')
                 or candidate.get('qualification_status') == 'manual_review'
             )
-        ):
-            primary_action = "confirm"
+        )
+        primary_label = getattr(self, 'candidate_review_primary_label', None)
+        if primary_label is not None:
+            primary_label.configure(
+                text="复核结论" if binary_review_actions else "建议下一步"
+            )
+        primary_action = ""
+
+        if binary_review_actions:
+            primary_action = "review_decision"
             self._add_candidate_review_action(
                 self.candidate_review_primary_actions,
                 "确认通过",
@@ -22804,6 +22817,27 @@ class BossFilterGUI:
                     parent=self.candidate_review_window,
                     on_saved=on_saved,
                 ),
+            )
+            self._add_candidate_review_action(
+                self.candidate_review_primary_actions,
+                "确认不通过",
+                'close',
+                self.colors['danger'],
+                lambda: self._confirm_review_rejection(
+                    None,
+                    candidate=candidate,
+                    parent=self.candidate_review_window,
+                    on_saved=on_saved,
+                ),
+            )
+        elif candidate.get('greet_confirmation_pending'):
+            primary_action = "verify_sent"
+            self._add_candidate_review_action(
+                self.candidate_review_primary_actions,
+                "核实发送结果",
+                'stamp_check',
+                self.colors['warning'],
+                lambda: self._focus_candidate_in_greet_queue(candidate),
             )
         elif candidate_can_manual_approve_contact(candidate):
             primary_action = "approve_contact"
@@ -22867,7 +22901,7 @@ class BossFilterGUI:
                 ),
             )
 
-        if decision.review_status == "pending":
+        if decision.review_status == "pending" and not binary_review_actions:
             self._add_candidate_review_action(
                 self.candidate_review_secondary_actions,
                 "确认不通过",

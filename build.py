@@ -1384,7 +1384,12 @@ def _check_code_to_changelog_coverage(strict=False):
     for fpath in sorted(set(file_additions) | set(file_removals)):
         additions = file_additions.get(fpath, [])
         removals = file_removals.get(fpath, [])
-        joined = "\n".join(additions)
+        normalized_removals = {line.strip() for line in removals if line.strip()}
+        signal_additions = [
+            line for line in additions
+            if line.strip() not in normalized_removals
+        ]
+        joined = "\n".join(signal_additions)
 
         # 1. 新配置 / 阈值 / 默认值
         if "constants.py" in fpath:
@@ -1433,7 +1438,7 @@ def _check_code_to_changelog_coverage(strict=False):
 
         # 4. UI 文案 / 弹窗 / 用户可见输出
         if fpath.endswith(".py"):
-            for line in additions:
+            for line in signal_additions:
                 if _is_comment_or_doc_line(line):
                     continue
                 if not re.search(r"[一-鿿]{3,}", line):
@@ -1447,7 +1452,7 @@ def _check_code_to_changelog_coverage(strict=False):
                     ))
 
         # 5. 行为变更：风控、兜底、重试、缓存、上限、节奏等
-        for line in additions:
+        for line in signal_additions:
             if _is_comment_or_doc_line(line):
                 continue
             if _is_release_note_implementation_detail(fpath, line):
@@ -1472,7 +1477,7 @@ def _check_code_to_changelog_coverage(strict=False):
 
         # 6. 新数据字段：持久化、导出、状态、评分、候选人结构
         if fpath.endswith(".py") and any(k in fpath for k in ("storage.py", "filtering.py", "bossmaster.py", "gui_main.py", "llm_eval.py")):
-            for line in additions:
+            for line in signal_additions:
                 if _is_comment_or_doc_line(line):
                     continue
                 if not re.search(r"[一-鿿]{2,}", line) and re.search(
@@ -1546,7 +1551,7 @@ def _check_code_to_changelog_coverage(strict=False):
                     _keywords(text) + _context_keywords(fpath, line),
                     "体验优化",
                 ))
-        for line in additions:
+        for line in signal_additions:
             if _is_comment_or_doc_line(line):
                 continue
             if _is_release_note_implementation_detail(fpath, line):

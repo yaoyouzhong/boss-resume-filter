@@ -1915,7 +1915,7 @@ def test_model_settings_use_explicit_role_selectors_not_hidden_actions():
     assert 'text="学历核验模型:"' in settings_block
     assert "label_width_assignment = 14" in settings_block
     assert "model_choice_width = 34" in settings_block
-    assert "traffic_light_size = int(32 * self.dpi_scale * self.zoom_factor)" in settings_block
+    assert "TRAFFIC_LIGHT_BASE_SIZE * self.dpi_scale * self.zoom_factor" in settings_block
     assert "traffic_light_pending" in settings_block
     assert "traffic_light_success" in settings_block
     assert "traffic_light_error" in settings_block
@@ -3051,6 +3051,19 @@ def test_traffic_light_icons_are_registered_without_pulse_check():
     assert "pulse_check" not in icons.ICON_REGISTRY
 
 
+def test_run_and_settings_traffic_lights_share_one_base_size():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    settings_block = source[source.index("def _create_api_config_content"):]
+    settings_block = settings_block[:settings_block.index("\n    def load_api_config_to_ui")]
+    lamp_block = source[source.index("def _get_lamp_icon"):]
+    lamp_block = lamp_block[:lamp_block.index("\n    def _apply_lamp_status")]
+
+    assert "TRAFFIC_LIGHT_BASE_SIZE = 32" in source
+    assert "TRAFFIC_LIGHT_BASE_SIZE * self.dpi_scale * self.zoom_factor" in settings_block
+    assert "TRAFFIC_LIGHT_BASE_SIZE" in lamp_block
+    assert "int(16 *" not in lamp_block
+
+
 def test_result_action_icons_are_registered_visible_and_distinct():
     assert "task_list" in icons.ICON_REGISTRY
     assert "candidate_review" in icons.ICON_REGISTRY
@@ -3122,12 +3135,24 @@ def test_save_api_config_preserves_existing_default_model():
     }]
     gui.api_config = {
         "api_provider": "qwen",
+        "api_key": "current-secret",
         "base_url": "https://one.example/v1/",
         "model": "current-model",
         "saved_models": gui.saved_models,
     }
-    gui.colors = {"success": "green", "danger": "red"}
+    gui.colors = {
+        "success": "green",
+        "danger": "red",
+        "warning": "orange",
+        "text_primary": "black",
+        "text_muted": "gray",
+    }
     gui.api_status_label = _FakeWidget()
+    gui.ai_status_label = Mock()
+    gui.ai_eval_var = Mock()
+    gui.ai_eval_available_var = Mock()
+    gui.ai_eval_label = Mock()
+    gui._ai_eval_auto_done = True
     gui._status_clickable_labels = []
     gui.load_saved_models_to_tree = Mock()
     gui._mark_api_config_ui_current = Mock()
@@ -3145,8 +3170,59 @@ def test_save_api_config_preserves_existing_default_model():
     showerror.assert_not_called()
     assert gui.api_config["model"] == "current-model"
     assert gui.api_config["base_url"] == "https://one.example/v1/"
+    assert gui.api_config["api_key"] == "current-secret"
     assert any(m["model"] == "new-model" for m in gui.api_config["saved_models"])
     assert "默认 AI 模型保持不变" in showinfo.call_args.args[1]
+    gui.ai_eval_available_var.set.assert_called_once_with(True)
+    gui.ai_eval_var.set.assert_not_called()
+    gui.ai_status_label.config.assert_called_once_with(
+        text="✓ 已配置", foreground="green"
+    )
+
+
+def test_save_api_config_refreshes_active_key_for_same_endpoint():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.PROVIDER_DISPLAY = gui_main.PROVIDER_DISPLAY
+    gui.DISPLAY_TO_KEY = gui_main.DISPLAY_TO_KEY
+    gui.api_provider_var = _FakeVar("qwen")
+    gui.api_model_var = _FakeVar("new-model")
+    gui.api_key_var = _FakeVar("new-secret")
+    gui.api_base_url_var = _FakeVar("https://one.example/v1")
+    gui.llm_read_timeout_var = _FakeVar(60)
+    gui._pending_models_to_add = []
+    gui.saved_models = [{
+        "api_provider": "qwen",
+        "base_url": "https://one.example/v1/",
+        "model": "current-model",
+    }]
+    gui.api_config = {
+        "api_provider": "qwen",
+        "api_key": "old-secret",
+        "base_url": "https://one.example/v1/",
+        "model": "current-model",
+        "saved_models": gui.saved_models,
+    }
+    gui.colors = {"success": "green", "danger": "red"}
+    gui.api_status_label = _FakeWidget()
+    gui._status_clickable_labels = []
+    gui.load_saved_models_to_tree = Mock()
+    gui._mark_api_config_ui_current = Mock()
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        config_path = Path(tmp_dir) / "api_config.json"
+        with patch.object(gui_main, "get_api_config_path", return_value=config_path), \
+             patch.object(gui_main, "save_api_key", return_value=True), \
+             patch.object(gui_main.messagebox, "showinfo"), \
+             patch.object(gui_main.messagebox, "showwarning"), \
+             patch.object(gui_main.messagebox, "showerror") as showerror:
+            gui.save_api_config()
+
+        saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+
+    showerror.assert_not_called()
+    assert gui.api_config["api_key"] == "new-secret"
+    assert "api_key" not in saved_config
+    assert all("api_key" not in model for model in saved_config["saved_models"])
 
 
 def test_save_api_config_stops_when_system_credential_write_fails():
@@ -4265,6 +4341,7 @@ def test_candidate_review_workbench_exposes_flat_switch_and_direct_actions():
     assert '"标记反馈"' in block
     assert '"导入简历"' in block
     assert 'text="建议下一步"' in block
+    assert "self.candidate_review_primary_label" in block
     assert 'text="其他操作"' in block
     assert "int(9 * self.font_scale)" not in block
     assert block.count("int(10 * self.font_scale)") >= 4
@@ -5921,6 +5998,46 @@ def test_review_workbench_promotes_pending_send_verification():
     assert "self._focus_candidate_in_greet_queue(candidate)" in action_block
 
 
+def test_review_workbench_groups_pending_review_decisions_as_binary_actions():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.candidate_review_primary_actions = Mock()
+    gui.candidate_review_secondary_actions = Mock()
+    gui.candidate_review_primary_label = Mock()
+    gui.candidate_review_window = Mock()
+    gui.colors = {
+        "primary": "#2563EB",
+        "success": "#16A34A",
+        "warning": "#D97706",
+        "danger": "#DC2626",
+    }
+    gui._clear_candidate_review_actions = Mock()
+    gui._greet_queue_item_for_candidate = Mock(return_value=None)
+    gui._add_candidate_review_action = Mock()
+    candidate = {
+        "geek_id": "review",
+        "job_name": "Java",
+        "qualification_status": "manual_review",
+        "manual_review_required": True,
+        "match_score": 70,
+    }
+    decision = types.SimpleNamespace(review_status="pending")
+
+    gui._render_candidate_review_actions(candidate, decision)
+
+    gui.candidate_review_primary_label.configure.assert_called_once_with(
+        text="复核结论"
+    )
+    review_actions = {
+        item.args[1]: item.args[0]
+        for item in gui._add_candidate_review_action.call_args_list
+        if item.args[1] in {"确认通过", "确认不通过"}
+    }
+    assert review_actions == {
+        "确认通过": gui.candidate_review_primary_actions,
+        "确认不通过": gui.candidate_review_primary_actions,
+    }
+
+
 def test_review_queue_add_refreshes_current_candidate_only_after_success():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.candidate_review_window = Mock()
@@ -6759,7 +6876,7 @@ def test_run_control_inputs_share_browser_action_start_column():
     assert "self.rounds_spin.pack(side=\"left\")" in create_block
     assert '_create_run_control_lead(row_job, "选择岗位:")' in create_block
     assert "self.job_combo.pack(side=\"left\")" in create_block
-    assert '_create_run_control_lead(row2, "筛选完成后:")' in create_block
+    assert '_create_run_control_lead(row2, "筛选完成:")' in create_block
     assert "contact_combo.pack(side=\"left\")" in create_block
     assert "_create_run_control_lead(row_advanced_header)" in create_block
     assert "self.scan_advanced_toggle_label.pack(side=\"left\")" in create_block
