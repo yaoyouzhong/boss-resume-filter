@@ -1,29 +1,29 @@
 {
-  "version": "2.24.3",
+  "version": "2.24.4",
   "release_date": "2026-07-29",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.3/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.3/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.3/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.4/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.4/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.4/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "macos_dmg": {
-      "size": 33608898,
-      "sha256": "fe441bd0d522dbbd3f209d4985332f753d76b5b61f2f470cfeeb917e7f1f9f03"
+      "size": 33614101,
+      "sha256": "3eac1b9fe5a493e14b21b1509e9c20aa41cb27a551755d0303c7433d08a7140f"
     },
     "windows": {
-      "size": 35889704,
-      "sha256": "ac2a41952606806542defa5648821fca265831bdabab6a15c605c0af90839678"
+      "size": 35890626,
+      "sha256": "c7583a31402b40f7ac9ab1cb58215ced9548a849d3ca35c749634c3936695a46"
     },
     "macos": {
-      "size": 34434223,
-      "sha256": "1124065e51c8d1cbc56d61574eae5b38fac279f8014be852407660c03acba848"
+      "size": 34435667,
+      "sha256": "38205e603e60d4c04231645d8bd41b59bc096080f48d637208c49bd76c9d1bf7"
     }
   },
-  "release_notes": "### 体验优化\n\n- **复核处理更加连贯**：确认通过或不通过后继续停留在当前候选人，状态内容显示不完整时可悬停查看；“复核通过”统一表示待定分数或学历等硬条件经人工核实通过。\n- **联系提醒和运行设置更加清晰**：发送结果待核实人数改在“联系候选人”按钮上提示；滚动轮次、选择岗位、筛选完成后和 AI 评估（含 AI 响应超时）等运行参数统一左对齐，高级扫描设置增加醒目的访问频率提示。\n\n### 问题修复\n\n- **复核结论不再反复**：修正低分或硬条件待确认候选人通过后仍再次进入待复核的问题；复核不通过会保留明确结论，AI 评估调用失败不再额外要求复核或阻断符合条件的候选人。\n- **联系清单状态及时更新**：修正加入联系清单后仍可重复加入，以及反馈、跟进、屏蔽或复核变化后清单操作未同步的问题；不符合联系条件时明确显示已跳过原因，发送结果待核实的候选人始终优先要求人工核实。\n- **候选人状态保持闭环**：修正结束状态仍残留待复核、已约面但缺少日期时从待办消失、异常状态未进入体检，以及重新标记为未沟通后仍保留原打招呼记录的问题。",
+  "release_notes": "### 体验优化\n\n- **复核决策更加直观**：待复核候选人的“确认通过”和“确认不通过”并排显示在“复核结论”区域，跟进、反馈和简历等其他操作继续独立展示。\n- **运行界面更加一致**：运行控制页精简“筛选完成”文案，并统一浏览器状态与系统设置的红绿灯图标尺寸。\n\n### 问题修复\n\n- **新增模型后 AI 评估保持可用**：修正保存新模型后运行控制页误显示“未配置”并关闭 AI 评估的问题；当前默认模型和同一接入地址的新 Key 会保持正确状态。",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.3/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.3/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.3/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.4/BOSS_ResumeFilter.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.4/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.4/BOSS_ResumeFilter.dmg"
   }
 }
