@@ -82,20 +82,27 @@ def test_result_view_separates_recommended_review_and_rejected_without_limit():
             "contact_approved_at": "20260728_100000",
         },
         {"geek_id": "manual", "qualification_status": "manual_review", "match_score": 72},
+        {
+            "geek_id": "hard-passed",
+            "qualification_status": "qualified",
+            "match_score": 72,
+            "review_passed_at": "20260728_110000",
+            "review_passed_reasons": ["学历形式待确认"],
+        },
         {"geek_id": "ai-failed", "qualification_status": "qualified", "match_score": 72, "llm_error": "timeout"},
         {"geek_id": "send-pending", "qualification_status": "qualified", "match_score": 72, "greet_confirmation_pending": True},
         {"geek_id": "rejected", "qualification_status": "rejected", "match_score": 0},
     ]
 
-    assert len(_filter_candidates_by_result_view(candidates, "推荐候选人")) == 126
+    assert len(_filter_candidates_by_result_view(candidates, "推荐候选人")) == 128
     assert {
         c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "待复核")
-    } == {"pending", "manual", "ai-failed"}
+    } == {"pending", "manual"}
     assert {
-        c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "人工确认")
-    } == {"approved"}
+        c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "复核通过")
+    } == {"approved", "hard-passed"}
     assert [c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "淘汰记录")] == ["rejected"]
-    assert len(_filter_candidates_by_result_view(candidates, "全部记录")) == 131
+    assert len(_filter_candidates_by_result_view(candidates, "全部记录")) == 132
 
 
 def test_run_job_config_warning_is_acknowledged_until_diagnostics_change():
@@ -1621,7 +1628,7 @@ def test_result_page_defaults_to_all_records_and_offers_today():
 
     assert 'values=("全部时间", "今天", "近7天", "近30天", "自定义")' in result_block
     assert 'self.result_view_var = tk.StringVar(value="全部记录")' in result_block
-    assert '"推荐候选人", "人工确认", "待复核", "淘汰记录", "全部记录"' in result_block
+    assert '"推荐候选人", "复核通过", "待复核", "淘汰记录", "全部记录"' in result_block
 
 
 def test_result_blacklist_check_blends_with_page_background_in_every_state():
@@ -3270,10 +3277,8 @@ def test_candidate_status_shows_temporary_ai_eval_state_and_expires():
     assert "123" not in gui._ai_eval_results
 
     candidate["llm_error"] = "请求超时"
-    assert gui._format_candidate_status(candidate) == "未沟通｜待复核"
-    assert candidate["_full_status"] == (
-        "复核原因：AI 评估失败，需人工判断或重试"
-    )
+    assert gui._format_candidate_status(candidate) == "未沟通"
+    assert candidate["_full_status"] == "未沟通"
 
 
 def test_result_status_tooltip_shows_hidden_review_reason():
@@ -3282,6 +3287,8 @@ def test_result_status_tooltip_shows_hidden_review_reason():
         "geek_id": "review-1",
         "followup_status": "未沟通",
         "llm_error": "请求超时",
+        "qualification_status": "manual_review",
+        "qualification_reasons": ["学历形式待确认"],
     }
     assert gui._format_candidate_status(candidate) == "未沟通｜待复核"
 
@@ -3307,7 +3314,7 @@ def test_result_status_tooltip_shows_hidden_review_reason():
     callback = gui.root.after.call_args.args[1]
     callback()
     gui._show_tooltip.assert_called_once_with(
-        "复核原因：AI 评估失败，需人工判断或重试",
+        "复核原因：学历形式待确认",
         115,
         210,
         ("row-1", "status"),
@@ -3523,7 +3530,7 @@ def test_refresh_results_keeps_ai_evaluated_and_failed_candidates_below_pass_sco
         )
         failed_values = gui.result_tree.items[1]["values"]
         assert failed_values[4] == 51
-        assert failed_values[5] == "—"
+        assert failed_values[5] == "失败"
         assert failed_values[6] == "未通过"
         assert failed_values[7] == "未沟通｜待复核"
 
@@ -3738,8 +3745,20 @@ def test_clear_manual_review_is_scoped_to_candidate_job():
         assert updated == 1
         assert saved[0]["manual_review_required"] is False
         assert saved[0]["qualification_status"] == "qualified"
+        assert saved[0]["qualification_reasons"] == []
+        assert saved[0]["review_passed_at"]
+        assert saved[0]["review_passed_reasons"] == ["硬性条件需要人工确认"]
         assert saved[1]["manual_review_required"] is True
         assert saved[1]["qualification_status"] == "manual_review"
+        assert "review_passed_at" not in saved[1]
+        assert [
+            candidate["job_name"]
+            for candidate in _filter_candidates_by_result_view(saved, "复核通过")
+        ] == ["Java 工程师"]
+        assert [
+            candidate["job_name"]
+            for candidate in _filter_candidates_by_result_view(saved, "推荐候选人")
+        ] == ["Java 工程师"]
 
 
 def test_confirm_manual_review_once_approves_pending_contact_without_changing_score():
@@ -3772,10 +3791,20 @@ def test_confirm_manual_review_once_approves_pending_contact_without_changing_sc
     assert candidate["match_score"] == 60
     assert candidate["manual_review_required"] is False
     assert candidate["qualification_status"] == "qualified"
+    assert candidate["qualification_reasons"] == []
+    assert candidate["review_passed_at"]
+    assert candidate["review_passed_reasons"] == [
+        "学历形式待确认",
+        "评分处于待定区间（60 分）",
+    ]
     assert candidate["contact_approval_reason"] == "人工确认复核通过并可联系"
     assert candidate["contact_approved_at"]
     _args, kwargs = gui._clear_manual_review.call_args
     assert kwargs["contact_approval_reason"] == "人工确认复核通过并可联系"
+    assert kwargs["review_passed_reasons"] == (
+        "学历形式待确认",
+        "评分处于待定区间（60 分）",
+    )
     assert kwargs["timestamp"] == candidate["contact_approved_at"]
     assert gui._format_candidate_status(candidate) == "未沟通｜复核通过"
     on_saved.assert_called_once_with()
@@ -3815,10 +3844,17 @@ def test_clear_manual_review_persists_contact_approval_for_only_matching_job():
         assert saved[0]["match_score"] == 60
         assert saved[0]["manual_review_required"] is False
         assert saved[0]["qualification_status"] == "qualified"
+        assert saved[0]["qualification_reasons"] == []
+        assert saved[0]["review_passed_at"] == "20260729_100000"
+        assert saved[0]["review_passed_reasons"] == [
+            "硬性条件需要人工确认",
+            "评分处于待定区间（60 分）",
+        ]
         assert saved[0]["contact_approved_at"] == "20260729_100000"
         assert saved[0]["contact_approval_reason"] == "人工确认复核通过并可联系"
         assert saved[1]["manual_review_required"] is True
         assert saved[1]["qualification_status"] == "manual_review"
+        assert "review_passed_at" not in saved[1]
         assert "contact_approved_at" not in saved[1]
 
 
@@ -3912,7 +3948,12 @@ def test_manual_contact_approval_is_persisted_for_only_matching_job():
         assert updated is True
         assert saved[0]["contact_approved_at"] == "20260728_100000"
         assert saved[0]["contact_approval_reason"] == "人工确认待定候选人可联系"
+        assert saved[0]["review_passed_at"] == "20260728_100000"
+        assert saved[0]["review_passed_reasons"] == [
+            "评分处于待定区间（64 分）"
+        ]
         assert "contact_approved_at" not in saved[1]
+        assert "review_passed_at" not in saved[1]
 
 
 def test_manual_contact_confirmation_persists_before_queue_without_changing_score():
@@ -3937,12 +3978,39 @@ def test_manual_contact_confirmation_persists_before_queue_without_changing_scor
     assert added == 1
     assert candidate["match_score"] == 64
     assert candidate["contact_approval_reason"] == "人工确认待定候选人可联系"
+    assert candidate["review_passed_at"]
+    assert candidate["review_passed_reasons"] == [
+        "评分处于待定区间（64 分）"
+    ]
     gui._update_candidate_contact_approval.assert_called_once()
     gui._add_candidates_to_greet_queue.assert_called_once_with(
         [candidate],
         parent=parent,
     )
     gui.refresh_results.assert_called_once_with(force=True)
+
+
+def test_suitable_pending_feedback_persists_review_passed_state():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        candidates_path = Path(tmp_dir) / "candidates.json"
+        candidates_path.write_text(json.dumps([{
+            "geek_id": "g1",
+            "job_name": "Java 工程师",
+            "match_score": 64,
+        }], ensure_ascii=False), encoding="utf-8")
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+
+        with patch("gui_main.CANDIDATES_PATH", candidates_path):
+            updated = gui._update_candidate_feedback(
+                "g1", "Java 工程师", "合适", [], ""
+            )
+
+        saved = json.loads(candidates_path.read_text(encoding="utf-8"))
+        assert updated is True
+        assert saved[0]["review_passed_at"] == saved[0]["feedback_updated_at"]
+        assert saved[0]["review_passed_reasons"] == [
+            "评分处于待定区间（64 分）"
+        ]
 
 
 def test_negative_feedback_clears_prior_contact_approval():
@@ -4008,7 +4076,8 @@ def test_suitable_pending_status_is_resolved_without_changing_recommendation():
     assert status == "未沟通｜复核通过｜合适"
     assert "待复核" not in status
     assert candidate["_full_status"] == (
-        "已完成人工复核，可以加入联系清单；原评分和推荐指数不变。"
+        "人工复核结论已通过；原评分和推荐指数不变。"
+        "是否可联系仍以当前沟通、反馈和屏蔽状态为准。"
     )
 
 
@@ -4024,7 +4093,30 @@ def test_manually_approved_pending_status_is_review_passed():
 
     assert status == "未沟通｜复核通过"
     assert candidate["_full_status"] == (
-        "已完成人工复核，可以加入联系清单；原评分和推荐指数不变。"
+        "人工复核结论已通过；原评分和推荐指数不变。"
+        "是否可联系仍以当前沟通、反馈和屏蔽状态为准。"
+    )
+
+
+def test_hard_condition_review_passed_keeps_recommendation_and_status():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidate = {
+        "geek_id": "education-reviewed",
+        "match_score": 72,
+        "review_passed_at": "20260729_100000",
+        "review_passed_reasons": ["学历形式待确认"],
+    }
+
+    decision = gui_main.derive_candidate_decision(candidate)
+
+    assert decision.screening_result == "推荐"
+    assert decision.result_view == "推荐候选人"
+    assert decision.review_status == "passed"
+    assert gui._format_candidate_status(candidate) == "未沟通｜复核通过"
+    assert candidate["_full_status"] == (
+        "复核事项：学历形式待确认\n"
+        "人工复核结论已通过；原评分和推荐指数不变。"
+        "是否可联系仍以当前沟通、反馈和屏蔽状态为准。"
     )
 
 
@@ -4771,11 +4863,23 @@ def test_greet_queue_skip_reason_filters_non_sendable_candidates():
     assert BossFilterGUI._greet_queue_skip_reason({
         "geek_id": "g1", "match_score": 70,
     }) == ""
+    assert BossFilterGUI._greet_queue_skip_reason({
+        "geek_id": "ai-failed",
+        "match_score": 70,
+        "qualification_status": "qualified",
+        "llm_error": "请求超时",
+    }) == ""
 
 
 def test_contact_queue_revalidates_latest_candidate_state_before_sending():
     assert BossFilterGUI._revalidate_greet_queue_candidate({
         "geek_id": "ready", "match_score": 70,
+    }) == ("待发送", "")
+    assert BossFilterGUI._revalidate_greet_queue_candidate({
+        "geek_id": "ai-failed",
+        "match_score": 70,
+        "qualification_status": "qualified",
+        "llm_error": "请求超时",
     }) == ("待发送", "")
     assert BossFilterGUI._revalidate_greet_queue_candidate({
         "geek_id": "blocked", "match_score": 80, "blacklisted": True,
@@ -4834,6 +4938,7 @@ def test_scan_contact_policy_selects_threshold_then_reuses_queue_validation():
     candidates = [
         {"geek_id": "strong", "match_score": 80},
         {"geek_id": "normal", "match_score": 70},
+        {"geek_id": "ai-failed", "match_score": 68, "llm_error": "请求超时"},
         {"geek_id": "pending", "match_score": 60},
     ]
 
@@ -4848,7 +4953,9 @@ def test_scan_contact_policy_selects_threshold_then_reuses_queue_validation():
         candidates, "将推荐及以上加入联系清单"
     )
     selected = gui._add_candidates_to_greet_queue.call_args.args[0]
-    assert [candidate["geek_id"] for candidate in selected] == ["strong", "normal"]
+    assert [candidate["geek_id"] for candidate in selected] == [
+        "strong", "normal", "ai-failed"
+    ]
 
 
 def test_page_dependent_contact_reports_wrong_job_page_for_confirmation():

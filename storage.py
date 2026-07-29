@@ -51,6 +51,8 @@ _FEEDBACK_FIELDS = (
     'greet_confirmation_updated_at',
     'contact_approved_at',
     'contact_approval_reason',
+    'review_passed_at',
+    'review_passed_reasons',
 )
 
 # 有时间戳的字段组：(时间戳字段, (关联数据字段...))
@@ -66,6 +68,7 @@ _TIMESTAMP_FIELD_GROUPS = (
         ('greet_confirmation_pending', 'greet_confirmation_reason'),
     ),
     ('contact_approved_at', ('contact_approval_reason',)),
+    ('review_passed_at', ('review_passed_reasons',)),
 )
 _TIMESTAMPED_FIELDS = frozenset(
     f for ts_f, related in _TIMESTAMP_FIELD_GROUPS for f in (ts_f, *related)
@@ -158,6 +161,7 @@ def _has_candidate_history(candidate: dict[str, Any]) -> bool:
         or candidate.get('followup_note')
         or candidate.get('resume_file')
         or candidate.get('resume_eval_adjustment') is not None
+        or candidate.get('review_passed_at')
     )
 
 
@@ -167,7 +171,6 @@ def is_recommended_candidate(candidate: dict[str, Any]) -> bool:
         candidate.get('qualification_status', 'qualified') == 'qualified'
         and candidate.get('match_score', 0) >= SCORE_THRESHOLD_RECOMMEND
         and not candidate.get('manual_review_required')
-        and not candidate.get('llm_error')
         and not candidate.get('greet_confirmation_pending')
     )
 

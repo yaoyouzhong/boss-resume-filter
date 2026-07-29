@@ -5638,7 +5638,7 @@ class BossFilterGUI:
         self.result_view_combo = ttk.Combobox(
             search_frame,
             textvariable=self.result_view_var,
-            values=("推荐候选人", "人工确认", "待复核", "淘汰记录", "全部记录"),
+            values=("推荐候选人", "复核通过", "待复核", "淘汰记录", "全部记录"),
             width=11,
             state="readonly",
             font=self.font_label,
@@ -15107,6 +15107,8 @@ class BossFilterGUI:
                         ai_text = f"+{resume_adj}" if resume_adj > 0 else str(resume_adj)
                     elif ai_adj is not None and c.get('llm_evaluated'):
                         ai_text = f"+{ai_adj}" if ai_adj > 0 else str(ai_adj)
+                    elif c.get('llm_error'):
+                        ai_text = "失败"
                     else:
                         ai_text = "—"
 
@@ -17602,7 +17604,7 @@ class BossFilterGUI:
         decision = derive_candidate_decision(candidate)
         status_parts = [decision.communication_status]
         tooltip_text = ""
-        if decision.result_view == "待复核":
+        if decision.review_status == "pending":
             status_parts.append("待复核")
             tooltip_text = (
                 f"复核原因：{decision.primary_review_reason or '请人工确认'}"
@@ -17610,11 +17612,20 @@ class BossFilterGUI:
         elif decision.result_view == "淘汰记录":
             rejection_reason = decision.primary_review_reason or "淘汰记录"
             status_parts.append(rejection_reason)
-        elif decision.result_view == "人工确认":
+        elif decision.review_status == "passed":
             status_parts.append("复核通过")
+            passed_reasons = [
+                str(reason).strip()
+                for reason in (candidate.get('review_passed_reasons') or [])
+                if str(reason).strip()
+            ]
+            reason_text = (
+                f"复核事项：{'；'.join(passed_reasons)}\n"
+                if passed_reasons else ""
+            )
             tooltip_text = (
-                "已完成人工复核，可以加入联系清单；"
-                "原评分和推荐指数不变。"
+                f"{reason_text}人工复核结论已通过；原评分和推荐指数不变。"
+                "是否可联系仍以当前沟通、反馈和屏蔽状态为准。"
             )
         if candidate.get('feedback_status'):
             status_parts.append(candidate.get('feedback_status'))
@@ -18840,9 +18851,10 @@ class BossFilterGUI:
         geek_id,
         job_name,
         contact_approval_reason="",
+        review_passed_reasons=None,
         timestamp=None,
     ):
-        """按候选人和岗位完成复核，并按需记录人工联系批准。"""
+        """按候选人和岗位完成复核，记录通过结论及可选联系批准。"""
         if not geek_id or not CANDIDATES_PATH.exists():
             return 0
         with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
@@ -18859,9 +18871,17 @@ class BossFilterGUI:
                     c.get('manual_review_required')
                     or c.get('qualification_status') == 'manual_review'
                 ):
+                    passed_reasons = list(
+                        review_passed_reasons
+                        or derive_candidate_decision(c).review_reasons
+                        or ["人工复核"]
+                    )
                     c['manual_review_required'] = False
                     c['qualification_status'] = 'qualified'
+                    c['qualification_reasons'] = []
                     c.pop('auto_greet_blocked_reason', None)
+                    c['review_passed_at'] = approved_at
+                    c['review_passed_reasons'] = passed_reasons
                     if contact_approval_reason:
                         c['contact_approved_at'] = approved_at
                         c['contact_approval_reason'] = contact_approval_reason
@@ -18892,8 +18912,14 @@ class BossFilterGUI:
                 str(candidate.get('geek_id') or '') == str(geek_id)
                 and candidate.get('job_name', '').replace(" ", "") == normalized_job
             ):
+                review_reasons = list(
+                    derive_candidate_decision(candidate).review_reasons
+                    or [f"评分处于待定区间（{candidate.get('match_score', 0)} 分）"]
+                )
                 candidate['contact_approved_at'] = approved_at
                 candidate['contact_approval_reason'] = str(reason or '').strip()
+                candidate['review_passed_at'] = approved_at
+                candidate['review_passed_reasons'] = review_reasons
                 updated = True
                 break
 
@@ -18920,11 +18946,7 @@ class BossFilterGUI:
 
         name = candidate.get('name') or '该候选人'
         score = candidate.get('match_score', 0)
-        review_reason = (
-            "AI 评估失败，需要以现有资料人工判断"
-            if candidate.get('llm_error')
-            else f"匹配分为 {score}，处于待定区间"
-        )
+        review_reason = f"匹配分为 {score}，处于待定区间"
         if not messagebox.askyesno(
             "确认联系候选人",
             f"{name} 当前{review_reason}。\n\n"
@@ -18936,11 +18958,7 @@ class BossFilterGUI:
             return 0
 
         approved_at = datetime.now().strftime("%Y%m%d_%H%M%S")
-        approval_reason = (
-            "人工确认 AI 评估失败候选人可联系"
-            if candidate.get('llm_error')
-            else "人工确认待定候选人可联系"
-        )
+        approval_reason = "人工确认待定候选人可联系"
         updated = self._update_candidate_contact_approval(
             candidate.get('geek_id'),
             candidate.get('job_name', ''),
@@ -18957,6 +18975,10 @@ class BossFilterGUI:
 
         candidate['contact_approved_at'] = approved_at
         candidate['contact_approval_reason'] = approval_reason
+        candidate['review_passed_at'] = approved_at
+        candidate['review_passed_reasons'] = [
+            f"评分处于待定区间（{score} 分）"
+        ]
         added = self._add_candidates_to_greet_queue(
             [candidate],
             parent=parent or self.root,
@@ -19001,6 +19023,7 @@ class BossFilterGUI:
                 candidate.get('geek_id'),
                 candidate.get('job_name', ''),
                 contact_approval_reason=contact_approval_reason,
+                review_passed_reasons=review_reasons,
                 timestamp=confirmed_at,
             )
             if not updated:
@@ -19008,7 +19031,10 @@ class BossFilterGUI:
                 return
             candidate['manual_review_required'] = False
             candidate['qualification_status'] = 'qualified'
+            candidate['qualification_reasons'] = []
             candidate.pop('auto_greet_blocked_reason', None)
+            candidate['review_passed_at'] = confirmed_at
+            candidate['review_passed_reasons'] = list(review_reasons)
             if contact_approval_reason:
                 candidate['contact_approved_at'] = confirmed_at
                 candidate['contact_approval_reason'] = contact_approval_reason
@@ -19043,9 +19069,14 @@ class BossFilterGUI:
             self._manual_review_contact_approval_reason(c)
             for c in to_confirm
         }
+        review_reasons = {
+            self._candidate_identity_key(c):
+            list(derive_candidate_decision(c).review_reasons)
+            for c in to_confirm
+        }
         approval_count = sum(bool(reason) for reason in approval_reasons.values())
         approval_text = (
-            f"\n其中 {approval_count} 名待定或 AI 评估失败候选人"
+            f"\n其中 {approval_count} 名待定候选人"
             "将同时记录为人工确认可联系；不会修改匹配分或推荐指数。"
             if approval_count else ""
         )
@@ -19069,12 +19100,20 @@ class BossFilterGUI:
                     c.get('geek_id'),
                     c.get('job_name', ''),
                     contact_approval_reason=contact_approval_reason,
+                    review_passed_reasons=review_reasons.get(
+                        self._candidate_identity_key(c), []
+                    ),
                     timestamp=confirmed_at,
                 )
                 if updated:
                     c['manual_review_required'] = False
                     c['qualification_status'] = 'qualified'
+                    c['qualification_reasons'] = []
                     c.pop('auto_greet_blocked_reason', None)
+                    c['review_passed_at'] = confirmed_at
+                    c['review_passed_reasons'] = review_reasons.get(
+                        self._candidate_identity_key(c), []
+                    )
                     if contact_approval_reason:
                         c['contact_approved_at'] = confirmed_at
                         c['contact_approval_reason'] = contact_approval_reason
@@ -19324,6 +19363,18 @@ class BossFilterGUI:
                 c['feedback_reasons'] = reasons
                 c['feedback_note'] = note.strip()
                 c['feedback_updated_at'] = feedback_time
+                try:
+                    score = int(c.get('match_score', 0) or 0)
+                except (TypeError, ValueError):
+                    score = 0
+                if (
+                    status == "合适"
+                    and SCORE_THRESHOLD_PASS <= score < SCORE_THRESHOLD_RECOMMEND
+                ):
+                    c['review_passed_at'] = feedback_time
+                    c['review_passed_reasons'] = [
+                        f"评分处于待定区间（{score} 分）"
+                    ]
                 if status in {"误推", "放弃"}:
                     c.pop('contact_approved_at', None)
                     c.pop('contact_approval_reason', None)
@@ -19485,7 +19536,20 @@ class BossFilterGUI:
                 candidate['feedback_status'] = status
                 candidate['feedback_reasons'] = reasons
                 candidate['feedback_note'] = note
-                candidate['feedback_updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
+                feedback_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+                candidate['feedback_updated_at'] = feedback_time
+                try:
+                    score = int(candidate.get('match_score', 0) or 0)
+                except (TypeError, ValueError):
+                    score = 0
+                if (
+                    status == "合适"
+                    and SCORE_THRESHOLD_PASS <= score < SCORE_THRESHOLD_RECOMMEND
+                ):
+                    candidate['review_passed_at'] = feedback_time
+                    candidate['review_passed_reasons'] = [
+                        f"评分处于待定区间（{score} 分）"
+                    ]
                 if status in {"误推", "放弃"}:
                     candidate.pop('contact_approved_at', None)
                     candidate.pop('contact_approval_reason', None)
@@ -21685,6 +21749,16 @@ class BossFilterGUI:
         if decision.review_reasons:
             lines.append("  复核原因：")
             lines.extend(f"  - {reason}" for reason in decision.review_reasons)
+        elif decision.review_status == "passed":
+            lines.append("  复核状态：已通过")
+            passed_reasons = [
+                str(reason).strip()
+                for reason in (candidate.get('review_passed_reasons') or [])
+                if str(reason).strip()
+            ]
+            if passed_reasons:
+                lines.append("  通过前复核事项：")
+                lines.extend(f"  - {reason}" for reason in passed_reasons)
         else:
             lines.append("  复核状态：无需复核")
 
@@ -22262,18 +22336,23 @@ class BossFilterGUI:
         self.candidate_review_position_var.set(f"{index + 1} / {len(candidates)}")
         self.candidate_review_result_var.set(decision.screening_result)
         self.candidate_review_reason_var.set(
-            decision.primary_review_reason or "无需复核"
+            decision.primary_review_reason
+            or ("复核已通过" if decision.review_status == "passed" else "无需复核")
         )
         self.candidate_review_communication_var.set(decision.communication_status)
         result_color = {
             '推荐候选人': self.colors['success'],
-            '人工确认': self.colors['success'],
+            '复核通过': self.colors['success'],
             '待复核': self.colors['warning'],
             '淘汰记录': self.colors['danger'],
         }.get(decision.result_view, self.colors['text_primary'])
         self.candidate_review_state_labels[0].configure(fg=result_color)
         self.candidate_review_state_labels[1].configure(
-            fg=self.colors['warning'] if decision.review_reasons else self.colors['success']
+            fg=(
+                self.colors['warning']
+                if decision.review_status == "pending"
+                else self.colors['success']
+            )
         )
         self.candidate_review_state_labels[2].configure(fg=self.colors['primary'])
 

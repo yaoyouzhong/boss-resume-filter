@@ -16,7 +16,6 @@ REVIEW_CATEGORY_ORDER = (
     "工作地点待确认",
     "求职状态待确认",
     "必要条件待确认",
-    "AI评估失败",
     "评分待确认",
     "其他待确认",
 )
@@ -55,6 +54,7 @@ class CandidateDecision:
 
     screening_result: str
     result_view: str
+    review_status: str
     review_reasons: tuple[str, ...]
     communication_status: str
     next_action: str
@@ -71,12 +71,14 @@ def derive_candidate_decision(candidate: dict[str, Any]) -> CandidateDecision:
     qualification = str(candidate.get("qualification_status") or "qualified")
     communication = _communication_status(candidate)
     manually_approved = candidate_has_manual_contact_approval(candidate)
+    review_passed = candidate_has_review_passed(candidate)
 
     if qualification == "rejected":
         reasons = tuple(_unique_texts(candidate.get("qualification_reasons") or []))
         return CandidateDecision(
             screening_result="淘汰",
             result_view="淘汰记录",
+            review_status="not_passed",
             review_reasons=reasons,
             communication_status=communication,
             next_action="核对淘汰依据；如判断有误，标记为误杀并补充原因。",
@@ -86,8 +88,6 @@ def derive_candidate_decision(candidate: dict[str, Any]) -> CandidateDecision:
     review_reasons: list[str] = []
     if qualification == "manual_review" or candidate.get("manual_review_required"):
         review_reasons.extend(_manual_review_reasons(candidate))
-    if candidate.get("llm_error") and not manually_approved:
-        review_reasons.append("AI 评估失败，需人工判断或重试")
     if score_value is not None and score < SCORE_THRESHOLD_RECOMMEND:
         if score >= SCORE_THRESHOLD_PASS:
             if not manually_approved:
@@ -99,16 +99,20 @@ def derive_candidate_decision(candidate: dict[str, Any]) -> CandidateDecision:
     if review_reasons:
         next_action = _review_next_action(candidate, review_reasons)
         result_view = "待复核"
+        review_status = "pending"
     elif score_value is not None and score < SCORE_THRESHOLD_RECOMMEND:
-        result_view = "人工确认"
+        result_view = "复核通过"
+        review_status = "passed"
         next_action = _recommended_next_action(candidate, communication)
     else:
         result_view = "推荐候选人"
+        review_status = "passed" if review_passed else "not_required"
         next_action = _recommended_next_action(candidate, communication)
 
     return CandidateDecision(
         screening_result=screening_result,
         result_view=result_view,
+        review_status=review_status,
         review_reasons=tuple(review_reasons),
         communication_status=communication,
         next_action=next_action,
@@ -118,9 +122,14 @@ def derive_candidate_decision(candidate: dict[str, Any]) -> CandidateDecision:
 def filter_candidates_by_result_view(
     candidates: list[dict[str, Any]], view: str
 ) -> list[dict[str, Any]]:
-    """Filter candidates by their derived decision view."""
-    if view not in {"推荐候选人", "人工确认", "待复核", "淘汰记录"}:
+    """Filter candidates by screening or review scope; scopes may overlap."""
+    if view not in {"推荐候选人", "复核通过", "待复核", "淘汰记录"}:
         return list(candidates)
+    if view == "复核通过":
+        return [
+            candidate for candidate in candidates
+            if derive_candidate_decision(candidate).review_status == "passed"
+        ]
     return [
         candidate for candidate in candidates
         if derive_candidate_decision(candidate).result_view == view
@@ -130,7 +139,7 @@ def filter_candidates_by_result_view(
 def candidate_review_category(candidate: dict[str, Any]) -> str:
     """Return one stable business category for a pending-review candidate."""
     decision = derive_candidate_decision(candidate)
-    if decision.result_view != "待复核":
+    if decision.review_status != "pending":
         return ""
 
     reason = decision.primary_review_reason
@@ -142,7 +151,6 @@ def candidate_review_category(candidate: dict[str, Any]) -> str:
         ("工作地点待确认", ("工作地点", "地点", "城市")),
         ("求职状态待确认", ("求职状态", "在职状态", "到岗")),
         ("必要条件待确认", ("必要条件", "技能", "关键词")),
-        ("AI评估失败", ("AI 评估失败", "AI评估失败")),
         ("评分待确认", ("评分",)),
     )
     for category, keywords in category_keywords:
@@ -172,7 +180,7 @@ def candidate_greet_skip_reason(candidate: dict[str, Any]) -> str:
     decision = derive_candidate_decision(candidate)
     if decision.result_view == "淘汰记录":
         return "已淘汰"
-    if decision.result_view == "待复核":
+    if decision.review_status == "pending":
         return decision.primary_review_reason or "需先完成复核"
     score = _as_int(candidate.get("match_score"))
     if score is None:
@@ -187,6 +195,18 @@ def candidate_has_manual_contact_approval(candidate: dict[str, Any]) -> bool:
     return bool(
         candidate.get("contact_approved_at")
         or str(candidate.get("feedback_status") or "").strip() == "合适"
+    )
+
+
+def candidate_has_review_passed(candidate: dict[str, Any]) -> bool:
+    """Return whether a completed human review can be identified."""
+    if candidate.get("review_passed_at") or candidate.get("contact_approved_at"):
+        return True
+    score = _as_int(candidate.get("match_score"))
+    return bool(
+        score is not None
+        and SCORE_THRESHOLD_PASS <= score < SCORE_THRESHOLD_RECOMMEND
+        and str(candidate.get("feedback_status") or "").strip() == "合适"
     )
 
 
@@ -213,7 +233,7 @@ def candidate_can_manual_approve_contact(candidate: dict[str, Any]) -> bool:
         return False
     if candidate_has_manual_contact_approval(candidate):
         return False
-    return score < SCORE_THRESHOLD_RECOMMEND or bool(candidate.get("llm_error"))
+    return score < SCORE_THRESHOLD_RECOMMEND
 
 
 def build_daily_candidate_actions(
@@ -266,7 +286,7 @@ def build_daily_candidate_actions(
             continue
 
         decision = derive_candidate_decision(candidate)
-        if decision.result_view == "待复核":
+        if decision.review_status == "pending":
             buckets["待复核"].append(_item(
                 30, "待复核", candidate,
                 decision.primary_review_reason or "需要人工复核",
@@ -550,8 +570,6 @@ def _manual_review_reasons(candidate: dict[str, Any]) -> list[str]:
 
 
 def _review_next_action(candidate: dict[str, Any], reasons: list[str]) -> str:
-    if candidate.get("llm_error"):
-        return "先查看现有证据；必要时重试 AI 评估，再确认是否通过。"
     if candidate.get("manual_review_required") or candidate.get("qualification_status") == "manual_review":
         return "核对硬性条件证据；确认无误后通过，否则标记反馈。"
     return "查看匹配证据；可导入完整简历复评，或记录人工反馈。"

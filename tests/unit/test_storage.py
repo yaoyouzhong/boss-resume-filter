@@ -13,6 +13,7 @@ from storage import (
     build_greeted_index,
     get_greeted_geek_ids,
     is_already_greeted,
+    is_recommended_candidate,
     load_candidates_all,
     mark_candidate_greeted,
     merge_candidates_all,
@@ -306,6 +307,8 @@ def test_dedupe_preserves_manual_contact_approval_across_rescan():
             "batch_timestamp": "20260701_100000",
             "contact_approved_at": "20260701_120000",
             "contact_approval_reason": "人工确认待定候选人可联系",
+            "review_passed_at": "20260701_120000",
+            "review_passed_reasons": ["评分处于待定区间（64 分）"],
         },
         {
             "geek_id": "g1",
@@ -318,6 +321,18 @@ def test_dedupe_preserves_manual_contact_approval_across_rescan():
     assert result[0]["match_score"] == 62
     assert result[0]["contact_approved_at"] == "20260701_120000"
     assert result[0]["contact_approval_reason"] == "人工确认待定候选人可联系"
+    assert result[0]["review_passed_at"] == "20260701_120000"
+    assert result[0]["review_passed_reasons"] == ["评分处于待定区间（64 分）"]
+
+
+def test_ai_failure_does_not_remove_rule_recommended_status():
+    assert is_recommended_candidate({
+        "geek_id": "ai-failed",
+        "job_name": "Java",
+        "match_score": 70,
+        "qualification_status": "qualified",
+        "llm_error": "请求超时",
+    }) is True
 
 
 def test_dedupe_preserves_followup_from_old_to_new():

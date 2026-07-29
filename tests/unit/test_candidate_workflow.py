@@ -5,6 +5,7 @@ from candidate_workflow import (
     candidate_can_manual_approve_contact,
     candidate_greet_skip_reason,
     candidate_has_manual_contact_approval,
+    candidate_has_review_passed,
     candidate_review_category,
     classify_followup_timing,
     default_next_followup_at,
@@ -38,10 +39,10 @@ def test_candidate_decision_exposes_deterministic_review_reason():
     })
 
     assert decision.result_view == "待复核"
+    assert decision.review_status == "pending"
     assert decision.primary_review_reason == "工作年限证据不足"
     assert decision.review_reasons == (
         "工作年限证据不足",
-        "AI 评估失败，需人工判断或重试",
         "评分处于待定区间（60 分）",
     )
 
@@ -56,25 +57,34 @@ def test_candidate_decision_keeps_legacy_string_reason_intact():
     assert decision.review_reasons == ("工作年限证据不足",)
 
 
-def test_result_views_form_disjoint_decision_partitions():
+def test_result_views_keep_screening_and_review_scopes_independent():
     candidates = [
         {"geek_id": "recommended", "match_score": 70},
         {"geek_id": "send-pending", "match_score": 70, "greet_confirmation_pending": True},
         {"geek_id": "pending", "match_score": 60},
         {"geek_id": "approved", "match_score": 60, "contact_approved_at": "20260728_100000"},
+        {
+            "geek_id": "hard-passed",
+            "match_score": 80,
+            "review_passed_at": "20260728_110000",
+            "review_passed_reasons": ["学历形式待确认"],
+        },
+        {"geek_id": "ai-failed", "match_score": 70, "llm_error": "timeout"},
         {"geek_id": "manual", "match_score": 80, "manual_review_required": True},
         {"geek_id": "rejected", "match_score": 90, "qualification_status": "rejected"},
     ]
 
     assert {c["geek_id"] for c in filter_candidates_by_result_view(candidates, "推荐候选人")} == {
-        "recommended", "send-pending"
+        "recommended", "send-pending", "hard-passed", "ai-failed"
     }
     assert {c["geek_id"] for c in filter_candidates_by_result_view(candidates, "待复核")} == {
         "pending", "manual"
     }
-    assert [c["geek_id"] for c in filter_candidates_by_result_view(candidates, "人工确认")] == [
-        "approved"
-    ]
+    assert {
+        c["geek_id"] for c in filter_candidates_by_result_view(
+            candidates, "复核通过"
+        )
+    } == {"approved", "hard-passed"}
     assert [c["geek_id"] for c in filter_candidates_by_result_view(candidates, "淘汰记录")] == [
         "rejected"
     ]
@@ -107,10 +117,27 @@ def test_pending_candidate_can_be_manually_approved_without_changing_score():
 
     decision = derive_candidate_decision(pending)
     assert candidate_has_manual_contact_approval(pending) is True
+    assert candidate_has_review_passed(pending) is True
     assert decision.screening_result == "待定"
-    assert decision.result_view == "人工确认"
+    assert decision.result_view == "复核通过"
+    assert decision.review_status == "passed"
     assert decision.review_reasons == ()
     assert candidate_greet_skip_reason(pending) == ""
+
+
+def test_prior_hard_condition_review_does_not_approve_a_new_pending_score():
+    candidate = {
+        "geek_id": "rescored",
+        "match_score": 60,
+        "review_passed_at": "20260728_100000",
+        "review_passed_reasons": ["学历形式待确认"],
+    }
+
+    decision = derive_candidate_decision(candidate)
+
+    assert decision.review_status == "pending"
+    assert decision.review_reasons == ("评分处于待定区间（60 分）",)
+    assert candidate_can_manual_approve_contact(candidate) is True
 
 
 def test_suitable_feedback_resolves_only_non_hard_pending_review():
@@ -126,13 +153,13 @@ def test_suitable_feedback_resolves_only_non_hard_pending_review():
         qualification_reasons=["学历形式待确认"],
     )
 
-    assert derive_candidate_decision(approved).result_view == "人工确认"
+    assert derive_candidate_decision(approved).result_view == "复核通过"
     assert candidate_greet_skip_reason(approved) == ""
     assert derive_candidate_decision(hard_review).result_view == "待复核"
     assert candidate_greet_skip_reason(hard_review) == "学历形式待确认"
 
 
-def test_rule_qualified_ai_failure_can_be_acknowledged_without_retrying_ai():
+def test_rule_qualified_ai_failure_does_not_require_review_or_approval():
     candidate = {
         "geek_id": "ai-failed",
         "match_score": 70,
@@ -140,14 +167,13 @@ def test_rule_qualified_ai_failure_can_be_acknowledged_without_retrying_ai():
         "llm_error": "timeout",
     }
 
-    assert derive_candidate_decision(candidate).result_view == "待复核"
-    assert candidate_can_manual_approve_contact(candidate) is True
-
-    candidate["contact_approved_at"] = "20260728_100000"
     decision = derive_candidate_decision(candidate)
     assert decision.screening_result == "推荐"
     assert decision.result_view == "推荐候选人"
+    assert decision.review_status == "not_required"
+    assert decision.review_status == "not_required"
     assert decision.review_reasons == ()
+    assert candidate_can_manual_approve_contact(candidate) is False
     assert candidate_greet_skip_reason(candidate) == ""
 
 
@@ -239,10 +265,17 @@ def test_daily_actions_reuse_all_pending_review_decisions_without_default_limit(
     items = build_daily_candidate_actions(candidates)
 
     assert len(items) == 14
-    assert {item.group for item in items} == {"待复核"}
-    assert {item.candidate["geek_id"] for item in items} == {
-        candidate["geek_id"] for candidate in candidates
-    }
+    assert {item.group for item in items} == {"待复核", "待打招呼"}
+    assert {
+        item.candidate["geek_id"]
+        for item in items
+        if item.group == "待复核"
+    } == {f"score-{index}" for index in range(12)} | {"manual"}
+    assert [
+        item.candidate["geek_id"]
+        for item in items
+        if item.group == "待打招呼"
+    ] == ["ai-failed"]
 
 
 def test_review_categories_normalize_primary_reasons_without_duplicate_people():
@@ -274,7 +307,7 @@ def test_review_categories_normalize_primary_reasons_without_duplicate_people():
         "学历形式待确认",
         "求职状态待确认",
         "评分待确认",
-        "AI评估失败",
+        "",
     ]
     assert candidate_review_category({"geek_id": "ready", "match_score": 70}) == ""
 
