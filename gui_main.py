@@ -16879,6 +16879,16 @@ class BossFilterGUI:
             full = cand.get('_full_status', '')
             display = cand.get('_display_status', '')
             show_tooltip = bool(full and full != display)
+            if full and not show_tooltip:
+                try:
+                    cell_bbox = self.result_tree.bbox(item, column_id)
+                    show_tooltip = bool(
+                        cell_bbox
+                        and self._result_tree_font.measure(display or full)
+                        > max(0, cell_bbox[2] - 12)
+                    )
+                except (tk.TclError, TypeError, ValueError):
+                    show_tooltip = False
         elif cand and column_name == 'job_status':
             extra = cand.get('_extra_fields') or ('', '', '', '', '')
             full = str(extra[2] or '')

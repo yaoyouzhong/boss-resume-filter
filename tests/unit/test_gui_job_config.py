@@ -3314,6 +3314,52 @@ def test_result_status_tooltip_shows_hidden_review_reason():
     )
 
 
+def test_result_status_tooltip_shows_confirmed_status_only_when_clipped():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidate = {
+        "geek_id": "confirmed-1",
+        "followup_status": "未沟通",
+        "feedback_status": "合适",
+    }
+    assert gui._format_candidate_status(candidate) == "未沟通｜合适"
+    assert candidate["_full_status"] == "未沟通｜合适"
+
+    gui.result_tree = Mock()
+    gui.result_tree.identify_row.return_value = "row-1"
+    gui.result_tree.identify_column.return_value = "#8"
+    gui.result_tree.cget.return_value = (
+        "name", "exp", "salary", "skills", "score", "ai_eval", "level", "status"
+    )
+    gui.result_tree.bbox.return_value = (0, 0, 80, 24)
+    gui._item_to_candidate = {"row-1": candidate}
+    gui._result_tree_font = Mock()
+    gui._tooltip = None
+    gui._tooltip_item = None
+    gui._tooltip_after_id = None
+    gui.root = Mock()
+    gui.root.winfo_pointerx.return_value = 100
+    gui.root.winfo_pointery.return_value = 200
+    gui._hide_tooltip = Mock()
+    gui._show_tooltip = Mock()
+
+    gui._result_tree_font.measure.return_value = 100
+    gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
+    callback = gui.root.after.call_args.args[1]
+    callback()
+    gui._show_tooltip.assert_called_once_with(
+        "未沟通｜合适", 115, 210, ("row-1", "status")
+    )
+
+    gui.root.after.reset_mock()
+    gui._show_tooltip.reset_mock()
+    gui._tooltip = None
+    gui._tooltip_item = None
+    gui._result_tree_font.measure.return_value = 60
+    gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
+    gui.root.after.assert_not_called()
+    gui._show_tooltip.assert_not_called()
+
+
 def test_result_job_status_tooltip_only_shows_when_text_is_clipped():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     candidate = {
