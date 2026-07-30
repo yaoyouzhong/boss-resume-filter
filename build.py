@@ -1340,6 +1340,26 @@ def _check_code_to_changelog_coverage(strict=False):
                 return True
         if re.search(r"\b\w*cache\w*\s*=", lowered):
             return True
+        if (
+            not re.search(r"[一-鿿]", stripped)
+            and re.search(r"""["']job_uuid["']\s*:""", stripped)
+        ):
+            # Stable identity fields are cross-file implementation metadata,
+            # not a user-facing data feature by themselves.
+            return True
+        if fpath.endswith("diagnostic_package.py") and (
+            "re.compile(" in stripped
+            or (
+                stripped.startswith(("r\"", "r'"))
+                and any(
+                    marker in stripped
+                    for marker in ("\\s", "\\b", "(?=", "[^")
+                )
+            )
+        ):
+            # Redaction regexes are evidence for the diagnostic-package
+            # feature, but their individual patterns do not belong in notes.
+            return True
         if re.search(r"getattr\(.*cache|source_cache|preview_render", lowered):
             return True
         if "pingfang sc" in lowered or "microsoft yahei" in lowered:

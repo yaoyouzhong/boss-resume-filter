@@ -227,6 +227,53 @@ diff --git a/gui_main.py b/gui_main.py
     assert "未覆盖信号" not in output.getvalue()
 
 
+def test_changelog_coverage_ignores_stable_ids_and_redaction_regexes():
+    diff_text = """\
+diff --git a/bossmaster.py b/bossmaster.py
+--- a/bossmaster.py
++++ b/bossmaster.py
++                {"job_name": job_name, "job_uuid": job_uuid},
+diff --git a/diagnostic_package.py b/diagnostic_package.py
+--- a/diagnostic_package.py
++++ b/diagnostic_package.py
++    re.compile(r"(\\b正在向\\s+)([^\\s]+)(?=\\s+打招呼)"),
++        r"(\\[\\d+/\\d+\\]\\s+)([^\\s-]+)(?=\\s+(?:-|打招呼|\\())"
+"""
+
+    class Result:
+        returncode = 0
+        stdout = diff_text
+
+    originals = (
+        build._read_version,
+        build._extract_changelog_release,
+        build._get_last_tag,
+        build.subprocess.run,
+    )
+    try:
+        build._read_version = lambda: "2.24.6"
+        build._extract_changelog_release = lambda _version: (
+            "v2.24.6 — 测试",
+            "### 新增功能\n\n- 测试\n\n### 体验优化\n\n- 测试",
+        )
+        build._get_last_tag = lambda: "v2.24.5"
+        build.subprocess.run = lambda *args, **kwargs: Result()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            build._check_code_to_changelog_coverage(strict=True)
+    finally:
+        (
+            build._read_version,
+            build._extract_changelog_release,
+            build._get_last_tag,
+            build.subprocess.run,
+        ) = originals
+
+    assert "未检测到用户可见的新增代码信号" in output.getvalue()
+    assert "未覆盖信号" not in output.getvalue()
+
+
 def test_changelog_coverage_ignores_removed_nested_helper():
     diff_text = """\
 diff --git a/gui_main.py b/gui_main.py
