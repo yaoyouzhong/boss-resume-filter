@@ -73,6 +73,171 @@ def _tree_sha(ref: str) -> str:
     return _git_text("rev-parse", f"{ref}^{{tree}}")
 
 
+def _local_codex_branches() -> list[str]:
+    output = _git_text(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads/codex/",
+    )
+    return sorted(line.strip() for line in output.splitlines() if line.strip())
+
+
+def _discover_cleanup_branches(
+    candidate_branch: str,
+    candidate_sha: str,
+    base_sha: str,
+    source_branches: list[str],
+) -> list[dict[str, str]]:
+    """Record release-contained topic branches that can be cleaned later."""
+    candidate_branch = pr_delivery.validate_branch_name(candidate_branch)
+    explicit_sources = {
+        pr_delivery.validate_branch_name(branch) for branch in source_branches
+    }
+    included: list[dict[str, str]] = []
+    for branch in _local_codex_branches():
+        pr_delivery.validate_branch_name(branch)
+        if branch == candidate_branch:
+            continue
+        if not pr_delivery._is_ancestor(branch, candidate_sha):
+            continue
+        if branch not in explicit_sources and pr_delivery._is_ancestor(
+            branch, base_sha,
+        ):
+            continue
+        included.append({
+            "branch": branch,
+            "head_sha": _git_text("rev-parse", branch),
+            "role": "included",
+        })
+    included.append({
+        "branch": candidate_branch,
+        "head_sha": candidate_sha,
+        "role": "candidate",
+    })
+    return included
+
+
+def _cleanup_entries(state: dict[str, Any]) -> list[dict[str, str]]:
+    raw_entries = state.get("cleanup_branches")
+    if raw_entries is None:
+        raw_entries = [{
+            "branch": state["candidate_branch"],
+            "head_sha": state["candidate_sha"],
+            "role": "candidate",
+        }]
+    if not isinstance(raw_entries, list) or not raw_entries:
+        _fail("发布分支清理计划为空或格式无效")
+
+    entries: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in raw_entries:
+        if not isinstance(raw, dict):
+            _fail("发布分支清理计划格式无效")
+        branch = pr_delivery.validate_branch_name(str(raw.get("branch") or ""))
+        head_sha = str(raw.get("head_sha") or "")
+        role = str(raw.get("role") or "included")
+        if not re.fullmatch(r"[0-9a-fA-F]{40}", head_sha):
+            _fail(f"发布分支清理计划缺少完整提交：{branch}")
+        if role not in {"candidate", "included"}:
+            _fail(f"发布分支清理计划角色无效：{branch}")
+        if branch in seen:
+            _fail(f"发布分支清理计划包含重复项：{branch}")
+        seen.add(branch)
+        entries.append({
+            "branch": branch,
+            "head_sha": head_sha.lower(),
+            "role": role,
+        })
+
+    candidate = str(state["candidate_branch"])
+    if [item["branch"] for item in entries if item["role"] == "candidate"] != [candidate]:
+        _fail("发布分支清理计划中的候选分支不一致")
+    return entries
+
+
+def _validate_cleanup_plan(state: dict[str, Any]) -> list[dict[str, str]]:
+    """Fail closed before deleting any release-contained branch."""
+    entries = _cleanup_entries(state)
+    candidate_sha = str(state["candidate_sha"])
+    merge_sha = str(state.get("merge_sha") or "")
+    if merge_sha:
+        origin_master = pr_delivery._remote_ref("origin", "refs/heads/master")
+        gitee_master = pr_delivery._remote_ref("gitee", "refs/heads/master")
+        if not origin_master or origin_master != gitee_master:
+            _fail("分支清理前 GitHub/Gitee master 不一致")
+        if merge_sha != origin_master and not pr_delivery._is_ancestor(
+            merge_sha, origin_master,
+        ):
+            _fail("分支清理前发布合并提交已不在当前 master 历史中")
+    for entry in entries:
+        branch = entry["branch"]
+        expected_sha = entry["head_sha"]
+        if not pr_delivery._is_ancestor(expected_sha, candidate_sha):
+            _fail(f"待清理分支未包含在已确认候选中：{branch}")
+        if pr_delivery._local_branch_exists(branch):
+            current_sha = _git_text("rev-parse", branch)
+            if current_sha != expected_sha:
+                _fail(f"待清理分支在候选确认后发生变化，已保留：{branch}")
+        worktree = pr_delivery._worktree_for_branch(branch)
+        if worktree is not None:
+            pr_delivery._assert_clean_worktree(
+                worktree, f"待清理分支 {branch} 工作区",
+            )
+        for remote in ("origin", "gitee"):
+            remote_sha = pr_delivery._remote_ref(
+                remote, f"refs/heads/{branch}",
+            )
+            if remote_sha and remote_sha != expected_sha:
+                _fail(
+                    f"{remote} 待清理分支在候选确认后发生变化，已保留：{branch}"
+                )
+    return entries
+
+
+def _delete_included_branch(entry: dict[str, str]) -> None:
+    branch = entry["branch"]
+    worktree = pr_delivery._worktree_for_branch(branch)
+    if worktree is not None:
+        _run(["git", "switch", "--detach", "origin/master"], cwd=worktree)
+    for remote in ("origin", "gitee"):
+        if pr_delivery._remote_branch_exists(remote, branch):
+            pr_delivery._run_external(
+                ["git", "push", remote, "--delete", branch],
+                f"删除 {remote} 已发布来源分支 {branch}",
+                postcondition=lambda remote=remote: not (
+                    pr_delivery._remote_branch_exists(remote, branch)
+                ),
+            )
+    if pr_delivery._local_branch_exists(branch):
+        _run(["git", "branch", "-D", branch])
+    if (
+        pr_delivery._local_branch_exists(branch)
+        or pr_delivery._remote_branch_exists("origin", branch)
+        or pr_delivery._remote_branch_exists("gitee", branch)
+    ):
+        _fail(f"已发布来源分支清理后仍然存在：{branch}")
+    print(f"  [OK] 已清理候选包含分支：{branch}")
+
+
+def _cleanup_release_branches(state: dict[str, Any]) -> None:
+    entries = _validate_cleanup_plan(state)
+    candidate = next(item for item in entries if item["role"] == "candidate")
+    for entry in entries:
+        if entry["role"] == "included":
+            _delete_included_branch(entry)
+    pr_delivery.cleanup_delivered_branch(
+        candidate["branch"], str(state["merge_sha"]),
+    )
+    if pr_delivery._remote_branch_exists("gitee", candidate["branch"]):
+        pr_delivery._run_external(
+            ["git", "push", "gitee", "--delete", candidate["branch"]],
+            f"删除 gitee 发布候选分支 {candidate['branch']}",
+            postcondition=lambda: not pr_delivery._remote_branch_exists(
+                "gitee", candidate["branch"],
+            ),
+        )
+
+
 def _read_state() -> dict[str, Any]:
     if not STATE_PATH.is_file():
         _fail("没有可确认的一键发布状态；请先准备发布候选")
@@ -262,6 +427,10 @@ def _print_candidate(state: dict[str, Any]) -> None:
     print(f"  PR: {state['pr_url']}")
     print(f"  标题: {state['release_title']}")
     print(state["release_body"])
+    cleanup = "、".join(
+        item["branch"] for item in _cleanup_entries(state)
+    )
+    print(f"\n  公开验收后自动清理分支: {cleanup}")
     print(f"\n  内部内容凭证: {state['content_sha'][:12]}")
     print(f"  确认口令: {expected_confirm_authorization(state['version'])}")
 
@@ -333,6 +502,9 @@ def prepare_candidate(
         _apply_release_materials(version, notes_path)
     candidate_sha = _git_text("rev-parse", "HEAD")
     candidate_tree = _tree_sha(candidate_sha)
+    cleanup_branches = _discover_cleanup_branches(
+        candidate_branch, candidate_sha, master_sha, effective,
+    )
     with _timed_step("生成版本内容审核"):
         review = release_content_review.review_release_candidate(
             version, candidate_sha, candidate_tree,
@@ -363,6 +535,7 @@ def prepare_candidate(
         "candidate_branch": candidate_branch,
         "candidate_sha": candidate_sha,
         "candidate_tree_sha": candidate_tree,
+        "cleanup_branches": cleanup_branches,
         "base_sha": master_sha,
         "pr_number": int(checked["number"]),
         "pr_url": checked.get("url") or pr.get("url") or "",
@@ -388,6 +561,8 @@ def _verify_candidate(
         _fail("候选分支提交在确认前发生变化；必须重新展示版本内容")
     if _tree_sha(sha) != state["candidate_tree_sha"]:
         _fail("候选文件树在确认前发生变化；必须重新展示版本内容")
+    if "cleanup_branches" in state:
+        _validate_cleanup_plan(state)
     review = release_content_review.review_release_candidate(
         state["version"], sha, state["candidate_tree_sha"],
     )
@@ -419,7 +594,16 @@ def _dispatch_formal_release(
         )
     master_worktree = pr_delivery._worktree_for_branch("master")
     if master_worktree is None:
-        _fail("合并后找不到可用于正式发布的 master 工作区")
+        _assert_clean("正式发布切换 master 前当前工作区")
+        _run(["git", "switch", "master"])
+        if _git_text("branch", "--show-current") != "master":
+            _fail("合并后无法切换到可用于正式发布的 master 工作区")
+        return release_dispatch.dispatch_release(
+            version,
+            execute=True,
+            authorization=release_dispatch.expected_authorization(version),
+            approved_content_sha=approved_content_sha,
+        )
     script = master_worktree / "scripts" / "release_dispatch.py"
     result = subprocess.run(
         [
@@ -514,9 +698,7 @@ def confirm_release(
         _write_state(state)
 
     if state.get("phase") == "published_pending_cleanup":
-        pr_delivery.cleanup_delivered_branch(
-            state["candidate_branch"], state["merge_sha"],
-        )
+        _cleanup_release_branches(state)
         state["phase"] = "complete"
         _write_state(state)
     return state

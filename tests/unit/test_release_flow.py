@@ -147,6 +147,90 @@ def test_existing_aggregate_must_contain_every_declared_source_branch():
         )
 
 
+def test_cleanup_plan_discovers_only_branches_added_to_candidate_history():
+    candidate = "codex/release-v2.24"
+    candidate_sha = "c" * 40
+    base_sha = "b" * 40
+    branches = [
+        "codex/already-in-base",
+        "codex/feature-a",
+        "codex/feature-b",
+        "codex/unrelated",
+        candidate,
+    ]
+    heads = {
+        "codex/feature-a": "a" * 40,
+        "codex/feature-b": "d" * 40,
+    }
+
+    def is_ancestor(ancestor, descendant):
+        if descendant == candidate_sha:
+            return ancestor in {
+                "codex/already-in-base",
+                "codex/feature-a",
+                "codex/feature-b",
+            }
+        if descendant == base_sha:
+            return ancestor == "codex/already-in-base"
+        return False
+
+    with (
+        patch.object(release_flow, "_local_codex_branches", return_value=branches),
+        patch.object(release_flow.pr_delivery, "_is_ancestor", side_effect=is_ancestor),
+        patch.object(
+            release_flow,
+            "_git_text",
+            side_effect=lambda *args: heads[args[-1]],
+        ),
+    ):
+        result = release_flow._discover_cleanup_branches(
+            candidate, candidate_sha, base_sha, ["codex/feature-a"],
+        )
+
+    assert result == [
+        {
+            "branch": "codex/feature-a",
+            "head_sha": "a" * 40,
+            "role": "included",
+        },
+        {
+            "branch": "codex/feature-b",
+            "head_sha": "d" * 40,
+            "role": "included",
+        },
+        {
+            "branch": candidate,
+            "head_sha": candidate_sha,
+            "role": "candidate",
+        },
+    ]
+
+
+def test_cleanup_plan_keeps_explicit_source_even_if_already_in_base():
+    branch = "codex/already-in-base"
+    with (
+        patch.object(
+            release_flow,
+            "_local_codex_branches",
+            return_value=[branch, "codex/release-v2.24"],
+        ),
+        patch.object(release_flow.pr_delivery, "_is_ancestor", return_value=True),
+        patch.object(release_flow, "_git_text", return_value="a" * 40),
+    ):
+        result = release_flow._discover_cleanup_branches(
+            "codex/release-v2.24",
+            "c" * 40,
+            "b" * 40,
+            [branch],
+        )
+
+    assert result[0] == {
+        "branch": branch,
+        "head_sha": "a" * 40,
+        "role": "included",
+    }
+
+
 def test_prepare_candidate_stops_after_pr_checks_and_writes_review_state():
     gate = {"head_sha": "a" * 40, "master_sha": "b" * 40}
     pr = {"number": 42, "url": "https://github.example/pr/42"}
@@ -159,6 +243,11 @@ def test_prepare_candidate_stops_after_pr_checks_and_writes_review_state():
         "content_sha": "c" * 64,
         "review_warnings": [],
     }
+    cleanup = [{
+        "branch": "codex/feature-a",
+        "head_sha": "a" * 40,
+        "role": "candidate",
+    }]
     events = []
     with (
         patch.object(release_flow, "_git_text", return_value="codex/feature-a"),
@@ -193,6 +282,11 @@ def test_prepare_candidate_stops_after_pr_checks_and_writes_review_state():
         ),
         patch.object(release_flow, "_tree_sha", return_value="t" * 40),
         patch.object(
+            release_flow,
+            "_discover_cleanup_branches",
+            return_value=cleanup,
+        ),
+        patch.object(
             release_flow.release_content_review,
             "review_release_candidate",
             return_value=review,
@@ -218,6 +312,7 @@ def test_prepare_candidate_stops_after_pr_checks_and_writes_review_state():
 
     assert events == ["branch", "materials", "gate", "push_pr", "checks", "state"]
     assert result["phase"] == "awaiting_content_approval"
+    assert result["cleanup_branches"] == cleanup
     write_state.assert_called_once()
     merge.assert_not_called()
     dispatch.assert_not_called()
@@ -285,8 +380,8 @@ def test_confirm_verifies_tree_then_merges_syncs_and_publishes():
             side_effect=lambda *_args, **_kwargs: events.append("sync"),
         ),
         patch.object(
-            release_flow.pr_delivery,
-            "cleanup_delivered_branch",
+            release_flow,
+            "_cleanup_release_branches",
             side_effect=lambda *_: events.append("cleanup"),
         ),
         patch.object(
@@ -331,8 +426,8 @@ def test_confirm_stops_if_squash_tree_differs_from_approved_candidate():
             "synchronize_merged_delivery",
         ) as synchronize,
         patch.object(
-            release_flow.pr_delivery,
-            "cleanup_delivered_branch",
+            release_flow,
+            "_cleanup_release_branches",
         ) as cleanup,
         patch.object(release_flow, "_dispatch_formal_release") as dispatch,
         _raises(release_flow.ReleaseFlowError, "文件树与已确认候选不一致"),
@@ -360,8 +455,8 @@ def test_confirm_resumes_sync_after_merge_without_remerging_pr():
             "synchronize_merged_delivery",
         ) as synchronize,
         patch.object(
-            release_flow.pr_delivery,
-            "cleanup_delivered_branch",
+            release_flow,
+            "_cleanup_release_branches",
         ) as cleanup,
         patch.object(release_flow, "_write_state"),
         patch.object(
@@ -384,7 +479,7 @@ def test_confirm_resumes_sync_after_merge_without_remerging_pr():
         "m" * 40,
         origin_already_fetched=False,
     )
-    cleanup.assert_called_once_with("codex/feature-a", "m" * 40)
+    cleanup.assert_called_once_with(state)
 
 
 def test_formal_release_failure_preserves_candidate_branch():
@@ -406,8 +501,8 @@ def test_formal_release_failure_preserves_candidate_branch():
             side_effect=release_flow.ReleaseFlowError("Gitee 上传失败"),
         ),
         patch.object(
-            release_flow.pr_delivery,
-            "cleanup_delivered_branch",
+            release_flow,
+            "_cleanup_release_branches",
         ) as cleanup,
         _raises(release_flow.ReleaseFlowError, "Gitee 上传失败"),
     ):
@@ -469,3 +564,181 @@ def test_formal_release_uses_master_worktree_when_current_is_detached():
 
     assert result["mode"] == "published_from_master_worktree"
     assert run.call_args.kwargs["cwd"] == master
+
+
+def test_formal_release_switches_clean_current_worktree_to_master_when_missing():
+    published = {"mode": "published"}
+    with (
+        patch.object(
+            release_flow,
+            "_git_text",
+            side_effect=["codex/release-v2.24", "master"],
+        ),
+        patch.object(release_flow.pr_delivery, "_worktree_for_branch", return_value=None),
+        patch.object(release_flow, "_assert_clean") as clean,
+        patch.object(release_flow, "_run") as run,
+        patch.object(
+            release_flow.release_dispatch,
+            "dispatch_release",
+            return_value=published,
+        ) as dispatch,
+    ):
+        result = release_flow._dispatch_formal_release("2.24", "c" * 64)
+
+    assert result == published
+    clean.assert_called_once_with("正式发布切换 master 前当前工作区")
+    run.assert_called_once_with(["git", "switch", "master"])
+    dispatch.assert_called_once()
+
+
+def test_cleanup_release_branches_removes_included_then_candidate_branch():
+    state = {
+        **_candidate_state(),
+        "phase": "published_pending_cleanup",
+        "merge_sha": "m" * 40,
+        "cleanup_branches": [
+            {
+                "branch": "codex/feature-a",
+                "head_sha": "a" * 40,
+                "role": "included",
+            },
+            {
+                "branch": "codex/release-v2.24",
+                "head_sha": "c" * 40,
+                "role": "candidate",
+            },
+        ],
+        "candidate_branch": "codex/release-v2.24",
+        "candidate_sha": "c" * 40,
+    }
+    entries = state["cleanup_branches"]
+    events = []
+    with (
+        patch.object(release_flow, "_validate_cleanup_plan", return_value=entries),
+        patch.object(
+            release_flow.pr_delivery,
+            "cleanup_delivered_branch",
+            side_effect=lambda *_: events.append("candidate"),
+        ),
+        patch.object(
+            release_flow.pr_delivery,
+            "_remote_branch_exists",
+            return_value=False,
+        ),
+        patch.object(
+            release_flow,
+            "_delete_included_branch",
+            side_effect=lambda item: events.append(item["branch"]),
+        ),
+    ):
+        release_flow._cleanup_release_branches(state)
+
+    assert events == ["codex/feature-a", "candidate"]
+
+
+def test_included_branch_cleanup_detaches_worktree_and_removes_both_remotes():
+    branch = "codex/feature-a"
+    worktree = Path("D:/worktrees/feature-a")
+    removed_remotes = set()
+    commands = []
+
+    def remote_exists(remote, _branch):
+        return remote not in removed_remotes
+
+    def run_external(args, _label, *, postcondition=None, **_kwargs):
+        removed_remotes.add(args[2])
+        assert postcondition is not None and postcondition()
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    def run(args, **kwargs):
+        commands.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    with (
+        patch.object(
+            release_flow.pr_delivery,
+            "_worktree_for_branch",
+            return_value=worktree,
+        ),
+        patch.object(
+            release_flow.pr_delivery,
+            "_remote_branch_exists",
+            side_effect=remote_exists,
+        ),
+        patch.object(
+            release_flow.pr_delivery,
+            "_run_external",
+            side_effect=run_external,
+        ),
+        patch.object(
+            release_flow.pr_delivery,
+            "_local_branch_exists",
+            side_effect=[True, False],
+        ),
+        patch.object(release_flow, "_run", side_effect=run),
+    ):
+        release_flow._delete_included_branch({
+            "branch": branch,
+            "head_sha": "a" * 40,
+            "role": "included",
+        })
+
+    assert (
+        ["git", "switch", "--detach", "origin/master"],
+        {"cwd": worktree},
+    ) in commands
+    assert (["git", "branch", "-D", branch], {}) in commands
+    assert removed_remotes == {"origin", "gitee"}
+
+
+def test_cleanup_plan_rejects_branch_moved_after_candidate_confirmation():
+    state = {
+        **_candidate_state(),
+        "cleanup_branches": [
+            {
+                "branch": "codex/feature-a",
+                "head_sha": "a" * 40,
+                "role": "candidate",
+            },
+        ],
+    }
+    with (
+        patch.object(release_flow.pr_delivery, "_is_ancestor", return_value=True),
+        patch.object(release_flow.pr_delivery, "_local_branch_exists", return_value=True),
+        patch.object(release_flow, "_git_text", return_value="d" * 40),
+        _raises(release_flow.ReleaseFlowError, "发生变化"),
+    ):
+        release_flow._validate_cleanup_plan(state)
+
+
+def test_cleanup_plan_preserves_branch_with_dirty_worktree():
+    state = {
+        **_candidate_state(),
+        "cleanup_branches": [
+            {
+                "branch": "codex/feature-a",
+                "head_sha": "a" * 40,
+                "role": "candidate",
+            },
+        ],
+    }
+    dirty = release_flow.pr_delivery.PRDeliveryError(
+        "待清理分支 codex/feature-a 工作区存在未提交修改"
+    )
+    with (
+        patch.object(release_flow.pr_delivery, "_is_ancestor", return_value=True),
+        patch.object(release_flow.pr_delivery, "_local_branch_exists", return_value=True),
+        patch.object(release_flow, "_git_text", return_value="a" * 40),
+        patch.object(
+            release_flow.pr_delivery,
+            "_worktree_for_branch",
+            return_value=Path("D:/worktrees/feature-a"),
+        ),
+        patch.object(
+            release_flow.pr_delivery,
+            "_assert_clean_worktree",
+            side_effect=dirty,
+        ),
+        _raises(release_flow.pr_delivery.PRDeliveryError, "存在未提交修改"),
+    ):
+        release_flow._validate_cleanup_plan(state)

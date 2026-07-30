@@ -15,7 +15,7 @@
 
 ### 正式发布（Actions 构建 + 本机镜像）
 
-正常发布的唯一用户入口是本机 `scripts/release_flow.py`。它把开发分支提交、版本材料、候选 PR、CI 等待、内容确认、正式发布和线上验收串成一个可恢复状态机；唯一正常停点是最终标题和正文确认。`release_prepare.py`、`release_delivery.py`、`pr_delivery.py` 与 `release_dispatch.py` 仅保留为分阶段恢复入口。
+正常发布的唯一用户入口是本机 `scripts/release_flow.py`。它把开发分支提交、版本材料、候选 PR、CI 等待、内容确认、正式发布、线上验收和已发布分支清理串成一个可恢复状态机；唯一正常停点是最终标题和正文确认。候选准备时会记录候选新增历史中已经包含的 `codex/*` 阶段分支并展示清理名单；验收成功后若当前工作区仍在候选分支且没有其他 `master` worktree，会自动切回 `master` 再继续正式发布。`release_prepare.py`、`release_delivery.py`、`pr_delivery.py` 与 `release_dispatch.py` 仅保留为分阶段恢复入口。
 
 Windows 项目代码通过根目录 `subprocess_utils.py` 统一控制子进程：发布和测试从现有控制台运行时，Git、Python、Ruff、PyInstaller、GitHub CLI 及其认证、Git、telemetry 后代全部继承同一终端，不再创建新窗口；打包后的无控制台 GUI 启动 WMIC、taskkill、更新器等命令时才使用 `CREATE_NO_WINDOW`。stdout/stderr 仍由父进程回放，Chrome 等确需显示的图形程序显式放行。禁止为发布 CLI 使用 `CREATE_NEW_CONSOLE`，Windows Terminal 可能把它作为新窗口激活到前台。调用 `release_flow.py` 的外层编排器仍须使用 `windowsHide`、`Start-Process -WindowStyle Hidden` 或等价机制；仓库内脚本无法隐藏调用者在启动前已经创建的 PowerShell/终端窗口。
 
@@ -54,7 +54,7 @@ python scripts/release_flow.py --version 2.24 \
 
 **Dry Run：**将 `dry_run` 设为 `true` 时只执行授权校验和严格门禁，不构建、不创建 tag、不推送、不发布。
 
-**多分支聚合：**重复传入 `--branch` 显式声明纳入顺序，并为每个分支传入与手工 GUI 实测一致的 `--tested-branch branch=commit_sha`。每个分支必须有独立且干净的 worktree；脚本先在各自目录运行稳定回归和导入烟测，再从同步的 `master` 创建 `codex/release-vX.Y`，逐个合入并对组合结果重新执行完整门禁。冲突、实测 SHA 变化、分支独立测试或组合测试失败都立即停止。示例授权：`一键发布版本 v2.24，包含 codex/a、codex/b`。
+**多分支聚合：**重复传入 `--branch` 显式声明纳入顺序，并为每个分支传入与手工 GUI 实测一致的 `--tested-branch branch=commit_sha`。每个分支必须有独立且干净的 worktree；脚本先在各自目录运行稳定回归和导入烟测，再从同步的 `master` 创建 `codex/release-vX.Y`，逐个合入并对组合结果重新执行完整门禁。冲突、实测 SHA 变化、分支独立测试或组合测试失败都立即停止。候选提交历史中已包含且不属于发布前 `master` 的其他本地 `codex/*` 分支会自动进入清理计划，但不会自动成为新的合并输入。公开验收后，脚本仅在记录的分支头未变化、远端分支缺失或仍指向同一提交、关联 worktree 干净时自动解除占用并删除本地及已有远端分支；worktree 目录本身始终保留。示例授权：`一键发布版本 v2.24，包含 codex/a、codex/b`。
 
 **凭据配置：**Actions 只使用 `GITHUB_TOKEN` 创建 tag、Draft Release 和上传附件，不保存也不使用 `GITEE_TOKEN`。正式发布前，本机必须提供具有 Gitee projects 权限的 `GITEE_TOKEN`；缺失或 Gitee API 不可达时会在触发 Actions 前停止。本地 `build.py --release` 仍停用，正常发布统一从 `release_flow.py` 进入。
 
@@ -157,7 +157,7 @@ pyinstaller --onefile --noconsole \
 - 真实 Chrome 验收未连接、登录页、推荐页加载中、无已发布职位、无候选人和正常候选人页面
 - 自动化矩阵只能证明状态逻辑和列策略，不能代替对应系统、DPI、字体和真实 BOSS 页面上的最终视觉/连接检查
 
-`release_flow.py` 要求开发修改已经由 Codex 完成语义审查和提交；确定性脚本不自行猜测哪些脏文件属于本次任务。它在当前单分支或显式多分支聚合结果上同步版本材料、运行严格门禁、推送候选 PR 并等待 CI，然后停在内容确认。内容调整继续使用同一 PR；确认前不得合并，确认后才连续执行正式发布。底层脚本保留用于失败后的分阶段恢复。
+`release_flow.py` 要求开发修改已经由 Codex 完成语义审查和提交；确定性脚本不自行猜测哪些脏文件属于本次任务，也不自动合并未显式声明的兄弟分支。它在当前单分支或显式多分支聚合结果上同步版本材料、运行严格门禁、推送候选 PR 并等待 CI，然后停在内容确认，同时展示公开验收后将自动清理的候选分支和候选历史内阶段分支。内容调整继续使用同一 PR；确认前不得合并，确认后才连续执行正式发布。底层脚本保留用于失败后的分阶段恢复。
 
 Release 标题和说明必须先写在 `CHANGELOG.md` 对应版本段落中。`scripts/release_ci.py` 会自动提取该段落作为 GitHub/Gitee Release 内容；如果缺少对应版本，或未按以下顺序分类，发布会直接中断：
 
