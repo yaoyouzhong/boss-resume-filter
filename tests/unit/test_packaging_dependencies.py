@@ -105,8 +105,29 @@ def test_pr_checks_run_stable_validation_for_master_pull_requests():
     assert "PYTHONIOENCODING: utf-8" in workflow
     assert 'PYTHONUTF8: "1"' in workflow
     assert 'python -c "import build; build._check_source_compiles()"' in workflow
+    assert 'python -c "import build; build._check_undefined_names()"' in workflow
+    assert "requirements-release.txt" in workflow
     assert "python tests/run_unit_tests.py" in workflow
     assert "python tests/test_import.py" in workflow
+
+
+def test_ruff_f821_is_a_local_and_release_ci_hard_gate():
+    build_source = (BASE_DIR / "build.py").read_text(encoding="utf-8")
+    release_requirements = (BASE_DIR / "requirements-release.txt").read_text(
+        encoding="utf-8"
+    )
+    build_requirements = (BASE_DIR / "requirements-build.txt").read_text(
+        encoding="utf-8"
+    )
+    release_workflow = (BASE_DIR / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"F821"' in build_source
+    assert "_check_undefined_names()" in build_source
+    assert "ruff==" in release_requirements
+    assert "-r requirements-release.txt" in build_requirements
+    assert "-r requirements.txt -r requirements-release.txt" in release_workflow
 
 
 def test_pr_checks_never_publish_or_sync_releases():

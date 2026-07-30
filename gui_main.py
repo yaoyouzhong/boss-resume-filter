@@ -100,6 +100,8 @@ from job_config_diagnostics import (
     score_job_config_quality,
     summarize_job_config_diagnostics,
 )
+from job_config_store import load_job_config_snapshot, save_job_config_snapshot
+from job_identity import job_names_equal, normalize_job_name
 from constants import (
     API_CANDIDATE_LIMIT_DEFAULT,
     DOM_SCROLL_BATCH_MAX,
@@ -7567,7 +7569,7 @@ class BossFilterGUI:
         if job_name != "全部岗位":
             candidates = [
                 c for c in candidates
-                if c.get('job_name', '').replace(" ", "") == job_name.replace(" ", "")
+                if normalize_job_name(c.get('job_name')) == normalize_job_name(job_name)
             ]
 
         time_range = self.stats_time_var.get() if hasattr(self, 'stats_time_var') else "全部"
@@ -8776,7 +8778,10 @@ class BossFilterGUI:
 
                 # 岗位过滤
                 if selected_job != "全部岗位":
-                    candidates = [c for c in candidates if c.get('job_name', '') == selected_job.replace(" ", "")]
+                    candidates = [
+                        c for c in candidates
+                        if normalize_job_name(c.get('job_name')) == normalize_job_name(selected_job)
+                    ]
 
                 # 淘汰结论优先于历史分数，首页与结果页使用同一决策口径。
                 candidates = [
@@ -8868,7 +8873,10 @@ class BossFilterGUI:
             if hasattr(self, 'home_job_var'):
                 selected_job = self.home_job_var.get()
                 if selected_job != "全部岗位":
-                    candidates = [c for c in candidates if c.get('job_name', '') == selected_job.replace(" ", "")]
+                    candidates = [
+                        c for c in candidates
+                        if normalize_job_name(c.get('job_name')) == normalize_job_name(selected_job)
+                    ]
 
             # 根据类型筛选候选人（只统计通过分）
             if stat_type == 'total_home':
@@ -9221,7 +9229,10 @@ class BossFilterGUI:
             if hasattr(self, 'result_job_var'):
                 selected_job = self.result_job_var.get()
                 if selected_job != "全部岗位":
-                    candidates = [c for c in candidates if c.get('job_name', '') == selected_job.replace(" ", "")]
+                    candidates = [
+                        c for c in candidates
+                        if normalize_job_name(c.get('job_name')) == normalize_job_name(selected_job)
+                    ]
 
             # 日期过滤（与 refresh_results 保持一致）
             date_start, date_end = self._get_result_date_filter() if hasattr(self, 'result_date_start_entry') else (None, None)
@@ -9594,12 +9605,11 @@ class BossFilterGUI:
 
     def _read_job_rules_from_file(self):
         """轻量读取岗位规则，避免 GUI 首屏 import 自动化主程序。"""
-        if not CONFIG_PATH.exists():
+        if not CONFIG_PATH.exists() and not CONFIG_BACKUP_PATH.exists():
             return {}
         try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-        except (json.JSONDecodeError, OSError):
+            config = load_job_config_snapshot(CONFIG_PATH, CONFIG_BACKUP_PATH)
+        except (OSError, ValueError, RuntimeError):
             return {}
 
         if "job_requirements" in config and isinstance(config["job_requirements"], dict):
@@ -9610,33 +9620,17 @@ class BossFilterGUI:
 
     def load_config(self):
         """加载岗位配置"""
-        if CONFIG_PATH.exists():
-            try:
-                with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                    # 支持新旧两种格式
-                    if "job_requirements" in config:
-                        self.job_rules = config["job_requirements"]
-                    elif "jobs" in config:
-                        self.job_rules = config["jobs"]
-                    else:
-                        self.job_rules = {}
-            except Exception as e:
-                # 配置文件损坏时尝试从备份恢复
-                if CONFIG_BACKUP_PATH.exists():
-                    try:
-                        shutil.copy(CONFIG_BACKUP_PATH, CONFIG_PATH)
-                        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                            config = json.load(f)
-                            if "job_requirements" in config:
-                                self.job_rules = config["job_requirements"]
-                            elif "jobs" in config:
-                                self.job_rules = config["jobs"]
-                    except (json.JSONDecodeError, IOError) as e:
-                        print(f"从备份恢复配置失败：{e}")
-                        self.job_rules = {}
-                else:
-                    self.job_rules = {}
+        try:
+            config = load_job_config_snapshot(CONFIG_PATH, CONFIG_BACKUP_PATH)
+        except (OSError, ValueError, RuntimeError) as e:
+            print(f"加载岗位配置失败：{e}")
+            config = {}
+        if "job_requirements" in config:
+            self.job_rules = config["job_requirements"]
+        elif "jobs" in config:
+            self.job_rules = config["jobs"]
+        else:
+            self.job_rules = {}
 
     def load_api_config(self, resolve_keys=True):
         """加载 API 配置 - 从系统钥匙串读取加密的 API Key（按服务商管理）"""
@@ -11580,21 +11574,12 @@ class BossFilterGUI:
 
     def save_config(self):
         """保存配置文件 - 带备份保护，保留 requirement_template 等顶层字段"""
-        # 先备份旧配置
-        if CONFIG_PATH.exists():
-            try:
-                shutil.copy(CONFIG_PATH, CONFIG_BACKUP_PATH)
-            except IOError as e:
-                print(f"备份配置失败：{e}")
-
-        # 加载已有配置，保留顶层字段（如 requirement_template）
-        existing = {}
-        if CONFIG_PATH.exists():
-            try:
-                with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                    existing = json.load(f)
-            except (json.JSONDecodeError, IOError):
-                pass
+        # 加载主文件或已验证备份，保留 requirement_template 等顶层字段。
+        try:
+            existing = load_job_config_snapshot(CONFIG_PATH, CONFIG_BACKUP_PATH)
+        except (OSError, ValueError, RuntimeError) as e:
+            print(f"读取原岗位配置失败，将保留有效备份并写入当前配置：{e}")
+            existing = {}
 
         # 更新 job_requirements，保留其他顶层字段；剔除解析溯源等 GUI 临时字段
         existing = {
@@ -11603,8 +11588,7 @@ class BossFilterGUI:
             if not str(key).startswith("_")
         }
         existing["job_requirements"] = self._strip_transient_fields(self.job_rules)
-        with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
-            json.dump(existing, f, ensure_ascii=False, indent=4)
+        save_job_config_snapshot(existing, CONFIG_PATH, CONFIG_BACKUP_PATH)
 
     def _confirm_job_form_transition(self):
         """Protect unsaved job edits before switching or starting another draft."""
@@ -12552,10 +12536,9 @@ class BossFilterGUI:
     def _insert_requirement_template(self):
         """插入招聘需求模板到输入框（模板文本从 job_config.json 读取）"""
         try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                config = json.load(f)
+            config = load_job_config_snapshot(CONFIG_PATH, CONFIG_BACKUP_PATH)
             template = config.get("requirement_template", "")
-        except Exception:
+        except (OSError, ValueError, RuntimeError):
             template = ""
         if not template:
             messagebox.showwarning("警告", "配置文件中未找到 requirement_template 模板")
@@ -13400,8 +13383,7 @@ class BossFilterGUI:
         # 检查是否已存在相同（规范化后）的岗位
         existing_key_to_delete = None
         for key in self.job_rules.keys():
-            normalized_key = re.sub(r'\s+', ' ', key).strip()
-            if normalized_key.lower() == normalized_job_name.lower():
+            if job_names_equal(key, normalized_job_name):
                 existing_key_to_delete = key
                 break
 
@@ -15073,7 +15055,10 @@ class BossFilterGUI:
                 # 岗位过滤
                 selected_job = self.result_job_var.get()
                 if selected_job != "全部岗位":
-                    candidates = [c for c in candidates if c.get('job_name', '') == selected_job.replace(" ", "")]
+                    candidates = [
+                        c for c in candidates
+                        if normalize_job_name(c.get('job_name')) == normalize_job_name(selected_job)
+                    ]
 
                 # 日期过滤按首次发现时间统计；旧数据回退 batch_timestamp。
                 date_start, date_end = current_dates
@@ -15293,10 +15278,10 @@ class BossFilterGUI:
         candidates = load_candidates_all(CANDIDATES_PATH)
         selected_job = self.result_job_var.get() if hasattr(self, 'result_job_var') else "全部岗位"
         if selected_job != "全部岗位":
-            normalized_job = selected_job.replace(" ", "")
+            normalized_job = normalize_job_name(selected_job)
             candidates = [
                 c for c in candidates
-                if c.get('job_name', '').replace(" ", "") == normalized_job
+                if normalize_job_name(c.get('job_name')) == normalized_job
             ]
         return candidates, selected_job
 
@@ -15970,7 +15955,11 @@ class BossFilterGUI:
             for item in candidate_by_key.values():
                 if (
                     (not issue.name or item.get('name') == issue.name)
-                    and (not issue.job_name or item.get('job_name') == issue.job_name)
+                    and (
+                        not issue.job_name
+                        or normalize_job_name(item.get('job_name'))
+                        == normalize_job_name(issue.job_name)
+                    )
                 ):
                     return item
             return None
@@ -18128,6 +18117,17 @@ class BossFilterGUI:
             self.refresh_results()
             return
 
+        job_requirement, job_rule = self._get_job_requirement_for_candidates([candidate])
+        if not job_requirement or not job_rule:
+            messagebox.showwarning(
+                "未找到岗位配置",
+                "未找到该候选人对应的已保存岗位规则。简历已保留，但不能开始二次评估。",
+                parent=parent or self.root,
+            )
+            self.refresh_results()
+            return
+        hard_conditions = self._format_ai_hard_conditions(job_rule)
+
         # 5. 后台线程调用 LLM
         name = candidate.get('name', '')
         _parent = parent or self.root
@@ -18164,22 +18164,6 @@ class BossFilterGUI:
                             parent=_parent)
                     _parent.after(0, _no_key)
                     return
-
-                # 读取岗位需求
-                job_config_path = get_base_dir() / "job_config.json"
-                job_requirement = ""
-                hard_conditions = ""
-                if job_config_path.exists():
-                    import json as _json
-                    with open(job_config_path, 'r', encoding='utf-8') as f:
-                        jc = _json.load(f)
-                    job_requirement = jc.get('raw_text', '') or jc.get('description', '')
-                    hc = jc.get('required_conditions') or jc.get('hard_conditions', [])
-                    if hc:
-                        hard_conditions = "## 硬性条件\n" + "\n".join(
-                            f"- {c}" if isinstance(c, str) else f"- {c.get('text','')}"
-                            for c in (hc if isinstance(hc, list) else [hc])
-                        ) + "\n\n"
 
                 self.append_log(f"[简历评估] 正在评估 {name}...")
                 result = evaluate_with_resume(
@@ -18543,7 +18527,15 @@ class BossFilterGUI:
 
         # 从job_config.json获取岗位需求
         job_rules = self._get_job_rules_cached()
-        rule = job_rules.get(job_name)
+        normalized_job = normalize_job_name(job_name)
+        matched_names = [
+            configured_name
+            for configured_name in job_rules
+            if job_names_equal(configured_name, normalized_job)
+        ]
+        if len(matched_names) != 1:
+            return "", {}
+        rule = job_rules.get(matched_names[0])
         if not isinstance(rule, dict) or not rule:
             return "", {}
 
@@ -18554,6 +18546,33 @@ class BossFilterGUI:
             job_requirement = f"岗位：{job_name}，{min_exp}年经验，{edu}学历"
 
         return job_requirement, rule
+
+    @staticmethod
+    def _format_ai_hard_conditions(rule: dict) -> str:
+        """Format the saved job rule once for both first and resume AI reviews."""
+        hard_parts = []
+        if rule.get('min_exp'):
+            hard_parts.append(f"- 经验：要求≥{rule['min_exp']}年，候选人需满足")
+        if rule.get('edu') and rule.get('edu') != '不限':
+            hard_parts.append(f"- 学历：要求{rule['edu']}")
+        if rule.get('max_age'):
+            hard_parts.append(f"- 年龄：上限{rule['max_age']}岁")
+        if rule.get('work_location'):
+            hard_parts.append(f"- 地点：要求{rule['work_location']}，候选人期望城市需匹配")
+        if rule.get('salary_max'):
+            hard_parts.append(f"- 薪资：岗位最高{rule['salary_max']}K，候选人期望不应超过")
+        required_conditions = rule.get('required_conditions', [])
+        if required_conditions:
+            condition_names = [
+                condition
+                if isinstance(condition, str)
+                else condition.get('name', str(condition))
+                for condition in required_conditions
+            ]
+            hard_parts.append(f"- 必要条件：{'、'.join(condition_names)}")
+        if not hard_parts:
+            return ""
+        return "## 筛选硬条件\n" + "\n".join(hard_parts) + "\n\n"
 
     def _do_ai_eval_batch(self, evaluation_groups, api_config, api_key):
         """按岗位分组后台执行 AI 评估，并合并本轮结果。"""
@@ -18578,22 +18597,7 @@ class BossFilterGUI:
                 def progress_callback(percentage, description, *, _base=processed_count, _size=group_size):
                     self._ai_eval_done = _base + int(percentage / 100 * _size)
 
-                hard_parts = []
-                if rule.get('min_exp'):
-                    hard_parts.append(f"- 经验：要求≥{rule['min_exp']}年，候选人需满足")
-                if rule.get('edu') and rule.get('edu') != '不限':
-                    hard_parts.append(f"- 学历：要求{rule['edu']}")
-                if rule.get('max_age'):
-                    hard_parts.append(f"- 年龄：上限{rule['max_age']}岁")
-                if rule.get('work_location'):
-                    hard_parts.append(f"- 地点：要求{rule['work_location']}，候选人期望城市需匹配")
-                if rule.get('salary_max'):
-                    hard_parts.append(f"- 薪资：岗位最高{rule['salary_max']}K，候选人期望不应超过")
-                req_conds = rule.get('required_conditions', [])
-                if req_conds:
-                    cond_names = [c if isinstance(c, str) else c.get('name', str(c)) for c in req_conds]
-                    hard_parts.append(f"- 必要条件：{'、'.join(cond_names)}")
-                hard_conditions = "## 筛选硬条件\n" + "\n".join(hard_parts) + "\n\n" if hard_parts else ""
+                hard_conditions = self._format_ai_hard_conditions(rule)
 
                 group_error = ""
                 try:
@@ -18967,8 +18971,8 @@ class BossFilterGUI:
         return bool(update_candidate_records(
             lambda candidate: (
                 candidate.get('geek_id') == geek_id
-                and candidate.get('job_name', '').replace(" ", "")
-                == job_name.replace(" ", "")
+                and normalize_job_name(candidate.get('job_name'))
+                == normalize_job_name(job_name)
             ),
             apply_status,
             CANDIDATES_PATH,
@@ -19057,8 +19061,8 @@ class BossFilterGUI:
             for candidate in candidates:
                 if (
                     str(candidate.get('geek_id')) == str(geek_id)
-                    and candidate.get('job_name', '').replace(' ', '')
-                    == job_name.replace(' ', '')
+                    and normalize_job_name(candidate.get('job_name'))
+                    == normalize_job_name(job_name)
                     and (
                         candidate.get('manual_review_required')
                         or candidate.get('qualification_status') == 'manual_review'
@@ -19096,13 +19100,13 @@ class BossFilterGUI:
         if not geek_id or not CANDIDATES_PATH.exists():
             return 0
         rejected_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-        normalized_job = str(job_name or '').replace(" ", "")
+        normalized_job = normalize_job_name(job_name)
 
         def reject_review(candidates):
             for candidate in candidates:
                 if (
                     str(candidate.get('geek_id') or '') != str(geek_id)
-                    or candidate.get('job_name', '').replace(" ", "") != normalized_job
+                    or normalize_job_name(candidate.get('job_name')) != normalized_job
                 ):
                     continue
                 decision = derive_candidate_decision(candidate)
@@ -19140,7 +19144,7 @@ class BossFilterGUI:
         if not geek_id or not CANDIDATES_PATH.exists():
             return False
         approved_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-        normalized_job = str(job_name or '').replace(" ", "")
+        normalized_job = normalize_job_name(job_name)
 
         def approve_contact(candidate):
             review_reasons = list(
@@ -19157,7 +19161,7 @@ class BossFilterGUI:
         return bool(update_candidate_records(
             lambda candidate: (
                 str(candidate.get('geek_id') or '') == str(geek_id)
-                and candidate.get('job_name', '').replace(" ", "") == normalized_job
+                and normalize_job_name(candidate.get('job_name')) == normalized_job
             ),
             approve_contact,
             CANDIDATES_PATH,
@@ -19696,8 +19700,8 @@ class BossFilterGUI:
         return bool(update_candidate_records(
             lambda candidate: (
                 candidate.get('geek_id') == geek_id
-                and candidate.get('job_name', '').replace(" ", "")
-                == job_name.replace(" ", "")
+                and normalize_job_name(candidate.get('job_name'))
+                == normalize_job_name(job_name)
             ),
             apply_feedback,
             CANDIDATES_PATH,
@@ -22102,7 +22106,7 @@ class BossFilterGUI:
         """Return the persisted candidate identity used by result-page actions."""
         return (
             str(candidate.get('geek_id') or ''),
-            str(candidate.get('job_name') or '').replace(' ', ''),
+            normalize_job_name(candidate.get('job_name')),
         )
 
     @staticmethod
@@ -23108,7 +23112,8 @@ class BossFilterGUI:
                         c for c in self.result_tree_data
                         if not (
                             c.get('geek_id') == target_geek_id
-                            and c.get('job_name', '').replace(' ', '') == target_job_name.replace(' ', '')
+                            and normalize_job_name(c.get('job_name'))
+                            == normalize_job_name(target_job_name)
                         )
                     ]
 
@@ -23117,8 +23122,8 @@ class BossFilterGUI:
                     remove_candidates_all(
                         lambda persisted: (
                             persisted.get('geek_id') == target_geek_id
-                            and persisted.get('job_name', '').replace(' ', '')
-                            == target_job_name.replace(' ', '')
+                            and normalize_job_name(persisted.get('job_name'))
+                            == normalize_job_name(target_job_name)
                         ),
                         CANDIDATES_PATH,
                     )
@@ -23255,8 +23260,13 @@ class BossFilterGUI:
             if is_all_jobs:
                 greeted_count = sum(1 for c in _candidates if c.get('greet_sent'))
             else:
-                job_name = selected_job.replace(" ", "")
-                greeted_count = sum(1 for c in _candidates if c.get('greet_sent') and c.get('job_name', '') == job_name)
+                job_name = normalize_job_name(selected_job)
+                greeted_count = sum(
+                    1
+                    for c in _candidates
+                    if c.get('greet_sent')
+                    and normalize_job_name(c.get('job_name')) == job_name
+                )
         except (OSError, RuntimeError):
             pass
 
@@ -23361,14 +23371,14 @@ class BossFilterGUI:
 
                 def clear_snapshot(candidates):
                     if choice == "current":
-                        job_name = selected_job.replace(" ", "")
+                        job_name = normalize_job_name(selected_job)
                         other_jobs = [
                             c for c in candidates
-                            if c.get('job_name', '').replace(" ", "") != job_name
+                            if normalize_job_name(c.get('job_name')) != job_name
                         ]
                         current_job = [
                             c for c in candidates
-                            if c.get('job_name', '').replace(" ", "") == job_name
+                            if normalize_job_name(c.get('job_name')) == job_name
                         ]
                         if keep_greeted:
                             kept = [

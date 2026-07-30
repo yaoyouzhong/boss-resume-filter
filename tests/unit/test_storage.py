@@ -13,6 +13,7 @@ from storage import (
     _dedupe_candidates,
     build_blacklist_index,
     build_greeted_index,
+    candidate_key,
     get_greeted_geek_ids,
     is_already_greeted,
     is_recommended_candidate,
@@ -27,6 +28,13 @@ from storage import (
     save_candidates_all,
     update_candidate_greeted,
 )
+
+
+def test_candidate_key_uses_shared_unicode_whitespace_normalization():
+    assert candidate_key("g1", "高级 Java\t工程师\u00a0") == (
+        "g1",
+        "高级Java工程师",
+    )
 
 
 def test_resolve_greeting_confirmation_as_sent_clears_pending_and_marks_contacted():

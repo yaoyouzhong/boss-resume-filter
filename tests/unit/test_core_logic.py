@@ -1412,6 +1412,36 @@ def test_api_enrichment_respects_one_page_cap():
     assert "最多 1 页" in output.getvalue()
 
 
+def test_api_enrichment_zero_budget_makes_zero_direct_requests():
+    class FakeFrame:
+        def run_js(self, script):
+            if script == 'return location.href':
+                return "https://www.zhipin.com/web/frame/recommend/?jobid=job-123&status=0"
+            return None
+
+    dom_batch = [
+        {"geek_id": "g-dom-1", "name": "张三", "text": "本科，5年 Java"},
+    ]
+
+    with patch('bossmaster.time.sleep'), \
+            patch('bossmaster._human_delay', return_value=0), \
+            patch('bossmaster.get_iframe', return_value=None), \
+            patch('bossmaster._start_recommend_api_listener', return_value=None), \
+            patch('bossmaster._find_recent_recommend_api_url') as find_api_url, \
+            patch('bossmaster._build_recommend_api_pagination_from_page') as build_pagination, \
+            patch('bossmaster._fetch_api_page_result') as fetch_api, \
+            patch('bossmaster._detect_captcha', return_value=(False, "")), \
+            patch('bossmaster._extract_cards_batch', return_value=dom_batch):
+        candidates = bossmaster.extract_candidates_by_comprehensive_analysis(
+            FakeFrame(), max_rounds=1, extraction_mode="api", max_candidates=0
+        )
+
+    assert [candidate["geek_id"] for candidate in candidates] == ["g-dom-1"]
+    find_api_url.assert_not_called()
+    build_pagination.assert_not_called()
+    fetch_api.assert_not_called()
+
+
 def test_default_api_enrichment_allows_eight_pages_and_warns_when_still_hitting():
     class FakeFrame:
         def run_js(self, script):

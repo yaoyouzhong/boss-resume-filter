@@ -30,7 +30,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements-release.txt
 
       - name: Compute product code fingerprint
         id: product
@@ -49,6 +51,12 @@ jobs:
       - name: Install dependencies
         if: steps.regression-cache.outputs.cache-hit != 'true'
         run: python -m pip install -r requirements.txt
+
+      - name: Install Ruff gate
+        run: python -m pip install --disable-pip-version-check -r requirements-release.txt
+
+      - name: Reject undefined names
+        run: python -c "import build; build._check_undefined_names()"
 
       - name: Compile tracked source files
         if: steps.regression-cache.outputs.cache-hit != 'true'

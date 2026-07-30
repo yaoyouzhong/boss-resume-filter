@@ -7,6 +7,8 @@ import hashlib
 import json
 import logging
 import os
+import plistlib
+import re
 import shlex
 import subprocess
 import sys
@@ -156,6 +158,61 @@ def _parse_version(v: str) -> tuple:
         return (0, 0, 0)
 
 
+def _github_asset_integrity(
+    repo: str,
+    version: str,
+    platform_key: str,
+    asset: dict,
+) -> dict[str, object]:
+    """Resolve mandatory size/SHA256 metadata for a GitHub release asset."""
+    try:
+        release_size = int(asset.get("size"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("GitHub Release 文件大小无效") from exc
+    if release_size <= 0:
+        raise ValueError("GitHub Release 文件大小无效")
+
+    digest = str(asset.get("digest") or "").strip()
+    digest_match = re.fullmatch(r"sha256:([0-9a-fA-F]{64})", digest)
+    if digest_match:
+        return {
+            "size": release_size,
+            "sha256": digest_match.group(1).lower(),
+        }
+
+    manifest_url = f"https://raw.githubusercontent.com/{repo}/master/latest.json"
+    response = requests.get(
+        manifest_url,
+        headers={"Accept": "application/json"},
+        timeout=UPDATE_TIMEOUT_GITHUB,
+    )
+    response.raise_for_status()
+    manifest = response.json()
+    if not isinstance(manifest, dict):
+        raise ValueError("GitHub 完整性清单格式无效")
+    if str(manifest.get("version") or "").lstrip("vV") != version:
+        raise ValueError("GitHub 完整性清单版本与 Release 不一致")
+
+    metadata = (manifest.get("assets") or {}).get(platform_key)
+    if not isinstance(metadata, dict):
+        raise ValueError("GitHub 完整性清单缺少当前平台")
+    try:
+        manifest_size = int(metadata.get("size"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("GitHub 完整性清单文件大小无效") from exc
+    sha256 = str(metadata.get("sha256") or "").strip().lower()
+    if manifest_size != release_size:
+        raise ValueError("GitHub 完整性清单文件大小与 Release 不一致")
+    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise ValueError("GitHub 完整性清单 SHA256 无效")
+
+    download_url = str(asset.get("browser_download_url") or "")
+    manifest_url_for_asset = str((manifest.get("downloads") or {}).get(platform_key) or "")
+    if not download_url or manifest_url_for_asset != download_url:
+        raise ValueError("GitHub 完整性清单下载地址与 Release 不一致")
+    return {"size": release_size, "sha256": sha256}
+
+
 def check_github_release(repo="yaoyouzhong/boss-resume-filter"):
     """
     检查 GitHub Release 最新版本
@@ -180,6 +237,7 @@ def check_github_release(repo="yaoyouzhong/boss-resume-filter"):
         'release_info': None,
         'download_url': None,
         'download_url_fallback': None,
+        'asset_info': {},
         'error': None
     }
 
@@ -208,20 +266,34 @@ def check_github_release(repo="yaoyouzhong/boss-resume-filter"):
             result['update_type'] = 'version'
 
         # 查找下载链接
+        selected_asset = None
+        platform_key = None
         if sys.platform == 'win32':
             # Windows: 查找 .exe
             for asset in release.get('assets', []):
                 if asset.get('name', '').endswith('.exe'):
+                    selected_asset = asset
+                    platform_key = "windows"
                     result['download_url'] = asset.get('browser_download_url')
-                    result['asset_info'] = {'size': asset.get('size')}
                     break
         elif sys.platform == 'darwin':
             # macOS: 查找 _mac.zip
             for asset in release.get('assets', []):
                 if asset.get('name', '').endswith('_mac.zip'):
+                    selected_asset = asset
+                    platform_key = "macos"
                     result['download_url'] = asset.get('browser_download_url')
-                    result['asset_info'] = {'size': asset.get('size')}
                     break
+
+        if result['has_update']:
+            if not selected_asset or not platform_key:
+                raise ValueError("GitHub Release 缺少当前平台的更新文件")
+            result['asset_info'] = _github_asset_integrity(
+                repo,
+                latest_version,
+                platform_key,
+                selected_asset,
+            )
 
     except requests.exceptions.Timeout:
         result['error'] = "网络连接超时"
@@ -881,7 +953,7 @@ rm -f "$0"
 
         # 写入 /tmp/（不在 temp_dir 内，不会随进程退出被清理）
         script_path = Path(tempfile.gettempdir()) / "boss_update.sh"
-        with open(script_path, 'w') as f:
+        with open(script_path, 'w', encoding='utf-8', newline='\n') as f:
             f.write(script)
         script_path.chmod(0o755)
 

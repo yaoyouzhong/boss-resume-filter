@@ -12,6 +12,7 @@ from typing import Any, Callable, Optional, TypeVar
 
 from candidate_workflow import default_next_followup_at
 from constants import SCORE_THRESHOLD_PASS, SCORE_THRESHOLD_RECOMMEND
+from job_identity import normalize_job_name
 
 
 logger = logging.getLogger(__name__)
@@ -187,7 +188,7 @@ def get_greeted_geek_ids(candidates_all: list[dict[str, Any]]) -> set[str]:
 
 def candidate_key(geek_id: Any, job_name: str) -> tuple[str, str]:
     """Normalize a (geek_id, job_name) composite key for dedup and lookup."""
-    return (str(geek_id), str(job_name).replace(' ', ''))
+    return (str(geek_id), normalize_job_name(job_name))
 
 
 def get_first_seen(candidate: dict[str, Any], fallback: str = '') -> str:
@@ -529,11 +530,11 @@ def merge_candidates_all(
                     refreshed_current.append(archived)
             current = refreshed_current
         if prune_pending_jobs:
-            normalized_jobs = {str(job).replace(' ', '') for job in prune_pending_jobs}
+            normalized_jobs = {normalize_job_name(job) for job in prune_pending_jobs}
             current = [
                 item for item in current
                 if not (
-                    str(item.get('job_name', '')).replace(' ', '') in normalized_jobs
+                    normalize_job_name(item.get('job_name')) in normalized_jobs
                     and _is_current_scan_pending(item)
                     and candidate_key(item.get('geek_id'), item.get('job_name', '')) not in incoming_keys
                 )
@@ -577,7 +578,7 @@ def resolve_candidate_greeting_confirmation(
 ) -> bool:
     """Persist the user's verification of an uncertain greeting result."""
     geek_id = str(candidate.get('geek_id') or '')
-    normalized_job = str(candidate.get('job_name') or '').replace(' ', '')
+    normalized_job = normalize_job_name(candidate.get('job_name'))
     if not geek_id:
         return False
 
@@ -586,7 +587,7 @@ def resolve_candidate_greeting_confirmation(
         target = next((
             item for item in candidates
             if str(item.get('geek_id') or '') == geek_id
-            and str(item.get('job_name') or '').replace(' ', '') == normalized_job
+            and normalize_job_name(item.get('job_name')) == normalized_job
         ), None)
         if target is None:
             return False
@@ -615,11 +616,11 @@ def update_candidate_greeted(
     """原子完成候选人读取、打招呼状态更新和保存。"""
     with _CANDIDATES_FILE_LOCK:
         candidates = load_candidates_all(path)
-        normalized_job = job_name.replace(" ", "")
+        normalized_job = normalize_job_name(job_name)
         for candidate in candidates:
             if (
                 candidate.get('geek_id') == geek_id
-                and candidate.get('job_name', '').replace(" ", "") == normalized_job
+                and normalize_job_name(candidate.get('job_name')) == normalized_job
             ):
                 mark_candidate_greeted(candidate, method)
                 save_candidates_all(candidates, path)

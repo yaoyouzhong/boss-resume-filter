@@ -355,6 +355,9 @@ SOURCE_CHECK_FILES = [
     "gui_main.py",
     "filtering.py",
     "storage.py",
+    "safe_json_store.py",
+    "job_config_store.py",
+    "job_identity.py",
     "llm_eval.py",
     "ai_adapter.py",
     "job_ai_parser.py",
@@ -748,6 +751,24 @@ def _check_api_config_has_no_plaintext_key():
 def _check_source_compiles():
     files = [str(BASE_DIR / path) for path in SOURCE_CHECK_FILES if (BASE_DIR / path).exists()]
     _run_checked([sys.executable, "-m", "py_compile", *files], "源码编译检查")
+
+
+def _check_undefined_names():
+    """Block releases on Ruff F821 undefined-name findings."""
+    _run_checked(
+        [
+            sys.executable,
+            "-m",
+            "ruff",
+            "check",
+            ".",
+            "--select",
+            "F821",
+            "--exclude",
+            "pack_venv,.worktrees,build,dist,tests/archive",
+        ],
+        "Ruff F821 未定义名称检查",
+    )
 
 
 def _run_unit_checks():
@@ -1698,6 +1719,7 @@ def _preflight_checks(
     _run_preflight_step("敏感/运行数据跟踪检查", _check_sensitive_files_not_tracked)
     _run_preflight_step("API 配置明文 Key 检查", _check_api_config_has_no_plaintext_key)
     _run_preflight_step("源码编译检查", _check_source_compiles)
+    _run_preflight_step("Ruff F821 未定义名称检查", _check_undefined_names)
     _run_preflight_step("CHANGELOG 版本同步检查", _check_changelog_updated)
     _run_preflight_step(
         "CHANGELOG 条目质量检查",
@@ -1762,6 +1784,7 @@ def _validate_prepared_ci_build(prepared_sha):
         print("错误: 打包任务检出的提交与严格门禁通过的提交不一致")
         sys.exit(1)
     _check_source_compiles()
+    _check_undefined_names()
     print(f"  [OK] 复用同一工作流的严格门禁: {prepared_sha[:12]}")
 
 

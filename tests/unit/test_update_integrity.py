@@ -2,12 +2,58 @@ import contextlib
 import inspect
 import io
 import json
+import plistlib
+import stat
 import tempfile
 from pathlib import Path
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 
 import build
 import updater
+
+
+def test_update_macos_app_reads_real_plist_and_launches_replacement_script():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        zip_path = root / "BOSS_ResumeFilter_mac.zip"
+        zip_path.write_bytes(b"placeholder")
+        current_app = root / "Applications" / "BOSS Resume Filter.app"
+        extract_dir = root / "extracted"
+        script_dir = root / "scripts"
+        script_dir.mkdir()
+        executable_path = (
+            extract_dir
+            / "BOSS Resume Filter.app"
+            / "Contents"
+            / "MacOS"
+            / "BOSS_ResumeFilter"
+        )
+
+        def fake_ditto(command, **_kwargs):
+            assert command[:4] == ["ditto", "-x", "-k", str(zip_path)]
+            executable_path.parent.mkdir(parents=True)
+            executable_path.write_bytes(b"#!/bin/sh\n")
+            info_plist = executable_path.parents[1] / "Info.plist"
+            with open(info_plist, "wb") as file_obj:
+                plistlib.dump({"CFBundleExecutable": "BOSS_ResumeFilter"}, file_obj)
+            return updater.subprocess.CompletedProcess(command, 0)
+
+        with (
+            patch.object(updater.tempfile, "mkdtemp", return_value=str(extract_dir)),
+            patch.object(updater.tempfile, "gettempdir", return_value=str(script_dir)),
+            patch.object(updater.subprocess, "run", side_effect=fake_ditto),
+            patch.object(updater.subprocess, "Popen", return_value=Mock()) as popen,
+        ):
+            success, message = updater.update_macos_app(zip_path, current_app)
+
+        assert success is True
+        assert "重启" in message
+        if updater.os.name != "nt":
+            assert executable_path.stat().st_mode & stat.S_IXUSR
+        script = (script_dir / "boss_update.sh").read_text(encoding="utf-8")
+        assert "CFBundleExecutable" in script
+        assert str(current_app) in script
+        popen.assert_called_once()
 
 
 def test_run_in_venv_relaunches_the_requested_release_entrypoint():
@@ -65,9 +111,11 @@ def test_prepared_ci_build_is_bound_to_the_exact_workflow_commit():
         }),
         patch.object(build.subprocess, "run", return_value=completed),
         patch.object(build, "_check_source_compiles") as compile_check,
+        patch.object(build, "_check_undefined_names") as ruff_check,
     ):
         build._validate_prepared_ci_build("a" * 40)
     compile_check.assert_called_once_with()
+    ruff_check.assert_called_once_with()
 
     with patch.dict(build.os.environ, {}, clear=True):
         try:

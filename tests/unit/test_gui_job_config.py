@@ -8004,6 +8004,10 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
     gui.append_log = Mock()
     gui.refresh_results = Mock()
     gui._format_candidate_status = Mock(return_value="已导入简历")
+    gui._get_job_requirement_for_candidates = Mock(return_value=(
+        "Java 岗位要求",
+        {"min_exp": 3, "required_conditions": ["Java"]},
+    ))
     parent = Mock()
     tree = Mock()
     callbacks = []
@@ -8349,6 +8353,44 @@ def test_batch_ai_eval_does_not_invent_requirement_for_missing_job_config():
 
     assert requirement == ""
     assert rule == {}
+
+
+def test_resume_eval_resolves_candidate_job_and_reuses_saved_hard_conditions():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    java_rule = {
+        "original_requirement": "Java 岗位完整要求",
+        "min_exp": 5,
+        "edu": "本科",
+        "max_age": 35,
+        "work_location": "南京",
+        "salary_max": 20,
+        "required_conditions": [{"name": "Spring Cloud"}],
+    }
+    gui._get_job_rules_cached = Mock(return_value={
+        "高级 Java 工程师": java_rule,
+        "Python 工程师": {
+            "original_requirement": "Python 岗位完整要求",
+            "required_conditions": ["Django"],
+        },
+    })
+
+    requirement, rule = gui._get_job_requirement_for_candidates([
+        {"job_name": " 高级\tJava\u00a0工程师 "},
+    ])
+    hard_conditions = gui._format_ai_hard_conditions(rule)
+
+    assert requirement == "Java 岗位完整要求"
+    assert rule is java_rule
+    assert "经验：要求≥5年" in hard_conditions
+    assert "学历：要求本科" in hard_conditions
+    assert "必要条件：Spring Cloud" in hard_conditions
+
+    source = Path(gui_main.__file__).read_text(encoding="utf-8")
+    resume_block = source[source.index("def _import_resume"):]
+    resume_block = resume_block[:resume_block.index("\n    def _revert_resume_eval")]
+    assert "self._get_job_requirement_for_candidates([candidate])" in resume_block
+    assert "self._format_ai_hard_conditions(job_rule)" in resume_block
+    assert "jc.get('raw_text'" not in resume_block
 
 
 def test_batch_ai_eval_worker_uses_each_jobs_requirement_and_merges_results():
