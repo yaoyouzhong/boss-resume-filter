@@ -59,6 +59,11 @@ class HiddenSubprocess:
 
         if _is_github_cli(command):
             env = dict(prepared.get("env") or os.environ)
+            # The locally deployed GUI-subsystem gh compatibility shim only
+            # hides the real CLI automatically when ChatGPT is its direct
+            # parent. Release commands are launched by Python, so opt into the
+            # shim's hidden mode explicitly.
+            env.setdefault("CODEX_GH_SHIM_FORCE_CODEX", "1")
             env.setdefault("GH_TELEMETRY", "false")
             env.setdefault("TZ", "Asia/Shanghai")
             prepared["env"] = env

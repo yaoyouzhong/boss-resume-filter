@@ -59,6 +59,7 @@ def test_hidden_subprocess_hides_windows_commands_and_disables_gh_helpers():
     assert kwargs["creationflags"] & fake.CREATE_NO_WINDOW
     assert kwargs["startupinfo"].dwFlags & fake.STARTF_USESHOWWINDOW
     assert kwargs["startupinfo"].wShowWindow == fake.SW_HIDE
+    assert kwargs["env"]["CODEX_GH_SHIM_FORCE_CODEX"] == "1"
     assert kwargs["env"]["GH_TELEMETRY"] == "false"
     assert kwargs["env"]["TZ"] == "Asia/Shanghai"
 
@@ -141,6 +142,7 @@ def test_console_parent_reuses_existing_console_for_whole_process_tree():
     _kind, _args, kwargs = fake.calls[0]
     assert "creationflags" not in kwargs
     assert "startupinfo" not in kwargs
+    assert kwargs["env"]["CODEX_GH_SHIM_FORCE_CODEX"] == "1"
     assert kwargs["env"]["GH_TELEMETRY"] == "false"
     assert kwargs["env"]["TZ"] == "Asia/Shanghai"
 
@@ -255,6 +257,7 @@ def test_github_cli_environment_keeps_existing_explicit_values():
     proxy = HiddenSubprocess(fake, platform="win32", has_console=False)
     explicit_env = {
         **os.environ,
+        "CODEX_GH_SHIM_FORCE_CODEX": "custom",
         "GH_TELEMETRY": "custom",
         "TZ": "UTC",
     }
@@ -266,5 +269,6 @@ def test_github_cli_environment_keeps_existing_explicit_values():
     )
 
     _kind, _args, kwargs = fake.calls[0]
+    assert kwargs["env"]["CODEX_GH_SHIM_FORCE_CODEX"] == "custom"
     assert kwargs["env"]["GH_TELEMETRY"] == "custom"
     assert kwargs["env"]["TZ"] == "UTC"
