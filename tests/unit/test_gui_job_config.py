@@ -1234,10 +1234,19 @@ def test_candidate_detail_groups_api_resume_sections():
 
 
 class _FakeRoot:
-    def __init__(self, state="normal", width=1500, height=950):
+    def __init__(
+        self,
+        state="normal",
+        width=1500,
+        height=950,
+        screen_width=1920,
+        screen_height=1080,
+    ):
         self._state = state
         self._width = width
         self._height = height
+        self._screen_width = screen_width
+        self._screen_height = screen_height
 
     def state(self):
         return self._state
@@ -1249,10 +1258,10 @@ class _FakeRoot:
         return self._height
 
     def winfo_screenwidth(self):
-        return 1920
+        return self._screen_width
 
     def winfo_screenheight(self):
-        return 1080
+        return self._screen_height
 
 
 class _FakeTree:
@@ -1320,7 +1329,8 @@ class _FakeResultTree:
 
 
 def test_result_tree_columns_expand_only_when_space_is_available():
-    """列数只由表格实际可用宽度驱动：<1100px 8 列，≥1100px 11 列，≥1250px 13 列；
+    """<1100px 显示 8 列，≥1100px 显示 11 列；
+    只有最大化且 ≥1250px 才显示 13 列，避免 4K 非最大化窗口挤压全列；
     富余宽度显式分配给各列（ttk stretch 只会收缩不会放大，否则会右侧留白且表头截断）。"""
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot()
@@ -1349,7 +1359,20 @@ def test_result_tree_columns_expand_only_when_space_is_available():
         options["width"] for options in gui.result_tree.column_options.values()
     ) == 1247
 
+    # 4K 非最大化窗口即使表格很宽，也保持 11 列，避免字体缩放后全列挤压。
+    gui.root = _FakeRoot(
+        state="normal",
+        width=2048,
+        height=1183,
+        screen_width=3840,
+        screen_height=2160,
+    )
+    gui.result_tree = _FakeTree(1600)
+    gui._update_result_tree_columns()
+    assert len(gui.result_tree.displaycolumns) == 11
+
     # 1080P 高 DPI 环境最大化后的结果表约 1250px，压缩到可读下限后可容纳全部列。
+    gui.root = _FakeRoot(state="zoomed")
     gui.result_tree = _FakeTree(1250)
     gui._update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 13
