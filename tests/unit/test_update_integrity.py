@@ -180,11 +180,17 @@ diff --git a/bossmaster.py b/bossmaster.py
 --- a/bossmaster.py
 +++ b/bossmaster.py
 +    retry_at = parsedate_to_datetime(raw)
++    clear_outcome = {"kept": 0, "removed": 0, "blacklisted": 0}
 +    listener = page.listen
 +    if detail_listener:
 +        or any(mark in page_text for mark in risk_marks)
 +        detail_listener.stop()
 +        "risk_blocked",
+diff --git a/gui_main.py b/gui_main.py
+--- a/gui_main.py
++++ b/gui_main.py
+-                if c.get('followup_status') not in {"不合适", "已归档"}:
++            if candidate.get('followup_status') not in {"不合适", "已归档"}:
 """
 
     class Result:

@@ -1314,13 +1314,13 @@ def _check_code_to_changelog_coverage(strict=False):
         """Return True for implementation churn that should not force user-facing notes."""
         lowered = f"{fpath} {line}".lower()
         stripped = line.strip()
+        if re.match(r"^(?:if|elif|for|while|and|or)\b", stripped):
+            return True
         if not re.search(r"[一-鿿]", stripped):
             if re.match(
                 r"^[A-Za-z_]\w*(?:\.\w+)*(?:\s*:\s*[^=]+)?\s*=",
                 stripped,
             ):
-                return True
-            if re.match(r"^(?:if|elif|for|while|and|or)\b", stripped):
                 return True
             if re.match(r"^[A-Za-z_]\w*(?:\.\w+)+\(.*\)\s*$", stripped):
                 return True
@@ -1462,6 +1462,8 @@ def _check_code_to_changelog_coverage(strict=False):
             for line in signal_additions:
                 if _is_comment_or_doc_line(line):
                     continue
+                if _is_release_note_implementation_detail(fpath, line):
+                    continue
                 if not re.search(r"[一-鿿]{3,}", line):
                     continue
                 if "print(" in line or any(ui_file in fpath for ui_file in ui_files):
@@ -1500,6 +1502,8 @@ def _check_code_to_changelog_coverage(strict=False):
         if fpath.endswith(".py") and any(k in fpath for k in ("storage.py", "filtering.py", "bossmaster.py", "gui_main.py", "llm_eval.py")):
             for line in signal_additions:
                 if _is_comment_or_doc_line(line):
+                    continue
+                if _is_release_note_implementation_detail(fpath, line):
                     continue
                 if not re.search(r"[一-鿿]{2,}", line) and re.search(
                     r"^\s*['\"][A-Za-z_][A-Za-z0-9_]{2,}['\"]\s*:", line
