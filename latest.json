@@ -1,29 +1,29 @@
 {
-  "version": "2.24.4",
-  "release_date": "2026-07-29",
+  "version": "2.24.5",
+  "release_date": "2026-07-30",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.4/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.4/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.4/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.5/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.5/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.5/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "macos_dmg": {
-      "size": 33614101,
-      "sha256": "3eac1b9fe5a493e14b21b1509e9c20aa41cb27a551755d0303c7433d08a7140f"
+      "size": 33632422,
+      "sha256": "293418e1ae47c5449b6c01c3cdc081c4cea617bdecf65b2864bb31c2e86b52a9"
     },
     "windows": {
-      "size": 35890626,
-      "sha256": "c7583a31402b40f7ac9ab1cb58215ced9548a849d3ca35c749634c3936695a46"
+      "size": 35921447,
+      "sha256": "b9e3ce0ab756652f3668471a2e99524a88eb3a3565b5e4a484009eb95ffaa797"
     },
     "macos": {
-      "size": 34435667,
-      "sha256": "38205e603e60d4c04231645d8bd41b59bc096080f48d637208c49bd76c9d1bf7"
+      "size": 34449265,
+      "sha256": "74160706a733735a88379100059c1835c531cc71c54be7ef967272783f188518"
     }
   },
-  "release_notes": "### 体验优化\n\n- **复核决策更加直观**：待复核候选人的“确认通过”和“确认不通过”并排显示在“复核结论”区域，跟进、反馈和简历等其他操作继续独立展示。\n- **运行界面更加一致**：运行控制页精简“筛选完成”文案，并统一浏览器状态与系统设置的红绿灯图标尺寸。\n\n### 问题修复\n\n- **新增模型后 AI 评估保持可用**：修正保存新模型后运行控制页误显示“未配置”并关闭 AI 评估的问题；当前默认模型和同一接入地址的新 Key 会保持正确状态。",
+  "release_notes": "### 问题修复\n\n- **筛选结果信息展示更加完整**：修正 1080P 环境下窗口最大化后仍未展示毕业学校和最近公司的问题；结果表根据实际宽度显示核心列，空间充足时补充学历、年龄、求职状态、毕业学校和最近公司。\n- **候选人与配置保存更加可靠**：候选人数据、岗位配置和联系清单在保存前会校验新内容，并保留最近一次有效备份；写入异常或主文件损坏时不会再用无效内容覆盖可恢复数据。\n- **简历文件管理边界更加明确**：导入的简历使用受管文件副本，撤回简历评估时只删除程序管理范围内的文件，不会误删用户选择的外部原始文件。\n- **岗位规则与简历评估保持一致**：统一识别岗位名称中的空白差异，并确保简历二次评估使用候选人所属岗位的完整要求和筛选条件，避免多岗位场景下评估依据错位。\n- **扫描增强关闭后严格停止补充读取**：将最多读取人数设为 0 时不再执行候选人资料补充请求，关闭扫描增强后的行为与界面设置保持一致。\n- **自动更新校验与 macOS 更新更加稳妥**：GitHub 备用更新源必须具备完整的文件校验信息才能安装；同时修正 macOS 自动更新读取应用信息和生成更新脚本时可能失败的问题。",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.4/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.4/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.4/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.5/BOSS_ResumeFilter.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.5/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.24.5/BOSS_ResumeFilter.dmg"
   }
 }
