@@ -356,8 +356,13 @@ SENSITIVE_TRACKED_PATHS = [
 SOURCE_CHECK_FILES = [
     "bossmaster.py",
     "gui_main.py",
+    "ui_layout.py",
     "filtering.py",
     "storage.py",
+    "contact_queue.py",
+    "data_schema.py",
+    "data_recovery.py",
+    "diagnostic_package.py",
     "safe_json_store.py",
     "job_config_store.py",
     "job_identity.py",
@@ -818,9 +823,12 @@ def _check_changelog_updated():
     # 检查核心代码是否有变更
     core_files = [
         "gui_main.py", "gui_dialogs.py", "ui_messagebox.py", "changelog_parser.py", "bossmaster.py",
-        "filtering.py", "storage.py", "llm_eval.py", "ai_adapter.py", "job_ai_parser.py",
+        "filtering.py", "storage.py", "contact_queue.py", "data_schema.py",
+        "data_recovery.py", "diagnostic_package.py", "resume_store.py",
+        "llm_eval.py", "ai_adapter.py", "job_ai_parser.py",
         "job_config_diagnostics.py", "doc_parser.py", "security.py", "updater.py", "icons.py",
         "constants.py", "paths.py", "subprocess_utils.py", "selectors.json", "ui_config.json",
+        "ui_layout.py",
         "job_config.json",
     ]
     result = subprocess.run(
@@ -1331,6 +1339,26 @@ def _check_code_to_changelog_coverage(strict=False):
             if re.match(r"""^["'][A-Za-z_][A-Za-z0-9_ -]*["'],?$""", stripped):
                 return True
         if re.search(r"\b\w*cache\w*\s*=", lowered):
+            return True
+        if (
+            not re.search(r"[一-鿿]", stripped)
+            and re.search(r"""["']job_uuid["']\s*:""", stripped)
+        ):
+            # Stable identity fields are cross-file implementation metadata,
+            # not a user-facing data feature by themselves.
+            return True
+        if fpath.endswith("diagnostic_package.py") and (
+            "re.compile(" in stripped
+            or (
+                stripped.startswith(("r\"", "r'"))
+                and any(
+                    marker in stripped
+                    for marker in ("\\s", "\\b", "(?=", "[^")
+                )
+            )
+        ):
+            # Redaction regexes are evidence for the diagnostic-package
+            # feature, but their individual patterns do not belong in notes.
             return True
         if re.search(r"getattr\(.*cache|source_cache|preview_render", lowered):
             return True
@@ -3677,8 +3705,12 @@ def _needs_cross_platform_rebuild(changed_files):
     # 需要重建的文件（改了影响构建产物内容）
     SHARED_BUILD_FILES = {
         'gui_main.py', 'bossmaster.py', 'filtering.py', 'llm_eval.py', 'ai_adapter.py',
-        'job_ai_parser.py', 'job_config_diagnostics.py', 'storage.py', 'doc_parser.py', 'security.py', 'constants.py',
-        'paths.py', 'icons.py', 'updater.py', 'subprocess_utils.py', 'selectors.json',
+        'job_ai_parser.py', 'job_config_diagnostics.py', 'storage.py',
+        'contact_queue.py', 'data_schema.py', 'data_recovery.py',
+        'diagnostic_package.py',
+        'job_config_store.py', 'resume_store.py',
+        'doc_parser.py', 'security.py', 'constants.py',
+        'paths.py', 'icons.py', 'updater.py', 'subprocess_utils.py', 'ui_layout.py', 'selectors.json',
         'job_config.json', 'api_config.json', 'ui_config.json', 'requirements.txt',
         'build.py',  # 打包脚本本身的变化影响产物内容
     }

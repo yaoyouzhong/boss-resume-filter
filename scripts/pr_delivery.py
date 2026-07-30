@@ -271,7 +271,8 @@ def _find_delivery_pr(branch: str, head_sha: str) -> dict[str, Any] | None:
             "--base", "master",
             "--state", "all",
             "--limit", "20",
-            "--json", "number,state,isDraft,url,headRefOid,mergeCommit",
+            "--json",
+            "number,state,isDraft,url,headRefOid,mergeCommit,title,body",
             ],
             "读取交付 PR 列表",
         ) or []
@@ -316,6 +317,66 @@ def _default_pr_body() -> str:
     )
 
 
+def _normalized_pr_text(value: Any) -> str:
+    """Normalize GitHub-returned Markdown without hiding meaningful changes."""
+    return str(value or "").replace("\r\n", "\n").rstrip()
+
+
+def _pr_metadata_matches(
+    pr: dict[str, Any],
+    *,
+    title: str,
+    body: str,
+) -> bool:
+    return (
+        str(pr.get("title") or "").strip() == title.strip()
+        and _normalized_pr_text(pr.get("body")) == _normalized_pr_text(body)
+    )
+
+
+def _sync_open_pr_metadata(
+    pr: dict[str, Any],
+    *,
+    title: str,
+    body: str,
+    expected_head_sha: str,
+) -> dict[str, Any]:
+    """Refresh reused PR metadata and return a freshly verified PR snapshot."""
+    number = int(pr["number"])
+    if pr.get("state") != "OPEN":
+        return pr
+
+    if not _pr_metadata_matches(pr, title=title, body=body):
+        _run_external(
+            [
+                "gh",
+                "pr",
+                "edit",
+                str(number),
+                "--title",
+                title,
+                "--body",
+                body,
+            ],
+            f"刷新 PR #{number} 标题和正文",
+        )
+        print(f"  [更新] PR #{number} 标题和正文已按当前分支刷新")
+    else:
+        print(f"  [跳过] PR #{number} 标题和正文已是最新")
+
+    refreshed = _pr_view(number)
+    if refreshed.get("state") != "OPEN":
+        _fail(f"刷新 PR #{number} 后状态不再是 OPEN")
+    if not _pr_metadata_matches(refreshed, title=title, body=body):
+        _fail(f"刷新 PR #{number} 后标题或正文校验失败")
+    if refreshed.get("headRefOid") != expected_head_sha:
+        print(
+            f"  [等待] PR #{number} head 尚未同步到目标提交，"
+            "PR Checks 阶段将继续校验"
+        )
+    return refreshed
+
+
 def _push_and_create_pr(
     branch: str,
     head_sha: str,
@@ -329,8 +390,16 @@ def _push_and_create_pr(
             "origin", f"refs/heads/{branch}"
         ) == head_sha,
     )
+    desired_title = title or _default_pr_title()
+    desired_body = _default_pr_body()
     pr = _find_delivery_pr(branch, head_sha)
     if pr is not None:
+        pr = _sync_open_pr_metadata(
+            pr,
+            title=desired_title,
+            body=desired_body,
+            expected_head_sha=head_sha,
+        )
         print(f"  [复用] PR #{pr['number']}: {pr['url']}")
         return pr
 
@@ -338,8 +407,8 @@ def _push_and_create_pr(
         "gh", "pr", "create",
         "--base", "master",
         "--head", branch,
-        "--title", title or _default_pr_title(),
-        "--body", _default_pr_body(),
+        "--title", desired_title,
+        "--body", desired_body,
     ]
     create_result: subprocess.CompletedProcess[str] | None = None
     total_attempts = len(release_retry.RETRY_DELAYS) + 1
@@ -353,7 +422,12 @@ def _push_and_create_pr(
             break
         existing = _find_delivery_pr(branch, head_sha)
         if existing is not None:
-            return existing
+            return _sync_open_pr_metadata(
+                existing,
+                title=desired_title,
+                body=desired_body,
+                expected_head_sha=head_sha,
+            )
         if (
             attempt < total_attempts
             and release_retry.is_retryable_cli_failure(create_result)
@@ -384,7 +458,7 @@ def _pr_view(number: int) -> dict[str, Any]:
             [
             "gh", "pr", "view", str(number),
             "--json",
-            "number,state,isDraft,url,headRefName,headRefOid,baseRefOid,mergeable,mergeStateStatus,statusCheckRollup,mergeCommit",
+            "number,state,isDraft,url,headRefName,headRefOid,baseRefOid,mergeable,mergeStateStatus,statusCheckRollup,mergeCommit,title,body",
             ],
             f"读取 PR #{number} 状态",
         )

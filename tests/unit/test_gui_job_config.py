@@ -1089,6 +1089,51 @@ def test_save_current_job_keeps_ai_preferred_keywords_as_preferred():
     rule = gui.job_rules["Python 工程师"]
     assert rule["keywords"] == [{"name": "Python", "weight": 2}]
     assert rule["preferred_keywords"] == [{"name": "证券行业", "bonus": 2}]
+    assert rule["job_uuid"]
+
+
+def test_save_current_job_rename_preserves_stable_job_id():
+    stable_id = "d8ea0e21-a53c-41ec-8869-6b370ed70a95"
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.job_name_var = _FakeVar("高级 Java 工程师")
+    gui.min_exp_var = _FakeVar("3")
+    gui.max_age_var = _FakeVar("")
+    gui.edu_var = _FakeVar("本科")
+    gui.work_location_var = _FakeVar("")
+    gui.salary_min_var = _FakeVar("")
+    gui.salary_max_var = _FakeVar("")
+    gui.skills_data = [{"name": "Java", "weight": 2, "source": "解析"}]
+    gui.required_conditions_data = []
+    gui.job_rules = {
+        "Java 工程师": {
+            "job_uuid": stable_id,
+            "min_exp": 3,
+        }
+    }
+    gui._job_form_loaded_name = "Java 工程师"
+    gui.config_job_combo = _FakeCombo()
+    gui._job_step_active = -1
+    gui._hide_save_hint = Mock()
+    gui._hide_job_step_bar = Mock()
+    gui._show_btn_add_hint = Mock()
+    gui._get_requirement_text = Mock(return_value="原始需求")
+    gui._confirm_job_config_diagnostics = Mock(return_value=True)
+    gui._remember_run_job_selection = Mock()
+    gui._set_job_form_baseline = Mock()
+    gui.save_config = Mock()
+
+    with (
+        patch("gui_main.messagebox.showinfo"),
+        patch("gui_main.messagebox.showwarning") as showwarning,
+    ):
+        assert gui.save_current_job() is True
+
+    showwarning.assert_not_called()
+    assert "Java 工程师" not in gui.job_rules
+    assert (
+        gui.job_rules["高级 Java 工程师"]["job_uuid"]
+        == stable_id
+    )
 
 
 def test_save_current_job_strips_required_condition_evidence_metadata():
@@ -6659,6 +6704,58 @@ def test_start_run_accepts_frame_recommend_page():
     assert started == [gui.run_worker]
 
 
+def test_browser_check_skips_all_connection_work_during_shared_cooldown():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.colors = {"warning": "#F9A825"}
+    updates = []
+    logs = []
+    gui.set_browser_ui = lambda *args: updates.append(args)
+    gui.append_run_log = logs.append
+
+    with patch.object(
+        BossFilterGUI,
+        "_boss_access_cooldown_state",
+        return_value={
+            "blocked": True,
+            "remaining_seconds": 90,
+            "status": 429,
+            "reason": "操作频繁",
+            "source": "扫描",
+        },
+    ):
+        gui.check_browser_connection(silent=True)
+
+    assert updates == [
+        ("● 冷却中", "#F9A825", "访问冷却中，剩余约 90 秒；来源：扫描", "disabled")
+    ]
+    assert logs == ["[访问保护] 操作频繁。剩余冷却约 90 秒。"]
+    assert not getattr(gui, "_browser_check_running", False)
+
+
+def test_start_run_rejects_shared_cooldown_before_touching_browser():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.is_running = False
+
+    with (
+        patch.object(
+            BossFilterGUI,
+            "_boss_access_cooldown_state",
+            return_value={
+                "blocked": True,
+                "remaining_seconds": 30,
+                "reason": "安全验证",
+            },
+        ),
+        patch("gui_main.messagebox.showwarning") as showwarning,
+    ):
+        gui.start_run()
+
+    showwarning.assert_called_once()
+    assert showwarning.call_args.args[0] == "BOSS 访问保护"
+    assert "剩余约 30 秒" in showwarning.call_args.args[1]
+    assert "安全验证" in showwarning.call_args.args[1]
+
+
 def test_run_page_readiness_rejects_bare_frame_shell():
     class FakePage:
         url = "https://www.zhipin.com/web/frame/recommend/"
@@ -8243,7 +8340,10 @@ def test_save_ai_eval_results_only_updates_the_evaluated_job_record():
         assert saved[0]["job_name"] == "Java"
         assert saved[0]["match_score"] == 80
         assert saved[0]["llm_evaluated"] is True
-        assert saved[1] == disk_candidates[1]
+        assert saved[1] == {
+            **disk_candidates[1],
+            "schema_version": 2,
+        }
         assert gui.all_candidates[0]["match_score"] == 80
         assert gui.all_candidates[1] == disk_candidates[1]
 
@@ -8561,3 +8661,105 @@ def test_detail_dim_scores_fallback_to_round1_without_resume():
     dim_lines = [l for l in detail.splitlines() if '技能深度' in l]
     assert dim_lines, f"未找到维度评估行：{detail}"
     assert "6/10" in dim_lines[0]
+
+
+# === 数据备份与恢复 ===
+
+def test_data_backup_summary_does_not_include_candidate_identity():
+    summary = BossFilterGUI._format_backup_summary({
+        "job_count": 2,
+        "candidate_count": 18,
+        "queue_count": 4,
+        "resume_count": 3,
+    })
+
+    assert summary == "岗位 2 个，候选人 18 人，联系清单 4 项，简历副本 3 份"
+
+
+def test_export_data_backup_blocks_while_scan_is_running():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.is_running = True
+    gui.greet_queue_running = False
+    gui.greet_queue_preparing = False
+    gui._data_maintenance_running = False
+
+    with (
+        patch.object(gui_main.messagebox, "showwarning") as warning,
+        patch.object(gui_main.filedialog, "asksaveasfilename") as choose,
+    ):
+        gui._export_data_backup()
+
+    warning.assert_called_once()
+    choose.assert_not_called()
+
+
+def test_export_data_backup_reports_verified_counts():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.is_running = False
+    gui.greet_queue_running = False
+    gui.greet_queue_preparing = False
+    gui._data_maintenance_running = False
+    gui._data_storage_error = ""
+    gui.data_backup_status_var = Mock()
+    gui.append_operation_log = Mock()
+
+    result = {
+        "path": "D:/safe/backup.zip",
+        "job_count": 2,
+        "candidate_count": 18,
+        "queue_count": 4,
+        "resume_count": 3,
+    }
+    with (
+        patch.object(
+            gui_main.filedialog,
+            "asksaveasfilename",
+            return_value=result["path"],
+        ),
+        patch.object(
+            gui_main,
+            "create_backup_package",
+            return_value=result,
+        ) as create,
+        patch.object(gui_main.messagebox, "showinfo") as info,
+    ):
+        gui._export_data_backup()
+
+    create.assert_called_once_with(gui_main.BASE_DIR, result["path"])
+    gui.data_backup_status_var.set.assert_called_with(
+        "最近备份：岗位 2 个，候选人 18 人，联系清单 4 项，简历副本 3 份"
+    )
+    info.assert_called_once()
+    assert gui._data_maintenance_running is False
+
+
+def test_restore_data_backup_rejects_tampered_package_before_confirmation():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.is_running = False
+    gui.greet_queue_running = False
+    gui.greet_queue_preparing = False
+    gui._data_maintenance_running = False
+
+    with (
+        patch.object(
+            gui_main.filedialog,
+            "askopenfilename",
+            return_value="D:/unsafe/backup.zip",
+        ),
+        patch.object(
+            gui_main,
+            "inspect_backup",
+            side_effect=ValueError("完整性校验失败"),
+        ),
+        patch.object(gui_main.messagebox, "showerror") as error,
+        patch.object(gui_main.messagebox, "askyesno") as confirm,
+        patch.object(gui_main, "restore_backup") as restore,
+    ):
+        gui._restore_data_backup()
+
+    error.assert_called_once()
+    confirm.assert_not_called()
+    restore.assert_not_called()

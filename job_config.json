@@ -1,7 +1,9 @@
 {
+    "schema_version": 2,
     "requirement_template": "职位描述【高级Java/Python工程师】：\n1. Java/Python基础扎实，具有实际开发经验，能够独立完成开发任务；\n2. 熟悉mysql、oracle其中一种数据库的使用及优化；\n3. 熟练使用Spring Cloud、Dubbo或类似的微服务框架,Dubbo优先；\n4. 熟练使用SpringBoot/Spring Mvc/Mybatis等常用java框架；\n5. 了解缓存技术Redis、消息中间件Kafka；\n6. 熟悉activiti、camunda、flowable等相关技术；\n7. 有AI开发背景（LLM、Al Agent、智能体、Spring AI、Langchain、智能问答、知识库）的优先；\n\n职位要求：\n1. 4-10年工作经验\n2. 本科学历\n3. 薪资范围：12k-15k\n4. 工作地点：南京市\n\n必要条件（硬性约束）：\n1. 具有4年以上工作经验\n2. 统招本科学历；",
     "job_requirements": {
         "中高级AI工程师": {
+            "job_uuid": "4d4ca69e-1211-56ec-a7f1-8a85a82d8968",
             "min_exp": 4,
             "edu": "本科",
             "max_age": 35,
@@ -113,6 +115,7 @@
             "original_requirement": "职位描述【中高级AI工程师】：\n1. Java/Python基础扎实，具有实际开发经验，能够独立完成开发任务；\n2. 熟悉mysql、oracle其中一种数据库的使用及优化；\n3. 熟练使用Spring Cloud、Dubbo或类似的微服务框架,Dubbo优先；\n4. 熟练使用SpringBoot/Spring Mvc/Mybatis等常用java框架；\n5. 了解缓存技术Redis、消息中间件Kafka；\n6. 熟悉activiti、camunda、flowable等相关技术；\n7. 有AI开发背景（LLM、Al Agent、智能体、Spring AI、Langchain、智能问答、知识库）的优先；\n\n职位要求：\n1. 4-10年工作经验\n2. 本科学历\n3. 薪资范围：12k-15k\n4. 工作地点：南京市雨花区凯润大厦2号楼5层\n\n必要条件（硬性约束）：\n1. 具有4年以上工作经验\n2. 统招本科学历"
         },
         "证券固收业务python分析师": {
+            "job_uuid": "14d7ed44-7006-59e7-ad4e-ad5ec8fa5ed5",
             "min_exp": 3,
             "edu": "本科",
             "max_age": 35,

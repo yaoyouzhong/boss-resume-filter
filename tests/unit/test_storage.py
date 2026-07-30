@@ -37,6 +37,14 @@ def test_candidate_key_uses_shared_unicode_whitespace_normalization():
     )
 
 
+def test_candidate_key_prefers_stable_job_uuid():
+    job_uuid = "d8ea0e21-a53c-41ec-8869-6b370ed70a95"
+    assert candidate_key("g1", "旧名称", job_uuid) == (
+        "g1",
+        f"uuid:{job_uuid}",
+    )
+
+
 def test_resolve_greeting_confirmation_as_sent_clears_pending_and_marks_contacted():
     with tempfile.TemporaryDirectory() as tmpdir:
         path = os.path.join(tmpdir, "candidates.json")
@@ -178,6 +186,52 @@ def test_dedupe_different_job_names_not_merged():
         {"geek_id": "g1", "job_name": "Python", "match_score": 60},
     ])
     assert len(result) == 2
+
+
+def test_dedupe_merges_renamed_job_by_stable_id():
+    job_uuid = "d8ea0e21-a53c-41ec-8869-6b370ed70a95"
+    result = _dedupe_candidates([
+        {
+            "geek_id": "g1",
+            "job_uuid": job_uuid,
+            "job_name": "Java 工程师",
+            "match_score": 70,
+            "last_evaluated_at": "20260701_090000",
+        },
+        {
+            "geek_id": "g1",
+            "job_uuid": job_uuid,
+            "job_name": "高级 Java 工程师",
+            "match_score": 80,
+            "last_evaluated_at": "20260702_090000",
+        },
+    ])
+
+    assert len(result) == 1
+    assert result[0]["job_name"] == "高级 Java 工程师"
+    assert result[0]["job_uuid"] == job_uuid
+
+
+def test_dedupe_migrates_legacy_name_record_into_stable_identity():
+    job_uuid = "d8ea0e21-a53c-41ec-8869-6b370ed70a95"
+    result = _dedupe_candidates([
+        {
+            "geek_id": "g1",
+            "job_name": "Java 工程师",
+            "match_score": 70,
+            "last_evaluated_at": "20260701_090000",
+        },
+        {
+            "geek_id": "g1",
+            "job_uuid": job_uuid,
+            "job_name": "Java工程师",
+            "match_score": 80,
+            "last_evaluated_at": "20260702_090000",
+        },
+    ])
+
+    assert len(result) == 1
+    assert result[0]["job_uuid"] == job_uuid
 
 
 def test_dedupe_merges_greet_sent_from_old_to_new():
@@ -664,6 +718,20 @@ def test_build_blacklist_index_is_cross_job_by_geek_id():
 
 # ========== save_candidates_all 原子写入 ==========
 
+def test_save_upgrades_candidate_record_schema_without_wrapping_list():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+
+        save_candidates_all([
+            {"geek_id": "g1", "job_name": "Java", "match_score": 70},
+        ], target)
+
+        with open(target, "r", encoding="utf-8") as file_obj:
+            payload = json.load(file_obj)
+        assert isinstance(payload, list)
+        assert payload[0]["schema_version"] == 2
+
+
 def test_save_creates_backup_of_existing_file():
     with tempfile.TemporaryDirectory() as tmpdir:
         target = os.path.join(tmpdir, "candidates_all.json")
@@ -717,6 +785,29 @@ def test_load_returns_empty_when_no_file():
         with contextlib.redirect_stdout(io.StringIO()):
             result = load_candidates_all(target)
     assert result == []
+
+
+def test_load_rejects_future_candidate_schema_without_overwriting_file():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        payload = [{
+            "geek_id": "g1",
+            "job_name": "Java",
+            "schema_version": 999,
+        }]
+        with open(target, "w", encoding="utf-8") as file_obj:
+            json.dump(payload, file_obj)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                load_candidates_all(target)
+            except RuntimeError as exc:
+                assert "数据可能已丢失" in str(exc)
+            else:
+                raise AssertionError("future candidate schema must be rejected")
+
+        with open(target, "r", encoding="utf-8") as file_obj:
+            assert json.load(file_obj) == payload
 
 
 def test_load_restores_when_main_file_missing_but_backup_exists():

@@ -1798,6 +1798,125 @@ def test_retry_after_activates_process_guard_for_followup_boss_access():
         assert exc.source == "后续访问"
 
 
+def test_boss_access_guard_survives_restart_and_blocks_followup_access():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "boss_guard.json"
+        first = bossmaster.BossAccessGuard(state_path)
+        first.block(
+            bossmaster.ApiRiskBlocked(
+                429,
+                0,
+                reason="操作频繁",
+                source="专项测试",
+                cooldown_seconds=30,
+            )
+        )
+
+        restarted = bossmaster.BossAccessGuard(state_path)
+        state = restarted.state()
+        assert state["blocked"] is True
+        assert 20 < state["remaining_seconds"] <= 30
+        try:
+            restarted.ensure_allowed("重启后的访问")
+            assert False, "persisted cooldown must survive process restart"
+        except bossmaster.ApiRiskBlocked as exc:
+            assert exc.from_guard is True
+            assert exc.source == "重启后的访问"
+            assert "操作频繁" in exc.reason
+
+
+def test_boss_access_guard_instances_share_the_longest_cooldown():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "boss_guard.json"
+        first = bossmaster.BossAccessGuard(state_path)
+        second = bossmaster.BossAccessGuard(state_path)
+        first.block(
+            bossmaster.ApiRiskBlocked(
+                429,
+                0,
+                reason="第一次限制",
+                source="实例一",
+                cooldown_seconds=5,
+            )
+        )
+        assert second.state()["blocked"] is True
+
+        second.block(
+            bossmaster.ApiRiskBlocked(
+                429,
+                0,
+                reason="延长限制",
+                source="实例二",
+                cooldown_seconds=30,
+            )
+        )
+        refreshed = first.state()
+        assert refreshed["blocked"] is True
+        assert 20 < refreshed["remaining_seconds"] <= 30
+        assert refreshed["source"] == "实例二"
+        assert refreshed["reason"] == "延长限制"
+
+
+def test_boss_access_guard_cleans_expired_persisted_state():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "boss_guard.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "version": bossmaster.BOSS_ACCESS_GUARD_STATE_VERSION,
+                    "blocked_until_epoch": 1,
+                    "status": 429,
+                    "reason": "已过期",
+                    "source": "专项测试",
+                    "triggered_at": "2026-01-01T00:00:00",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        state = bossmaster.BossAccessGuard(state_path).state()
+
+        assert state["blocked"] is False
+        assert not state_path.exists()
+
+
+def test_boss_access_guard_corrupt_state_enters_protective_cooldown():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = Path(tmpdir) / "boss_guard.json"
+        state_path.write_text("{broken", encoding="utf-8")
+
+        state = bossmaster.BossAccessGuard(state_path).state()
+
+        assert state["blocked"] is True
+        assert state["status"] == "状态损坏"
+        assert state["source"] == "本地状态恢复"
+        assert "状态文件损坏" in state["reason"]
+        assert state["persistence_error"]
+        persisted = json.loads(state_path.read_text(encoding="utf-8"))
+        assert (
+            persisted["version"]
+            == bossmaster.BOSS_ACCESS_GUARD_STATE_VERSION
+        )
+
+
+def test_boss_access_guard_read_failure_fails_closed_without_crashing():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        guard = bossmaster.BossAccessGuard(
+            Path(tmpdir) / "boss_guard.json"
+        )
+        with patch.object(
+            guard,
+            "_storage_lock",
+            side_effect=OSError("permission denied"),
+        ):
+            state = guard.state()
+
+        assert state["blocked"] is True
+        assert state["status"] == "状态读取失败"
+        assert state["source"] == "本地状态恢复"
+        assert "permission denied" in state["persistence_error"]
+
+
 def test_boss_control_flow_exceptions_redact_sensitive_reasons_at_source():
     client_error = bossmaster.ApiClientError(
         404,
@@ -2399,6 +2518,7 @@ def test_auto_greet_skips_manual_review_candidates():
 
     job_info = {
         "job_id": "job-risk",
+        "job_uuid": "d8ea0e21-a53c-41ec-8869-6b370ed70a95",
         "job_name": "Java 工程师",
         "rule_key": "java",
         "rule": {
@@ -2431,6 +2551,10 @@ def test_auto_greet_skips_manual_review_candidates():
         )
 
     assert len(result) == 1
+    assert (
+        result[0]["job_uuid"]
+        == "d8ea0e21-a53c-41ec-8869-6b370ed70a95"
+    )
     assert result[0]["manual_review_required"] is True
     assert result[0]["greet_sent"] is False
     mock_greet.assert_not_called()
@@ -3423,7 +3547,12 @@ def test_save_candidates_all_accepts_explicit_path():
         with open(target, "r", encoding="utf-8") as f:
             saved = json.load(f)
 
-    assert saved == [{"geek_id": "g1", "job_name": "Java", "match_score": 70}]
+    assert saved == [{
+        "geek_id": "g1",
+        "job_name": "Java",
+        "match_score": 70,
+        "schema_version": 2,
+    }]
 
 
 # ========== load_job_config ==========

@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "display_cases": [
+    {
+      "id": "windows-1080p-windowed-compact",
+      "platform": "Windows",
+      "display": "1920x1080",
+      "scale_percent": 100,
+      "window_mode": "windowed",
+      "result_tree_width": 1000,
+      "expected_column_count": 8,
+      "automated_test": "test_result_policy_windows_1080p_windowed_compact"
+    },
+    {
+      "id": "windows-1080p-maximized-all-fields",
+      "platform": "Windows",
+      "display": "1920x1080",
+      "scale_percent": 125,
+      "window_mode": "maximized",
+      "result_tree_width": 1250,
+      "expected_column_count": 13,
+      "automated_test": "test_result_policy_windows_1080p_maximized_includes_school_company"
+    },
+    {
+      "id": "windows-4k-windowed-readable",
+      "platform": "Windows",
+      "display": "3840x2160",
+      "scale_percent": 150,
+      "window_mode": "windowed",
+      "result_tree_width": 1600,
+      "expected_column_count": 11,
+      "automated_test": "test_result_policy_windows_4k_windowed_does_not_force_wide_columns"
+    },
+    {
+      "id": "windows-4k-maximized-all-fields",
+      "platform": "Windows",
+      "display": "3840x2160",
+      "scale_percent": 150,
+      "window_mode": "maximized",
+      "result_tree_width": 1700,
+      "expected_column_count": 13,
+      "automated_test": "test_result_policy_windows_4k_maximized_includes_all_fields"
+    },
+    {
+      "id": "macos-retina-windowed-core",
+      "platform": "macOS",
+      "display": "2560x1600",
+      "scale_percent": 200,
+      "window_mode": "windowed",
+      "result_tree_width": 1050,
+      "expected_column_count": 8,
+      "automated_test": "test_result_policy_macos_retina_windowed_keeps_core_columns_readable"
+    }
+  ],
+  "browser_cases": [
+    {
+      "id": "browser-disconnected",
+      "expected": "blocked",
+      "automated_test": "test_browser_matrix_disconnected"
+    },
+    {
+      "id": "browser-context-lost",
+      "expected": "blocked",
+      "automated_test": "test_browser_matrix_context_lost"
+    },
+    {
+      "id": "boss-login-page",
+      "expected": "blocked",
+      "automated_test": "test_browser_matrix_login_page"
+    },
+    {
+      "id": "non-recommend-page",
+      "expected": "blocked",
+      "automated_test": "test_browser_matrix_non_recommend_page"
+    },
+    {
+      "id": "recommend-loading",
+      "expected": "retry",
+      "automated_test": "test_browser_matrix_recommend_page_loading"
+    },
+    {
+      "id": "recommend-no-published-job",
+      "expected": "blocked",
+      "automated_test": "test_browser_matrix_no_published_job"
+    },
+    {
+      "id": "recommend-no-candidates",
+      "expected": "ready",
+      "automated_test": "test_browser_matrix_empty_candidate_page_is_valid"
+    },
+    {
+      "id": "recommend-ready",
+      "expected": "ready",
+      "automated_test": "test_browser_matrix_recommend_page_ready"
+    },
+    {
+      "id": "boss-cooldown-active",
+      "expected": "blocked-before-browser",
+      "automated_test": "test_start_run_rejects_shared_cooldown_before_touching_browser"
+    }
+  ],
+  "manual_cases": [
+    {
+      "id": "windows-current-host-all-pages",
+      "command": "python tests/manual/run_gui_acceptance_matrix.py",
+      "required_before_release": true
+    },
+    {
+      "id": "windows-1080p-maximized-visual",
+      "required_before_release": true
+    },
+    {
+      "id": "windows-4k-windowed-visual",
+      "required_before_release": true
+    },
+    {
+      "id": "macos-retina-all-pages",
+      "required_before_release": true
+    },
+    {
+      "id": "real-chrome-login-recommend-empty-ready",
+      "required_before_release": true
+    }
+  ]
+}

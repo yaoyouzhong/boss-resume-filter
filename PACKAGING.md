@@ -150,6 +150,13 @@ pyinstaller --onefile --noconsole \
 - `python tests/test_import.py` 通过
 - 工作区干净
 
+发布候选提交还必须按 `tests/gui_browser_acceptance_matrix.json` 留存 GUI 实测凭证：
+
+- Windows 当前机器先运行 `python tests/manual/run_gui_acceptance_matrix.py`，确认 7 个页面及结果列策略通过
+- 1080P 最大化、4K 非最大化、macOS Retina 分别在对应显示环境做视觉验收
+- 真实 Chrome 验收未连接、登录页、推荐页加载中、无已发布职位、无候选人和正常候选人页面
+- 自动化矩阵只能证明状态逻辑和列策略，不能代替对应系统、DPI、字体和真实 BOSS 页面上的最终视觉/连接检查
+
 `release_flow.py` 要求开发修改已经由 Codex 完成语义审查和提交；确定性脚本不自行猜测哪些脏文件属于本次任务。它在当前单分支或显式多分支聚合结果上同步版本材料、运行严格门禁、推送候选 PR 并等待 CI，然后停在内容确认。内容调整继续使用同一 PR；确认前不得合并，确认后才连续执行正式发布。底层脚本保留用于失败后的分阶段恢复。
 
 Release 标题和说明必须先写在 `CHANGELOG.md` 对应版本段落中。`scripts/release_ci.py` 会自动提取该段落作为 GitHub/Gitee Release 内容；如果缺少对应版本，或未按以下顺序分类，发布会直接中断：
