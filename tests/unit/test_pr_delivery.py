@@ -602,6 +602,132 @@ def test_existing_open_pr_is_reused_even_when_head_ref_is_stale():
     assert result == existing
 
 
+def test_reused_open_pr_refreshes_title_and_body_before_returning():
+    head_sha = "b" * 40
+    existing = {
+        "number": 10,
+        "state": "OPEN",
+        "url": "https://github.example/pr/10",
+        "headRefOid": "a" * 40,
+        "title": "Old title",
+        "body": "Old body",
+    }
+    refreshed = {
+        **existing,
+        "headRefOid": head_sha,
+        "title": "Current title",
+        "body": "Current body\n",
+    }
+    with (
+        patch.object(pr_delivery, "_run_external", return_value=_completed()) as run,
+        patch.object(pr_delivery, "_pr_view", return_value=refreshed) as pr_view,
+    ):
+        result = pr_delivery._sync_open_pr_metadata(
+            existing,
+            title="Current title",
+            body="Current body\n",
+            expected_head_sha=head_sha,
+        )
+
+    assert result == refreshed
+    assert run.call_args.args[:2] == (
+        [
+            "gh",
+            "pr",
+            "edit",
+            "10",
+            "--title",
+            "Current title",
+            "--body",
+            "Current body\n",
+        ],
+        "刷新 PR #10 标题和正文",
+    )
+    pr_view.assert_called_once_with(10)
+
+
+def test_reused_open_pr_skips_edit_when_metadata_is_current():
+    head_sha = "b" * 40
+    existing = {
+        "number": 10,
+        "state": "OPEN",
+        "url": "https://github.example/pr/10",
+        "headRefOid": head_sha,
+        "title": "Current title",
+        "body": "Current body",
+    }
+    with (
+        patch.object(pr_delivery, "_run_external") as run,
+        patch.object(pr_delivery, "_pr_view", return_value=existing),
+    ):
+        result = pr_delivery._sync_open_pr_metadata(
+            existing,
+            title="Current title",
+            body="Current body\n",
+            expected_head_sha=head_sha,
+        )
+
+    assert result == existing
+    run.assert_not_called()
+
+
+def test_reused_open_pr_stops_when_metadata_edit_fails():
+    existing = {
+        "number": 10,
+        "state": "OPEN",
+        "title": "Old title",
+        "body": "Old body",
+    }
+    with (
+        patch.object(
+            pr_delivery,
+            "_run_external",
+            side_effect=pr_delivery.PRDeliveryError("刷新失败"),
+        ),
+        patch.object(pr_delivery, "_pr_view") as pr_view,
+    ):
+        with _raises(pr_delivery.PRDeliveryError, "刷新失败"):
+            pr_delivery._sync_open_pr_metadata(
+                existing,
+                title="Current title",
+                body="Current body",
+                expected_head_sha="b" * 40,
+            )
+
+    pr_view.assert_not_called()
+
+
+def test_push_reuses_open_pr_through_metadata_refresh():
+    branch = "codex/test"
+    head_sha = "b" * 40
+    existing = {
+        "number": 10,
+        "state": "OPEN",
+        "url": "https://github.example/pr/10",
+    }
+    refreshed = {**existing, "headRefOid": head_sha}
+    with (
+        patch.object(pr_delivery, "_run_external", return_value=_completed()),
+        patch.object(pr_delivery, "_default_pr_title", return_value="Current title"),
+        patch.object(pr_delivery, "_default_pr_body", return_value="Current body"),
+        patch.object(pr_delivery, "_find_delivery_pr", return_value=existing),
+        patch.object(
+            pr_delivery,
+            "_sync_open_pr_metadata",
+            return_value=refreshed,
+        ) as sync,
+    ):
+        result = pr_delivery._push_and_create_pr(branch, head_sha)
+
+    assert result == refreshed
+    sync.assert_called_once_with(
+        existing,
+        title="Current title",
+        body="Current body",
+        expected_head_sha=head_sha,
+    )
+
+
 def test_pr_creation_reports_final_github_error_after_three_retries():
     branch = "codex/test"
     failures = [
