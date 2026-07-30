@@ -1,4 +1,4 @@
-"""Subprocess helpers that keep project child consoles hidden on Windows."""
+"""Subprocess helpers that keep project process trees hidden on Windows."""
 from __future__ import annotations
 
 import os
@@ -40,11 +40,19 @@ class HiddenSubprocess:
         if self._platform != "win32" or show_window:
             return prepared
 
+        creationflags = int(prepared.get("creationflags") or 0)
         create_no_window = int(getattr(self._module, "CREATE_NO_WINDOW", 0))
-        if create_no_window:
-            prepared["creationflags"] = (
-                int(prepared.get("creationflags") or 0) | create_no_window
-            )
+        create_new_console = int(getattr(self._module, "CREATE_NEW_CONSOLE", 0))
+        if create_new_console:
+            # A process created with CREATE_NO_WINDOW has no console to pass to
+            # Git/gh helpers, so their descendants can create visible consoles.
+            # Give the direct child one hidden console instead; its whole process
+            # tree then inherits that same hidden console.
+            creationflags &= ~create_no_window
+            creationflags |= create_new_console
+            prepared["creationflags"] = creationflags
+        elif create_no_window:
+            prepared["creationflags"] = creationflags | create_no_window
 
         startupinfo = prepared.get("startupinfo")
         if startupinfo is None:

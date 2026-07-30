@@ -18,7 +18,7 @@ python tests/test_import.py
 - `release_delivery.py`：旧版版本准备与 PR 组合入口，仅保留为分阶段恢复入口；行为测试在 `tests/unit/test_release_delivery.py`。
 - `release_prepare.py`：版本号、CHANGELOG、README 与项目版本注释的本地准备和严格门禁，保留为分阶段执行及故障恢复入口。
 - `release_dispatch.py`：正式发布底层入口，负责预检、触发或跳过 Actions 暂存、本机公开 GitHub 主源、Gitee 镜像和最终验收。
-- 根目录 `subprocess_utils.py`：Windows 项目的统一隐藏启动代理；Git、Python、Ruff、PyInstaller、GitHub CLI、WMIC、taskkill 等控制台子进程使用无窗口方式运行，stdout/stderr 由父进程回放，GitHub CLI 同时关闭额外 telemetry/时区探测子进程；Chrome 等需要展示界面的程序显式放行。
+- 根目录 `subprocess_utils.py`：Windows 项目的统一隐藏启动代理；Git、Python、Ruff、PyInstaller、GitHub CLI、WMIC、taskkill 等控制台进程使用隐藏控制台运行，使其认证、Git、telemetry 等后代继续继承同一隐藏窗口，stdout/stderr 由父进程回放；GitHub CLI 同时关闭额外 telemetry/时区探测，Chrome 等需要展示界面的程序显式放行。
 - `pr_delivery.py`：普通开发分支的一次授权交付编排，负责本地门禁、push、PR、CI 等待、Squash 合并、双远端同步和安全分支清理；默认只预览，行为测试在 `tests/unit/test_pr_delivery.py`。
 - `watch_progress.py`：轮询 `.build_progress.json` 并输出本地打包状态，保留作为手工构建辅助工具。
 
