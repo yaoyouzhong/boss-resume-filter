@@ -130,6 +130,17 @@ def test_ruff_f821_is_a_local_and_release_ci_hard_gate():
     assert "-r requirements.txt -r requirements-release.txt" in release_workflow
 
 
+def test_hidden_release_subprocess_helper_is_compiled_by_the_release_gate():
+    """The Windows no-console launcher is a release-critical source dependency."""
+    build_source = (BASE_DIR / "build.py").read_text(encoding="utf-8")
+    packaging = (BASE_DIR / "PACKAGING.md").read_text(encoding="utf-8")
+    scripts_readme = (BASE_DIR / "scripts" / "README.md").read_text(encoding="utf-8")
+
+    assert '"subprocess_utils.py"' in build_source
+    assert "Start-Process -WindowStyle Hidden" in packaging
+    assert "Start-Process -WindowStyle Hidden" in scripts_readme
+
+
 def test_pr_checks_never_publish_or_sync_releases():
     """PR validation must stay read-only and separate from release delivery."""
     workflow = (BASE_DIR / ".github" / "workflows" / "pr-checks.yml").read_text(

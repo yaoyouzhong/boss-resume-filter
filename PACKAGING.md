@@ -17,6 +17,8 @@
 
 正常发布的唯一用户入口是本机 `scripts/release_flow.py`。它把开发分支提交、版本材料、候选 PR、CI 等待、内容确认、正式发布和线上验收串成一个可恢复状态机；唯一正常停点是最终标题和正文确认。`release_prepare.py`、`release_delivery.py`、`pr_delivery.py` 与 `release_dispatch.py` 仅保留为分阶段恢复入口。
 
+Windows 项目代码通过根目录 `subprocess_utils.py` 统一控制子进程：发布和测试从现有控制台运行时，Git、Python、Ruff、PyInstaller、GitHub CLI 及其认证、Git、telemetry 后代全部继承同一终端，不再创建新窗口；打包后的无控制台 GUI 启动 WMIC、taskkill、更新器等命令时才使用 `CREATE_NO_WINDOW`。stdout/stderr 仍由父进程回放，Chrome 等确需显示的图形程序显式放行。禁止为发布 CLI 使用 `CREATE_NEW_CONSOLE`，Windows Terminal 可能把它作为新窗口激活到前台。调用 `release_flow.py` 的外层编排器仍须使用 `windowsHide`、`Start-Process -WindowStyle Hidden` 或等价机制；仓库内脚本无法隐藏调用者在启动前已经创建的 PowerShell/终端窗口。
+
 ```bash
 # 准备单分支候选 PR，等待 CI 后展示最终版本内容并停止
 python scripts/release_flow.py --version 2.24 \

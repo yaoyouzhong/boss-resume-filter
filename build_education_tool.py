@@ -12,6 +12,9 @@ import subprocess
 from pathlib import Path
 
 from education_tool_security import _keystream, _wrap_key
+from subprocess_utils import hidden_subprocess
+
+subprocess = hidden_subprocess(subprocess)
 
 BASE_DIR = Path(__file__).resolve().parent
 BUILD_DIR = BASE_DIR / "build" / "education-tool"

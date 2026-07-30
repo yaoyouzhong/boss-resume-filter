@@ -10,6 +10,14 @@ from pathlib import Path
 
 CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 SCRIPT_DIR = Path(__file__).resolve().parent
+BASE_DIR = SCRIPT_DIR.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+from subprocess_utils import hidden_subprocess  # noqa: E402
+
+subprocess = hidden_subprocess(subprocess)
+
 MD_PATH = SCRIPT_DIR / "education-tool-manual.md"
 PDF_PATH = SCRIPT_DIR / "EducationCertificateTool-Manual.pdf"
 

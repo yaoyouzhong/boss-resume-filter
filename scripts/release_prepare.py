@@ -31,6 +31,9 @@ for import_path in (BASE_DIR, SCRIPTS_DIR):
 import build  # noqa: E402
 from product_fingerprint import product_code_fingerprint  # noqa: E402
 import release_retry  # noqa: E402
+from subprocess_utils import hidden_subprocess  # noqa: E402
+
+subprocess = hidden_subprocess(subprocess)
 
 
 RELEASE_FILES = frozenset({

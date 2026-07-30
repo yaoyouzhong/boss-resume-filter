@@ -33,6 +33,9 @@ from constants import (
     UPDATE_TIMEOUT_RELEASE_NOTES_GITHUB,
 )
 from paths import get_base_dir
+from subprocess_utils import hidden_subprocess
+
+subprocess = hidden_subprocess(subprocess)
 
 logger = logging.getLogger(__name__)
 

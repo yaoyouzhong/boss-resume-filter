@@ -30,6 +30,9 @@ import build  # noqa: E402
 import release_content_review  # noqa: E402
 import release_dispatch  # noqa: E402
 import release_prepare  # noqa: E402
+from subprocess_utils import hidden_subprocess  # noqa: E402
+
+subprocess = hidden_subprocess(subprocess)
 
 
 STATE_PATH = BASE_DIR / ".release_flow_state.json"
