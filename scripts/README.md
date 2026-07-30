@@ -12,7 +12,7 @@ python tests/test_import.py
 ## 活跃脚本
 
 - `release_ci.py`：正式发布的确定性规则实现；Actions 只调用严格门禁和 GitHub Draft 暂存，本机核对 GitHub 附件完整性元数据后立即公开主源，再自动清理 Gitee 历史版本附件、下载并镜像本次版本、同步清单和完成一次权威线上验收；阶段耗时、Actions run、附件进度和脱敏错误同时写入状态文件与发布日志；行为测试在 `tests/unit/test_release_ci.py`。
-- `release_flow.py`：正常发布唯一入口；支持单分支和显式多分支聚合，把候选 PR、内容确认、Squash tree 校验、正式发布与断点续跑串成一个状态机；发布失败保留候选分支，完整线上验收后才清理；行为测试在 `tests/unit/test_release_flow.py`。
+- `release_flow.py`：正常发布唯一入口；支持单分支和显式多分支聚合，把候选 PR、内容确认、Squash tree 校验、正式发布与断点续跑串成一个状态机；准备阶段记录候选新增历史中已经包含的 `codex/*` 阶段分支并展示清理名单，完整线上验收后才核对提交、远端和 worktree 状态并自动清理；行为测试在 `tests/unit/test_release_flow.py`。
 - `product_fingerprint.py`：计算排除公开发布文案后的产品代码指纹；本机门禁和 PR Checks 仅在同一指纹已经成功回归时复用测试证据。
 - `release_content_review.py`：对最终标题和正文做固定用户视角审核；确认前绑定候选 tree，合并后绑定正式发布提交。
 - `release_delivery.py`：旧版版本准备与 PR 组合入口，仅保留为分阶段恢复入口；行为测试在 `tests/unit/test_release_delivery.py`。
@@ -41,7 +41,7 @@ python scripts/release_flow.py `
 python scripts/release_flow.py --version 2.24 --confirm --approved-content-sha "<由编排器后台传入>" --authorization "确认发布 v2.24"
 ```
 
-确认后自动完成 Squash 合并、双远端同步、双平台构建、GitHub/Gitee Release、`latest.json` 和线上验收。多分支使用重复的 `--branch` 与 `--tested-branch branch=commit_sha`；每个分支必须有独立干净的 worktree，脚本会先在各自目录重跑稳定回归和导入烟测，再验证聚合结果。分支顺序同时进入精确授权文本。任一失败保留状态，不自动处理冲突、rebase、force push 或删除 worktree。
+确认后自动完成 Squash 合并、双远端同步、切换到可发布的 `master` 工作区、双平台构建、GitHub/Gitee Release、`latest.json`、线上验收和分支清理。多分支使用重复的 `--branch` 与 `--tested-branch branch=commit_sha`；每个分支必须有独立干净的 worktree，脚本会先在各自目录重跑稳定回归和导入烟测，再验证聚合结果。分支顺序同时进入精确授权文本。候选提交已经包含、但未单独列在命令中的本地 `codex/*` 阶段分支只会加入验收后清理名单，不会因此自动合入任何新内容；清理前分支头、远端或工作区发生变化会停止并保留分支。独立 worktree 会切为 detached `origin/master` 以释放分支，但目录不会删除。任一失败保留状态，不自动处理冲突、rebase、force push 或删除 worktree。
 
 ### 普通 PR 一键交付
 
