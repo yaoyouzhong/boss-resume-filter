@@ -1320,7 +1320,7 @@ class _FakeResultTree:
 
 
 def test_result_tree_columns_expand_only_when_space_is_available():
-    """列数只由表格实际可用宽度驱动：<1250px 8 列，≥1250px 11 列，≥1700px 13 列；
+    """列数只由表格实际可用宽度驱动：<1100px 8 列，≥1100px 11 列，≥1250px 13 列；
     富余宽度显式分配给各列（ttk stretch 只会收缩不会放大，否则会右侧留白且表头截断）。"""
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot()
@@ -1333,32 +1333,33 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     assert gui.result_tree.column_options["skills"]["stretch"] is True
 
     # 富余宽度按比例放大填满表格
-    gui.result_tree = _FakeTree(1200)
+    gui.result_tree = _FakeTree(1099)
     gui._update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 8
     assert gui.result_tree.column_options["skills"]["width"] > 85
     assert gui.result_tree.column_options["skills"]["stretch"] is False
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
-    ) == 1198
+    ) == 1097
 
-    gui.result_tree = _FakeTree(1400)
+    gui.result_tree = _FakeTree(1249)
     gui._update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 11
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
-    ) == 1398
+    ) == 1247
 
-    gui.result_tree = _FakeTree(1700)
+    # 1080P 高 DPI 环境最大化后的结果表约 1250px，压缩到可读下限后可容纳全部列。
+    gui.result_tree = _FakeTree(1250)
     gui._update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 13
     assert gui.result_tree.displaycolumns[-2:] == ("school", "company")
-    assert gui.result_tree.column_options["school"]["width"] > 150
-    assert gui.result_tree.column_options["company"]["width"] > 170
+    assert gui.result_tree.column_options["school"]["width"] >= 120
+    assert gui.result_tree.column_options["company"]["width"] >= 125
     assert gui.result_tree.column_options["level"]["width"] < 110
     assert gui.result_tree.column_options["education"]["width"] == 140
     assert gui.result_tree.column_options["age"]["width"] == 110
-    assert gui.result_tree.column_options["job_status"]["width"] > 120
+    assert gui.result_tree.column_options["job_status"]["width"] >= 90
     assert gui.result_tree.column_options["skills"]["width"] < 140
     assert gui.result_tree.column_options["name"]["stretch"] is False
     assert gui.result_tree.column_options["education"]["stretch"] is False
@@ -1367,7 +1368,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     assert gui.result_tree.column_options["company"]["stretch"] is False
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
-    ) == 1698
+    ) == 1248
 
     gui.result_tree = _FakeTree(0)
     gui._apply_result_tree_column_widths((

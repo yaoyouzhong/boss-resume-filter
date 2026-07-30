@@ -2207,9 +2207,9 @@ class BossFilterGUI:
         except (tk.TclError, ValueError):
             tree_width = 0
         display_columns = base_columns
-        if tree_width >= 1250:
+        if tree_width >= 1100:
             display_columns += extra_columns
-        if tree_width >= 1700:
+        if tree_width >= 1250:
             display_columns += wide_columns
         self._apply_result_tree_column_widths(display_columns)
         if tuple(self.result_tree.cget("displaycolumns")) != display_columns:
@@ -2297,13 +2297,15 @@ class BossFilterGUI:
         stretch = not wide_mode
         floor_total = sum(floors.values())
         base_flex_total = sum(base_widths[c] for c in flexible_columns)
-        if flexible_available > max(base_flex_total, floor_total):
-            growth_caps = {
-                "name": 130, "exp": 115, "salary": 120, "skills": 130,
-                "score": 95, "ai_eval": 95, "level": 120, "status": 260,
-                "education": 160, "age": 120, "job_status": 170,
-                "school": 280, "company": 320,
-            }
+        growth_caps = {
+            "name": 130, "exp": 115, "salary": 120, "skills": 130,
+            "score": 95, "ai_eval": 95, "level": 120, "status": 260,
+            "education": 160, "age": 120, "job_status": 170,
+            "school": 280, "company": 320,
+        }
+        can_fit_wide_columns = wide_mode and flexible_available >= floor_total
+        has_surplus = flexible_available > max(base_flex_total, floor_total)
+        if can_fit_wide_columns or has_surplus:
             widths.update(floors)
             self._distribute_tree_surplus(
                 widths, flexible_columns, floors, base_widths, growth_caps,
@@ -5772,7 +5774,7 @@ class BossFilterGUI:
         self.result_tree.heading("school", text="毕业学校")
         self.result_tree.heading("company", text="最近公司")
 
-        # 表格宽度 <1250px 显示 8 列；≥1250px 显示 11 列；≥1700px 再显示学校和公司。
+        # 表格宽度 <1100px 显示 8 列；≥1100px 显示 11 列；≥1250px 再显示学校和公司。
         self.result_tree.column("name", width=80, minwidth=60, anchor='center')
         self.result_tree.column("exp", width=85, minwidth=70, anchor='center')
         self.result_tree.column("salary", width=85, minwidth=70, anchor='center')
