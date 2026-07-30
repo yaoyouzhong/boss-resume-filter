@@ -44,6 +44,9 @@ for import_path in (BASE_DIR, SCRIPTS_DIR):
 import build  # noqa: E402
 import release_content_review  # noqa: E402
 import release_retry  # noqa: E402
+from subprocess_utils import hidden_subprocess  # noqa: E402
+
+subprocess = hidden_subprocess(subprocess)
 
 
 RELEASE_ARTIFACTS = (

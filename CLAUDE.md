@@ -26,6 +26,7 @@ boss-resume-filter/
 ├── migrate_keys.py       # API Key 迁移工具（明文→加密）
 ├── constants.py          # 共享常量（评分模型参数、阈值、学历档位、滚动参数、城市列表）
 ├── paths.py              # 路径工具（get_base_dir、ensure_config_files、路径常量）
+├── subprocess_utils.py   # Windows 控制台子进程隐藏启动与输出回放
 ├── build.py              # PyInstaller 打包、发布门禁与公开版本核验脚本
 ├── build_education_tool.py # 独立学历证书核验助手打包脚本
 ├── latest.json           # 双源版本清单（正式发布工作流自动维护）
@@ -38,7 +39,7 @@ boss-resume-filter/
 │   ├── release_ci.py   # GitHub 暂存、本机镜像与正式发布规则
 │   ├── release_content_review.py # 发布内容审核与内部凭证绑定
 │   ├── pr_delivery.py # 普通 PR 一次授权交付（门禁、PR、合并、双远端同步、分支清理）
-│   ├── release_flow.py # 单/多分支一键发布、内容确认与断点续跑统一入口
+│   ├── release_flow.py # 一键发布、内容确认与断点续跑统一入口
 │   ├── release_delivery.py / release_prepare.py / release_dispatch.py # 分阶段恢复入口
 │   └── watch_progress.py # 发布进度监控脚本（轮询 .build_progress.json）
 ├── pyinstaller-hooks/    # PyInstaller 自定义 hook（控制模块收集范围，减小产物体积）
@@ -80,7 +81,7 @@ boss-resume-filter/
 - 用户准确授权“`一键发布版本 vX.Y`”后，统一入口允许提交当前 `codex/*` 开发分支、同步版本材料、先完成用户视角内容审核，再运行严格门禁、普通 push、创建/复用发布候选 PR 并等待 `PR Checks`；随后必须完整展示最终标题、正文、候选提交和内容审核结果并停在内容确认阶段，不得合并、创建 tag、构建安装包或公开 Release。用户可在该阶段反复调整版本内容；产品代码指纹未变化且已有同指纹成功回归凭证时，纯发布文案调整只重跑文档、版本和发布内容门禁，否则必须重跑完整回归和 CI；任一修改都使旧确认自动失效
 - 用户准确授权“`一键发布版本 vX.Y，包含 <branch-a>、<branch-b>...`”时，统一入口可从双远端一致的 `master` 创建 `codex/release-vX.Y` 聚合分支，按声明顺序合入显式列出的干净分支并验证每个分支记录的 GUI 实测提交；不得自动纳入未列出的分支。各分支测试与最终聚合测试都必须通过，冲突、来源不明、实测提交变化或组合回归失败立即停止，不自动解决冲突
 - 只有用户在候选 PR、CI 和最终内容展示完成后准确授权“`确认发布 vX.Y`”，才允许核验内容与候选 tree 凭证、Squash 合并、同步 GitHub/Gitee `master`、触发双平台构建、创建不可变 tag、公开 GitHub/Gitee Release、同步 `latest.json`、完成线上验收并在全部成功后清理已授权分支。正式发布失败或中断时必须保留本地和远端候选分支；候选 tree、版本、标题、正文、PR head、目标分支或测试凭证变化后旧确认自动失效；确认不覆盖 rebase、force push、冲突处理、移动公开 tag 或删除 worktree
-- `release_flow.py` 是正常发布的唯一用户入口；`release_prepare.py`、`release_delivery.py`、`pr_delivery.py` 和 `release_dispatch.py` 仅作为确定性底层与故障恢复入口。任一阶段失败必须保留可恢复状态；发布状态必须记录 Actions run、每阶段开始/结束/耗时/尝试次数和脱敏错误。续跑时先验证已完成阶段的后置条件，满足则跳过，不能从头重复所有远端操作；GitHub 已公开后不得回滚，只能幂等续跑 Gitee、清单同步和公开验收
+- `release_flow.py` 是正常发布的唯一用户入口；`release_prepare.py`、`release_delivery.py`、`pr_delivery.py` 和 `release_dispatch.py` 仅作为确定性底层与故障恢复入口。任一阶段失败必须保留可恢复状态；发布状态必须记录 Actions run、每阶段开始/结束/耗时/尝试次数和脱敏错误。续跑时先验证已完成阶段的后置条件，满足则跳过，不能从头重复所有远端操作；GitHub 已公开后不得回滚，只能幂等续跑 Gitee、清单同步和公开验收。Windows 项目代码启动 Git、Python、Ruff、PyInstaller、GitHub CLI、WMIC、taskkill 等控制台子进程必须统一经过 `subprocess_utils.py` 隐藏窗口并回放输出，禁止绕过该代理；确需显示的 Chrome 等图形程序必须显式声明 `show_window=True`。外层编排器也必须使用 `windowsHide`、`Start-Process -WindowStyle Hidden` 或等价方式启动顶层命令
 - 发布准备 PR 合并前执行 `/neat-freak`、文案润色和风险相关实测；授权后由工作流重跑严格门禁并核验公开下载、自动更新和双远端状态
 - 已公开 tag 不得移动或覆盖，修复必须发布更高补丁版本；同一提交允许断点续跑
 - `candidates_all.json`、本地 API 配置、Chrome profile 和登录状态不属于任务临时文件，禁止收尾时自动清理

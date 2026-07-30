@@ -34,6 +34,9 @@ import release_ci  # noqa: E402
 import release_content_review  # noqa: E402
 import release_prepare  # noqa: E402
 import release_retry  # noqa: E402
+from subprocess_utils import hidden_subprocess  # noqa: E402
+
+subprocess = hidden_subprocess(subprocess)
 
 
 DEFAULT_RUN_DISCOVERY_TIMEOUT = 90

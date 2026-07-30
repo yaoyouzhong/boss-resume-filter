@@ -29,6 +29,9 @@ from urllib.parse import urlparse
 
 import icons
 import ui_theme
+from subprocess_utils import hidden_subprocess
+
+subprocess = hidden_subprocess(subprocess)
 
 logger = logging.getLogger(__name__)
 
@@ -7267,6 +7270,7 @@ class BossFilterGUI:
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                show_window=True,
             )
             try:
                 CHROME_DEBUG_PORT_FILE.write_text(str(debug_port), encoding='utf-8')
@@ -13969,6 +13973,7 @@ class BossFilterGUI:
                             ],
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
+                            show_window=True,
                         )
 
                         # 持久化端口号，下次启动时可复用

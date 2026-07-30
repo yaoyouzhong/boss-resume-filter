@@ -27,6 +27,9 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import release_retry  # noqa: E402
+from subprocess_utils import hidden_subprocess  # noqa: E402
+
+subprocess = hidden_subprocess(subprocess)
 
 
 DEFAULT_CHECK_TIMEOUT = 30 * 60

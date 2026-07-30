@@ -35,6 +35,9 @@ _BUILD_SCRIPTS_DIR = Path(__file__).resolve().parent / "scripts"
 if str(_BUILD_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_BUILD_SCRIPTS_DIR))
 import release_retry  # noqa: E402
+from subprocess_utils import hidden_subprocess  # noqa: E402
+
+subprocess = hidden_subprocess(subprocess)
 
 # Windows 终端默认 GBK 编码导致中文乱码和 Unicode 字符崩溃，强制 UTF-8
 if sys.platform == 'win32':
@@ -365,6 +368,7 @@ SOURCE_CHECK_FILES = [
     "doc_parser.py",
     "security.py",
     "build.py",
+    "subprocess_utils.py",
     "icons.py",
     "migrate_keys.py",
     "tests/run_unit_tests.py",
@@ -816,7 +820,7 @@ def _check_changelog_updated():
         "gui_main.py", "gui_dialogs.py", "ui_messagebox.py", "changelog_parser.py", "bossmaster.py",
         "filtering.py", "storage.py", "llm_eval.py", "ai_adapter.py", "job_ai_parser.py",
         "job_config_diagnostics.py", "doc_parser.py", "security.py", "updater.py", "icons.py",
-        "constants.py", "paths.py", "selectors.json", "ui_config.json",
+        "constants.py", "paths.py", "subprocess_utils.py", "selectors.json", "ui_config.json",
         "job_config.json",
     ]
     result = subprocess.run(
@@ -3674,7 +3678,7 @@ def _needs_cross_platform_rebuild(changed_files):
     SHARED_BUILD_FILES = {
         'gui_main.py', 'bossmaster.py', 'filtering.py', 'llm_eval.py', 'ai_adapter.py',
         'job_ai_parser.py', 'job_config_diagnostics.py', 'storage.py', 'doc_parser.py', 'security.py', 'constants.py',
-        'paths.py', 'icons.py', 'updater.py', 'selectors.json',
+        'paths.py', 'icons.py', 'updater.py', 'subprocess_utils.py', 'selectors.json',
         'job_config.json', 'api_config.json', 'ui_config.json', 'requirements.txt',
         'build.py',  # 打包脚本本身的变化影响产物内容
     }
