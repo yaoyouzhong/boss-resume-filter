@@ -77,6 +77,8 @@ from storage import (
     build_blacklist_index,
     build_greeted_index,
     candidate_key,
+    candidate_record_key,
+    candidate_records_share_job,
     get_first_seen,
     get_greeted_geek_ids,
     get_last_evaluated,
@@ -4751,17 +4753,27 @@ def _bind_latest_candidate_states(
     persisted_candidates: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Rebind scan results to records containing the latest persisted business state."""
-    latest_by_key = {
-        candidate_key(item.get('geek_id'), item.get('job_name', '')): item
-        for item in persisted_candidates
-        if item.get('geek_id')
-    }
+    latest_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in persisted_candidates:
+        if not item.get("geek_id"):
+            continue
+        latest_by_key[candidate_record_key(item)] = item
+        latest_by_key.setdefault(
+            candidate_key(item.get("geek_id"), item.get("job_name", "")),
+            item,
+        )
     return [
         merge_candidate_business_state(
             candidate,
             latest_by_key.get(
-                candidate_key(candidate.get('geek_id'), candidate.get('job_name', '')),
-                {},
+                candidate_record_key(candidate),
+                latest_by_key.get(
+                    candidate_key(
+                        candidate.get("geek_id"),
+                        candidate.get("job_name", ""),
+                    ),
+                    {},
+                ),
             ),
         )
         for candidate in candidates
@@ -4886,6 +4898,9 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
         greet_context_limit: 后续联系信息准备人数上限。
     """
     job_name = job_info['job_name']
+    job_uuid = job_info.get("job_uuid") or job_info.get("rule", {}).get(
+        "job_uuid"
+    )
 
     # 确定打招呼等级的显示和筛选逻辑
     if greet_level == 'strong':
@@ -4916,7 +4931,13 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
     if candidates_all:
         for c in candidates_all:
             all_existing_ids.add(c['geek_id'])
-            if c.get('job_name') == job_name and c.get('greet_sent') is True:
+            if (
+                candidate_records_share_job(
+                    c,
+                    {"job_name": job_name, "job_uuid": job_uuid},
+                )
+                and c.get('greet_sent') is True
+            ):
                 existing_ids_for_job_and_greeted.add(c['geek_id'])
 
         blacklist_text = f"，{len(blacklisted_geek_ids)} 人已屏蔽" if blacklisted_geek_ids else ""
@@ -4930,11 +4951,20 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
     if scan_state.get('scan_status') == 'interrupted' and auto_greet:
         auto_greet = False
         print("[WARN] 扫描已中断，本轮仅保存已提取结果，不自动打招呼")
-    existing_by_candidate_key = {
-        candidate_key(c.get('geek_id'), c.get('job_name', '')): c
-        for c in candidates_all
-        if c.get('geek_id')
-    }
+    existing_by_candidate_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for existing_candidate in candidates_all:
+        if not existing_candidate.get("geek_id"):
+            continue
+        existing_by_candidate_key[
+            candidate_record_key(existing_candidate)
+        ] = existing_candidate
+        existing_by_candidate_key.setdefault(
+            candidate_key(
+                existing_candidate.get("geek_id"),
+                existing_candidate.get("job_name", ""),
+            ),
+            existing_candidate,
+        )
 
     if blacklisted_geek_ids:
         before_count = len(raw_candidates)
@@ -4957,7 +4987,7 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
         )
 
     evaluated_candidate_keys = {
-        candidate_key(candidate.get('geek_id'), job_name)
+        candidate_key(candidate.get('geek_id'), job_name, job_uuid)
         for candidate in raw_candidates
         if candidate.get('geek_id')
     }
@@ -5029,14 +5059,24 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
             if not summary_info.get('salary'):
                 summary_info['salary'] = '面议'
 
-            candidate_k = candidate_key(candidate['geek_id'], job_name)
-            existing_record = existing_by_candidate_key.get(candidate_k)
+            candidate_k = candidate_key(
+                candidate['geek_id'],
+                job_name,
+                job_uuid,
+            )
+            existing_record = existing_by_candidate_key.get(
+                candidate_k,
+                existing_by_candidate_key.get(
+                    candidate_key(candidate['geek_id'], job_name)
+                ),
+            )
             first_seen_at = get_first_seen(existing_record, scan_timestamp) if existing_record else scan_timestamp
             candidate_record = {
                 "geek_id": candidate['geek_id'],
                 "name": candidate['name'],
                 "summary": candidate['summary'],
                 "job_id": job_info['job_id'],
+                "job_uuid": job_uuid,
                 "job_name": normalized_job_name,
                 "salary": summary_info.get('salary', ''),
                 "age": summary_info.get('age', ''),
@@ -5115,8 +5155,17 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                 elif '筛选异常' in reason:
                     reason = '筛选异常'
             failed_reasons[reason] = failed_reasons.get(reason, 0) + 1
-            candidate_k = candidate_key(candidate['geek_id'], job_name)
-            existing_record = existing_by_candidate_key.get(candidate_k)
+            candidate_k = candidate_key(
+                candidate['geek_id'],
+                job_name,
+                job_uuid,
+            )
+            existing_record = existing_by_candidate_key.get(
+                candidate_k,
+                existing_by_candidate_key.get(
+                    candidate_key(candidate['geek_id'], job_name)
+                ),
+            )
             first_seen_at = get_first_seen(existing_record, scan_timestamp) if existing_record else scan_timestamp
             rejection_source = None
             if existing_record and is_recommended_candidate(existing_record):
@@ -5132,6 +5181,7 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                 "name": candidate['name'],
                 "summary": candidate['summary'],
                 "job_id": job_info['job_id'],
+                "job_uuid": job_uuid,
                 "job_name": normalized_job_name,
                 "match_rule": job_info['rule_key'],
                 "match_score": 0,
@@ -5150,7 +5200,9 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
             if rejection_source:
                 rejected_candidates.append(rejected_record)
 
-        processed_candidate_keys.add(candidate_key(candidate.get('geek_id'), job_name))
+        processed_candidate_keys.add(
+            candidate_key(candidate.get('geek_id'), job_name, job_uuid)
+        )
 
         if (i + 1) % 20 == 0:
             print(f"  已筛选 {i + 1}/{len(raw_candidates)} 个，通过 {len(passed_candidates)} 个")
@@ -6245,6 +6297,7 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
             rule = job_rules[job_name]
             job_info = {
                 "job_id": "unknown",
+                "job_uuid": rule.get("job_uuid"),
                 "job_name": job_name,
                 "rule": rule,
                 "rule_key": job_name

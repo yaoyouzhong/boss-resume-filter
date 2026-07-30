@@ -12,6 +12,12 @@ from typing import Any, Callable, Optional, TypeVar
 
 from candidate_workflow import default_next_followup_at
 from constants import SCORE_THRESHOLD_PASS, SCORE_THRESHOLD_RECOMMEND
+from data_schema import (
+    CANDIDATE_SCHEMA_VERSION,
+    job_identity_token,
+    normalize_job_uuid,
+    validate_candidate_schema,
+)
 from job_identity import normalize_job_name
 
 
@@ -93,6 +99,16 @@ def _read_candidate_file(candidate_path: Path) -> list[dict[str, Any]]:
         loaded = json.load(f)
     if not isinstance(loaded, list) or any(not isinstance(item, dict) for item in loaded):
         raise ValueError("候选人数据必须是对象列表")
+    for item in loaded:
+        version = item.get("schema_version", 1)
+        if (
+            not isinstance(version, int)
+            or isinstance(version, bool)
+            or version < 1
+            or version > CANDIDATE_SCHEMA_VERSION
+        ):
+            raise ValueError("候选人 Schema 版本无效")
+        normalize_job_uuid(item.get("job_uuid"))
     return loaded
 
 
@@ -186,9 +202,36 @@ def get_greeted_geek_ids(candidates_all: list[dict[str, Any]]) -> set[str]:
     return set(c['geek_id'] for c in candidates_all if c.get('greet_sent') is True)
 
 
-def candidate_key(geek_id: Any, job_name: str) -> tuple[str, str]:
-    """Normalize a (geek_id, job_name) composite key for dedup and lookup."""
-    return (str(geek_id), normalize_job_name(job_name))
+def candidate_key(
+    geek_id: Any,
+    job_name: str,
+    job_uuid: Any = None,
+) -> tuple[str, str]:
+    """Return a stable candidate/job key with a legacy name fallback."""
+    return (str(geek_id), job_identity_token(job_uuid, job_name))
+
+
+def candidate_record_key(candidate: dict[str, Any]) -> tuple[str, str]:
+    """Return the best available persisted identity for one candidate record."""
+    return candidate_key(
+        candidate.get("geek_id"),
+        candidate.get("job_name", ""),
+        candidate.get("job_uuid"),
+    )
+
+
+def candidate_records_share_job(
+    left: dict[str, Any],
+    right: dict[str, Any],
+) -> bool:
+    """Compare stable job IDs when both exist, otherwise use legacy names."""
+    left_uuid = normalize_job_uuid(left.get("job_uuid"))
+    right_uuid = normalize_job_uuid(right.get("job_uuid"))
+    if left_uuid and right_uuid:
+        return left_uuid == right_uuid
+    return normalize_job_name(left.get("job_name")) == normalize_job_name(
+        right.get("job_name")
+    )
 
 
 def get_first_seen(candidate: dict[str, Any], fallback: str = '') -> str:
@@ -268,6 +311,21 @@ def _prepare_candidates_for_save(
     # 兼容旧数据：batch_timestamp 继续表示首次发现时间，避免重复扫描
     # 把历史候选人重新计入”今天/本周”统计。仅在缺少字段时回填。
     for candidate in unique_candidates:
+        version = candidate.get(
+            "schema_version",
+            CANDIDATE_SCHEMA_VERSION,
+        )
+        if (
+            not isinstance(version, int)
+            or isinstance(version, bool)
+            or version not in (1, CANDIDATE_SCHEMA_VERSION)
+        ):
+            raise ValueError("候选人 Schema 版本无效")
+        candidate["schema_version"] = CANDIDATE_SCHEMA_VERSION
+        stable_id = normalize_job_uuid(candidate.get("job_uuid"))
+        if stable_id:
+            candidate["job_uuid"] = stable_id
+        validate_candidate_schema(candidate)
         _normalize_candidate_state_fields(candidate)
         first_seen_at = get_first_seen(candidate)
         if first_seen_at:
@@ -499,7 +557,7 @@ def merge_candidates_all(
     with _CANDIDATES_FILE_LOCK:
         current = load_candidates_all(path)
         incoming_keys = {
-            candidate_key(item.get('geek_id'), item.get('job_name', ''))
+            candidate_record_key(item)
             for item in candidates
             if item.get('geek_id')
         } if replace_keys or prune_pending_jobs else set()
@@ -511,7 +569,7 @@ def merge_candidates_all(
             refreshed_current = []
             archived_at = datetime.now().strftime("%Y%m%d_%H%M%S")
             for item in current:
-                key = candidate_key(item.get('geek_id'), item.get('job_name', ''))
+                key = candidate_record_key(item)
                 if key not in normalized_replace_keys or key in incoming_keys:
                     refreshed_current.append(item)
                 elif is_recommended_candidate(item) or should_retain_rejected_candidate(item):
@@ -536,7 +594,7 @@ def merge_candidates_all(
                 if not (
                     normalize_job_name(item.get('job_name')) in normalized_jobs
                     and _is_current_scan_pending(item)
-                    and candidate_key(item.get('geek_id'), item.get('job_name', '')) not in incoming_keys
+                    and candidate_record_key(item) not in incoming_keys
                 )
             ]
         save_candidates_all(current + candidates, path)
@@ -578,7 +636,6 @@ def resolve_candidate_greeting_confirmation(
 ) -> bool:
     """Persist the user's verification of an uncertain greeting result."""
     geek_id = str(candidate.get('geek_id') or '')
-    normalized_job = normalize_job_name(candidate.get('job_name'))
     if not geek_id:
         return False
 
@@ -587,7 +644,7 @@ def resolve_candidate_greeting_confirmation(
         target = next((
             item for item in candidates
             if str(item.get('geek_id') or '') == geek_id
-            and normalize_job_name(item.get('job_name')) == normalized_job
+            and candidate_records_share_job(item, candidate)
         ), None)
         if target is None:
             return False
@@ -743,11 +800,14 @@ def _should_replace_candidate(
 def _dedupe_candidates(candidates_all: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """按候选人与岗位去重，保留最新评估并合并人工业务状态。"""
     seen: dict[tuple[str, str], dict[str, Any]] = {}
+    aliases: dict[tuple[str, str], tuple[str, str]] = {}
 
     for c in candidates_all:
         geek_id = c.get('geek_id')
         if geek_id:
-            key = candidate_key(geek_id, c.get('job_name', ''))
+            stable_key = candidate_record_key(c)
+            legacy_key = candidate_key(geek_id, c.get('job_name', ''))
+            key = aliases.get(stable_key) or aliases.get(legacy_key) or stable_key
             if key not in seen:
                 seen[key] = dict(c)  # 浅拷贝，避免修改调用方的输入数据
             else:
@@ -769,6 +829,8 @@ def _dedupe_candidates(candidates_all: list[dict[str, Any]]) -> list[dict[str, A
                     seen[key] = c
                 else:
                     _merge_manual_fields(old_c, c)
+            aliases[stable_key] = key
+            aliases[legacy_key] = key
 
     unique_candidates = list(seen.values())
 

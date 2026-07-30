@@ -70,8 +70,9 @@ def test_queue_persists_intent_without_candidate_profile():
         save_contact_queue([item], path)
 
         payload = json.loads(path.read_text(encoding="utf-8"))
-        assert payload["version"] == 1
+        assert payload["version"] == 2
         assert payload["items"][0]["geek_id"] == "g1"
+        assert payload["items"][0]["job_uuid"] == ""
         assert "candidate" not in payload["items"][0]
         assert "private resume text" not in path.read_text(encoding="utf-8")
 
@@ -159,7 +160,7 @@ def test_queue_load_recovers_valid_backup_after_corruption():
         restored = load_contact_queue([_candidate()], path)
 
         assert len(restored) == 1
-        assert json.loads(path.read_text(encoding="utf-8"))["version"] == 1
+        assert json.loads(path.read_text(encoding="utf-8"))["version"] == 2
 
 
 def test_queue_save_preserves_good_backup_when_primary_is_corrupt():
@@ -177,3 +178,52 @@ def test_queue_save_preserves_good_backup_when_primary_is_corrupt():
 
         assert backup.read_text(encoding="utf-8") == expected_backup
         assert json.loads(path.read_text(encoding="utf-8"))["items"][0]["geek_id"] == "g1"
+
+
+def test_queue_uses_stable_job_id_across_display_name_change():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "contact_queue.json"
+        job_uuid = "d8ea0e21-a53c-41ec-8869-6b370ed70a95"
+        original = _candidate(
+            job_name="Java 工程师",
+            job_uuid=job_uuid,
+        )
+        save_contact_queue([build_contact_queue_item(original)], path)
+        renamed = _candidate(
+            job_name="高级 Java 工程师",
+            job_uuid=job_uuid,
+        )
+
+        restored = load_contact_queue([renamed], path)
+
+        assert len(restored) == 1
+        assert restored[0]["candidate"] is renamed
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["items"][0]["job_uuid"] == job_uuid
+
+
+def test_legacy_queue_still_binds_candidate_with_new_stable_id():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "contact_queue.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "items": [{
+                        "queue_id": "q1",
+                        "geek_id": "g1",
+                        "job_name": "JavaEngineer",
+                        "status": "待发送",
+                    }],
+                }
+            ),
+            encoding="utf-8",
+        )
+        latest = _candidate(
+            job_uuid="d8ea0e21-a53c-41ec-8869-6b370ed70a95",
+        )
+
+        restored = load_contact_queue([latest], path)
+
+        assert len(restored) == 1
+        assert restored[0]["candidate"] is latest

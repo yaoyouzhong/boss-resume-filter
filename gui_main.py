@@ -104,6 +104,7 @@ from job_config_diagnostics import (
     summarize_job_config_diagnostics,
 )
 from job_config_store import load_job_config_snapshot, save_job_config_snapshot
+from data_schema import legacy_job_uuid, new_job_uuid, normalize_job_uuid
 from job_identity import job_names_equal, normalize_job_name
 from constants import (
     API_CANDIDATE_LIMIT_DEFAULT,
@@ -13385,23 +13386,53 @@ class BossFilterGUI:
             return False
 
         # 检查是否已存在相同（规范化后）的岗位
-        existing_key_to_delete = None
+        loaded_key = str(getattr(self, "_job_form_loaded_name", "") or "")
+        if loaded_key not in self.job_rules:
+            loaded_key = ""
+        matching_key = None
         for key in self.job_rules.keys():
             if job_names_equal(key, normalized_job_name):
-                existing_key_to_delete = key
+                matching_key = key
                 break
 
-        if existing_key_to_delete and existing_key_to_delete != normalized_job_name:
-            if messagebox.askyesno("岗位已存在", f"检测到重复岗位：'{existing_key_to_delete}'\n是否覆盖更新？"):
-                pass
-            else:
+        if loaded_key and matching_key and matching_key != loaded_key:
+            messagebox.showwarning(
+                "岗位名称冲突",
+                f"“{normalized_job_name}”已经属于另一个岗位。\n"
+                "为避免历史候选人错误合并，请换一个名称。",
+                parent=self.root,
+            )
+            return False
+
+        if (
+            not loaded_key
+            and matching_key
+            and matching_key != normalized_job_name
+        ):
+            if not messagebox.askyesno(
+                "岗位已存在",
+                f"检测到重复岗位：'{matching_key}'\n是否覆盖更新？",
+                parent=self.root,
+            ):
                 return False
 
         if not self._confirm_job_config_diagnostics(normalized_job_name, rule):
             return False
 
-        if existing_key_to_delete and existing_key_to_delete != normalized_job_name:
-            del self.job_rules[existing_key_to_delete]
+        identity_source_key = loaded_key or matching_key
+        identity_source = (
+            self.job_rules.get(identity_source_key, {})
+            if identity_source_key
+            else {}
+        )
+        stable_id = normalize_job_uuid(identity_source.get("job_uuid"))
+        if not stable_id and identity_source_key:
+            stable_id = legacy_job_uuid(identity_source_key)
+        rule["job_uuid"] = stable_id or new_job_uuid()
+
+        key_to_delete = loaded_key or matching_key
+        if key_to_delete and key_to_delete != normalized_job_name:
+            del self.job_rules[key_to_delete]
 
         self.job_rules[normalized_job_name] = rule
 

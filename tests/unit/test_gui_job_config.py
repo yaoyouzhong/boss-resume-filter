@@ -1089,6 +1089,51 @@ def test_save_current_job_keeps_ai_preferred_keywords_as_preferred():
     rule = gui.job_rules["Python 工程师"]
     assert rule["keywords"] == [{"name": "Python", "weight": 2}]
     assert rule["preferred_keywords"] == [{"name": "证券行业", "bonus": 2}]
+    assert rule["job_uuid"]
+
+
+def test_save_current_job_rename_preserves_stable_job_id():
+    stable_id = "d8ea0e21-a53c-41ec-8869-6b370ed70a95"
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.job_name_var = _FakeVar("高级 Java 工程师")
+    gui.min_exp_var = _FakeVar("3")
+    gui.max_age_var = _FakeVar("")
+    gui.edu_var = _FakeVar("本科")
+    gui.work_location_var = _FakeVar("")
+    gui.salary_min_var = _FakeVar("")
+    gui.salary_max_var = _FakeVar("")
+    gui.skills_data = [{"name": "Java", "weight": 2, "source": "解析"}]
+    gui.required_conditions_data = []
+    gui.job_rules = {
+        "Java 工程师": {
+            "job_uuid": stable_id,
+            "min_exp": 3,
+        }
+    }
+    gui._job_form_loaded_name = "Java 工程师"
+    gui.config_job_combo = _FakeCombo()
+    gui._job_step_active = -1
+    gui._hide_save_hint = Mock()
+    gui._hide_job_step_bar = Mock()
+    gui._show_btn_add_hint = Mock()
+    gui._get_requirement_text = Mock(return_value="原始需求")
+    gui._confirm_job_config_diagnostics = Mock(return_value=True)
+    gui._remember_run_job_selection = Mock()
+    gui._set_job_form_baseline = Mock()
+    gui.save_config = Mock()
+
+    with (
+        patch("gui_main.messagebox.showinfo"),
+        patch("gui_main.messagebox.showwarning") as showwarning,
+    ):
+        assert gui.save_current_job() is True
+
+    showwarning.assert_not_called()
+    assert "Java 工程师" not in gui.job_rules
+    assert (
+        gui.job_rules["高级 Java 工程师"]["job_uuid"]
+        == stable_id
+    )
 
 
 def test_save_current_job_strips_required_condition_evidence_metadata():
@@ -8295,7 +8340,10 @@ def test_save_ai_eval_results_only_updates_the_evaluated_job_record():
         assert saved[0]["job_name"] == "Java"
         assert saved[0]["match_score"] == 80
         assert saved[0]["llm_evaluated"] is True
-        assert saved[1] == disk_candidates[1]
+        assert saved[1] == {
+            **disk_candidates[1],
+            "schema_version": 2,
+        }
         assert gui.all_candidates[0]["match_score"] == 80
         assert gui.all_candidates[1] == disk_candidates[1]
 

@@ -2518,6 +2518,7 @@ def test_auto_greet_skips_manual_review_candidates():
 
     job_info = {
         "job_id": "job-risk",
+        "job_uuid": "d8ea0e21-a53c-41ec-8869-6b370ed70a95",
         "job_name": "Java 工程师",
         "rule_key": "java",
         "rule": {
@@ -2550,6 +2551,10 @@ def test_auto_greet_skips_manual_review_candidates():
         )
 
     assert len(result) == 1
+    assert (
+        result[0]["job_uuid"]
+        == "d8ea0e21-a53c-41ec-8869-6b370ed70a95"
+    )
     assert result[0]["manual_review_required"] is True
     assert result[0]["greet_sent"] is False
     mock_greet.assert_not_called()
@@ -3542,7 +3547,12 @@ def test_save_candidates_all_accepts_explicit_path():
         with open(target, "r", encoding="utf-8") as f:
             saved = json.load(f)
 
-    assert saved == [{"geek_id": "g1", "job_name": "Java", "match_score": 70}]
+    assert saved == [{
+        "geek_id": "g1",
+        "job_name": "Java",
+        "match_score": 70,
+        "schema_version": 2,
+    }]
 
 
 # ========== load_job_config ==========
