@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import os
 import sys
 from pathlib import Path
 
@@ -13,6 +14,9 @@ import tkinter as tk
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "docs" / "assets" / "user-guide"
 sys.path.insert(0, str(ROOT))
+os.environ["BOSS_RESUME_FILTER_DISABLE_DATA_MIGRATION"] = "1"
+os.environ["BOSS_RESUME_FILTER_DISABLE_GUARD_PERSISTENCE"] = "1"
+os.environ["BOSS_RESUME_FILTER_DISABLE_STARTUP_UPDATE"] = "1"
 
 import gui_main
 
@@ -333,9 +337,10 @@ def main() -> None:
 
     root = tk.Tk()
     root.withdraw()
-    gui_main.updater.auto_check_on_startup = lambda *args, **kwargs: None
-    gui_main.updater.mark_update_success_and_cleanup = lambda *args, **kwargs: None
     app = gui_main.BossFilterGUI(root)
+    app._start_browser_auto_check = lambda: None
+    app._stop_browser_auto_check = lambda: None
+    app._schedule_api_key_resolution = lambda: None
     gui_main._show_main_window_centered(root, monitor_area)
     root.lift()
     root.attributes("-topmost", True)

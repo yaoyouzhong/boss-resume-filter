@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import sys
+import os
 import tkinter as tk
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+os.environ["BOSS_RESUME_FILTER_DISABLE_DATA_MIGRATION"] = "1"
+os.environ["BOSS_RESUME_FILTER_DISABLE_GUARD_PERSISTENCE"] = "1"
+os.environ["BOSS_RESUME_FILTER_DISABLE_STARTUP_UPDATE"] = "1"
 
 import gui_main
 
@@ -27,6 +31,9 @@ def main() -> int:
     root.withdraw()
     try:
         app = gui_main.BossFilterGUI(root)
+        app._start_browser_auto_check = lambda: None
+        app._stop_browser_auto_check = lambda: None
+        app._schedule_api_key_resolution = lambda: None
         for name, page_attr, creator_name, show_name in PAGES:
             if getattr(app, page_attr) is None:
                 getattr(app, creator_name)()

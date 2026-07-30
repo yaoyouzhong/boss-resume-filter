@@ -356,6 +356,7 @@ SENSITIVE_TRACKED_PATHS = [
 SOURCE_CHECK_FILES = [
     "bossmaster.py",
     "gui_main.py",
+    "ui_layout.py",
     "filtering.py",
     "storage.py",
     "contact_queue.py",
@@ -827,6 +828,7 @@ def _check_changelog_updated():
         "llm_eval.py", "ai_adapter.py", "job_ai_parser.py",
         "job_config_diagnostics.py", "doc_parser.py", "security.py", "updater.py", "icons.py",
         "constants.py", "paths.py", "subprocess_utils.py", "selectors.json", "ui_config.json",
+        "ui_layout.py",
         "job_config.json",
     ]
     result = subprocess.run(
@@ -3688,7 +3690,7 @@ def _needs_cross_platform_rebuild(changed_files):
         'diagnostic_package.py',
         'job_config_store.py', 'resume_store.py',
         'doc_parser.py', 'security.py', 'constants.py',
-        'paths.py', 'icons.py', 'updater.py', 'subprocess_utils.py', 'selectors.json',
+        'paths.py', 'icons.py', 'updater.py', 'subprocess_utils.py', 'ui_layout.py', 'selectors.json',
         'job_config.json', 'api_config.json', 'ui_config.json', 'requirements.txt',
         'build.py',  # 打包脚本本身的变化影响产物内容
     }

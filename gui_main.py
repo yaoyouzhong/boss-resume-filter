@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 
 import icons
 import ui_theme
+from ui_layout import result_display_columns
 from subprocess_utils import hidden_subprocess
 
 subprocess = hidden_subprocess(subprocess)
@@ -1169,7 +1170,12 @@ class BossFilterGUI:
             self._setup_global_shortcuts()
 
         # 更新模块含 requests 等重型依赖，延迟并在后台导入，避免阻塞 GUI 冷启动。
-        if not standalone_education:
+        if (
+            not standalone_education
+            and os.environ.get(
+                "BOSS_RESUME_FILTER_DISABLE_STARTUP_UPDATE"
+            ) != "1"
+        ):
             self.root.after(12000, self._load_startup_updater)
 
     def _load_startup_updater(self):
@@ -2296,18 +2302,14 @@ class BossFilterGUI:
         if not hasattr(self, 'result_tree'):
             return
 
-        base_columns = ("name", "exp", "salary", "skills", "score", "ai_eval", "level", "status")
-        extra_columns = ("education", "age", "job_status")
-        wide_columns = ("school", "company")
         try:
             tree_width = int(self.result_tree.winfo_width())
         except (tk.TclError, ValueError):
             tree_width = 0
-        display_columns = base_columns
-        if tree_width >= 1100:
-            display_columns += extra_columns
-        if self._is_window_maximized() and tree_width >= 1250:
-            display_columns += wide_columns
+        display_columns = result_display_columns(
+            tree_width,
+            maximized=self._is_window_maximized(),
+        )
         self._apply_result_tree_column_widths(display_columns)
         if tuple(self.result_tree.cget("displaycolumns")) != display_columns:
             self.result_tree.configure(displaycolumns=display_columns)
