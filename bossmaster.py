@@ -67,6 +67,8 @@ from filtering import (
     parse_experience_years,
 )
 from candidate_workflow import candidate_greet_skip_reason
+from job_config_store import load_job_config_snapshot
+from job_identity import normalize_job_name
 from paths import BASE_DIR, SELECTORS_PATH, CONFIG_PATH, CANDIDATES_PATH, CANDIDATES_XLSX_PATH
 from storage import (
     build_blacklist_index,
@@ -80,6 +82,7 @@ from storage import (
     load_candidates_all,
     merge_candidate_business_state,
     merge_candidates_all,
+    mutate_candidates_all,
     persist_candidate_greeting_pending,
     persist_candidate_greeted,
     save_candidates_all,
@@ -422,46 +425,42 @@ def load_job_config() -> tuple[dict[str, Any], dict[str, Any]]:
     """
     default_rule = None
 
-    if os.path.exists(CONFIG_PATH):
+    if os.path.exists(CONFIG_PATH) or os.path.exists(f"{CONFIG_PATH}.bak"):
         try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                config = json.load(f)
+            config = load_job_config_snapshot(CONFIG_PATH)
 
-                # 支持新旧两种格式
-                if "jobs" in config:
-                    job_requirements = config["jobs"]
-                else:
-                    job_requirements = config.get("job_requirements", {})
+            # 支持新旧两种格式
+            if "jobs" in config:
+                job_requirements = dict(config["jobs"])
+            else:
+                job_requirements = dict(config.get("job_requirements", {}))
 
-                # 提取 default 作为默认规则（如果存在）
-                if "default" in job_requirements:
-                    default_rule = job_requirements.pop("default")
+            # 提取 default 作为默认规则（如果存在）
+            if "default" in job_requirements:
+                default_rule = job_requirements.pop("default")
 
-                # 处理岗位名称去空格 + keywords 去重
-                new_job_requirements = {}
-                for job_name, rule in job_requirements.items():
-                    # 岗位名称去除空格
-                    clean_job_name = job_name.replace(" ", "")
+            # 处理岗位名称去空白 + keywords 去重
+            new_job_requirements = {}
+            for job_name, rule in job_requirements.items():
+                clean_job_name = normalize_job_name(job_name)
 
-                    if isinstance(rule, dict) and rule.get('keywords'):
-                        seen = set()
-                        unique_keywords = []
-                        for kw in rule['keywords']:
-                            # 支持两种格式：字符串 或 {"name": xxx, "weight": xxx}
-                            if isinstance(kw, dict):
-                                kw_lower = kw.get('name', '').lower()
-                            else:
-                                kw_lower = kw.lower()
-                            if kw_lower not in seen:
-                                seen.add(kw_lower)
-                                unique_keywords.append(kw)
-                        rule['keywords'] = unique_keywords
+                if isinstance(rule, dict) and rule.get('keywords'):
+                    seen = set()
+                    unique_keywords = []
+                    for kw in rule['keywords']:
+                        # 支持两种格式：字符串 或 {"name": xxx, "weight": xxx}
+                        if isinstance(kw, dict):
+                            kw_lower = kw.get('name', '').lower()
+                        else:
+                            kw_lower = kw.lower()
+                        if kw_lower not in seen:
+                            seen.add(kw_lower)
+                            unique_keywords.append(kw)
+                    rule['keywords'] = unique_keywords
 
-                    new_job_requirements[clean_job_name] = rule
+                new_job_requirements[clean_job_name] = rule
 
-                job_requirements = new_job_requirements
-
-                return job_requirements, default_rule
+            return new_job_requirements, default_rule
         except Exception as e:
             print(f"读取配置文件出错：{e}")
 
@@ -480,7 +479,7 @@ JOB_RULES = load_job_config()
 
 def _normalize_job_name_for_match(job_name: str) -> str:
     """Normalize job names for selection matching while preserving configured keys."""
-    return re.sub(r'\s+', '', job_name or '').casefold()
+    return normalize_job_name(job_name).casefold()
 
 
 def _resolve_job_name(requested_job: str, job_rules: dict[str, Any]) -> str | None:
@@ -2696,7 +2695,7 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
         stop_event: threading.Event，设位时立即停止扫描
         captcha_callback: 验证码回调 callable(stage, detail)
         notice_callback: GUI 提示回调 callable(title, message)
-        max_candidates: API 直调补全预算，用于推导最多补全页数；0 表示使用保守默认值
+        max_candidates: API 直调补全预算，用于推导最多补全页数；0 表示禁止 API 直调
         use_api_extraction: 兼容旧调用；False 等价于 extraction_mode="dom"
         extraction_mode: 提取模式，api=listener+refresh+DOM+API补全，listener=listener+refresh+DOM补全，dom=仅DOM滚动
         scan_stats: 可选字典，写入扫描完整性、停止原因和轮次统计
@@ -2717,6 +2716,13 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
         extraction_mode = "api" if use_api_extraction else "dom"
     api_enrichment_enabled = extraction_mode == "api"
     listener_enabled = extraction_mode in {"api", "listener"}
+    if max_candidates is None:
+        api_candidate_budget = API_CANDIDATE_LIMIT_DEFAULT
+    else:
+        try:
+            api_candidate_budget = max(0, int(max_candidates))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_candidates 必须是非负整数或 None") from exc
 
     # DOM 是候选人来源；listener/API 只能按 geek_id 补全已出现的候选人。
     api_listener = _start_recommend_api_listener(page) if listener_enabled else None
@@ -3092,6 +3098,7 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
     if (
         scan_status != "interrupted"
         and api_enrichment_enabled
+        and api_candidate_budget > 0
         and not api_chain_stopped
         and all_candidates
     ):
@@ -3106,10 +3113,7 @@ def extract_candidates_by_comprehensive_analysis(page, max_rounds=MAX_ROUNDS_DEF
             if not pagination:
                 pagination = _build_recommend_api_pagination_from_page(target)
             if pagination:
-                if max_candidates and max_candidates > 0:
-                    page_limit = min(20, max(1, (max_candidates + 19) // 20))
-                else:
-                    page_limit = 5
+                page_limit = min(20, max(1, (api_candidate_budget + 19) // 20))
                 print(f"API 直调仅补全 DOM 已出现候选人，最多 {page_limit} 页")
                 consecutive_misses = 0
                 api_limit_reached_with_hits = False
@@ -4680,7 +4684,7 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
     # 点对点模式
     point_to_point_mode = bool(greet_names_list)
 
-    normalized_job_name = job_name.replace(" ", "")
+    normalized_job_name = normalize_job_name(job_name)
 
     if point_to_point_mode:
         print(f"开始智能扫描候选人... (岗位：{job_name}, 点对点打招呼：{greet_names_list}, 轮次：{max_rounds})")
@@ -5720,25 +5724,33 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
 
     # 清空 candidates_all.json（如果指定 --clear）
     if args.clear and os.path.exists(CANDIDATES_PATH):
-        candidates_all = load_candidates_all()
-        blacklisted = [c for c in candidates_all if c.get('blacklisted')]
-        if args.keep_greeted:
-            # 保留已打招呼和已屏蔽的候选人
-            kept = [c for c in candidates_all if c.get('greet_sent') or c.get('blacklisted')]
-            kept_count = len(kept)
-            removed = len(candidates_all) - kept_count
-            if kept_count > 0:
-                save_candidates_all(kept)
+        clear_outcome = {"kept": 0, "removed": 0, "blacklisted": 0}
+
+        def clear_candidates_snapshot(candidates):
+            blacklisted = [c for c in candidates if c.get('blacklisted')]
+            if args.keep_greeted:
+                kept = [
+                    c for c in candidates
+                    if c.get('greet_sent') or c.get('blacklisted')
+                ]
             else:
-                os.remove(CANDIDATES_PATH)
+                kept = blacklisted
+            clear_outcome["kept"] = len(kept)
+            clear_outcome["removed"] = len(candidates) - len(kept)
+            clear_outcome["blacklisted"] = len(blacklisted)
+            candidates[:] = kept
+            return clear_outcome["removed"]
+
+        mutate_candidates_all(clear_candidates_snapshot)
+        kept_count = clear_outcome["kept"]
+        removed = clear_outcome["removed"]
+        if args.keep_greeted:
             print(f"已清空 candidates_all.json（保留 {kept_count} 条已打招呼/黑名单记录，删除 {removed} 条）")
         else:
-            removed = len(candidates_all) - len(blacklisted)
-            if blacklisted:
-                save_candidates_all(blacklisted)
-                print(f"已清空 candidates_all.json（保留 {len(blacklisted)} 条黑名单记录，删除 {removed} 条）")
+            blacklist_count = clear_outcome["blacklisted"]
+            if blacklist_count:
+                print(f"已清空 candidates_all.json（保留 {blacklist_count} 条黑名单记录，删除 {removed} 条）")
             else:
-                os.remove(CANDIDATES_PATH)
                 print("已清空 candidates_all.json")
 
     # 补打招呼模式：直接处理，不需要打开浏览器扫描

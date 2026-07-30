@@ -183,8 +183,8 @@ def capture_widget(widget: tk.Widget, filename: str) -> None:
         widget.attributes("-topmost", True)
     except tk.TclError:
         pass
-    # v2.23 uses short after() callbacks for the initial reveal, page-width
-    # adjustment, and deferred data refresh.  Keep pumping Tk while the page
+    # The GUI uses short after() callbacks for the initial reveal, page-width
+    # adjustment, and deferred data refresh. Keep pumping Tk while the page
     # settles; a plain sleep blocks those callbacks and captures the blue
     # startup curtain instead of the requested page.
     deadline = time.monotonic() + 0.8
@@ -254,6 +254,30 @@ def capture_dialog(root: tk.Tk, title: str, filename: str) -> None:
     raise RuntimeError(f"Dialog not found: {title}")
 
 
+def crop_maximized_result_columns(root: tk.Tk, tree: tk.Widget, filename: str) -> None:
+    """Crop the 4K capture to the result table's readable right-side columns."""
+    image_path = OUT_DIR / filename
+    image = Image.open(image_path)
+    root_x = root.winfo_rootx()
+    root_y = root.winfo_rooty()
+    tree_x = tree.winfo_rootx() - root_x
+    tree_y = tree.winfo_rooty() - root_y
+    tree_right = tree_x + tree.winfo_width()
+    items = tree.get_children()
+    if items:
+        _, row_y, _, row_height = tree.bbox(items[-1])
+        tree_bottom = tree_y + row_y + row_height + 16
+    else:
+        tree_bottom = tree_y + min(tree.winfo_height(), 520)
+    crop_box = (
+        max(tree_x, tree_right - 1600),
+        max(0, tree_y),
+        min(image.width, tree_right),
+        min(image.height, tree_bottom),
+    )
+    image.crop(crop_box).save(image_path)
+
+
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     DEMO_DATA_PATH.write_text(json.dumps(build_demo_candidates(), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -300,11 +324,29 @@ def main() -> None:
     app.show_page_result()
     app.refresh_results()
     capture_widget(root, "05-results.png")
+    normal_geometry = root.geometry()
+    root.state("zoomed")
+    root.update()
+    app._update_result_tree_columns()
+    capture_widget(root, "05-results-maximized.png")
+    crop_maximized_result_columns(root, app.result_tree, "05-results-maximized.png")
+    root.state("normal")
+    root.geometry(normal_geometry)
+    root.update()
 
     app.show_daily_candidate_actions()
     capture_dialog(root, "今日待办", "10-today-tasks.png")
 
-    app._open_candidate_review_workbench(app.result_tree_data[0], candidates=app.result_tree_data)
+    review_candidate = next(
+        candidate
+        for candidate in app.result_tree_data
+        if 55 <= int(candidate.get("match_score", 0)) < 65
+    )
+    review_candidate["qualification_status"] = "manual_review"
+    review_candidate["manual_review_required"] = True
+    review_candidate["qualification_reasons"] = ["学历形式待确认"]
+    review_candidate["qualification_evidence"] = ["学历层级为本科，学历形式需人工核实。"]
+    app._open_candidate_review_workbench(review_candidate, candidates=app.result_tree_data)
     capture_dialog(root, "候选人查看与复核", "11-review-workbench.png")
     app.candidate_review_window = None
 
@@ -338,7 +380,7 @@ def main() -> None:
         root,
         {
             "current": gui_main.__version__,
-            "latest": "2.24",
+            "latest": "2.25",
             "update_type": "version",
             "changelog_body": (
                 "### 新增功能\n\n"

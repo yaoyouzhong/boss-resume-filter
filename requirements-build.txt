@@ -1,4 +1,5 @@
 -r requirements.txt
+-r requirements-release.txt
 
 # CI 打包工具；dmgbuild 仅在 macOS 安装
 pyinstaller

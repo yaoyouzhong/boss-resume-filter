@@ -8,14 +8,16 @@ import shutil
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional, TypeVar
 
 from candidate_workflow import default_next_followup_at
 from constants import SCORE_THRESHOLD_PASS, SCORE_THRESHOLD_RECOMMEND
+from job_identity import normalize_job_name
 
 
 logger = logging.getLogger(__name__)
 _CANDIDATES_FILE_LOCK = threading.RLock()
+_MutationResult = TypeVar("_MutationResult")
 
 CANDIDATES_FILE = "candidates_all.json"
 _FEEDBACK_FIELDS = (
@@ -37,6 +39,8 @@ _FEEDBACK_FIELDS = (
     'qualification_reasons',
     'qualification_evidence',
     'resume_file',
+    'resume_artifact_id',
+    'resume_original_name',
     'resume_imported_at',
     'resume_eval_adjustment',
     'resume_eval_reason',
@@ -83,40 +87,86 @@ def _candidate_paths(path: Optional[str] = None) -> tuple[Path, Path]:
     return candidate_path, Path(str(candidate_path) + ".bak")
 
 
+def _read_candidate_file(candidate_path: Path) -> list[dict[str, Any]]:
+    """Read and validate one candidate snapshot."""
+    with open(candidate_path, 'r', encoding='utf-8') as f:
+        loaded = json.load(f)
+    if not isinstance(loaded, list) or any(not isinstance(item, dict) for item in loaded):
+        raise ValueError("候选人数据必须是对象列表")
+    return loaded
+
+
+def _sync_file(file_obj: Any) -> None:
+    """Flush one newly written snapshot before it becomes authoritative."""
+    file_obj.flush()
+    os.fsync(file_obj.fileno())
+
+
+def _sync_parent_directory(path: Path) -> None:
+    """Persist directory metadata after an atomic replace on POSIX."""
+    if os.name == "nt":
+        return
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _atomic_copy(source: Path, target: Path) -> None:
+    """Copy one validated snapshot without exposing a partial destination."""
+    tmp_target = Path(str(target) + ".tmp")
+    try:
+        shutil.copy2(source, tmp_target)
+        with open(tmp_target, "r+b") as copied:
+            os.fsync(copied.fileno())
+        os.replace(tmp_target, target)
+        _sync_parent_directory(target)
+    finally:
+        if tmp_target.exists():
+            try:
+                tmp_target.unlink()
+            except OSError:
+                pass
+
+
+def _load_candidates_all_unlocked(path: Optional[str] = None) -> list[dict[str, Any]]:
+    candidate_path, backup_path = _candidate_paths(path)
+    if candidate_path.exists():
+        try:
+            return _read_candidate_file(candidate_path)
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            print(f"加载候选人数据失败：{e}")
+            restored = _load_candidates_backup(path)
+            if restored is not None:
+                try:
+                    _atomic_copy(backup_path, candidate_path)
+                    print(f"已从 {backup_path} 恢复候选人数据")
+                except OSError as restore_error:
+                    error_msg = f"候选人数据文件损坏且备份恢复失败：{restore_error}"
+                    print(error_msg)
+                    raise RuntimeError(error_msg) from restore_error
+                return restored
+            error_msg = "候选人数据文件损坏且备份不存在或损坏，数据可能已丢失"
+            print(error_msg)
+            raise RuntimeError(error_msg)
+    restored = _load_candidates_backup(path)
+    if restored is not None:
+        try:
+            _atomic_copy(backup_path, candidate_path)
+            print(f"主文件缺失，已从 {backup_path} 恢复候选人数据")
+        except OSError as restore_error:
+            error_msg = f"主文件缺失且备份恢复失败：{restore_error}"
+            print(error_msg)
+            raise RuntimeError(error_msg) from restore_error
+        return restored
+    return []
+
+
 def load_candidates_all(path: Optional[str] = None) -> list[dict[str, Any]]:
-    """加载候选人数据；主文件损坏时自动尝试从 .bak 恢复。恢复失败时抛出异常，避免静默丢失数据。"""
+    """加载候选人数据；主文件损坏时自动尝试从已验证的 .bak 恢复。"""
     with _CANDIDATES_FILE_LOCK:
-        candidate_path, backup_path = _candidate_paths(path)
-        if candidate_path.exists():
-            try:
-                with open(candidate_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, OSError) as e:
-                print(f"加载候选人数据失败：{e}")
-                restored = _load_candidates_backup(path)
-                if restored is not None:
-                    try:
-                        shutil.copy2(backup_path, candidate_path)
-                        print(f"已从 {backup_path} 恢复候选人数据")
-                    except OSError as restore_error:
-                        error_msg = f"候选人数据文件损坏且备份恢复失败：{restore_error}"
-                        print(error_msg)
-                        raise RuntimeError(error_msg) from restore_error
-                    return restored
-                error_msg = f"候选人数据文件损坏且备份不存在或损坏，数据可能已丢失"
-                print(error_msg)
-                raise RuntimeError(error_msg)
-        restored = _load_candidates_backup(path)
-        if restored is not None:
-            try:
-                shutil.copy2(backup_path, candidate_path)
-                print(f"主文件缺失，已从 {backup_path} 恢复候选人数据")
-            except OSError as restore_error:
-                error_msg = f"主文件缺失且备份恢复失败：{restore_error}"
-                print(error_msg)
-                raise RuntimeError(error_msg) from restore_error
-            return restored
-        return []
+        return _load_candidates_all_unlocked(path)
 
 
 def _load_candidates_backup(path: Optional[str] = None) -> Optional[list[dict[str, Any]]]:
@@ -125,9 +175,8 @@ def _load_candidates_backup(path: Optional[str] = None) -> Optional[list[dict[st
     if not backup_path.exists():
         return None
     try:
-        with open(backup_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
+        return _read_candidate_file(backup_path)
+    except (json.JSONDecodeError, OSError, ValueError) as e:
         print(f"加载候选人备份失败：{e}")
         return None
 
@@ -139,7 +188,7 @@ def get_greeted_geek_ids(candidates_all: list[dict[str, Any]]) -> set[str]:
 
 def candidate_key(geek_id: Any, job_name: str) -> tuple[str, str]:
     """Normalize a (geek_id, job_name) composite key for dedup and lookup."""
-    return (str(geek_id), str(job_name).replace(' ', ''))
+    return (str(geek_id), normalize_job_name(job_name))
 
 
 def get_first_seen(candidate: dict[str, Any], fallback: str = '') -> str:
@@ -210,54 +259,174 @@ def _is_current_scan_pending(candidate: dict[str, Any]) -> bool:
     )
 
 
-def save_candidates_all(candidates_all: list[dict[str, Any]], path: Optional[str] = None) -> None:
-    """保存 candidates_all.json，支持去重、中断恢复和 .bak 备份。"""
-    with _CANDIDATES_FILE_LOCK:
-        candidate_path, backup_path = _candidate_paths(path)
-        unique_candidates = _dedupe_candidates(candidates_all)
+def _prepare_candidates_for_save(
+    candidates_all: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Normalize and filter one candidate snapshot before persistence."""
+    unique_candidates = _dedupe_candidates(candidates_all)
 
-        # 兼容旧数据：batch_timestamp 继续表示首次发现时间，避免重复扫描
-        # 把历史候选人重新计入”今天/本周”统计。仅在缺少字段时回填。
-        for candidate in unique_candidates:
-            _normalize_candidate_state_fields(candidate)
-            first_seen_at = get_first_seen(candidate)
-            if first_seen_at:
-                candidate['first_seen_at'] = first_seen_at
-                candidate['batch_timestamp'] = first_seen_at
-            if not candidate.get('last_evaluated_at') and candidate.get('batch_timestamp'):
-                candidate['last_evaluated_at'] = candidate['batch_timestamp']
+    # 兼容旧数据：batch_timestamp 继续表示首次发现时间，避免重复扫描
+    # 把历史候选人重新计入”今天/本周”统计。仅在缺少字段时回填。
+    for candidate in unique_candidates:
+        _normalize_candidate_state_fields(candidate)
+        first_seen_at = get_first_seen(candidate)
+        if first_seen_at:
+            candidate['first_seen_at'] = first_seen_at
+            candidate['batch_timestamp'] = first_seen_at
+        if not candidate.get('last_evaluated_at') and candidate.get('batch_timestamp'):
+            candidate['last_evaluated_at'] = candidate['batch_timestamp']
 
-        # 普通首次淘汰只进入扫描汇总；仅保留有复核或业务价值的淘汰记录。
-        retained_candidates = []
-        for candidate in unique_candidates:
-            if candidate.get('qualification_status') == 'rejected':
-                if not should_retain_rejected_candidate(candidate):
-                    continue
-                candidate = dict(candidate)
-                if not candidate.get('review_rejected_at'):
-                    candidate['match_score'] = 0
-                candidate['recommend_level'] = '未通过'
-                retained_candidates.append(candidate)
+    # 普通首次淘汰只进入扫描汇总；仅保留有复核或业务价值的淘汰记录。
+    retained_candidates = []
+    for candidate in unique_candidates:
+        if candidate.get('qualification_status') == 'rejected':
+            if not should_retain_rejected_candidate(candidate):
                 continue
-            if (
-                candidate.get('match_score', 0) >= SCORE_THRESHOLD_PASS
-                or _has_candidate_history(candidate)
-                or candidate.get('llm_evaluated')
-                or candidate.get('llm_error')
-            ):
-                retained_candidates.append(candidate)
-        unique_candidates = retained_candidates
+            candidate = dict(candidate)
+            if not candidate.get('review_rejected_at'):
+                candidate['match_score'] = 0
+            candidate['recommend_level'] = '未通过'
+            retained_candidates.append(candidate)
+            continue
+        if (
+            candidate.get('match_score', 0) >= SCORE_THRESHOLD_PASS
+            or _has_candidate_history(candidate)
+            or candidate.get('llm_evaluated')
+            or candidate.get('llm_error')
+        ):
+            retained_candidates.append(candidate)
+    return retained_candidates
+
+
+def _save_candidates_all_unlocked(
+    candidates_all: list[dict[str, Any]],
+    path: Optional[str] = None,
+) -> None:
+    candidate_path, backup_path = _candidate_paths(path)
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    prepared_candidates = _prepare_candidates_for_save(candidates_all)
+    tmp_file = Path(str(candidate_path) + ".tmp")
+
+    try:
+        with open(tmp_file, 'w', encoding='utf-8') as f:
+            json.dump(prepared_candidates, f, ensure_ascii=False, indent=2)
+            _sync_file(f)
+        _read_candidate_file(tmp_file)
 
         if candidate_path.exists():
             try:
-                shutil.copy2(candidate_path, backup_path)
-            except OSError as e:
-                print(f"备份候选人数据失败：{e}")
+                _read_candidate_file(candidate_path)
+            except (json.JSONDecodeError, OSError, ValueError) as e:
+                print(f"当前候选人主文件无效，保留已有备份：{e}")
+            else:
+                try:
+                    _atomic_copy(candidate_path, backup_path)
+                except OSError as e:
+                    print(f"备份候选人数据失败：{e}")
 
-        tmp_file = Path(str(candidate_path) + ".tmp")
-        with open(tmp_file, 'w', encoding='utf-8') as f:
-            json.dump(unique_candidates, f, ensure_ascii=False, indent=2)
         os.replace(tmp_file, candidate_path)
+        _sync_parent_directory(candidate_path)
+    finally:
+        if tmp_file.exists():
+            try:
+                tmp_file.unlink()
+            except OSError:
+                pass
+
+
+def save_candidates_all(candidates_all: list[dict[str, Any]], path: Optional[str] = None) -> None:
+    """保存候选人快照；只轮换已验证备份并原子替换主文件。"""
+    with _CANDIDATES_FILE_LOCK:
+        _save_candidates_all_unlocked(candidates_all, path)
+
+
+def mutate_candidates_all(
+    mutator: Callable[[list[dict[str, Any]]], _MutationResult],
+    path: Optional[str] = None,
+) -> _MutationResult:
+    """在同一文件锁内完成读取、修改和保存。
+
+    ``mutator`` 必须返回真值表示数据发生变化；返回假值时不会写盘或轮换备份。
+    """
+    with _CANDIDATES_FILE_LOCK:
+        candidates = _load_candidates_all_unlocked(path)
+        result = mutator(candidates)
+        if result:
+            _save_candidates_all_unlocked(candidates, path)
+        return result
+
+
+def remove_candidates_all(
+    predicate: Callable[[dict[str, Any]], bool],
+    path: Optional[str] = None,
+) -> int:
+    """Remove matching records inside one repository transaction."""
+    def remove(candidates: list[dict[str, Any]]) -> int:
+        retained = [candidate for candidate in candidates if not predicate(candidate)]
+        removed = len(candidates) - len(retained)
+        if removed:
+            candidates[:] = retained
+        return removed
+
+    return mutate_candidates_all(remove, path)
+
+
+def update_candidate_records(
+    predicate: Callable[[dict[str, Any]], bool],
+    updater: Callable[[dict[str, Any]], None],
+    path: Optional[str] = None,
+    *,
+    update_all: bool = False,
+) -> int:
+    """Update matching records against the latest persisted snapshot."""
+    def update(candidates: list[dict[str, Any]]) -> int:
+        updated = 0
+        for candidate in candidates:
+            if not predicate(candidate):
+                continue
+            updater(candidate)
+            updated += 1
+            if not update_all:
+                break
+        return updated
+
+    return mutate_candidates_all(update, path)
+
+
+class CandidateRepository:
+    """Candidate persistence boundary used by GUI and background workflows."""
+
+    def __init__(self, path: Optional[str] = None):
+        self.path = path
+
+    def load(self) -> list[dict[str, Any]]:
+        return load_candidates_all(self.path)
+
+    def save(self, candidates: list[dict[str, Any]]) -> None:
+        save_candidates_all(candidates, self.path)
+
+    def mutate(
+        self,
+        mutator: Callable[[list[dict[str, Any]]], _MutationResult],
+    ) -> _MutationResult:
+        return mutate_candidates_all(mutator, self.path)
+
+    def remove(self, predicate: Callable[[dict[str, Any]], bool]) -> int:
+        return remove_candidates_all(predicate, self.path)
+
+    def update(
+        self,
+        predicate: Callable[[dict[str, Any]], bool],
+        updater: Callable[[dict[str, Any]], None],
+        *,
+        update_all: bool = False,
+    ) -> int:
+        return update_candidate_records(
+            predicate,
+            updater,
+            self.path,
+            update_all=update_all,
+        )
 
 
 def mark_candidate_greeted(
@@ -361,11 +530,11 @@ def merge_candidates_all(
                     refreshed_current.append(archived)
             current = refreshed_current
         if prune_pending_jobs:
-            normalized_jobs = {str(job).replace(' ', '') for job in prune_pending_jobs}
+            normalized_jobs = {normalize_job_name(job) for job in prune_pending_jobs}
             current = [
                 item for item in current
                 if not (
-                    str(item.get('job_name', '')).replace(' ', '') in normalized_jobs
+                    normalize_job_name(item.get('job_name')) in normalized_jobs
                     and _is_current_scan_pending(item)
                     and candidate_key(item.get('geek_id'), item.get('job_name', '')) not in incoming_keys
                 )
@@ -409,7 +578,7 @@ def resolve_candidate_greeting_confirmation(
 ) -> bool:
     """Persist the user's verification of an uncertain greeting result."""
     geek_id = str(candidate.get('geek_id') or '')
-    normalized_job = str(candidate.get('job_name') or '').replace(' ', '')
+    normalized_job = normalize_job_name(candidate.get('job_name'))
     if not geek_id:
         return False
 
@@ -418,7 +587,7 @@ def resolve_candidate_greeting_confirmation(
         target = next((
             item for item in candidates
             if str(item.get('geek_id') or '') == geek_id
-            and str(item.get('job_name') or '').replace(' ', '') == normalized_job
+            and normalize_job_name(item.get('job_name')) == normalized_job
         ), None)
         if target is None:
             return False
@@ -447,11 +616,11 @@ def update_candidate_greeted(
     """原子完成候选人读取、打招呼状态更新和保存。"""
     with _CANDIDATES_FILE_LOCK:
         candidates = load_candidates_all(path)
-        normalized_job = job_name.replace(" ", "")
+        normalized_job = normalize_job_name(job_name)
         for candidate in candidates:
             if (
                 candidate.get('geek_id') == geek_id
-                and candidate.get('job_name', '').replace(" ", "") == normalized_job
+                and normalize_job_name(candidate.get('job_name')) == normalized_job
             ):
                 mark_candidate_greeted(candidate, method)
                 save_candidates_all(candidates, path)

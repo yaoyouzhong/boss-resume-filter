@@ -6,11 +6,14 @@ import io
 import json
 import os
 import tempfile
+import threading
 
 from storage import (
+    CandidateRepository,
     _dedupe_candidates,
     build_blacklist_index,
     build_greeted_index,
+    candidate_key,
     get_greeted_geek_ids,
     is_already_greeted,
     is_recommended_candidate,
@@ -18,12 +21,20 @@ from storage import (
     mark_candidate_greeted,
     mark_candidate_not_greeted,
     merge_candidates_all,
+    mutate_candidates_all,
     persist_candidate_greeted,
     persist_candidate_greeting_pending,
     resolve_candidate_greeting_confirmation,
     save_candidates_all,
     update_candidate_greeted,
 )
+
+
+def test_candidate_key_uses_shared_unicode_whitespace_normalization():
+    assert candidate_key("g1", "高级 Java\t工程师\u00a0") == (
+        "g1",
+        "高级Java工程师",
+    )
 
 
 def test_resolve_greeting_confirmation_as_sent_clears_pending_and_marks_contacted():
@@ -1121,3 +1132,81 @@ def test_save_with_explicit_path_creates_backup():
         with open(bak, "r", encoding="utf-8") as f:
             backup = json.load(f)
         assert backup[0]["geek_id"] == "old"
+
+
+def test_save_preserves_valid_backup_when_current_main_is_corrupt():
+    """损坏主文件不能覆盖最后一份可恢复备份。"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        backup_data = [{"geek_id": "recoverable", "job_name": "Java"}]
+        with open(target, "w", encoding="utf-8") as f:
+            f.write("{broken")
+        with open(target + ".bak", "w", encoding="utf-8") as f:
+            json.dump(backup_data, f)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            save_candidates_all(
+                [{"geek_id": "new", "job_name": "Java", "match_score": 70}],
+                target,
+            )
+
+        with open(target + ".bak", "r", encoding="utf-8") as f:
+            assert json.load(f) == backup_data
+        assert load_candidates_all(target)[0]["geek_id"] == "new"
+
+
+def test_repository_mutations_keep_updates_from_concurrent_workers():
+    """两个后台操作必须基于最新快照依次提交，不能互相覆盖。"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        save_candidates_all(
+            [{"geek_id": "g1", "job_name": "Java", "match_score": 70}],
+            target,
+        )
+        first_entered = threading.Event()
+        release_first = threading.Event()
+
+        def first_mutation(candidates):
+            candidates[0]["feedback_status"] = "合适"
+            first_entered.set()
+            assert release_first.wait(timeout=2)
+            return True
+
+        def second_mutation(candidates):
+            candidates[0]["followup_status"] = "已回复"
+            return True
+
+        first = threading.Thread(
+            target=lambda: mutate_candidates_all(first_mutation, target)
+        )
+        second = threading.Thread(
+            target=lambda: mutate_candidates_all(second_mutation, target)
+        )
+        first.start()
+        assert first_entered.wait(timeout=2)
+        second.start()
+        release_first.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        saved = load_candidates_all(target)[0]
+        assert saved["feedback_status"] == "合适"
+        assert saved["followup_status"] == "已回复"
+
+
+def test_candidate_repository_uses_same_transaction_boundary():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        repository = CandidateRepository(target)
+        repository.save(
+            [{"geek_id": "g1", "job_name": "Java", "match_score": 70}]
+        )
+
+        def mark_reviewed(candidates):
+            candidates[0]["review_passed_at"] = "20260730_120000"
+            return 1
+
+        assert repository.mutate(mark_reviewed) == 1
+        assert repository.load()[0]["review_passed_at"] == "20260730_120000"

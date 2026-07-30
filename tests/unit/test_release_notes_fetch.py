@@ -128,6 +128,104 @@ def test_check_gitee_latest_retries_once_on_timeout():
     assert calls[1][1]["timeout"] == updater.UPDATE_TIMEOUT_GITEE
 
 
+def test_check_github_release_uses_release_digest_for_integrity():
+    download_url = (
+        "https://github.com/example/repo/releases/download/v9.9.9/"
+        "BOSS_ResumeFilter.exe"
+    )
+    release = {
+        "tag_name": "v9.9.9",
+        "assets": [{
+            "name": "BOSS_ResumeFilter.exe",
+            "size": 123,
+            "digest": "sha256:" + "A" * 64,
+            "browser_download_url": download_url,
+        }],
+    }
+
+    with (
+        patch.object(updater, "get_current_version", return_value="1.0"),
+        patch.object(updater.sys, "platform", "win32"),
+        patch.object(updater.requests, "get", return_value=FakeResponse(release)) as get,
+    ):
+        result = updater.check_github_release("example/repo")
+
+    assert result["error"] is None
+    assert result["has_update"] is True
+    assert result["asset_info"] == {"size": 123, "sha256": "a" * 64}
+    get.assert_called_once()
+
+
+def test_check_github_release_uses_matching_latest_manifest_when_digest_missing():
+    download_url = (
+        "https://github.com/example/repo/releases/download/v9.9.9/"
+        "BOSS_ResumeFilter.exe"
+    )
+    release = {
+        "tag_name": "v9.9.9",
+        "assets": [{
+            "name": "BOSS_ResumeFilter.exe",
+            "size": 123,
+            "browser_download_url": download_url,
+        }],
+    }
+    manifest = {
+        "version": "9.9.9",
+        "downloads": {"windows": download_url},
+        "assets": {"windows": {"size": 123, "sha256": "b" * 64}},
+    }
+
+    with (
+        patch.object(updater, "get_current_version", return_value="1.0"),
+        patch.object(updater.sys, "platform", "win32"),
+        patch.object(
+            updater.requests,
+            "get",
+            side_effect=[FakeResponse(release), FakeResponse(manifest)],
+        ) as get,
+    ):
+        result = updater.check_github_release("example/repo")
+
+    assert result["error"] is None
+    assert result["asset_info"] == {"size": 123, "sha256": "b" * 64}
+    assert get.call_args_list[1].args[0].endswith("/example/repo/master/latest.json")
+
+
+def test_check_github_release_rejects_mismatched_integrity_manifest():
+    download_url = (
+        "https://github.com/example/repo/releases/download/v9.9.9/"
+        "BOSS_ResumeFilter.exe"
+    )
+    release = {
+        "tag_name": "v9.9.9",
+        "assets": [{
+            "name": "BOSS_ResumeFilter.exe",
+            "size": 123,
+            "browser_download_url": download_url,
+        }],
+    }
+    stale_manifest = {
+        "version": "9.9.8",
+        "downloads": {"windows": download_url},
+        "assets": {"windows": {"size": 123, "sha256": "b" * 64}},
+    }
+
+    with (
+        patch.object(updater, "get_current_version", return_value="1.0"),
+        patch.object(updater.sys, "platform", "win32"),
+        patch.object(
+            updater.requests,
+            "get",
+            side_effect=[FakeResponse(release), FakeResponse(stale_manifest)],
+        ),
+    ):
+        result = updater.check_github_release("example/repo")
+
+    assert result["has_update"] is True
+    assert "完整性清单版本" in result["error"]
+    assert result["asset_info"] == {}
+
+
 def test_silent_update_check_does_not_print_gitee_fallback():
     class ImmediateThread:
         def __init__(self, target, daemon=False):

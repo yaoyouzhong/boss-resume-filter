@@ -1234,10 +1234,19 @@ def test_candidate_detail_groups_api_resume_sections():
 
 
 class _FakeRoot:
-    def __init__(self, state="normal", width=1500, height=950):
+    def __init__(
+        self,
+        state="normal",
+        width=1500,
+        height=950,
+        screen_width=1920,
+        screen_height=1080,
+    ):
         self._state = state
         self._width = width
         self._height = height
+        self._screen_width = screen_width
+        self._screen_height = screen_height
 
     def state(self):
         return self._state
@@ -1249,10 +1258,10 @@ class _FakeRoot:
         return self._height
 
     def winfo_screenwidth(self):
-        return 1920
+        return self._screen_width
 
     def winfo_screenheight(self):
-        return 1080
+        return self._screen_height
 
 
 class _FakeTree:
@@ -1320,7 +1329,8 @@ class _FakeResultTree:
 
 
 def test_result_tree_columns_expand_only_when_space_is_available():
-    """列数只由表格实际可用宽度驱动：<1250px 8 列，≥1250px 11 列，≥1700px 13 列；
+    """<1100px 显示 8 列，≥1100px 显示 11 列；
+    只有最大化且 ≥1250px 才显示 13 列，避免 4K 非最大化窗口挤压全列；
     富余宽度显式分配给各列（ttk stretch 只会收缩不会放大，否则会右侧留白且表头截断）。"""
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot()
@@ -1333,32 +1343,46 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     assert gui.result_tree.column_options["skills"]["stretch"] is True
 
     # 富余宽度按比例放大填满表格
-    gui.result_tree = _FakeTree(1200)
+    gui.result_tree = _FakeTree(1099)
     gui._update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 8
     assert gui.result_tree.column_options["skills"]["width"] > 85
     assert gui.result_tree.column_options["skills"]["stretch"] is False
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
-    ) == 1198
+    ) == 1097
 
-    gui.result_tree = _FakeTree(1400)
+    gui.result_tree = _FakeTree(1249)
     gui._update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 11
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
-    ) == 1398
+    ) == 1247
 
-    gui.result_tree = _FakeTree(1700)
+    # 4K 非最大化窗口即使表格很宽，也保持 11 列，避免字体缩放后全列挤压。
+    gui.root = _FakeRoot(
+        state="normal",
+        width=2048,
+        height=1183,
+        screen_width=3840,
+        screen_height=2160,
+    )
+    gui.result_tree = _FakeTree(1600)
+    gui._update_result_tree_columns()
+    assert len(gui.result_tree.displaycolumns) == 11
+
+    # 1080P 高 DPI 环境最大化后的结果表约 1250px，压缩到可读下限后可容纳全部列。
+    gui.root = _FakeRoot(state="zoomed")
+    gui.result_tree = _FakeTree(1250)
     gui._update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 13
     assert gui.result_tree.displaycolumns[-2:] == ("school", "company")
-    assert gui.result_tree.column_options["school"]["width"] > 150
-    assert gui.result_tree.column_options["company"]["width"] > 170
+    assert gui.result_tree.column_options["school"]["width"] >= 120
+    assert gui.result_tree.column_options["company"]["width"] >= 125
     assert gui.result_tree.column_options["level"]["width"] < 110
     assert gui.result_tree.column_options["education"]["width"] == 140
     assert gui.result_tree.column_options["age"]["width"] == 110
-    assert gui.result_tree.column_options["job_status"]["width"] > 120
+    assert gui.result_tree.column_options["job_status"]["width"] >= 90
     assert gui.result_tree.column_options["skills"]["width"] < 140
     assert gui.result_tree.column_options["name"]["stretch"] is False
     assert gui.result_tree.column_options["education"]["stretch"] is False
@@ -1367,7 +1391,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     assert gui.result_tree.column_options["company"]["stretch"] is False
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
-    ) == 1698
+    ) == 1248
 
     gui.result_tree = _FakeTree(0)
     gui._apply_result_tree_column_widths((
@@ -7980,6 +8004,10 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
     gui.append_log = Mock()
     gui.refresh_results = Mock()
     gui._format_candidate_status = Mock(return_value="已导入简历")
+    gui._get_job_requirement_for_candidates = Mock(return_value=(
+        "Java 岗位要求",
+        {"min_exp": 3, "required_conditions": ["Java"]},
+    ))
     parent = Mock()
     tree = Mock()
     callbacks = []
@@ -7995,9 +8023,9 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
         with patch("gui_main.filedialog.askopenfilename", return_value=str(resume_path)), \
                 patch("gui_main.messagebox.askyesno", return_value=True), \
                 patch("gui_main.messagebox.showerror") as showerror, \
-                patch("gui_main.save_candidates_all"), \
+                patch("gui_main.update_candidate_records", return_value=1), \
                 patch("gui_main.get_api_key", return_value="secret"), \
-                patch("paths.get_base_dir", return_value=tmp_path), \
+                patch("gui_main.get_base_dir", return_value=tmp_path), \
                 patch("llm_eval.evaluate_with_resume", side_effect=RuntimeError("模型故障")), \
                 patch("gui_main.threading.Thread", side_effect=run_thread):
             gui._import_resume(
@@ -8020,6 +8048,48 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
         parent=parent,
     )
     tree.set.assert_any_call("row-1", "status", "已导入简历")
+
+
+def test_revert_resume_eval_never_deletes_file_outside_managed_directory():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.append_log = Mock()
+    gui.refresh_results = Mock()
+    gui.refresh_home_stats = Mock()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        external = root / "outside-resume.pdf"
+        external.write_bytes(b"private")
+        candidate = {
+            "geek_id": "g1",
+            "job_name": "Java",
+            "name": "张三",
+            "rule_score": 70,
+            "llm_adjustment": 5,
+            "match_score": 80,
+            "resume_file": str(external),
+            "resume_eval_adjustment": 10,
+            "resume_eval_reason": "完整简历匹配",
+        }
+        gui._resolve_candidate = Mock(return_value=candidate)
+
+        def apply_update(_predicate, updater, _path):
+            updater(candidate)
+            return 1
+
+        with patch("gui_main.messagebox.askyesno", return_value=True), \
+                patch("gui_main.update_candidate_records", side_effect=apply_update), \
+                patch("gui_main.get_base_dir", return_value=root):
+            gui._revert_resume_eval(None, candidate=candidate, parent=gui.root)
+
+        assert external.read_bytes() == b"private"
+        assert "resume_file" not in candidate
+        assert candidate["match_score"] == 75
+        assert any(
+            "未删除受管目录外" in call.args[0]
+            for call in gui.append_log.call_args_list
+        )
 
 
 # === 评分拆解与简历评估的替代关系（regression: resume_adj=0 时不得回退显示 AI 调整值）===
@@ -8283,6 +8353,44 @@ def test_batch_ai_eval_does_not_invent_requirement_for_missing_job_config():
 
     assert requirement == ""
     assert rule == {}
+
+
+def test_resume_eval_resolves_candidate_job_and_reuses_saved_hard_conditions():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    java_rule = {
+        "original_requirement": "Java 岗位完整要求",
+        "min_exp": 5,
+        "edu": "本科",
+        "max_age": 35,
+        "work_location": "南京",
+        "salary_max": 20,
+        "required_conditions": [{"name": "Spring Cloud"}],
+    }
+    gui._get_job_rules_cached = Mock(return_value={
+        "高级 Java 工程师": java_rule,
+        "Python 工程师": {
+            "original_requirement": "Python 岗位完整要求",
+            "required_conditions": ["Django"],
+        },
+    })
+
+    requirement, rule = gui._get_job_requirement_for_candidates([
+        {"job_name": " 高级\tJava\u00a0工程师 "},
+    ])
+    hard_conditions = gui._format_ai_hard_conditions(rule)
+
+    assert requirement == "Java 岗位完整要求"
+    assert rule is java_rule
+    assert "经验：要求≥5年" in hard_conditions
+    assert "学历：要求本科" in hard_conditions
+    assert "必要条件：Spring Cloud" in hard_conditions
+
+    source = Path(gui_main.__file__).read_text(encoding="utf-8")
+    resume_block = source[source.index("def _import_resume"):]
+    resume_block = resume_block[:resume_block.index("\n    def _revert_resume_eval")]
+    assert "self._get_job_requirement_for_candidates([candidate])" in resume_block
+    assert "self._format_ai_hard_conditions(job_rule)" in resume_block
+    assert "jc.get('raw_text'" not in resume_block
 
 
 def test_batch_ai_eval_worker_uses_each_jobs_requirement_and_merges_results():

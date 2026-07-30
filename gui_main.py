@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.24.4"
+__version__ = "2.24.5"
 
 import json
 import logging
@@ -100,6 +100,8 @@ from job_config_diagnostics import (
     score_job_config_quality,
     summarize_job_config_diagnostics,
 )
+from job_config_store import load_job_config_snapshot, save_job_config_snapshot
+from job_identity import job_names_equal, normalize_job_name
 from constants import (
     API_CANDIDATE_LIMIT_DEFAULT,
     DOM_SCROLL_BATCH_MAX,
@@ -121,10 +123,17 @@ from storage import (
     load_candidates_all,
     mark_candidate_greeted,
     mark_candidate_not_greeted,
+    mutate_candidates_all,
     persist_candidate_greeted,
     persist_candidate_greeting_pending,
+    remove_candidates_all,
     resolve_candidate_greeting_confirmation,
-    save_candidates_all,
+    update_candidate_records,
+)
+from resume_store import (
+    UnmanagedResumePathError,
+    delete_managed_resume,
+    store_resume_copy,
 )
 import gui_dialogs
 from ui_messagebox import messagebox
@@ -1306,13 +1315,10 @@ class BossFilterGUI:
             if self._candidate_identity_key(candidate) not in remove_keys
         ]
         if remove_keys and CANDIDATES_PATH.exists():
-            with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                candidates = json.load(f)
-            candidates = [
-                candidate for candidate in candidates
-                if self._candidate_identity_key(candidate) not in remove_keys
-            ]
-            save_candidates_all(candidates, CANDIDATES_PATH)
+            remove_candidates_all(
+                lambda candidate: self._candidate_identity_key(candidate) in remove_keys,
+                CANDIDATES_PATH,
+            )
         for sel_item in selection:
             if self.result_tree.exists(sel_item):
                 self.result_tree.delete(sel_item)
@@ -2207,9 +2213,9 @@ class BossFilterGUI:
         except (tk.TclError, ValueError):
             tree_width = 0
         display_columns = base_columns
-        if tree_width >= 1250:
+        if tree_width >= 1100:
             display_columns += extra_columns
-        if tree_width >= 1700:
+        if self._is_window_maximized() and tree_width >= 1250:
             display_columns += wide_columns
         self._apply_result_tree_column_widths(display_columns)
         if tuple(self.result_tree.cget("displaycolumns")) != display_columns:
@@ -2297,13 +2303,15 @@ class BossFilterGUI:
         stretch = not wide_mode
         floor_total = sum(floors.values())
         base_flex_total = sum(base_widths[c] for c in flexible_columns)
-        if flexible_available > max(base_flex_total, floor_total):
-            growth_caps = {
-                "name": 130, "exp": 115, "salary": 120, "skills": 130,
-                "score": 95, "ai_eval": 95, "level": 120, "status": 260,
-                "education": 160, "age": 120, "job_status": 170,
-                "school": 280, "company": 320,
-            }
+        growth_caps = {
+            "name": 130, "exp": 115, "salary": 120, "skills": 130,
+            "score": 95, "ai_eval": 95, "level": 120, "status": 260,
+            "education": 160, "age": 120, "job_status": 170,
+            "school": 280, "company": 320,
+        }
+        can_fit_wide_columns = wide_mode and flexible_available >= floor_total
+        has_surplus = flexible_available > max(base_flex_total, floor_total)
+        if can_fit_wide_columns or has_surplus:
             widths.update(floors)
             self._distribute_tree_surplus(
                 widths, flexible_columns, floors, base_widths, growth_caps,
@@ -5772,7 +5780,8 @@ class BossFilterGUI:
         self.result_tree.heading("school", text="毕业学校")
         self.result_tree.heading("company", text="最近公司")
 
-        # 表格宽度 <1250px 显示 8 列；≥1250px 显示 11 列；≥1700px 再显示学校和公司。
+        # 表格宽度 <1100px 显示 8 列；≥1100px 显示 11 列；
+        # 仅在窗口最大化且表格宽度 ≥1250px 时再显示学校和公司。
         self.result_tree.column("name", width=80, minwidth=60, anchor='center')
         self.result_tree.column("exp", width=85, minwidth=70, anchor='center')
         self.result_tree.column("salary", width=85, minwidth=70, anchor='center')
@@ -7552,8 +7561,7 @@ class BossFilterGUI:
         """
         if not CANDIDATES_PATH.exists():
             return []
-        with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-            candidates = json.load(f)
+        candidates = load_candidates_all(CANDIDATES_PATH)
         candidates = [c for c in candidates if not c.get('blacklisted')]
 
         if job_name is None:
@@ -7561,7 +7569,7 @@ class BossFilterGUI:
         if job_name != "全部岗位":
             candidates = [
                 c for c in candidates
-                if c.get('job_name', '').replace(" ", "") == job_name.replace(" ", "")
+                if normalize_job_name(c.get('job_name')) == normalize_job_name(job_name)
             ]
 
         time_range = self.stats_time_var.get() if hasattr(self, 'stats_time_var') else "全部"
@@ -8765,13 +8773,15 @@ class BossFilterGUI:
 
         try:
             if CANDIDATES_PATH.exists():
-                with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                    candidates = json.load(f)
+                candidates = load_candidates_all(CANDIDATES_PATH)
                 candidates = [c for c in candidates if not c.get('blacklisted')]
 
                 # 岗位过滤
                 if selected_job != "全部岗位":
-                    candidates = [c for c in candidates if c.get('job_name', '') == selected_job.replace(" ", "")]
+                    candidates = [
+                        c for c in candidates
+                        if normalize_job_name(c.get('job_name')) == normalize_job_name(selected_job)
+                    ]
 
                 # 淘汰结论优先于历史分数，首页与结果页使用同一决策口径。
                 candidates = [
@@ -8856,15 +8866,17 @@ class BossFilterGUI:
                 self._show_inline_banner(self.home_page, 'info', "暂无候选人数据，请先到运行控制页开始筛选。")
                 return
 
-            with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                candidates = json.load(f)
+            candidates = load_candidates_all(CANDIDATES_PATH)
             candidates = [c for c in candidates if not c.get('blacklisted')]
 
             # 岗位过滤
             if hasattr(self, 'home_job_var'):
                 selected_job = self.home_job_var.get()
                 if selected_job != "全部岗位":
-                    candidates = [c for c in candidates if c.get('job_name', '') == selected_job.replace(" ", "")]
+                    candidates = [
+                        c for c in candidates
+                        if normalize_job_name(c.get('job_name')) == normalize_job_name(selected_job)
+                    ]
 
             # 根据类型筛选候选人（只统计通过分）
             if stat_type == 'total_home':
@@ -9030,13 +9042,10 @@ class BossFilterGUI:
                             if self._candidate_identity_key(candidate) not in remove_keys
                         ]
                         if remove_keys and CANDIDATES_PATH.exists():
-                            with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                                candidates = json.load(f)
-                            candidates = [
-                                candidate for candidate in candidates
-                                if self._candidate_identity_key(candidate) not in remove_keys
-                            ]
-                            save_candidates_all(candidates, CANDIDATES_PATH)
+                            remove_candidates_all(
+                                lambda item: self._candidate_identity_key(item) in remove_keys,
+                                CANDIDATES_PATH,
+                            )
                         # 删除 Treeview 中的项
                         for sel_item in selection:
                             candidate = self._find_candidate_in_detail_tree(
@@ -9111,13 +9120,10 @@ class BossFilterGUI:
                         if self._candidate_identity_key(item) != candidate_key
                     ]
                     if CANDIDATES_PATH.exists():
-                        with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                            candidates = json.load(f)
-                        candidates = [
-                            item for item in candidates
-                            if self._candidate_identity_key(item) != candidate_key
-                        ]
-                        save_candidates_all(candidates, CANDIDATES_PATH)
+                        remove_candidates_all(
+                            lambda item: self._candidate_identity_key(item) == candidate_key,
+                            CANDIDATES_PATH,
+                        )
                     tree.delete(clicked_item)
                     new_greeted = len([c for c in filtered_ref[0] if c.get('greet_sent', False)])
                     count_label_ref[0].config(text=f"，已打招呼 {new_greeted} 人")
@@ -9216,15 +9222,17 @@ class BossFilterGUI:
                 self._show_inline_banner(self.result_page, 'info', "暂无候选人数据，请先到运行控制页开始筛选。")
                 return
 
-            with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                candidates = json.load(f)
+            candidates = load_candidates_all(CANDIDATES_PATH)
             candidates = [c for c in candidates if not c.get('blacklisted')]
 
             # 岗位过滤
             if hasattr(self, 'result_job_var'):
                 selected_job = self.result_job_var.get()
                 if selected_job != "全部岗位":
-                    candidates = [c for c in candidates if c.get('job_name', '') == selected_job.replace(" ", "")]
+                    candidates = [
+                        c for c in candidates
+                        if normalize_job_name(c.get('job_name')) == normalize_job_name(selected_job)
+                    ]
 
             # 日期过滤（与 refresh_results 保持一致）
             date_start, date_end = self._get_result_date_filter() if hasattr(self, 'result_date_start_entry') else (None, None)
@@ -9444,13 +9452,10 @@ class BossFilterGUI:
                             if self._candidate_identity_key(candidate) not in remove_keys
                         ]
                         if remove_keys and CANDIDATES_PATH.exists():
-                            with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                                candidates = json.load(f)
-                            candidates = [
-                                candidate for candidate in candidates
-                                if self._candidate_identity_key(candidate) not in remove_keys
-                            ]
-                            save_candidates_all(candidates, CANDIDATES_PATH)
+                            remove_candidates_all(
+                                lambda item: self._candidate_identity_key(item) in remove_keys,
+                                CANDIDATES_PATH,
+                            )
                         # 删除 Treeview 中的项
                         for sel_item in selection:
                             candidate = self._find_candidate_in_detail_tree(
@@ -9525,13 +9530,10 @@ class BossFilterGUI:
                         if self._candidate_identity_key(item) != candidate_key
                     ]
                     if CANDIDATES_PATH.exists():
-                        with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                            candidates_all = json.load(f)
-                        candidates_all = [
-                            item for item in candidates_all
-                            if self._candidate_identity_key(item) != candidate_key
-                        ]
-                        save_candidates_all(candidates_all, CANDIDATES_PATH)
+                        remove_candidates_all(
+                            lambda item: self._candidate_identity_key(item) == candidate_key,
+                            CANDIDATES_PATH,
+                        )
                     tree.delete(clicked_item)
                     new_greeted = len([c for c in filtered_ref[0] if c.get('greet_sent', False)])
                     count_label_ref[0].config(text=f"，已打招呼 {new_greeted} 人")
@@ -9603,12 +9605,11 @@ class BossFilterGUI:
 
     def _read_job_rules_from_file(self):
         """轻量读取岗位规则，避免 GUI 首屏 import 自动化主程序。"""
-        if not CONFIG_PATH.exists():
+        if not CONFIG_PATH.exists() and not CONFIG_BACKUP_PATH.exists():
             return {}
         try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-        except (json.JSONDecodeError, OSError):
+            config = load_job_config_snapshot(CONFIG_PATH, CONFIG_BACKUP_PATH)
+        except (OSError, ValueError, RuntimeError):
             return {}
 
         if "job_requirements" in config and isinstance(config["job_requirements"], dict):
@@ -9619,33 +9620,17 @@ class BossFilterGUI:
 
     def load_config(self):
         """加载岗位配置"""
-        if CONFIG_PATH.exists():
-            try:
-                with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                    # 支持新旧两种格式
-                    if "job_requirements" in config:
-                        self.job_rules = config["job_requirements"]
-                    elif "jobs" in config:
-                        self.job_rules = config["jobs"]
-                    else:
-                        self.job_rules = {}
-            except Exception as e:
-                # 配置文件损坏时尝试从备份恢复
-                if CONFIG_BACKUP_PATH.exists():
-                    try:
-                        shutil.copy(CONFIG_BACKUP_PATH, CONFIG_PATH)
-                        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                            config = json.load(f)
-                            if "job_requirements" in config:
-                                self.job_rules = config["job_requirements"]
-                            elif "jobs" in config:
-                                self.job_rules = config["jobs"]
-                    except (json.JSONDecodeError, IOError) as e:
-                        print(f"从备份恢复配置失败：{e}")
-                        self.job_rules = {}
-                else:
-                    self.job_rules = {}
+        try:
+            config = load_job_config_snapshot(CONFIG_PATH, CONFIG_BACKUP_PATH)
+        except (OSError, ValueError, RuntimeError) as e:
+            print(f"加载岗位配置失败：{e}")
+            config = {}
+        if "job_requirements" in config:
+            self.job_rules = config["job_requirements"]
+        elif "jobs" in config:
+            self.job_rules = config["jobs"]
+        else:
+            self.job_rules = {}
 
     def load_api_config(self, resolve_keys=True):
         """加载 API 配置 - 从系统钥匙串读取加密的 API Key（按服务商管理）"""
@@ -11589,21 +11574,12 @@ class BossFilterGUI:
 
     def save_config(self):
         """保存配置文件 - 带备份保护，保留 requirement_template 等顶层字段"""
-        # 先备份旧配置
-        if CONFIG_PATH.exists():
-            try:
-                shutil.copy(CONFIG_PATH, CONFIG_BACKUP_PATH)
-            except IOError as e:
-                print(f"备份配置失败：{e}")
-
-        # 加载已有配置，保留顶层字段（如 requirement_template）
-        existing = {}
-        if CONFIG_PATH.exists():
-            try:
-                with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                    existing = json.load(f)
-            except (json.JSONDecodeError, IOError):
-                pass
+        # 加载主文件或已验证备份，保留 requirement_template 等顶层字段。
+        try:
+            existing = load_job_config_snapshot(CONFIG_PATH, CONFIG_BACKUP_PATH)
+        except (OSError, ValueError, RuntimeError) as e:
+            print(f"读取原岗位配置失败，将保留有效备份并写入当前配置：{e}")
+            existing = {}
 
         # 更新 job_requirements，保留其他顶层字段；剔除解析溯源等 GUI 临时字段
         existing = {
@@ -11612,8 +11588,7 @@ class BossFilterGUI:
             if not str(key).startswith("_")
         }
         existing["job_requirements"] = self._strip_transient_fields(self.job_rules)
-        with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
-            json.dump(existing, f, ensure_ascii=False, indent=4)
+        save_job_config_snapshot(existing, CONFIG_PATH, CONFIG_BACKUP_PATH)
 
     def _confirm_job_form_transition(self):
         """Protect unsaved job edits before switching or starting another draft."""
@@ -12561,10 +12536,9 @@ class BossFilterGUI:
     def _insert_requirement_template(self):
         """插入招聘需求模板到输入框（模板文本从 job_config.json 读取）"""
         try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                config = json.load(f)
+            config = load_job_config_snapshot(CONFIG_PATH, CONFIG_BACKUP_PATH)
             template = config.get("requirement_template", "")
-        except Exception:
+        except (OSError, ValueError, RuntimeError):
             template = ""
         if not template:
             messagebox.showwarning("警告", "配置文件中未找到 requirement_template 模板")
@@ -13409,8 +13383,7 @@ class BossFilterGUI:
         # 检查是否已存在相同（规范化后）的岗位
         existing_key_to_delete = None
         for key in self.job_rules.keys():
-            normalized_key = re.sub(r'\s+', ' ', key).strip()
-            if normalized_key.lower() == normalized_job_name.lower():
+            if job_names_equal(key, normalized_job_name):
                 existing_key_to_delete = key
                 break
 
@@ -15072,8 +15045,7 @@ class BossFilterGUI:
 
         try:
             if CANDIDATES_PATH.exists():
-                with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                    persisted_candidates = json.load(f)
+                persisted_candidates = load_candidates_all(CANDIDATES_PATH)
                 # 编辑操作始终持有完整数据集，页面过滤只能影响展示范围。
                 self.all_candidates = persisted_candidates
                 candidates = persisted_candidates
@@ -15083,7 +15055,10 @@ class BossFilterGUI:
                 # 岗位过滤
                 selected_job = self.result_job_var.get()
                 if selected_job != "全部岗位":
-                    candidates = [c for c in candidates if c.get('job_name', '') == selected_job.replace(" ", "")]
+                    candidates = [
+                        c for c in candidates
+                        if normalize_job_name(c.get('job_name')) == normalize_job_name(selected_job)
+                    ]
 
                 # 日期过滤按首次发现时间统计；旧数据回退 batch_timestamp。
                 date_start, date_end = current_dates
@@ -15300,14 +15275,13 @@ class BossFilterGUI:
         """Load candidates for result-page state diagnostics using the job filter only."""
         if not CANDIDATES_PATH.exists():
             return [], "全部岗位"
-        with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-            candidates = json.load(f)
+        candidates = load_candidates_all(CANDIDATES_PATH)
         selected_job = self.result_job_var.get() if hasattr(self, 'result_job_var') else "全部岗位"
         if selected_job != "全部岗位":
-            normalized_job = selected_job.replace(" ", "")
+            normalized_job = normalize_job_name(selected_job)
             candidates = [
                 c for c in candidates
-                if c.get('job_name', '').replace(" ", "") == normalized_job
+                if normalize_job_name(c.get('job_name')) == normalized_job
             ]
         return candidates, selected_job
 
@@ -15981,7 +15955,11 @@ class BossFilterGUI:
             for item in candidate_by_key.values():
                 if (
                     (not issue.name or item.get('name') == issue.name)
-                    and (not issue.job_name or item.get('job_name') == issue.job_name)
+                    and (
+                        not issue.job_name
+                        or normalize_job_name(item.get('job_name'))
+                        == normalize_job_name(issue.job_name)
+                    )
                 ):
                     return item
             return None
@@ -17969,28 +17947,26 @@ class BossFilterGUI:
         """按 geek_id 标记候选人黑名单，跨岗位生效。"""
         if not CANDIDATES_PATH.exists():
             return 0
-        with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-            candidates = json.load(f)
-
-        updated = 0
         blacklisted_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-        for c in candidates:
-            if str(c.get('geek_id')) == str(geek_id):
-                c['blacklisted'] = True
-                c['blacklist_reason'] = reason.strip()
-                c['blacklisted_at'] = blacklisted_at
-                if c.get('followup_status') not in {"不合适", "已归档"}:
-                    apply_followup_state(
-                        c,
-                        "不合适",
-                        c.get('followup_note', ''),
-                        timestamp=blacklisted_at,
-                    )
-                updated += 1
 
-        if updated:
-            save_candidates_all(candidates, CANDIDATES_PATH)
-        return updated
+        def apply_blacklist(candidate):
+            candidate['blacklisted'] = True
+            candidate['blacklist_reason'] = reason.strip()
+            candidate['blacklisted_at'] = blacklisted_at
+            if candidate.get('followup_status') not in {"不合适", "已归档"}:
+                apply_followup_state(
+                    candidate,
+                    "不合适",
+                    candidate.get('followup_note', ''),
+                    timestamp=blacklisted_at,
+                )
+
+        return update_candidate_records(
+            lambda candidate: str(candidate.get('geek_id')) == str(geek_id),
+            apply_blacklist,
+            CANDIDATES_PATH,
+            update_all=True,
+        )
 
     def _import_resume(self, item, candidate=None, parent=None, tree=None, tree_item=None):
         """导入候选人简历文件并触发二次 AI 评估。"""
@@ -18094,25 +18070,38 @@ class BossFilterGUI:
             messagebox.showwarning("内容过少", "简历提取的文本内容过少，可能不是有效的简历文件。")
             return
 
-        # 3. 拷贝文件到 resumes/ 目录
-        from paths import get_base_dir
-        resumes_dir = get_base_dir() / "resumes"
-        resumes_dir.mkdir(exist_ok=True)
-        geek_id = candidate.get('geek_id', 'unknown')
-        name = candidate.get('name', '未知')
-        # 清理姓名中的特殊字符（避免文件名问题）
-        safe_name = ''.join(c for c in name if c.isalnum() or c in '_-一-鿿') or '未知'
-        ts = datetime.now().strftime("%Y%m%d%H%M%S")
-        dest = resumes_dir / f"{safe_name}_{geek_id}_{ts}{ext}"
+        # 3. 保存到受管简历目录；磁盘文件名不包含候选人身份。
         try:
-            shutil.copy2(filepath, dest)
+            managed_resume = store_resume_copy(filepath, base_dir=get_base_dir())
         except Exception as e:
             messagebox.showerror("存储失败", f"无法保存简历文件：\n{e}")
             return
 
         # 更新候选人记录（文件路径和导入时间）
-        candidate['resume_file'] = str(dest)
+        candidate['resume_file'] = managed_resume.reference
+        candidate['resume_artifact_id'] = managed_resume.artifact_id
+        candidate['resume_original_name'] = managed_resume.original_name
         candidate['resume_imported_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        resume_identity = self._candidate_identity_key(candidate)
+
+        def save_resume_reference(persisted):
+            persisted['resume_file'] = candidate['resume_file']
+            persisted['resume_artifact_id'] = candidate['resume_artifact_id']
+            persisted['resume_original_name'] = candidate['resume_original_name']
+            persisted['resume_imported_at'] = candidate['resume_imported_at']
+
+        saved = update_candidate_records(
+            lambda persisted: self._candidate_identity_key(persisted) == resume_identity,
+            save_resume_reference,
+            CANDIDATES_PATH,
+        )
+        if not saved:
+            try:
+                delete_managed_resume(managed_resume.reference, base_dir=get_base_dir())
+            except (OSError, UnmanagedResumePathError):
+                pass
+            messagebox.showerror("存储失败", "候选人记录已变化，未能关联导入的简历。")
+            return
 
         # 4. 预览确认（只显示前 300 字）
         preview = resume_text[:300]
@@ -18124,12 +18113,20 @@ class BossFilterGUI:
             f"成功提取简历文本（{len(resume_text)} 字）：\n\n{preview}\n\n是否进行 AI 二次评估？",
         )
 
-        # 即使不评估，也保存已导入的文件路径
-        save_candidates_all(self.all_candidates, CANDIDATES_PATH)
-
         if not confirm:
             self.refresh_results()
             return
+
+        job_requirement, job_rule = self._get_job_requirement_for_candidates([candidate])
+        if not job_requirement or not job_rule:
+            messagebox.showwarning(
+                "未找到岗位配置",
+                "未找到该候选人对应的已保存岗位规则。简历已保留，但不能开始二次评估。",
+                parent=parent or self.root,
+            )
+            self.refresh_results()
+            return
+        hard_conditions = self._format_ai_hard_conditions(job_rule)
 
         # 5. 后台线程调用 LLM
         name = candidate.get('name', '')
@@ -18168,22 +18165,6 @@ class BossFilterGUI:
                     _parent.after(0, _no_key)
                     return
 
-                # 读取岗位需求
-                job_config_path = get_base_dir() / "job_config.json"
-                job_requirement = ""
-                hard_conditions = ""
-                if job_config_path.exists():
-                    import json as _json
-                    with open(job_config_path, 'r', encoding='utf-8') as f:
-                        jc = _json.load(f)
-                    job_requirement = jc.get('raw_text', '') or jc.get('description', '')
-                    hc = jc.get('required_conditions') or jc.get('hard_conditions', [])
-                    if hc:
-                        hard_conditions = "## 硬性条件\n" + "\n".join(
-                            f"- {c}" if isinstance(c, str) else f"- {c.get('text','')}"
-                            for c in (hc if isinstance(hc, list) else [hc])
-                        ) + "\n\n"
-
                 self.append_log(f"[简历评估] 正在评估 {name}...")
                 result = evaluate_with_resume(
                     candidate, resume_text, job_requirement,
@@ -18191,7 +18172,31 @@ class BossFilterGUI:
                 )
 
                 def _on_done():
-                    save_candidates_all(self.all_candidates, CANDIDATES_PATH)
+                    if result.success:
+                        resume_fields = (
+                            'resume_eval_adjustment',
+                            'resume_eval_reason',
+                            'resume_eval_model',
+                            'resume_eval_at',
+                            'resume_eval_dimension_scores',
+                            'rule_score',
+                            'match_score',
+                            'recommend_level',
+                            'score_breakdown',
+                        )
+
+                        def save_resume_evaluation(persisted):
+                            for field in resume_fields:
+                                if field in candidate:
+                                    persisted[field] = candidate[field]
+
+                        update_candidate_records(
+                            lambda persisted: (
+                                self._candidate_identity_key(persisted) == resume_identity
+                            ),
+                            save_resume_evaluation,
+                            CANDIDATES_PATH,
+                        )
                     self.refresh_results()
                     self.refresh_home_stats()
                     if result.success:
@@ -18290,44 +18295,68 @@ class BossFilterGUI:
         if not confirm:
             return
 
-        # 删除简历文件
-        resume_file = candidate.get('resume_file')
-        if resume_file:
-            try:
-                if os.path.exists(resume_file):
-                    os.remove(resume_file)
-            except Exception as e:
-                self.append_log(f"[撤销评估] 删除简历文件失败：{e}")
-
-        # 回退分数：match_score = rule_score + llm_adjustment
-        # rule_score 缺失时（候选人未跑过一次评估却导入简历）由 _resolve_rule_score 还原，
-        # 否则会落到含 resume_adj 的 match_score 上，撤销后 resume 调整值未被扣除
         from llm_eval import _resolve_rule_score
-        rule_score = _resolve_rule_score(candidate)
-        llm_adj = candidate.get('llm_adjustment', 0) or 0
-        reverted_score = max(0, min(100, rule_score + llm_adj))
+        resume_fields = (
+            'resume_file',
+            'resume_artifact_id',
+            'resume_original_name',
+            'resume_imported_at',
+            'resume_eval_adjustment',
+            'resume_eval_reason',
+            'resume_eval_model',
+            'resume_eval_at',
+            'resume_eval_dimension_scores',
+        )
+        identity = self._candidate_identity_key(candidate)
+        resume_reference = [candidate.get('resume_file')]
+        updated_snapshot = {}
+        reverted_score = [candidate.get('match_score', 0)]
 
-        # 清空简历相关字段
-        for field in ('resume_file', 'resume_imported_at', 'resume_eval_adjustment',
-                      'resume_eval_reason', 'resume_eval_model', 'resume_eval_at',
-                      'resume_eval_dimension_scores'):
-            candidate.pop(field, None)
+        def revert_resume(persisted):
+            resume_reference[0] = persisted.get('resume_file') or resume_reference[0]
+            rule_score = _resolve_rule_score(persisted)
+            llm_adj = persisted.get('llm_adjustment', 0) or 0
+            reverted_score[0] = max(0, min(100, rule_score + llm_adj))
+            for field in resume_fields:
+                persisted.pop(field, None)
+            persisted['rule_score'] = rule_score
+            persisted['match_score'] = reverted_score[0]
+            persisted['recommend_level'] = _recalc_recommend_level(reverted_score[0])
+            breakdown = persisted.get('score_breakdown')
+            if isinstance(breakdown, dict):
+                breakdown.pop('resume_adjustment', None)
+                breakdown['total'] = reverted_score[0]
+            updated_snapshot.update(persisted)
 
-        # 回退分数和推荐等级
-        candidate['match_score'] = reverted_score
-        candidate['recommend_level'] = _recalc_recommend_level(reverted_score)
+        updated = update_candidate_records(
+            lambda persisted: self._candidate_identity_key(persisted) == identity,
+            revert_resume,
+            CANDIDATES_PATH,
+        )
+        if not updated:
+            messagebox.showerror(
+                "撤销失败",
+                "候选人记录已变化，请刷新后重试。",
+                parent=_parent,
+            )
+            return
 
-        # 更新 score_breakdown
-        breakdown = candidate.get('score_breakdown')
-        if isinstance(breakdown, dict):
-            breakdown.pop('resume_adjustment', None)
-            breakdown['total'] = reverted_score
+        candidate.clear()
+        candidate.update(updated_snapshot)
+        if resume_reference[0]:
+            try:
+                delete_managed_resume(
+                    resume_reference[0],
+                    base_dir=get_base_dir(),
+                )
+            except UnmanagedResumePathError:
+                self.append_log("[撤销评估] 已清除记录，但未删除受管目录外的简历文件")
+            except OSError as e:
+                self.append_log(f"[撤销评估] 删除受管简历文件失败：{e}")
 
-        # 保存并刷新
-        save_candidates_all(self.all_candidates, CANDIDATES_PATH)
         self.refresh_results()
         self.refresh_home_stats()
-        self.append_log(f"[撤销评估] {name}: 分数回退到 {reverted_score}")
+        self.append_log(f"[撤销评估] {name}: 分数回退到 {reverted_score[0]}")
 
     # ===== 一键AI评估功能 =====
 
@@ -18498,7 +18527,15 @@ class BossFilterGUI:
 
         # 从job_config.json获取岗位需求
         job_rules = self._get_job_rules_cached()
-        rule = job_rules.get(job_name)
+        normalized_job = normalize_job_name(job_name)
+        matched_names = [
+            configured_name
+            for configured_name in job_rules
+            if job_names_equal(configured_name, normalized_job)
+        ]
+        if len(matched_names) != 1:
+            return "", {}
+        rule = job_rules.get(matched_names[0])
         if not isinstance(rule, dict) or not rule:
             return "", {}
 
@@ -18509,6 +18546,33 @@ class BossFilterGUI:
             job_requirement = f"岗位：{job_name}，{min_exp}年经验，{edu}学历"
 
         return job_requirement, rule
+
+    @staticmethod
+    def _format_ai_hard_conditions(rule: dict) -> str:
+        """Format the saved job rule once for both first and resume AI reviews."""
+        hard_parts = []
+        if rule.get('min_exp'):
+            hard_parts.append(f"- 经验：要求≥{rule['min_exp']}年，候选人需满足")
+        if rule.get('edu') and rule.get('edu') != '不限':
+            hard_parts.append(f"- 学历：要求{rule['edu']}")
+        if rule.get('max_age'):
+            hard_parts.append(f"- 年龄：上限{rule['max_age']}岁")
+        if rule.get('work_location'):
+            hard_parts.append(f"- 地点：要求{rule['work_location']}，候选人期望城市需匹配")
+        if rule.get('salary_max'):
+            hard_parts.append(f"- 薪资：岗位最高{rule['salary_max']}K，候选人期望不应超过")
+        required_conditions = rule.get('required_conditions', [])
+        if required_conditions:
+            condition_names = [
+                condition
+                if isinstance(condition, str)
+                else condition.get('name', str(condition))
+                for condition in required_conditions
+            ]
+            hard_parts.append(f"- 必要条件：{'、'.join(condition_names)}")
+        if not hard_parts:
+            return ""
+        return "## 筛选硬条件\n" + "\n".join(hard_parts) + "\n\n"
 
     def _do_ai_eval_batch(self, evaluation_groups, api_config, api_key):
         """按岗位分组后台执行 AI 评估，并合并本轮结果。"""
@@ -18533,22 +18597,7 @@ class BossFilterGUI:
                 def progress_callback(percentage, description, *, _base=processed_count, _size=group_size):
                     self._ai_eval_done = _base + int(percentage / 100 * _size)
 
-                hard_parts = []
-                if rule.get('min_exp'):
-                    hard_parts.append(f"- 经验：要求≥{rule['min_exp']}年，候选人需满足")
-                if rule.get('edu') and rule.get('edu') != '不限':
-                    hard_parts.append(f"- 学历：要求{rule['edu']}")
-                if rule.get('max_age'):
-                    hard_parts.append(f"- 年龄：上限{rule['max_age']}岁")
-                if rule.get('work_location'):
-                    hard_parts.append(f"- 地点：要求{rule['work_location']}，候选人期望城市需匹配")
-                if rule.get('salary_max'):
-                    hard_parts.append(f"- 薪资：岗位最高{rule['salary_max']}K，候选人期望不应超过")
-                req_conds = rule.get('required_conditions', [])
-                if req_conds:
-                    cond_names = [c if isinstance(c, str) else c.get('name', str(c)) for c in req_conds]
-                    hard_parts.append(f"- 必要条件：{'、'.join(cond_names)}")
-                hard_conditions = "## 筛选硬条件\n" + "\n".join(hard_parts) + "\n\n" if hard_parts else ""
+                hard_conditions = self._format_ai_hard_conditions(rule)
 
                 group_error = ""
                 try:
@@ -18754,30 +18803,21 @@ class BossFilterGUI:
             )
 
     def _save_ai_eval_results(self, candidates):
-        """保存AI评估结果到candidates.json"""
-        from storage import save_candidates_all
-
-        # 读取现有数据
-        if CANDIDATES_PATH.exists():
-            try:
-                with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                    all_candidates = json.load(f)
-            except Exception:
-                all_candidates = self.all_candidates if hasattr(self, 'all_candidates') else []
-        else:
-            all_candidates = self.all_candidates if hasattr(self, 'all_candidates') else []
-
+        """把 AI 评估字段合并到最新候选人快照。"""
         # AI 评估结果属于具体岗位；同一候选人在多个岗位中的评分不能互相覆盖。
         eval_map = {
             self._candidate_identity_key(candidate): candidate
             for candidate in candidates
             if self._candidate_identity_key(candidate)[0]
         }
-        for i, c in enumerate(all_candidates):
-            identity = self._candidate_identity_key(c)
-            if identity in eval_map:
+        def merge_ai_results(all_candidates):
+            updated = 0
+            for persisted in all_candidates:
+                identity = self._candidate_identity_key(persisted)
+                if identity not in eval_map:
+                    continue
                 eval_result = eval_map[identity]
-                all_candidates[i].update({
+                persisted.update({
                     'llm_evaluated': eval_result.get('llm_evaluated'),
                     'llm_adjustment': eval_result.get('llm_adjustment'),
                     'llm_reason': eval_result.get('llm_reason'),
@@ -18796,9 +18836,10 @@ class BossFilterGUI:
                     'manual_review_required': eval_result.get('manual_review_required'),
                     'auto_greet_blocked_reason': eval_result.get('auto_greet_blocked_reason'),
                 })
+                updated += 1
+            return updated
 
-        # 保存
-        save_candidates_all(all_candidates, CANDIDATES_PATH)
+        mutate_candidates_all(merge_ai_results, CANDIDATES_PATH)
 
         # 更新内存数据
         if hasattr(self, 'all_candidates'):
@@ -18852,20 +18893,21 @@ class BossFilterGUI:
         """按 geek_id 移除候选人黑名单，跨岗位生效。"""
         if not CANDIDATES_PATH.exists():
             return 0
-        with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-            candidates = json.load(f)
 
-        updated = 0
-        for c in candidates:
-            if str(c.get('geek_id')) == str(geek_id) and c.get('blacklisted'):
-                c.pop('blacklisted', None)
-                c.pop('blacklist_reason', None)
-                c.pop('blacklisted_at', None)
-                updated += 1
+        def clear_blacklist(candidate):
+            candidate.pop('blacklisted', None)
+            candidate.pop('blacklist_reason', None)
+            candidate.pop('blacklisted_at', None)
 
-        if updated:
-            save_candidates_all(candidates, CANDIDATES_PATH)
-        return updated
+        return update_candidate_records(
+            lambda candidate: (
+                str(candidate.get('geek_id')) == str(geek_id)
+                and bool(candidate.get('blacklisted'))
+            ),
+            clear_blacklist,
+            CANDIDATES_PATH,
+            update_all=True,
+        )
 
     def _unblacklist_candidate(self, item, candidate=None, parent=None, on_saved=None):
         """把选中候选人移出黑名单。"""
@@ -18908,33 +18950,33 @@ class BossFilterGUI:
         """更新候选人的跟进状态。"""
         if not CANDIDATES_PATH.exists():
             return False
-        with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-            candidates = json.load(f)
-
-        updated = False
         followup_time = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-        for c in candidates:
-            if c.get('geek_id') == geek_id and c.get('job_name', '').replace(" ", "") == job_name.replace(" ", ""):
-                if status == "未沟通":
-                    mark_candidate_not_greeted(c, followup_time)
-                elif (
-                    status in CONTACTED_FOLLOWUP_STATUSES
-                    and not c.get('greet_sent')
-                ):
-                    mark_candidate_greeted(c, "manual_status", followup_time)
-                apply_followup_state(
-                    c,
-                    status,
-                    note,
-                    timestamp=followup_time,
-                    next_followup_at=next_followup_at,
-                )
-                updated = True
-                break
 
-        if updated:
-            save_candidates_all(candidates, CANDIDATES_PATH)
-        return updated
+        def apply_status(candidate):
+            if status == "未沟通":
+                mark_candidate_not_greeted(candidate, followup_time)
+            elif (
+                status in CONTACTED_FOLLOWUP_STATUSES
+                and not candidate.get('greet_sent')
+            ):
+                mark_candidate_greeted(candidate, "manual_status", followup_time)
+            apply_followup_state(
+                candidate,
+                status,
+                note,
+                timestamp=followup_time,
+                next_followup_at=next_followup_at,
+            )
+
+        return bool(update_candidate_records(
+            lambda candidate: (
+                candidate.get('geek_id') == geek_id
+                and normalize_job_name(candidate.get('job_name'))
+                == normalize_job_name(job_name)
+            ),
+            apply_status,
+            CANDIDATES_PATH,
+        ))
 
     def _quick_update_candidate_followup(
         self,
@@ -19012,41 +19054,40 @@ class BossFilterGUI:
         """按候选人和岗位完成复核，记录通过结论及可选联系批准。"""
         if not geek_id or not CANDIDATES_PATH.exists():
             return 0
-        with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-            candidates = json.load(f)
-
-        updated = 0
         approved_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-        for c in candidates:
-            if (
-                str(c.get('geek_id')) == str(geek_id)
-                and c.get('job_name', '').replace(' ', '') == job_name.replace(' ', '')
-            ):
+
+        def complete_review(candidates):
+            updated = 0
+            for candidate in candidates:
                 if (
-                    c.get('manual_review_required')
-                    or c.get('qualification_status') == 'manual_review'
+                    str(candidate.get('geek_id')) == str(geek_id)
+                    and normalize_job_name(candidate.get('job_name'))
+                    == normalize_job_name(job_name)
+                    and (
+                        candidate.get('manual_review_required')
+                        or candidate.get('qualification_status') == 'manual_review'
+                    )
                 ):
                     passed_reasons = list(
                         review_passed_reasons
-                        or derive_candidate_decision(c).review_reasons
+                        or derive_candidate_decision(candidate).review_reasons
                         or ["人工复核"]
                     )
-                    c['manual_review_required'] = False
-                    c['qualification_status'] = 'qualified'
-                    c['qualification_reasons'] = []
-                    c.pop('auto_greet_blocked_reason', None)
-                    c['review_passed_at'] = approved_at
-                    c['review_passed_reasons'] = passed_reasons
-                    c.pop('review_rejected_at', None)
-                    c.pop('review_rejected_reasons', None)
+                    candidate['manual_review_required'] = False
+                    candidate['qualification_status'] = 'qualified'
+                    candidate['qualification_reasons'] = []
+                    candidate.pop('auto_greet_blocked_reason', None)
+                    candidate['review_passed_at'] = approved_at
+                    candidate['review_passed_reasons'] = passed_reasons
+                    candidate.pop('review_rejected_at', None)
+                    candidate.pop('review_rejected_reasons', None)
                     if contact_approval_reason:
-                        c['contact_approved_at'] = approved_at
-                        c['contact_approval_reason'] = contact_approval_reason
+                        candidate['contact_approved_at'] = approved_at
+                        candidate['contact_approval_reason'] = contact_approval_reason
                     updated += 1
+            return updated
 
-        if updated:
-            save_candidates_all(candidates, CANDIDATES_PATH)
-        return updated
+        return mutate_candidates_all(complete_review, CANDIDATES_PATH)
 
     def _reject_candidate_review(
         self,
@@ -19058,17 +19099,16 @@ class BossFilterGUI:
         """Persist one explicit human decision that the candidate did not pass review."""
         if not geek_id or not CANDIDATES_PATH.exists():
             return 0
-        with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-            candidates = json.load(f)
-
-        updated = 0
         rejected_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-        normalized_job = str(job_name or '').replace(" ", "")
-        for candidate in candidates:
-            if (
-                str(candidate.get('geek_id') or '') == str(geek_id)
-                and candidate.get('job_name', '').replace(" ", "") == normalized_job
-            ):
+        normalized_job = normalize_job_name(job_name)
+
+        def reject_review(candidates):
+            for candidate in candidates:
+                if (
+                    str(candidate.get('geek_id') or '') != str(geek_id)
+                    or normalize_job_name(candidate.get('job_name')) != normalized_job
+                ):
+                    continue
                 decision = derive_candidate_decision(candidate)
                 if decision.review_status != "pending":
                     continue
@@ -19088,12 +19128,10 @@ class BossFilterGUI:
                 candidate.pop('contact_approved_at', None)
                 candidate.pop('contact_approval_reason', None)
                 candidate.pop('auto_greet_blocked_reason', None)
-                updated += 1
-                break
+                return 1
+            return 0
 
-        if updated:
-            save_candidates_all(candidates, CANDIDATES_PATH)
-        return updated
+        return mutate_candidates_all(reject_review, CANDIDATES_PATH)
 
     def _update_candidate_contact_approval(
         self,
@@ -19105,33 +19143,29 @@ class BossFilterGUI:
         """Persist one explicit approval to contact a pending candidate."""
         if not geek_id or not CANDIDATES_PATH.exists():
             return False
-        with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-            candidates = json.load(f)
-
         approved_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-        updated = False
-        normalized_job = str(job_name or '').replace(" ", "")
-        for candidate in candidates:
-            if (
-                str(candidate.get('geek_id') or '') == str(geek_id)
-                and candidate.get('job_name', '').replace(" ", "") == normalized_job
-            ):
-                review_reasons = list(
-                    derive_candidate_decision(candidate).review_reasons
-                    or [f"评分处于待定区间（{candidate.get('match_score', 0)} 分）"]
-                )
-                candidate['contact_approved_at'] = approved_at
-                candidate['contact_approval_reason'] = str(reason or '').strip()
-                candidate['review_passed_at'] = approved_at
-                candidate['review_passed_reasons'] = review_reasons
-                candidate.pop('review_rejected_at', None)
-                candidate.pop('review_rejected_reasons', None)
-                updated = True
-                break
+        normalized_job = normalize_job_name(job_name)
 
-        if updated:
-            save_candidates_all(candidates, CANDIDATES_PATH)
-        return updated
+        def approve_contact(candidate):
+            review_reasons = list(
+                derive_candidate_decision(candidate).review_reasons
+                or [f"评分处于待定区间（{candidate.get('match_score', 0)} 分）"]
+            )
+            candidate['contact_approved_at'] = approved_at
+            candidate['contact_approval_reason'] = str(reason or '').strip()
+            candidate['review_passed_at'] = approved_at
+            candidate['review_passed_reasons'] = review_reasons
+            candidate.pop('review_rejected_at', None)
+            candidate.pop('review_rejected_reasons', None)
+
+        return bool(update_candidate_records(
+            lambda candidate: (
+                str(candidate.get('geek_id') or '') == str(geek_id)
+                and normalize_job_name(candidate.get('job_name')) == normalized_job
+            ),
+            approve_contact,
+            CANDIDATES_PATH,
+        ))
 
     def _approve_candidate_contact_and_queue(
         self,
@@ -19640,38 +19674,38 @@ class BossFilterGUI:
         """更新候选人的人工反馈。"""
         if not CANDIDATES_PATH.exists():
             return False
-        with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-            candidates = json.load(f)
-
-        updated = False
         feedback_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        for c in candidates:
-            if c.get('geek_id') == geek_id and c.get('job_name', '').replace(" ", "") == job_name.replace(" ", ""):
-                c['feedback_status'] = status
-                c['feedback_reasons'] = reasons
-                c['feedback_note'] = note.strip()
-                c['feedback_updated_at'] = feedback_time
-                try:
-                    score = int(c.get('match_score', 0) or 0)
-                except (TypeError, ValueError):
-                    score = 0
-                if (
-                    status == "合适"
-                    and SCORE_THRESHOLD_PASS <= score < SCORE_THRESHOLD_RECOMMEND
-                ):
-                    c['review_passed_at'] = feedback_time
-                    c['review_passed_reasons'] = [
-                        f"评分处于待定区间（{score} 分）"
-                    ]
-                if status in {"误推", "放弃"}:
-                    c.pop('contact_approved_at', None)
-                    c.pop('contact_approval_reason', None)
-                updated = True
-                break
 
-        if updated:
-            save_candidates_all(candidates, CANDIDATES_PATH)
-        return updated
+        def apply_feedback(candidate):
+            candidate['feedback_status'] = status
+            candidate['feedback_reasons'] = reasons
+            candidate['feedback_note'] = note.strip()
+            candidate['feedback_updated_at'] = feedback_time
+            try:
+                score = int(candidate.get('match_score', 0) or 0)
+            except (TypeError, ValueError):
+                score = 0
+            if (
+                status == "合适"
+                and SCORE_THRESHOLD_PASS <= score < SCORE_THRESHOLD_RECOMMEND
+            ):
+                candidate['review_passed_at'] = feedback_time
+                candidate['review_passed_reasons'] = [
+                    f"评分处于待定区间（{score} 分）"
+                ]
+            if status in {"误推", "放弃"}:
+                candidate.pop('contact_approved_at', None)
+                candidate.pop('contact_approval_reason', None)
+
+        return bool(update_candidate_records(
+            lambda candidate: (
+                candidate.get('geek_id') == geek_id
+                and normalize_job_name(candidate.get('job_name'))
+                == normalize_job_name(job_name)
+            ),
+            apply_feedback,
+            CANDIDATES_PATH,
+        ))
 
     def _mark_candidate_feedback(
         self,
@@ -20147,7 +20181,11 @@ class BossFilterGUI:
             lines.append(f"  评估理由：")
             lines.append(f"    {r_reason}")
             if c.get('resume_file'):
-                lines.append(f"  简历文件：{os.path.basename(c.get('resume_file', ''))}")
+                resume_name = (
+                    c.get('resume_original_name')
+                    or os.path.basename(c.get('resume_file', ''))
+                )
+                lines.append(f"  简历文件：{resume_name}")
             if c.get('resume_imported_at'):
                 lines.append(f"  导入时间：{c.get('resume_imported_at')}")
 
@@ -22068,7 +22106,7 @@ class BossFilterGUI:
         """Return the persisted candidate identity used by result-page actions."""
         return (
             str(candidate.get('geek_id') or ''),
-            str(candidate.get('job_name') or '').replace(' ', ''),
+            normalize_job_name(candidate.get('job_name')),
         )
 
     @staticmethod
@@ -23050,8 +23088,7 @@ class BossFilterGUI:
             if not CANDIDATES_PATH.exists():
                 return
             from bossmaster import export_to_excel
-            with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                candidates = json.load(f)
+            candidates = load_candidates_all(CANDIDATES_PATH)
             export_to_excel(candidates, str(CANDIDATES_XLSX_PATH))
         except Exception as e:
             self.append_log(f"[Excel] 同步更新失败：{e}")
@@ -23075,22 +23112,21 @@ class BossFilterGUI:
                         c for c in self.result_tree_data
                         if not (
                             c.get('geek_id') == target_geek_id
-                            and c.get('job_name', '').replace(' ', '') == target_job_name.replace(' ', '')
+                            and normalize_job_name(c.get('job_name'))
+                            == normalize_job_name(target_job_name)
                         )
                     ]
 
                 # 从 JSON 文件中移除
                 if CANDIDATES_PATH.exists():
-                    with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                        candidates = json.load(f)
-                    candidates = [
-                        c for c in candidates
-                        if not (
-                            c.get('geek_id') == target_geek_id
-                            and c.get('job_name', '').replace(' ', '') == target_job_name.replace(' ', '')
-                        )
-                    ]
-                    save_candidates_all(candidates, CANDIDATES_PATH)
+                    remove_candidates_all(
+                        lambda persisted: (
+                            persisted.get('geek_id') == target_geek_id
+                            and normalize_job_name(persisted.get('job_name'))
+                            == normalize_job_name(target_job_name)
+                        ),
+                        CANDIDATES_PATH,
+                    )
 
                     # 从树中移除
                     self.result_tree.delete(item)
@@ -23220,14 +23256,18 @@ class BossFilterGUI:
         # 统计已打招呼人数
         greeted_count = 0
         try:
-            with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                _candidates = json.load(f)
+            _candidates = load_candidates_all(CANDIDATES_PATH)
             if is_all_jobs:
                 greeted_count = sum(1 for c in _candidates if c.get('greet_sent'))
             else:
-                job_name = selected_job.replace(" ", "")
-                greeted_count = sum(1 for c in _candidates if c.get('greet_sent') and c.get('job_name', '') == job_name)
-        except (OSError, json.JSONDecodeError):
+                job_name = normalize_job_name(selected_job)
+                greeted_count = sum(
+                    1
+                    for c in _candidates
+                    if c.get('greet_sent')
+                    and normalize_job_name(c.get('job_name')) == job_name
+                )
+        except (OSError, RuntimeError):
             pass
 
         # 构建确认对话框
@@ -23322,75 +23362,93 @@ class BossFilterGUI:
                 return
 
             try:
-                # 备份
                 backup_path = CANDIDATES_PATH.with_suffix('.json.bak')
-                shutil.copy2(CANDIDATES_PATH, backup_path)
-                self.append_log(f"已备份候选人数据到 {backup_path.name}")
+                outcome = {
+                    "removed": 0,
+                    "kept": 0,
+                    "blacklist_kept": 0,
+                }
 
-                with open(CANDIDATES_PATH, 'r', encoding='utf-8') as f:
-                    candidates = json.load(f)
+                def clear_snapshot(candidates):
+                    if choice == "current":
+                        job_name = normalize_job_name(selected_job)
+                        other_jobs = [
+                            c for c in candidates
+                            if normalize_job_name(c.get('job_name')) != job_name
+                        ]
+                        current_job = [
+                            c for c in candidates
+                            if normalize_job_name(c.get('job_name')) == job_name
+                        ]
+                        if keep_greeted:
+                            kept = [
+                                c for c in current_job
+                                if c.get('greet_sent') or c.get('blacklisted')
+                            ]
+                            removed_list = [
+                                c for c in current_job
+                                if not c.get('greet_sent') and not c.get('blacklisted')
+                            ]
+                            outcome["kept"] = sum(
+                                1 for c in kept if c.get('greet_sent')
+                            )
+                            outcome["blacklist_kept"] = sum(
+                                1 for c in kept if c.get('blacklisted')
+                            )
+                        else:
+                            kept = [c for c in current_job if c.get('blacklisted')]
+                            removed_list = [
+                                c for c in current_job if not c.get('blacklisted')
+                            ]
+                            outcome["blacklist_kept"] = len(kept)
+                        candidates[:] = other_jobs + kept
+                    else:
+                        if keep_greeted:
+                            kept = [
+                                c for c in candidates
+                                if c.get('greet_sent') or c.get('blacklisted')
+                            ]
+                            removed_list = [
+                                c for c in candidates
+                                if not c.get('greet_sent') and not c.get('blacklisted')
+                            ]
+                            outcome["kept"] = sum(
+                                1 for c in kept if c.get('greet_sent')
+                            )
+                            outcome["blacklist_kept"] = sum(
+                                1 for c in kept if c.get('blacklisted')
+                            )
+                        else:
+                            kept = [c for c in candidates if c.get('blacklisted')]
+                            removed_list = [
+                                c for c in candidates if not c.get('blacklisted')
+                            ]
+                            outcome["blacklist_kept"] = len(kept)
+                        candidates[:] = kept
+                    outcome["removed"] = len(removed_list)
+                    return outcome["removed"]
 
-                kept_count = 0
-                blacklist_kept_count = 0
+                mutate_candidates_all(clear_snapshot, CANDIDATES_PATH)
+                removed = outcome["removed"]
+                kept_count = outcome["kept"]
+                blacklist_kept_count = outcome["blacklist_kept"]
+                if removed:
+                    self.append_log(f"已备份候选人数据到 {backup_path.name}")
 
                 if choice == "current":
-                    # 清空当前岗位
-                    job_name = selected_job.replace(" ", "")
-                    other_jobs = [c for c in candidates if c.get('job_name', '') != job_name]
-                    current_job = [c for c in candidates if c.get('job_name', '') == job_name]
-
-                    if keep_greeted:
-                        kept = [c for c in current_job if c.get('greet_sent') or c.get('blacklisted')]
-                        removed_list = [c for c in current_job if not c.get('greet_sent') and not c.get('blacklisted')]
-                        candidates = other_jobs + kept
-                        kept_count = sum(1 for c in kept if c.get('greet_sent'))
-                        blacklist_kept_count = sum(1 for c in kept if c.get('blacklisted'))
-                    else:
-                        kept = [c for c in current_job if c.get('blacklisted')]
-                        removed_list = [c for c in current_job if not c.get('blacklisted')]
-                        candidates = other_jobs + kept
-                        blacklist_kept_count = len(kept)
-
-                    removed = len(removed_list)
-
-                    save_candidates_all(candidates, CANDIDATES_PATH)
-
                     log_msg = f"已清空岗位「{selected_job}」的 {removed} 条候选人数据"
                     info_msg = f"已清空 {removed} 条候选人数据"
-                    if kept_count > 0:
-                        log_msg += f"，保留 {kept_count} 条已打招呼记录"
-                        info_msg += f"，保留 {kept_count} 条已打招呼记录"
-                    if blacklist_kept_count > 0:
-                        log_msg += f"，保留 {blacklist_kept_count} 条黑名单记录"
-                        info_msg += f"，保留 {blacklist_kept_count} 条黑名单记录"
-                    self.append_log(log_msg)
-                    messagebox.showinfo("完成", info_msg)
                 else:
-                    # 清空全部
-                    if keep_greeted:
-                        kept = [c for c in candidates if c.get('greet_sent') or c.get('blacklisted')]
-                        removed = len([c for c in candidates if not c.get('greet_sent') and not c.get('blacklisted')])
-                        candidates = kept
-                        kept_count = sum(1 for c in kept if c.get('greet_sent'))
-                        blacklist_kept_count = sum(1 for c in kept if c.get('blacklisted'))
-                    else:
-                        kept = [c for c in candidates if c.get('blacklisted')]
-                        removed = len(candidates) - len(kept)
-                        candidates = kept
-                        blacklist_kept_count = len(kept)
-
-                    save_candidates_all(candidates, CANDIDATES_PATH)
-
                     log_msg = f"已清空全部 {removed} 条候选人数据"
                     info_msg = f"已清空全部 {removed} 条候选人数据"
-                    if kept_count > 0:
-                        log_msg += f"，保留 {kept_count} 条已打招呼记录"
-                        info_msg += f"，保留 {kept_count} 条已打招呼记录"
-                    if blacklist_kept_count > 0:
-                        log_msg += f"，保留 {blacklist_kept_count} 条黑名单记录"
-                        info_msg += f"，保留 {blacklist_kept_count} 条黑名单记录"
-                    self.append_log(log_msg)
-                    messagebox.showinfo("完成", info_msg)
+                if kept_count > 0:
+                    log_msg += f"，保留 {kept_count} 条已打招呼记录"
+                    info_msg += f"，保留 {kept_count} 条已打招呼记录"
+                if blacklist_kept_count > 0:
+                    log_msg += f"，保留 {blacklist_kept_count} 条黑名单记录"
+                    info_msg += f"，保留 {blacklist_kept_count} 条黑名单记录"
+                self.append_log(log_msg)
+                messagebox.showinfo("完成", info_msg)
 
                 # 同步 Excel
                 self._regenerate_excel()

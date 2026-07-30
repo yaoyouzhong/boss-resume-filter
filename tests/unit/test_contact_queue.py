@@ -29,6 +29,10 @@ def test_candidate_identity_normalizes_job_spaces():
         "g1",
         "JavaEngineer",
     )
+    assert candidate_identity(_candidate(job_name="Java\tEngineer\u00a0")) == (
+        "g1",
+        "JavaEngineer",
+    )
 
 
 def test_pending_count_normalizes_runtime_and_legacy_verification_states():
@@ -156,3 +160,20 @@ def test_queue_load_recovers_valid_backup_after_corruption():
 
         assert len(restored) == 1
         assert json.loads(path.read_text(encoding="utf-8"))["version"] == 1
+
+
+def test_queue_save_preserves_good_backup_when_primary_is_corrupt():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "contact_queue.json"
+        first = build_contact_queue_item(_candidate(name="First"))
+        second = build_contact_queue_item(_candidate(name="Second"))
+        save_contact_queue([first], path)
+        save_contact_queue([second], path)
+        backup = Path(str(path) + ".bak")
+        expected_backup = backup.read_text(encoding="utf-8")
+        path.write_text("{broken", encoding="utf-8")
+
+        save_contact_queue([second], path)
+
+        assert backup.read_text(encoding="utf-8") == expected_backup
+        assert json.loads(path.read_text(encoding="utf-8"))["items"][0]["geek_id"] == "g1"

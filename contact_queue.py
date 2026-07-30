@@ -1,14 +1,14 @@
 """Persistent user intent for the GUI candidate contact queue."""
 from __future__ import annotations
 
-import json
-import os
-import shutil
 import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from job_identity import normalize_job_name
+from safe_json_store import JsonSnapshotError, load_json_snapshot, save_json_snapshot
 
 
 QUEUE_VERSION = 1
@@ -60,16 +60,12 @@ def save_contact_queue(items: list[dict[str, Any]], path: str | Path) -> None:
     }
 
     with _QUEUE_FILE_LOCK:
-        queue_path.parent.mkdir(parents=True, exist_ok=True)
-        if queue_path.exists():
-            try:
-                shutil.copy2(queue_path, backup_path)
-            except OSError:
-                pass
-        tmp_path = Path(str(queue_path) + ".tmp")
-        with open(tmp_path, "w", encoding="utf-8") as file_obj:
-            json.dump(payload, file_obj, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, queue_path)
+        save_json_snapshot(
+            payload,
+            queue_path,
+            _validate_payload,
+            backup_path=backup_path,
+        )
 
 
 def count_pending_contact_queue(items: list[dict[str, Any]]) -> int:
@@ -90,9 +86,15 @@ def load_pending_contact_queue_count(path: str | Path) -> int:
     queue_path = Path(path)
     backup_path = Path(str(queue_path) + ".bak")
     with _QUEUE_FILE_LOCK:
-        payload = _load_payload(queue_path)
-        if payload is None:
-            payload = _load_payload(backup_path)
+        try:
+            payload = load_json_snapshot(
+                queue_path,
+                _validate_payload,
+                backup_path=backup_path,
+                default=None,
+            )
+        except JsonSnapshotError:
+            payload = None
     if payload is None:
         return 0
     return count_pending_contact_queue(payload.get("items", []))
@@ -106,14 +108,15 @@ def load_contact_queue(
     queue_path = Path(path)
     backup_path = Path(str(queue_path) + ".bak")
     with _QUEUE_FILE_LOCK:
-        payload = _load_payload(queue_path)
-        if payload is None:
-            payload = _load_payload(backup_path)
-            if payload is not None:
-                try:
-                    shutil.copy2(backup_path, queue_path)
-                except OSError:
-                    pass
+        try:
+            payload = load_json_snapshot(
+                queue_path,
+                _validate_payload,
+                backup_path=backup_path,
+                default=None,
+            )
+        except JsonSnapshotError:
+            payload = None
         if payload is None:
             payload = {"version": QUEUE_VERSION, "items": []}
 
@@ -204,17 +207,14 @@ def _serialize_item(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _load_payload(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as file_obj:
-            payload = json.load(file_obj)
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict) or not isinstance(payload.get("items", []), list):
-        return None
-    return payload
+def _validate_payload(payload: Any) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("联系清单根节点必须是对象")
+    if payload.get("version") != QUEUE_VERSION:
+        raise ValueError("联系清单版本无效")
+    items = payload.get("items")
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        raise ValueError("联系清单项目必须是对象列表")
 
 
 def _normalize_status(value: Any) -> str:
@@ -228,7 +228,7 @@ def _normalize_status(value: Any) -> str:
 
 
 def _normalize_job_name(value: Any) -> str:
-    return str(value or "").replace(" ", "")
+    return normalize_job_name(value)
 
 
 def _safe_int(value: Any) -> int:
