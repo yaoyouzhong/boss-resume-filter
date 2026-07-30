@@ -8019,9 +8019,9 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
         with patch("gui_main.filedialog.askopenfilename", return_value=str(resume_path)), \
                 patch("gui_main.messagebox.askyesno", return_value=True), \
                 patch("gui_main.messagebox.showerror") as showerror, \
-                patch("gui_main.save_candidates_all"), \
+                patch("gui_main.update_candidate_records", return_value=1), \
                 patch("gui_main.get_api_key", return_value="secret"), \
-                patch("paths.get_base_dir", return_value=tmp_path), \
+                patch("gui_main.get_base_dir", return_value=tmp_path), \
                 patch("llm_eval.evaluate_with_resume", side_effect=RuntimeError("模型故障")), \
                 patch("gui_main.threading.Thread", side_effect=run_thread):
             gui._import_resume(
@@ -8044,6 +8044,48 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
         parent=parent,
     )
     tree.set.assert_any_call("row-1", "status", "已导入简历")
+
+
+def test_revert_resume_eval_never_deletes_file_outside_managed_directory():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.append_log = Mock()
+    gui.refresh_results = Mock()
+    gui.refresh_home_stats = Mock()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        external = root / "outside-resume.pdf"
+        external.write_bytes(b"private")
+        candidate = {
+            "geek_id": "g1",
+            "job_name": "Java",
+            "name": "张三",
+            "rule_score": 70,
+            "llm_adjustment": 5,
+            "match_score": 80,
+            "resume_file": str(external),
+            "resume_eval_adjustment": 10,
+            "resume_eval_reason": "完整简历匹配",
+        }
+        gui._resolve_candidate = Mock(return_value=candidate)
+
+        def apply_update(_predicate, updater, _path):
+            updater(candidate)
+            return 1
+
+        with patch("gui_main.messagebox.askyesno", return_value=True), \
+                patch("gui_main.update_candidate_records", side_effect=apply_update), \
+                patch("gui_main.get_base_dir", return_value=root):
+            gui._revert_resume_eval(None, candidate=candidate, parent=gui.root)
+
+        assert external.read_bytes() == b"private"
+        assert "resume_file" not in candidate
+        assert candidate["match_score"] == 75
+        assert any(
+            "未删除受管目录外" in call.args[0]
+            for call in gui.append_log.call_args_list
+        )
 
 
 # === 评分拆解与简历评估的替代关系（regression: resume_adj=0 时不得回退显示 AI 调整值）===

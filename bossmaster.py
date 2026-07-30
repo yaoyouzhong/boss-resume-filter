@@ -80,6 +80,7 @@ from storage import (
     load_candidates_all,
     merge_candidate_business_state,
     merge_candidates_all,
+    mutate_candidates_all,
     persist_candidate_greeting_pending,
     persist_candidate_greeted,
     save_candidates_all,
@@ -5720,25 +5721,33 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
 
     # 清空 candidates_all.json（如果指定 --clear）
     if args.clear and os.path.exists(CANDIDATES_PATH):
-        candidates_all = load_candidates_all()
-        blacklisted = [c for c in candidates_all if c.get('blacklisted')]
-        if args.keep_greeted:
-            # 保留已打招呼和已屏蔽的候选人
-            kept = [c for c in candidates_all if c.get('greet_sent') or c.get('blacklisted')]
-            kept_count = len(kept)
-            removed = len(candidates_all) - kept_count
-            if kept_count > 0:
-                save_candidates_all(kept)
+        clear_outcome = {"kept": 0, "removed": 0, "blacklisted": 0}
+
+        def clear_candidates_snapshot(candidates):
+            blacklisted = [c for c in candidates if c.get('blacklisted')]
+            if args.keep_greeted:
+                kept = [
+                    c for c in candidates
+                    if c.get('greet_sent') or c.get('blacklisted')
+                ]
             else:
-                os.remove(CANDIDATES_PATH)
+                kept = blacklisted
+            clear_outcome["kept"] = len(kept)
+            clear_outcome["removed"] = len(candidates) - len(kept)
+            clear_outcome["blacklisted"] = len(blacklisted)
+            candidates[:] = kept
+            return clear_outcome["removed"]
+
+        mutate_candidates_all(clear_candidates_snapshot)
+        kept_count = clear_outcome["kept"]
+        removed = clear_outcome["removed"]
+        if args.keep_greeted:
             print(f"已清空 candidates_all.json（保留 {kept_count} 条已打招呼/黑名单记录，删除 {removed} 条）")
         else:
-            removed = len(candidates_all) - len(blacklisted)
-            if blacklisted:
-                save_candidates_all(blacklisted)
-                print(f"已清空 candidates_all.json（保留 {len(blacklisted)} 条黑名单记录，删除 {removed} 条）")
+            blacklist_count = clear_outcome["blacklisted"]
+            if blacklist_count:
+                print(f"已清空 candidates_all.json（保留 {blacklist_count} 条黑名单记录，删除 {removed} 条）")
             else:
-                os.remove(CANDIDATES_PATH)
                 print("已清空 candidates_all.json")
 
     # 补打招呼模式：直接处理，不需要打开浏览器扫描
