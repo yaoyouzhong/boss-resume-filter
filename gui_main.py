@@ -113,6 +113,10 @@ from data_recovery import (
     recover_pending_transaction,
     restore_backup,
 )
+from diagnostic_package import (
+    DiagnosticPrivacyError,
+    create_diagnostic_package,
+)
 from job_identity import job_names_equal, normalize_job_name
 from constants import (
     API_CANDIDATE_LIMIT_DEFAULT,
@@ -4447,6 +4451,53 @@ class BossFilterGUI:
             background=self.colors["bg_card"],
         ).pack(anchor="w", pady=(int(10 * self.dpi_scale * self.zoom_factor), 0))
 
+        yield
+
+        diagnostic_card = self._create_card(
+            api_container,
+            "故障诊断",
+            fill="x",
+            padx=int(25 * self.dpi_scale * self.zoom_factor),
+            pady=int(15 * self.dpi_scale * self.zoom_factor),
+        )
+        ttk.Label(
+            diagnostic_card,
+            text=(
+                "导出环境、版本、数据结构计数和最近日志。"
+                "不包含候选人原始数据、简历、岗位内容、API Key、Cookie 或浏览器资料；"
+                "日志会自动脱敏并复核残留。"
+            ),
+            font=self.font_label,
+            foreground=self.colors["text_secondary"],
+            background=self.colors["bg_card"],
+            wraplength=int(900 * self.dpi_scale * self.zoom_factor),
+            justify="left",
+        ).pack(anchor="w")
+        diagnostic_icon = self.icons.button(
+            "export",
+            self.colors["text_primary"],
+        )
+        diagnostic_button = ttk.Button(
+            diagnostic_card,
+            image=diagnostic_icon,
+            text=" 导出脱敏诊断包",
+            compound=tk.LEFT,
+            command=self._export_diagnostic_package,
+        )
+        diagnostic_button._icon_ref = diagnostic_icon
+        diagnostic_button.pack(
+            anchor="w",
+            pady=(int(12 * self.dpi_scale * self.zoom_factor), 0),
+        )
+        self.diagnostic_package_status_var = tk.StringVar(value="")
+        ttk.Label(
+            diagnostic_card,
+            textvariable=self.diagnostic_package_status_var,
+            font=self.font_label,
+            foreground=self.colors["text_secondary"],
+            background=self.colors["bg_card"],
+        ).pack(anchor="w", pady=(int(10 * self.dpi_scale * self.zoom_factor), 0))
+
     def load_api_config_to_ui(self, resolve_key=True):
         """加载 API 配置到 UI 控件"""
         if not hasattr(self, 'api_config') or not self.api_config:
@@ -4645,6 +4696,108 @@ class BossFilterGUI:
         messagebox.showinfo(
             "数据恢复完成",
             f"{summary}{suffix}\n\n界面已重新加载恢复后的数据。",
+            parent=self.root,
+        )
+
+    def _diagnostic_runtime_context(self) -> dict:
+        """Return a strict allowlist of non-identifying GUI state."""
+        try:
+            current_page = PageIndex(
+                getattr(self, "current_page_index", PageIndex.HOME)
+            )
+            current_page_name = PAGE_SPECS[current_page].title
+        except (TypeError, ValueError, KeyError):
+            current_page_name = "未知"
+        context = {
+            "browser_connected": bool(
+                getattr(self, "browser_connected", False)
+            ),
+            "browser_state": (
+                "connected"
+                if getattr(self, "browser_connected", False)
+                else "disconnected"
+            ),
+            "current_page": current_page_name,
+            "data_storage_error_present": bool(
+                str(getattr(self, "_data_storage_error", "") or "").strip()
+            ),
+            "dpi_scale": round(float(getattr(self, "dpi_scale", 1.0)), 3),
+            "zoom_factor": round(float(getattr(self, "zoom_factor", 1.0)), 3),
+        }
+        try:
+            context.update({
+                "screen_width": int(self.root.winfo_screenwidth()),
+                "screen_height": int(self.root.winfo_screenheight()),
+                "window_width": int(self.root.winfo_width()),
+                "window_height": int(self.root.winfo_height()),
+                "tk_patchlevel": str(
+                    self.root.tk.call("info", "patchlevel")
+                ),
+            })
+        except (AttributeError, TypeError, ValueError, tk.TclError):
+            pass
+        return context
+
+    def _export_diagnostic_package(self) -> None:
+        """Export a bounded, redacted support package for troubleshooting."""
+        if getattr(self, "_data_maintenance_running", False):
+            messagebox.showwarning(
+                "暂时不能导出",
+                "数据备份或恢复正在进行，请结束后再导出诊断包。",
+                parent=self.root,
+            )
+            return
+        destination = filedialog.asksaveasfilename(
+            title="导出脱敏诊断包",
+            defaultextension=".zip",
+            initialfile=f"BOSS诊断包-{datetime.now():%Y%m%d-%H%M%S}.zip",
+            filetypes=[("ZIP 诊断包", "*.zip")],
+            parent=self.root,
+        )
+        if not destination:
+            return
+        self._data_maintenance_running = True
+        status_var = getattr(self, "diagnostic_package_status_var", None)
+        if status_var is not None:
+            status_var.set("正在收集、脱敏并复核…")
+        try:
+            result = create_diagnostic_package(
+                BASE_DIR,
+                destination,
+                app_version=__version__,
+                runtime_context=self._diagnostic_runtime_context(),
+            )
+        except (
+            DiagnosticPrivacyError,
+            OSError,
+            ValueError,
+            RuntimeError,
+            zipfile.BadZipFile,
+        ) as exc:
+            if status_var is not None:
+                status_var.set("诊断包导出失败")
+            messagebox.showerror(
+                "诊断包导出失败",
+                f"没有生成可分享的诊断包。\n\n{exc}",
+                parent=self.root,
+            )
+            return
+        finally:
+            self._data_maintenance_running = False
+
+        if status_var is not None:
+            status_var.set(
+                f"最近导出：已脱敏并复核，包含 {result['log_count']} 个日志文件"
+            )
+        self.append_operation_log(
+            "[故障诊断] 已导出脱敏诊断包，"
+            f"包含 {result['log_count']} 个日志文件"
+        )
+        messagebox.showinfo(
+            "诊断包已导出",
+            "诊断包已完成自动脱敏和残留复核。\n\n"
+            f"保存位置：\n{result['path']}\n\n"
+            "分享前仍建议打开 ZIP，人工查看其中的文本内容。",
             parent=self.root,
         )
 
