@@ -198,6 +198,25 @@ def test_real_windows_child_process_runs_hidden_and_preserves_output():
     assert result.stdout.strip() == "hidden-child-ok"
 
 
+def test_pr_delivery_direct_entrypoint_can_import_hidden_proxy():
+    proxy = HiddenSubprocess(subprocess)
+    result = proxy.run(
+        [
+            sys.executable,
+            str(BASE_DIR / "scripts" / "pr_delivery.py"),
+            "--help",
+        ],
+        cwd=BASE_DIR,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--authorization" in result.stdout
+
+
 def test_github_cli_environment_keeps_existing_explicit_values():
     fake = _FakeSubprocess()
     proxy = HiddenSubprocess(fake, platform="win32")
