@@ -23,6 +23,9 @@ if str(ROOT) not in sys.path:
 
 # Unit tests must never read, overwrite, or clear the user's live risk state.
 os.environ.setdefault("BOSS_RESUME_FILTER_DISABLE_GUARD_PERSISTENCE", "1")
+# Tests use temporary snapshots explicitly; generic scan tests must not migrate
+# the developer's real job/candidate/contact files as a side effect.
+os.environ.setdefault("BOSS_RESUME_FILTER_DISABLE_DATA_MIGRATION", "1")
 
 
 def _configure_output_encoding() -> None:

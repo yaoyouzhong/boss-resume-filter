@@ -19,6 +19,7 @@ import queue
 import random
 import socket
 import subprocess
+import zipfile
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -105,6 +106,13 @@ from job_config_diagnostics import (
 )
 from job_config_store import load_job_config_snapshot, save_job_config_snapshot
 from data_schema import legacy_job_uuid, new_job_uuid, normalize_job_uuid
+from data_recovery import (
+    create_backup_package,
+    ensure_runtime_data_schema,
+    inspect_backup,
+    recover_pending_transaction,
+    restore_backup,
+)
 from job_identity import job_names_equal, normalize_job_name
 from constants import (
     API_CANDIDATE_LIMIT_DEFAULT,
@@ -1055,9 +1063,19 @@ class BossFilterGUI:
         # 加载配置
         self.job_rules = {}
         self.api_config = {}
+        self._data_storage_error = ""
+        self._data_recovery_report = {}
+        self._data_migration_report = {}
+        self._data_maintenance_running = False
         if standalone_education:
             self.api_config = dict(education_api_config or {})
         else:
+            if os.environ.get("BOSS_RESUME_FILTER_DISABLE_DATA_MIGRATION") != "1":
+                try:
+                    self._data_recovery_report = recover_pending_transaction(BASE_DIR)
+                    self._data_migration_report = ensure_runtime_data_schema(BASE_DIR)
+                except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+                    self._data_storage_error = str(exc)
             self.load_config()
             # 首屏启动只读 api_config.json，不同步查询 keyring。
             # keyring 初始化在 Windows 上可能耗时明显，等用户进入模型配置或真正运行时再按需读取。
@@ -1115,6 +1133,7 @@ class BossFilterGUI:
         # 启动日志更新
         if not standalone_education:
             self.update_log()
+            self._report_startup_data_state()
 
         # 启动 UI 更新队列处理（线程安全）
         self._process_ui_queue()
@@ -1167,6 +1186,64 @@ class BossFilterGUI:
             self.run_on_ui(_start)
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _report_startup_data_state(self) -> None:
+        """Log startup recovery/migration and surface write-blocking failures."""
+        error = str(getattr(self, "_data_storage_error", "") or "").strip()
+        if error:
+            self.append_log(f"[数据安全] 初始化失败，已阻止数据写入：{error}")
+            self.root.after(
+                0,
+                lambda detail=error: messagebox.showerror(
+                    "数据安全检查失败",
+                    "候选人、岗位配置和联系清单未通过启动检查，"
+                    "本次已禁止继续写入。\n\n"
+                    f"{detail}\n\n"
+                    "请先从系统设置恢复有效备份，或检查数据文件后重新启动。",
+                    parent=self.root,
+                ),
+            )
+            return
+
+        recovery = getattr(self, "_data_recovery_report", {}) or {}
+        if recovery.get("recovered"):
+            action = {
+                "complete": "完成上次中断的数据事务",
+                "rollback": "回退到上次有效恢复点",
+                "cleanup": "清理已完成的数据事务",
+            }.get(recovery.get("action"), "恢复上次数据事务")
+            self.append_log(f"[数据安全] {action}")
+
+        migration = getattr(self, "_data_migration_report", {}) or {}
+        if migration.get("changed"):
+            self.append_log("[数据安全] 已完成岗位、候选人与联系清单的一致性升级")
+        unresolved = int(migration.get("unresolved_candidate_count") or 0)
+        unresolved_queue = int(migration.get("unresolved_queue_count") or 0)
+        if unresolved or unresolved_queue:
+            self.append_log(
+                "[数据安全] 有 "
+                f"{unresolved} 条候选人记录、{unresolved_queue} 条联系清单记录"
+                "无法自动关联到现有岗位，已原样保留"
+            )
+
+    def _ensure_data_storage_available(
+        self,
+        action: str,
+        *,
+        show_dialog: bool = True,
+    ) -> bool:
+        """Fail closed when startup recovery or schema validation failed."""
+        error = str(getattr(self, "_data_storage_error", "") or "").strip()
+        if not error:
+            return True
+        if show_dialog:
+            messagebox.showerror(
+                "数据写入已阻止",
+                f"无法{action}，因为数据安全检查尚未通过。\n\n{error}\n\n"
+                "可在系统设置中从有效备份恢复数据。",
+                parent=getattr(self, "root", None),
+            )
+        return False
 
     def _setup_global_shortcuts(self):
         """注册全局快捷键：F5 刷新、Ctrl+F 搜索、Delete 移除选中、Ctrl+1~7 切换页面。"""
@@ -1959,6 +2036,12 @@ class BossFilterGUI:
         try:
             page = PageIndex(page_index)
         except (TypeError, ValueError):
+            return
+        if (
+            str(getattr(self, "_data_storage_error", "") or "").strip()
+            and page not in {PageIndex.HOME, PageIndex.SETTINGS}
+        ):
+            self._ensure_data_storage_available(f"打开“{PAGE_SPECS[page].title}”")
             return
         page_spec = PAGE_SPECS[page]
         self._request_page_first_open(
@@ -4303,6 +4386,67 @@ class BossFilterGUI:
         # 初始化模型列表
         self.saved_models = []
 
+        yield
+
+        data_card = self._create_card(
+            api_container,
+            "数据备份与恢复",
+            fill="x",
+            padx=int(25 * self.dpi_scale * self.zoom_factor),
+            pady=int(15 * self.dpi_scale * self.zoom_factor),
+        )
+        ttk.Label(
+            data_card,
+            text=(
+                "备份包含候选人、岗位配置、联系清单和已导入的简历副本。"
+                "导出的 ZIP 未加密，请保存在受控位置。"
+            ),
+            font=self.font_label,
+            foreground=self.colors["text_secondary"],
+            background=self.colors["bg_card"],
+            wraplength=int(900 * self.dpi_scale * self.zoom_factor),
+            justify="left",
+        ).pack(anchor="w")
+
+        data_button_row = ttk.Frame(data_card, style="TFrame")
+        data_button_row.pack(
+            fill="x",
+            pady=(int(12 * self.dpi_scale * self.zoom_factor), 0),
+        )
+        export_icon = self.icons.button("export", self.colors["text_primary"])
+        export_button = ttk.Button(
+            data_button_row,
+            image=export_icon,
+            text=" 导出数据备份",
+            compound=tk.LEFT,
+            command=self._export_data_backup,
+        )
+        export_button._icon_ref = export_icon
+        export_button.pack(side="left")
+
+        import_icon = self.icons.button("import", self.colors["text_primary"])
+        restore_button = ttk.Button(
+            data_button_row,
+            image=import_icon,
+            text=" 从备份恢复",
+            compound=tk.LEFT,
+            command=self._restore_data_backup,
+        )
+        restore_button._icon_ref = import_icon
+        restore_button.pack(
+            side="left",
+            padx=(int(10 * self.dpi_scale * self.zoom_factor), 0),
+        )
+
+        self.data_backup_status_var = tk.StringVar(value="")
+        ttk.Label(
+            data_card,
+            textvariable=self.data_backup_status_var,
+            font=self.font_label,
+            foreground=self.colors["text_secondary"],
+            background=self.colors["bg_card"],
+        ).pack(anchor="w", pady=(int(10 * self.dpi_scale * self.zoom_factor), 0))
+
     def load_api_config_to_ui(self, resolve_key=True):
         """加载 API 配置到 UI 控件"""
         if not hasattr(self, 'api_config') or not self.api_config:
@@ -4343,6 +4487,166 @@ class BossFilterGUI:
 
         # 加载已保存的模型列表
         self.load_saved_models_to_tree()
+
+    @staticmethod
+    def _format_backup_summary(result: dict) -> str:
+        """Return a privacy-safe summary for backup and restore dialogs."""
+        return (
+            f"岗位 {int(result.get('job_count') or 0)} 个，"
+            f"候选人 {int(result.get('candidate_count') or 0)} 人，"
+            f"联系清单 {int(result.get('queue_count') or 0)} 项，"
+            f"简历副本 {int(result.get('resume_count') or 0)} 份"
+        )
+
+    def _data_operation_busy(self) -> bool:
+        """Prevent backup/restore from racing with active candidate writes."""
+        return bool(
+            getattr(self, "is_running", False)
+            or getattr(self, "greet_queue_running", False)
+            or getattr(self, "greet_queue_preparing", False)
+            or getattr(self, "_data_maintenance_running", False)
+        )
+
+    def _set_data_backup_status(self, text: str) -> None:
+        status_var = getattr(self, "data_backup_status_var", None)
+        if status_var is not None:
+            status_var.set(text)
+
+    def _export_data_backup(self) -> None:
+        """Export one verified plaintext ZIP from the current runtime data."""
+        if self._data_operation_busy():
+            messagebox.showwarning(
+                "暂时不能备份",
+                "扫描、联系或数据维护正在进行，请结束后再导出备份。",
+                parent=self.root,
+            )
+            return
+        if not self._ensure_data_storage_available("导出数据备份"):
+            return
+        destination = filedialog.asksaveasfilename(
+            title="导出数据备份",
+            defaultextension=".zip",
+            initialfile=f"BOSS数据备份-{datetime.now():%Y%m%d-%H%M%S}.zip",
+            filetypes=[("ZIP 备份", "*.zip")],
+            parent=self.root,
+        )
+        if not destination:
+            return
+        self._data_maintenance_running = True
+        self._set_data_backup_status("正在生成并校验备份…")
+        try:
+            result = create_backup_package(BASE_DIR, destination)
+        except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+            self._set_data_backup_status("备份失败")
+            messagebox.showerror(
+                "数据备份失败",
+                f"没有生成可用备份。\n\n{exc}",
+                parent=self.root,
+            )
+            return
+        finally:
+            self._data_maintenance_running = False
+        summary = self._format_backup_summary(result)
+        self._set_data_backup_status(f"最近备份：{summary}")
+        self.append_operation_log(f"[数据安全] 已导出数据备份：{summary}")
+        messagebox.showinfo(
+            "数据备份完成",
+            f"{summary}\n\n保存位置：\n{result['path']}\n\n"
+            "此 ZIP 未加密，请妥善保管。",
+            parent=self.root,
+        )
+
+    def _restore_data_backup(self) -> None:
+        """Validate and transactionally restore a user-selected backup ZIP."""
+        if self._data_operation_busy():
+            messagebox.showwarning(
+                "暂时不能恢复",
+                "扫描、联系或数据维护正在进行，请结束后再恢复数据。",
+                parent=self.root,
+            )
+            return
+        source = filedialog.askopenfilename(
+            title="选择数据备份",
+            filetypes=[("ZIP 备份", "*.zip")],
+            parent=self.root,
+        )
+        if not source:
+            return
+        try:
+            preview = inspect_backup(source)
+        except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+            messagebox.showerror(
+                "备份不可用",
+                f"完整性或数据格式检查未通过，未修改当前数据。\n\n{exc}",
+                parent=self.root,
+            )
+            return
+
+        summary = self._format_backup_summary(preview)
+        if not messagebox.askyesno(
+            "确认恢复数据",
+            f"备份内容：{summary}\n\n"
+            "恢复将替换当前候选人、岗位配置和联系清单，并恢复备份中的简历副本。"
+            "执行前会自动保存当前数据恢复点。\n\n是否继续？",
+            parent=self.root,
+        ):
+            return
+
+        self._data_maintenance_running = True
+        self._set_data_backup_status("正在校验并恢复数据…")
+        try:
+            result = restore_backup(BASE_DIR, source)
+        except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+            self._set_data_backup_status("恢复失败，当前数据已保留或自动回退")
+            messagebox.showerror(
+                "数据恢复失败",
+                f"未完成恢复；程序会在下次启动时继续完成或自动回退。\n\n{exc}",
+                parent=self.root,
+            )
+            return
+        finally:
+            self._data_maintenance_running = False
+
+        self._data_storage_error = ""
+        self._data_recovery_report = {}
+        self._data_migration_report = result
+        self._job_rules_cache = None
+        self._job_rules_mtime = 0
+        self.load_config()
+        if hasattr(self, "config_job_combo"):
+            self.config_job_combo["values"] = list(self.job_rules.keys())
+            selected = next(iter(self.job_rules), "")
+            self.config_job_combo.set(selected)
+            if selected:
+                self.load_job_to_form(self.job_rules[selected])
+        if hasattr(self, "job_combo"):
+            self._sync_run_job_combo_values(self.job_rules, prefer_current=False)
+        self.greet_queue_items = []
+        self._greet_queue_loaded = False
+        self._refresh_contact_queue_badge()
+        self._result_tree_fingerprint = None
+        self._stats_tree_fingerprint = None
+        self._home_stats_fingerprint = None
+        if hasattr(self, "result_tree"):
+            self.refresh_results(force=True)
+        if hasattr(self, "stats_tree"):
+            self.refresh_stats()
+        if hasattr(self, "home_stats_labels"):
+            self.refresh_home_stats()
+
+        summary = self._format_backup_summary(result)
+        unresolved = (
+            int(result.get("unresolved_candidate_count") or 0)
+            + int(result.get("unresolved_queue_count") or 0)
+        )
+        suffix = f"，另有 {unresolved} 条记录未自动关联岗位" if unresolved else ""
+        self._set_data_backup_status(f"最近恢复：{summary}{suffix}")
+        self.append_operation_log(f"[数据安全] 已从备份恢复：{summary}{suffix}")
+        messagebox.showinfo(
+            "数据恢复完成",
+            f"{summary}{suffix}\n\n界面已重新加载恢复后的数据。",
+            parent=self.root,
+        )
 
     def _api_config_file_mtime(self):
         """Return a stable file fingerprint for api_config.json."""
@@ -11579,6 +11883,8 @@ class BossFilterGUI:
 
     def save_config(self):
         """保存配置文件 - 带备份保护，保留 requirement_template 等顶层字段"""
+        if not self._ensure_data_storage_available("保存岗位配置"):
+            return False
         # 加载主文件或已验证备份，保留 requirement_template 等顶层字段。
         try:
             existing = load_job_config_snapshot(CONFIG_PATH, CONFIG_BACKUP_PATH)
@@ -11594,6 +11900,7 @@ class BossFilterGUI:
         }
         existing["job_requirements"] = self._strip_transient_fields(self.job_rules)
         save_job_config_snapshot(existing, CONFIG_PATH, CONFIG_BACKUP_PATH)
+        return True
 
     def _confirm_job_form_transition(self):
         """Protect unsaved job edits before switching or starting another draft."""
@@ -13365,6 +13672,8 @@ class BossFilterGUI:
 
     def save_current_job(self):
         """保存当前岗位配置"""
+        if not self._ensure_data_storage_available("保存岗位配置"):
+            return False
         if getattr(self, '_active_requirement_parse_id', None) is not None:
             messagebox.showwarning(
                 "招聘需求正在解析",
@@ -13436,7 +13745,8 @@ class BossFilterGUI:
 
         self.job_rules[normalized_job_name] = rule
 
-        self.save_config()
+        if not self.save_config():
+            return False
         self.config_job_combo['values'] = list(self.job_rules.keys())
         self.config_job_combo.set(normalized_job_name)
         self._remember_run_job_selection(normalized_job_name)
@@ -14624,6 +14934,8 @@ class BossFilterGUI:
             self, 'greet_queue_preparing', False
         ):
             messagebox.showinfo("联系候选人", "候选人联系任务正在执行，请先暂停或等待发送完成。")
+            return
+        if not self._ensure_data_storage_available("开始筛选"):
             return
 
         guard_state = self._boss_access_cooldown_state()
@@ -20428,6 +20740,12 @@ class BossFilterGUI:
     def _persist_greet_queue(self):
         """Persist active queue intent; completed rows remain session-local."""
         if not self._greet_queue_loaded:
+            return
+        if not self._ensure_data_storage_available(
+            "保存联系清单",
+            show_dialog=False,
+        ):
+            self.append_log("[联系候选人] 数据安全检查未通过，联系清单未写入")
             return
         try:
             save_contact_queue(self.greet_queue_items, CONTACT_QUEUE_PATH)

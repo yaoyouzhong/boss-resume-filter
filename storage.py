@@ -112,6 +112,24 @@ def _read_candidate_file(candidate_path: Path) -> list[dict[str, Any]]:
     return loaded
 
 
+def validate_candidates_snapshot(payload: Any) -> None:
+    """Validate one in-memory candidate snapshot without touching disk."""
+    if not isinstance(payload, list) or any(
+        not isinstance(item, dict) for item in payload
+    ):
+        raise ValueError("候选人数据必须是对象列表")
+    for item in payload:
+        version = item.get("schema_version", 1)
+        if (
+            not isinstance(version, int)
+            or isinstance(version, bool)
+            or version < 1
+            or version > CANDIDATE_SCHEMA_VERSION
+        ):
+            raise ValueError("候选人 Schema 版本无效")
+        normalize_job_uuid(item.get("job_uuid"))
+
+
 def _sync_file(file_obj: Any) -> None:
     """Flush one newly written snapshot before it becomes authoritative."""
     file_obj.flush()

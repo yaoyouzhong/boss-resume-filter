@@ -5960,6 +5960,21 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
         parser.add_argument('--ai-eval', action='store_true', help='启用 AI 辅助评估：对通过筛选的候选人进行 LLM 二次评分')
         args = parser.parse_args()
 
+    if os.environ.get("BOSS_RESUME_FILTER_DISABLE_DATA_MIGRATION") != "1":
+        try:
+            from data_recovery import (
+                ensure_runtime_data_schema,
+                recover_pending_transaction,
+            )
+            recover_pending_transaction(BASE_DIR)
+            ensure_runtime_data_schema(BASE_DIR)
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+            message = f"数据安全检查失败，已停止运行：{exc}"
+            print(message)
+            if progress_callback:
+                progress_callback(100, f"[已停止] {message}")
+            return
+
     # 确定运行模式
     re_greet_mode = args.re_greet
     point_to_point_mode = bool(args.greet_names) and re_greet_mode  # 点对点模式仅在补打招呼时生效

@@ -8661,3 +8661,105 @@ def test_detail_dim_scores_fallback_to_round1_without_resume():
     dim_lines = [l for l in detail.splitlines() if '技能深度' in l]
     assert dim_lines, f"未找到维度评估行：{detail}"
     assert "6/10" in dim_lines[0]
+
+
+# === 数据备份与恢复 ===
+
+def test_data_backup_summary_does_not_include_candidate_identity():
+    summary = BossFilterGUI._format_backup_summary({
+        "job_count": 2,
+        "candidate_count": 18,
+        "queue_count": 4,
+        "resume_count": 3,
+    })
+
+    assert summary == "岗位 2 个，候选人 18 人，联系清单 4 项，简历副本 3 份"
+
+
+def test_export_data_backup_blocks_while_scan_is_running():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.is_running = True
+    gui.greet_queue_running = False
+    gui.greet_queue_preparing = False
+    gui._data_maintenance_running = False
+
+    with (
+        patch.object(gui_main.messagebox, "showwarning") as warning,
+        patch.object(gui_main.filedialog, "asksaveasfilename") as choose,
+    ):
+        gui._export_data_backup()
+
+    warning.assert_called_once()
+    choose.assert_not_called()
+
+
+def test_export_data_backup_reports_verified_counts():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.is_running = False
+    gui.greet_queue_running = False
+    gui.greet_queue_preparing = False
+    gui._data_maintenance_running = False
+    gui._data_storage_error = ""
+    gui.data_backup_status_var = Mock()
+    gui.append_operation_log = Mock()
+
+    result = {
+        "path": "D:/safe/backup.zip",
+        "job_count": 2,
+        "candidate_count": 18,
+        "queue_count": 4,
+        "resume_count": 3,
+    }
+    with (
+        patch.object(
+            gui_main.filedialog,
+            "asksaveasfilename",
+            return_value=result["path"],
+        ),
+        patch.object(
+            gui_main,
+            "create_backup_package",
+            return_value=result,
+        ) as create,
+        patch.object(gui_main.messagebox, "showinfo") as info,
+    ):
+        gui._export_data_backup()
+
+    create.assert_called_once_with(gui_main.BASE_DIR, result["path"])
+    gui.data_backup_status_var.set.assert_called_with(
+        "最近备份：岗位 2 个，候选人 18 人，联系清单 4 项，简历副本 3 份"
+    )
+    info.assert_called_once()
+    assert gui._data_maintenance_running is False
+
+
+def test_restore_data_backup_rejects_tampered_package_before_confirmation():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.is_running = False
+    gui.greet_queue_running = False
+    gui.greet_queue_preparing = False
+    gui._data_maintenance_running = False
+
+    with (
+        patch.object(
+            gui_main.filedialog,
+            "askopenfilename",
+            return_value="D:/unsafe/backup.zip",
+        ),
+        patch.object(
+            gui_main,
+            "inspect_backup",
+            side_effect=ValueError("完整性校验失败"),
+        ),
+        patch.object(gui_main.messagebox, "showerror") as error,
+        patch.object(gui_main.messagebox, "askyesno") as confirm,
+        patch.object(gui_main, "restore_backup") as restore,
+    ):
+        gui._restore_data_backup()
+
+    error.assert_called_once()
+    confirm.assert_not_called()
+    restore.assert_not_called()

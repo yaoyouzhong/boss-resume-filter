@@ -360,6 +360,7 @@ SOURCE_CHECK_FILES = [
     "storage.py",
     "contact_queue.py",
     "data_schema.py",
+    "data_recovery.py",
     "safe_json_store.py",
     "job_config_store.py",
     "job_identity.py",
@@ -821,6 +822,7 @@ def _check_changelog_updated():
     core_files = [
         "gui_main.py", "gui_dialogs.py", "ui_messagebox.py", "changelog_parser.py", "bossmaster.py",
         "filtering.py", "storage.py", "contact_queue.py", "data_schema.py",
+        "data_recovery.py", "resume_store.py",
         "llm_eval.py", "ai_adapter.py", "job_ai_parser.py",
         "job_config_diagnostics.py", "doc_parser.py", "security.py", "updater.py", "icons.py",
         "constants.py", "paths.py", "subprocess_utils.py", "selectors.json", "ui_config.json",
@@ -3681,7 +3683,8 @@ def _needs_cross_platform_rebuild(changed_files):
     SHARED_BUILD_FILES = {
         'gui_main.py', 'bossmaster.py', 'filtering.py', 'llm_eval.py', 'ai_adapter.py',
         'job_ai_parser.py', 'job_config_diagnostics.py', 'storage.py',
-        'contact_queue.py', 'data_schema.py', 'job_config_store.py',
+        'contact_queue.py', 'data_schema.py', 'data_recovery.py',
+        'job_config_store.py', 'resume_store.py',
         'doc_parser.py', 'security.py', 'constants.py',
         'paths.py', 'icons.py', 'updater.py', 'subprocess_utils.py', 'selectors.json',
         'job_config.json', 'api_config.json', 'ui_config.json', 'requirements.txt',

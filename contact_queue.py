@@ -88,6 +88,30 @@ def save_contact_queue(items: list[dict[str, Any]], path: str | Path) -> None:
         )
 
 
+def load_contact_queue_snapshot(path: str | Path) -> dict[str, Any]:
+    """Load raw queue intent for backup, migration, or transaction checks."""
+    queue_path = Path(path)
+    backup_path = Path(str(queue_path) + ".bak")
+    with _QUEUE_FILE_LOCK:
+        payload = load_json_snapshot(
+            queue_path,
+            _validate_payload,
+            backup_path=backup_path,
+            default=None,
+        )
+    if payload is None:
+        return {"version": QUEUE_VERSION, "items": []}
+    result = dict(payload)
+    result["version"] = QUEUE_VERSION
+    result["items"] = [dict(item) for item in payload.get("items", [])]
+    return result
+
+
+def validate_contact_queue_snapshot(payload: Any) -> None:
+    """Validate a queue snapshot intended for transactional persistence."""
+    _validate_payload(payload)
+
+
 def count_pending_contact_queue(items: list[dict[str, Any]]) -> int:
     """Count items that require manual send-result verification."""
     pending = 0

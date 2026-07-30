@@ -18,6 +18,11 @@ pack_venv/
 # 简历数据（敏感）
 resumes/
 output/
+backups/
+.data_manifest.json
+.data_transaction.json*
+.data_transaction.lock
+.data_transactions/
 
 # 浏览器运行状态（含 Cookies、登录态、历史记录、本地存储）
 .storage/
