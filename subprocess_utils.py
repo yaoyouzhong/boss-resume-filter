@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+import ctypes
 from pathlib import Path
 from types import ModuleType
 from typing import Any, TextIO
@@ -19,6 +20,16 @@ def _is_github_cli(command: Any) -> bool:
     return Path(executable.strip('"')).name.lower() in {"gh", "gh.exe"}
 
 
+def _has_attached_console(platform: str) -> bool:
+    """Return whether the current Windows process already owns a console."""
+    if platform != "win32":
+        return False
+    try:
+        return bool(ctypes.windll.kernel32.GetConsoleWindow())
+    except (AttributeError, OSError):
+        return False
+
+
 class HiddenSubprocess:
     """Proxy ``subprocess`` while preventing child console-window activation."""
 
@@ -27,9 +38,15 @@ class HiddenSubprocess:
         module: ModuleType,
         *,
         platform: str | None = None,
+        has_console: bool | None = None,
     ) -> None:
         self._module = module
         self._platform = platform or sys.platform
+        self._has_console = (
+            _has_attached_console(self._platform)
+            if has_console is None
+            else has_console
+        )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._module, name)
@@ -37,22 +54,26 @@ class HiddenSubprocess:
     def _prepare_kwargs(self, command: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
         prepared = dict(kwargs)
         show_window = bool(prepared.pop("show_window", False))
-        if self._platform != "win32" or show_window:
+        if self._platform != "win32":
             return prepared
 
-        creationflags = int(prepared.get("creationflags") or 0)
+        if _is_github_cli(command):
+            env = dict(prepared.get("env") or os.environ)
+            env.setdefault("GH_TELEMETRY", "false")
+            env.setdefault("TZ", "Asia/Shanghai")
+            prepared["env"] = env
+
+        if show_window or self._has_console:
+            # Reuse the caller's console so Git/gh helper processes inherit it.
+            # Creating a separate "hidden" console still activates Windows
+            # Terminal on systems that use it as the default console host.
+            return prepared
+
         create_no_window = int(getattr(self._module, "CREATE_NO_WINDOW", 0))
-        create_new_console = int(getattr(self._module, "CREATE_NEW_CONSOLE", 0))
-        if create_new_console:
-            # A process created with CREATE_NO_WINDOW has no console to pass to
-            # Git/gh helpers, so their descendants can create visible consoles.
-            # Give the direct child one hidden console instead; its whole process
-            # tree then inherits that same hidden console.
-            creationflags &= ~create_no_window
-            creationflags |= create_new_console
-            prepared["creationflags"] = creationflags
-        elif create_no_window:
-            prepared["creationflags"] = creationflags | create_no_window
+        if create_no_window:
+            prepared["creationflags"] = (
+                int(prepared.get("creationflags") or 0) | create_no_window
+            )
 
         startupinfo = prepared.get("startupinfo")
         if startupinfo is None:
@@ -66,11 +87,6 @@ class HiddenSubprocess:
             startupinfo.wShowWindow = int(getattr(self._module, "SW_HIDE", 0))
             prepared["startupinfo"] = startupinfo
 
-        if _is_github_cli(command):
-            env = dict(prepared.get("env") or os.environ)
-            env.setdefault("GH_TELEMETRY", "false")
-            env.setdefault("TZ", "Asia/Shanghai")
-            prepared["env"] = env
         return prepared
 
     @staticmethod

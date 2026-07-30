@@ -22,7 +22,6 @@ class _FakeStartupInfo:
 
 class _FakeSubprocess:
     CREATE_NO_WINDOW = 0x08000000
-    CREATE_NEW_CONSOLE = 0x00000010
     STARTF_USESHOWWINDOW = 0x00000001
     SW_HIDE = 0
     PIPE = subprocess.PIPE
@@ -51,14 +50,13 @@ class _FakeSubprocess:
 
 def test_hidden_subprocess_hides_windows_commands_and_disables_gh_helpers():
     fake = _FakeSubprocess()
-    proxy = HiddenSubprocess(fake, platform="win32")
+    proxy = HiddenSubprocess(fake, platform="win32", has_console=False)
 
     result = proxy.run(["gh", "pr", "view", "49"], capture_output=True)
 
     assert result.returncode == 0
     _kind, _args, kwargs = fake.calls[0]
-    assert kwargs["creationflags"] & fake.CREATE_NEW_CONSOLE
-    assert not kwargs["creationflags"] & fake.CREATE_NO_WINDOW
+    assert kwargs["creationflags"] & fake.CREATE_NO_WINDOW
     assert kwargs["startupinfo"].dwFlags & fake.STARTF_USESHOWWINDOW
     assert kwargs["startupinfo"].wShowWindow == fake.SW_HIDE
     assert kwargs["env"]["GH_TELEMETRY"] == "false"
@@ -67,22 +65,21 @@ def test_hidden_subprocess_hides_windows_commands_and_disables_gh_helpers():
 
 def test_hidden_subprocess_hides_windows_popen_without_changing_normal_env():
     fake = _FakeSubprocess()
-    proxy = HiddenSubprocess(fake, platform="win32")
+    proxy = HiddenSubprocess(fake, platform="win32", has_console=False)
     original_env = {"CUSTOM": "1"}
 
     result = proxy.Popen(["git", "status"], env=original_env)
 
     assert result == "popen-result"
     _kind, _args, kwargs = fake.calls[0]
-    assert kwargs["creationflags"] & fake.CREATE_NEW_CONSOLE
-    assert not kwargs["creationflags"] & fake.CREATE_NO_WINDOW
+    assert kwargs["creationflags"] & fake.CREATE_NO_WINDOW
     assert kwargs["startupinfo"].dwFlags & fake.STARTF_USESHOWWINDOW
     assert kwargs["env"] is original_env
 
 
 def test_visible_gui_process_can_explicitly_keep_its_window():
     fake = _FakeSubprocess()
-    proxy = HiddenSubprocess(fake, platform="win32")
+    proxy = HiddenSubprocess(fake, platform="win32", has_console=False)
 
     proxy.Popen(["chrome.exe", "https://example.com"], show_window=True)
 
@@ -104,7 +101,7 @@ def test_hidden_subprocess_preserves_non_windows_launch_kwargs():
 
 def test_hidden_subprocess_hides_normal_windows_commands():
     fake = _FakeSubprocess()
-    proxy = HiddenSubprocess(fake, platform="win32")
+    proxy = HiddenSubprocess(fake, platform="win32", has_console=False)
     original_env = {"CUSTOM": "1"}
 
     output = io.StringIO()
@@ -112,8 +109,7 @@ def test_hidden_subprocess_hides_normal_windows_commands():
         proxy.run(["git", "status"], env=original_env, text=True)
 
     _kind, _args, kwargs = fake.calls[0]
-    assert kwargs["creationflags"] & fake.CREATE_NEW_CONSOLE
-    assert not kwargs["creationflags"] & fake.CREATE_NO_WINDOW
+    assert kwargs["creationflags"] & fake.CREATE_NO_WINDOW
     assert kwargs["startupinfo"].dwFlags & fake.STARTF_USESHOWWINDOW
     assert kwargs["env"] is original_env
     assert kwargs["stdout"] == fake.PIPE
@@ -123,7 +119,7 @@ def test_hidden_subprocess_hides_normal_windows_commands():
 
 def test_hidden_subprocess_relays_uncaptured_github_output():
     fake = _FakeSubprocess()
-    proxy = HiddenSubprocess(fake, platform="win32")
+    proxy = HiddenSubprocess(fake, platform="win32", has_console=False)
     output = io.StringIO()
 
     with contextlib.redirect_stdout(output):
@@ -134,6 +130,19 @@ def test_hidden_subprocess_relays_uncaptured_github_output():
     _kind, _args, kwargs = fake.calls[0]
     assert kwargs["stdout"] == fake.PIPE
     assert kwargs["stderr"] == fake.PIPE
+
+
+def test_console_parent_reuses_existing_console_for_whole_process_tree():
+    fake = _FakeSubprocess()
+    proxy = HiddenSubprocess(fake, platform="win32", has_console=True)
+
+    proxy.run(["gh", "pr", "view", "50"], capture_output=True)
+
+    _kind, _args, kwargs = fake.calls[0]
+    assert "creationflags" not in kwargs
+    assert "startupinfo" not in kwargs
+    assert kwargs["env"]["GH_TELEMETRY"] == "false"
+    assert kwargs["env"]["TZ"] == "Asia/Shanghai"
 
 
 def test_release_entrypoints_use_hidden_subprocess_proxy():
@@ -202,7 +211,7 @@ def test_real_windows_child_process_runs_hidden_and_preserves_output():
     assert result.stdout.strip() == "hidden-child-ok"
 
 
-def test_real_windows_descendant_inherits_hidden_console():
+def test_real_windows_descendant_inherits_existing_console():
     if sys.platform != "win32":
         return
 
@@ -243,7 +252,7 @@ def test_pr_delivery_direct_entrypoint_can_import_hidden_proxy():
 
 def test_github_cli_environment_keeps_existing_explicit_values():
     fake = _FakeSubprocess()
-    proxy = HiddenSubprocess(fake, platform="win32")
+    proxy = HiddenSubprocess(fake, platform="win32", has_console=False)
     explicit_env = {
         **os.environ,
         "GH_TELEMETRY": "custom",
