@@ -127,7 +127,7 @@ boss-resume-filter/
 ## 敏感信息
 
 - .env 文件不进 git
-- 候选人数据含个人隐私，本地存储要加密
+- 候选人数据含个人隐私；当前阶段不启用候选人库或简历内容加密，必须保持本地、不纳入 Git，并使用有效备份、原子写入和受管简历路径；后续如启用加密，须单独设计兼容迁移与恢复方案
 - API Key 加密存储在系统钥匙串（Windows DPAPI / macOS Keychain），`api_config.json` / `api_config.local.json` 不含明文
 - API Key 按 provider + base_url 组合存储，同一服务商不同接入方式（API / Token Plan）独立管理
 
