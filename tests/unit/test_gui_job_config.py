@@ -6659,6 +6659,58 @@ def test_start_run_accepts_frame_recommend_page():
     assert started == [gui.run_worker]
 
 
+def test_browser_check_skips_all_connection_work_during_shared_cooldown():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.colors = {"warning": "#F9A825"}
+    updates = []
+    logs = []
+    gui.set_browser_ui = lambda *args: updates.append(args)
+    gui.append_run_log = logs.append
+
+    with patch.object(
+        BossFilterGUI,
+        "_boss_access_cooldown_state",
+        return_value={
+            "blocked": True,
+            "remaining_seconds": 90,
+            "status": 429,
+            "reason": "操作频繁",
+            "source": "扫描",
+        },
+    ):
+        gui.check_browser_connection(silent=True)
+
+    assert updates == [
+        ("● 冷却中", "#F9A825", "访问冷却中，剩余约 90 秒；来源：扫描", "disabled")
+    ]
+    assert logs == ["[访问保护] 操作频繁。剩余冷却约 90 秒。"]
+    assert not getattr(gui, "_browser_check_running", False)
+
+
+def test_start_run_rejects_shared_cooldown_before_touching_browser():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.is_running = False
+
+    with (
+        patch.object(
+            BossFilterGUI,
+            "_boss_access_cooldown_state",
+            return_value={
+                "blocked": True,
+                "remaining_seconds": 30,
+                "reason": "安全验证",
+            },
+        ),
+        patch("gui_main.messagebox.showwarning") as showwarning,
+    ):
+        gui.start_run()
+
+    showwarning.assert_called_once()
+    assert showwarning.call_args.args[0] == "BOSS 访问保护"
+    assert "剩余约 30 秒" in showwarning.call_args.args[1]
+    assert "安全验证" in showwarning.call_args.args[1]
+
+
 def test_run_page_readiness_rejects_bare_frame_shell():
     class FakePage:
         url = "https://www.zhipin.com/web/frame/recommend/"

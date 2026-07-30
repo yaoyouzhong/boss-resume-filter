@@ -8,6 +8,7 @@ from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
 from io import StringIO
+import os
 from pathlib import Path
 import sys
 import time
@@ -19,6 +20,9 @@ UNIT_DIR = Path(__file__).resolve().parent / "unit"
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# Unit tests must never read, overwrite, or clear the user's live risk state.
+os.environ.setdefault("BOSS_RESUME_FILTER_DISABLE_GUARD_PERSISTENCE", "1")
 
 
 def _configure_output_encoding() -> None:

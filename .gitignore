@@ -46,6 +46,7 @@ build_log*.txt
 test_output.txt
 *.html
 .last_update_check
+.boss_access_guard.json*
 .run_preferences.json
 release_notes_cache.json
 .build_progress.json

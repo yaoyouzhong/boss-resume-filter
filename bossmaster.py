@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import random
 import re
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -70,6 +72,7 @@ from candidate_workflow import candidate_greet_skip_reason
 from job_config_store import load_job_config_snapshot
 from job_identity import normalize_job_name
 from paths import BASE_DIR, SELECTORS_PATH, CONFIG_PATH, CANDIDATES_PATH, CANDIDATES_XLSX_PATH
+from safe_json_store import JsonSnapshotError, load_json_snapshot, save_json_snapshot
 from storage import (
     build_blacklist_index,
     build_greeted_index,
@@ -158,36 +161,235 @@ class ApiClientError(Exception):
 
 BOSS_RISK_DEFAULT_COOLDOWN_SECONDS = 15 * 60
 BOSS_RISK_MAX_COOLDOWN_SECONDS = 24 * 60 * 60
+BOSS_ACCESS_GUARD_STATE_VERSION = 1
+BOSS_ACCESS_GUARD_LOCK_TIMEOUT_SECONDS = 3.0
+BOSS_ACCESS_GUARD_STALE_LOCK_SECONDS = 30.0
+
+
+def _validate_boss_access_guard_payload(payload: Any) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("BOSS 访问保护状态必须是对象")
+    if payload.get("version") != BOSS_ACCESS_GUARD_STATE_VERSION:
+        raise ValueError("BOSS 访问保护状态版本不受支持")
+    blocked_until = payload.get("blocked_until_epoch")
+    if not isinstance(blocked_until, (int, float)) or isinstance(
+        blocked_until, bool
+    ):
+        raise ValueError("BOSS 访问保护截止时间无效")
+    if not math.isfinite(float(blocked_until)) or blocked_until < 0:
+        raise ValueError("BOSS 访问保护截止时间必须是有限非负数")
+    if not isinstance(payload.get("status", ""), (int, str)):
+        raise ValueError("BOSS 访问保护状态码无效")
+    for key in ("reason", "source", "triggered_at"):
+        if not isinstance(payload.get(key, ""), str):
+            raise ValueError(f"BOSS 访问保护字段 {key} 无效")
 
 
 class BossAccessGuard:
-    """Process-wide cooldown shared by all automated BOSS access paths."""
+    """Cross-process cooldown shared by all automated BOSS access paths."""
 
-    def __init__(self) -> None:
+    def __init__(self, storage_path: str | Path | None = None) -> None:
         self._lock = threading.RLock()
         self._blocked_until = 0.0
+        self._blocked_until_epoch = 0.0
         self._status: int | str = ""
         self._reason = ""
         self._source = ""
         self._triggered_at = ""
+        self._storage_path = Path(storage_path) if storage_path else None
+        self._persistence_error = ""
+
+    @contextmanager
+    def _storage_lock(self):
+        if self._storage_path is None:
+            yield
+            return
+        lock_path = Path(str(self._storage_path) + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + BOSS_ACCESS_GUARD_LOCK_TIMEOUT_SECONDS
+        lock_fd: int | None = None
+        while lock_fd is None:
+            try:
+                lock_fd = os.open(
+                    lock_path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                )
+                os.write(
+                    lock_fd,
+                    f"{os.getpid()} {time.time():.6f}".encode("ascii"),
+                )
+            except FileExistsError:
+                try:
+                    lock_age = time.time() - lock_path.stat().st_mtime
+                    if lock_age > BOSS_ACCESS_GUARD_STALE_LOCK_SECONDS:
+                        lock_path.unlink()
+                        continue
+                except FileNotFoundError:
+                    continue
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("等待 BOSS 访问保护状态锁超时")
+                time.sleep(0.02)
+        try:
+            yield
+        finally:
+            os.close(lock_fd)
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _load_persisted_locked(self) -> dict[str, Any] | None:
+        if self._storage_path is None:
+            return None
+        try:
+            payload = load_json_snapshot(
+                self._storage_path,
+                _validate_boss_access_guard_payload,
+                default=None,
+            )
+            self._persistence_error = ""
+            return payload
+        except JsonSnapshotError as exc:
+            self._persistence_error = str(exc)
+            now_epoch = time.time()
+            protection = {
+                "version": BOSS_ACCESS_GUARD_STATE_VERSION,
+                "blocked_until_epoch": (
+                    now_epoch + BOSS_RISK_DEFAULT_COOLDOWN_SECONDS
+                ),
+                "status": "状态损坏",
+                "reason": "访问保护状态文件损坏，已进入保护性冷却",
+                "source": "本地状态恢复",
+                "triggered_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            save_json_snapshot(
+                protection,
+                self._storage_path,
+                _validate_boss_access_guard_payload,
+            )
+            return protection
+
+    def _adopt_payload_locked(self, payload: dict[str, Any] | None) -> None:
+        if not payload:
+            return
+        blocked_until_epoch = float(payload["blocked_until_epoch"])
+        if blocked_until_epoch <= self._blocked_until_epoch:
+            return
+        remaining = min(
+            BOSS_RISK_MAX_COOLDOWN_SECONDS,
+            max(0.0, blocked_until_epoch - time.time()),
+        )
+        if remaining <= 0:
+            return
+        self._blocked_until_epoch = blocked_until_epoch
+        self._blocked_until = time.monotonic() + remaining
+        self._status = payload.get("status", "")
+        self._reason = str(payload.get("reason") or "")
+        self._source = str(payload.get("source") or "")
+        self._triggered_at = str(payload.get("triggered_at") or "")
+
+    def _save_locked(self) -> None:
+        if self._storage_path is None:
+            return
+        payload = {
+            "version": BOSS_ACCESS_GUARD_STATE_VERSION,
+            "blocked_until_epoch": self._blocked_until_epoch,
+            "status": self._status,
+            "reason": self._reason,
+            "source": self._source,
+            "triggered_at": self._triggered_at,
+        }
+        save_json_snapshot(
+            payload,
+            self._storage_path,
+            _validate_boss_access_guard_payload,
+        )
+
+    def _activate_locked(
+        self,
+        *,
+        status: int | str,
+        reason: str,
+        source: str,
+        cooldown: int,
+    ) -> bool:
+        blocked_until_epoch = time.time() + cooldown
+        if blocked_until_epoch < self._blocked_until_epoch:
+            return False
+        self._blocked_until_epoch = blocked_until_epoch
+        self._blocked_until = time.monotonic() + cooldown
+        self._status = status
+        self._reason = reason
+        self._source = source
+        self._triggered_at = datetime.now().isoformat(timespec="seconds")
+        return True
+
+    def _remove_persisted_locked(self) -> None:
+        if self._storage_path is None:
+            return
+        for path in (
+            self._storage_path,
+            Path(str(self._storage_path) + ".bak"),
+        ):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
 
     def block(self, exc: ApiRiskBlocked) -> dict[str, Any]:
         cooldown = exc.cooldown_seconds or BOSS_RISK_DEFAULT_COOLDOWN_SECONDS
         cooldown = max(1, min(int(cooldown), BOSS_RISK_MAX_COOLDOWN_SECONDS))
         with self._lock:
-            blocked_until = time.monotonic() + cooldown
-            if blocked_until >= self._blocked_until:
-                self._blocked_until = blocked_until
-                self._status = exc.status
-                self._reason = exc.reason
-                self._source = exc.source
-                self._triggered_at = datetime.now().isoformat(timespec="seconds")
+            try:
+                with self._storage_lock():
+                    self._adopt_payload_locked(self._load_persisted_locked())
+                    if self._activate_locked(
+                        status=exc.status,
+                        reason=exc.reason,
+                        source=exc.source,
+                        cooldown=cooldown,
+                    ):
+                        self._save_locked()
+            except (OSError, RuntimeError, ValueError, TypeError) as error:
+                self._persistence_error = str(error)
+                self._activate_locked(
+                    status=exc.status,
+                    reason=exc.reason,
+                    source=exc.source,
+                    cooldown=cooldown,
+                )
             return self._state_locked()
 
     def state(self) -> dict[str, Any]:
         with self._lock:
-            if self._blocked_until and self._blocked_until <= time.monotonic():
-                self._clear_locked()
+            try:
+                with self._storage_lock():
+                    payload = self._load_persisted_locked()
+                    self._adopt_payload_locked(payload)
+                    if (
+                        self._blocked_until
+                        and self._blocked_until <= time.monotonic()
+                    ):
+                        self._clear_locked()
+                    if (
+                        payload
+                        and float(payload["blocked_until_epoch"]) <= time.time()
+                        and not self._blocked_until
+                    ):
+                        self._remove_persisted_locked()
+            except (OSError, RuntimeError, ValueError, TypeError) as error:
+                self._persistence_error = str(error)
+                if (
+                    not self._blocked_until
+                    or self._blocked_until <= time.monotonic()
+                ):
+                    self._clear_locked()
+                    self._activate_locked(
+                        status="状态读取失败",
+                        reason="无法读取访问保护状态，已进入保护性冷却",
+                        source="本地状态恢复",
+                        cooldown=BOSS_RISK_DEFAULT_COOLDOWN_SECONDS,
+                    )
             return self._state_locked()
 
     def ensure_allowed(self, source: str) -> None:
@@ -209,37 +411,49 @@ class BossAccessGuard:
 
     def clear(self) -> None:
         with self._lock:
-            self._clear_locked()
+            with self._storage_lock():
+                self._clear_locked()
+                self._remove_persisted_locked()
 
     def _state_locked(self) -> dict[str, Any]:
         remaining = max(0.0, self._blocked_until - time.monotonic())
         return {
             "blocked": remaining > 0,
             "remaining_seconds": remaining,
+            "blocked_until_epoch": self._blocked_until_epoch,
             "status": self._status,
             "reason": self._reason,
             "source": self._source,
             "triggered_at": self._triggered_at,
+            "persistence_error": self._persistence_error,
         }
 
     def _clear_locked(self) -> None:
         self._blocked_until = 0.0
+        self._blocked_until_epoch = 0.0
         self._status = ""
         self._reason = ""
         self._source = ""
         self._triggered_at = ""
 
 
-BOSS_ACCESS_GUARD = BossAccessGuard()
+_BOSS_GUARD_PERSISTENCE_DISABLED = (
+    os.environ.get("BOSS_RESUME_FILTER_DISABLE_GUARD_PERSISTENCE") == "1"
+)
+BOSS_ACCESS_GUARD = BossAccessGuard(
+    None
+    if _BOSS_GUARD_PERSISTENCE_DISABLED
+    else BASE_DIR / ".boss_access_guard.json"
+)
 
 
 def get_boss_access_block_state() -> dict[str, Any]:
-    """Return the current process-wide BOSS access cooldown state."""
+    """Return the current cross-process BOSS access cooldown state."""
     return BOSS_ACCESS_GUARD.state()
 
 
 def clear_boss_access_block() -> None:
-    """Clear the process-wide guard; intended for explicit recovery and tests."""
+    """Clear the shared guard; intended for explicit recovery and tests."""
     BOSS_ACCESS_GUARD.clear()
 
 

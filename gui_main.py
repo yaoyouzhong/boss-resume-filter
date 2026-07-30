@@ -13826,12 +13826,64 @@ class BossFilterGUI:
         self._browser_connection_failures = getattr(self, '_browser_connection_failures', 0) + 1
         return silent and self._browser_connection_failures < 2
 
+    @staticmethod
+    def _boss_access_cooldown_state():
+        """Read the shared BOSS cooldown without making GUI startup fragile."""
+        try:
+            from bossmaster import get_boss_access_block_state
+            return get_boss_access_block_state()
+        except Exception as exc:
+            return {
+                "blocked": True,
+                "remaining_seconds": 15 * 60,
+                "status": "状态读取失败",
+                "reason": f"无法读取访问保护状态：{type(exc).__name__}",
+                "source": "本地状态恢复",
+            }
+
+    def _show_boss_access_cooldown(self, state, *, silent):
+        remaining = max(1, int(state.get("remaining_seconds", 0) + 0.999))
+        reason = str(state.get("reason") or "已触发 BOSS 访问保护")
+        source = str(state.get("source") or "")
+        help_text = f"访问冷却中，剩余约 {remaining} 秒"
+        if source:
+            help_text += f"；来源：{source}"
+        self.set_browser_ui(
+            "● 冷却中",
+            self.colors['warning'],
+            help_text,
+            "disabled",
+        )
+        signature = (
+            state.get("status"),
+            reason,
+            source,
+            max(1, (remaining + 59) // 60),
+        )
+        should_log = not silent or signature != getattr(
+            self, "_boss_cooldown_log_signature", None
+        )
+        self._boss_cooldown_log_signature = signature
+        if should_log:
+            return f"[访问保护] {reason}。剩余冷却约 {remaining} 秒。"
+        return ""
+
     def check_browser_connection(self, silent=False):
         """检测浏览器连接状态
 
         Args:
             silent: True 时只更新 UI 不写日志（用于自动轮询）
         """
+        guard_state = self._boss_access_cooldown_state()
+        if guard_state.get("blocked"):
+            cooldown_log = self._show_boss_access_cooldown(
+                guard_state,
+                silent=silent,
+            )
+            if cooldown_log:
+                self.append_run_log(cooldown_log)
+            return
+        self._boss_cooldown_log_signature = None
         if getattr(self, '_browser_check_running', False):
             # 手动点击优先：标记待处理，当前 silent 检查结束后自动重试
             if not silent:
@@ -14541,6 +14593,19 @@ class BossFilterGUI:
             self, 'greet_queue_preparing', False
         ):
             messagebox.showinfo("联系候选人", "候选人联系任务正在执行，请先暂停或等待发送完成。")
+            return
+
+        guard_state = self._boss_access_cooldown_state()
+        if guard_state.get("blocked"):
+            remaining = max(
+                1,
+                int(guard_state.get("remaining_seconds", 0) + 0.999),
+            )
+            reason = guard_state.get("reason") or "已触发 BOSS 访问保护"
+            messagebox.showwarning(
+                "BOSS 访问保护",
+                f"BOSS 访问仍在冷却中，剩余约 {remaining} 秒。\n\n{reason}",
+            )
             return
 
         # 立即禁用按钮，防止重复点击
