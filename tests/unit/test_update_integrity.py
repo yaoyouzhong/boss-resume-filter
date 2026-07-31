@@ -359,6 +359,111 @@ diff --git a/gui_main.py b/gui_main.py
     assert "未覆盖信号" not in output.getvalue()
 
 
+def test_changelog_coverage_groups_structured_dialog_copy_by_diff_hunk():
+    diff_text = """\
+diff --git a/gui_main.py b/gui_main.py
+--- a/gui_main.py
++++ b/gui_main.py
+@@ -10,5 +10,9 @@ def export_diagnostics(self):
+-        messagebox.showinfo(
+-            "导出完成",
+-            "本次已禁止继续写入。\\n\\n此 ZIP 未加密，请妥善保管。",
++        messagebox.show_result(
++            "诊断包已导出",
++            headline="导出完成",
++            notice="此 ZIP 未加密，请妥善保管。",
++            detail="本次已禁止继续写入。",
+         )
+"""
+
+    class Result:
+        returncode = 0
+        stdout = diff_text
+
+    originals = (
+        build._read_version,
+        build._extract_changelog_release,
+        build._get_last_tag,
+        build.subprocess.run,
+    )
+    try:
+        build._read_version = lambda: "2.25.1"
+        build._extract_changelog_release = lambda _version: (
+            "v2.25.1 — 测试",
+            "### 体验优化\n\n- 统一弹窗层级与操作反馈。",
+        )
+        build._get_last_tag = lambda: "v2.25"
+        build.subprocess.run = lambda *args, **kwargs: Result()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            build._check_code_to_changelog_coverage(strict=True)
+    finally:
+        (
+            build._read_version,
+            build._extract_changelog_release,
+            build._get_last_tag,
+            build.subprocess.run,
+        ) = originals
+
+    assert "均已在 CHANGELOG 中体现" in output.getvalue()
+    assert "未覆盖信号" not in output.getvalue()
+
+
+def test_changelog_coverage_still_blocks_unrelated_ui_feature_in_another_hunk():
+    diff_text = """\
+diff --git a/gui_main.py b/gui_main.py
+--- a/gui_main.py
++++ b/gui_main.py
+@@ -10,3 +10,7 @@ def export_diagnostics(self):
+-        messagebox.showinfo("导出完成", "诊断包已导出")
++        messagebox.show_result(
++            "诊断包已导出",
++            headline="导出完成",
++        )
+@@ -30,2 +34,3 @@ def create_result_page(self):
++        ttk.Button(toolbar, text="批量归档候选人")
+"""
+
+    class Result:
+        returncode = 0
+        stdout = diff_text
+
+    originals = (
+        build._read_version,
+        build._extract_changelog_release,
+        build._get_last_tag,
+        build.subprocess.run,
+    )
+    try:
+        build._read_version = lambda: "2.25.1"
+        build._extract_changelog_release = lambda _version: (
+            "v2.25.1 — 测试",
+            "### 体验优化\n\n- 统一弹窗层级与操作反馈。",
+        )
+        build._get_last_tag = lambda: "v2.25"
+        build.subprocess.run = lambda *args, **kwargs: Result()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            try:
+                build._check_code_to_changelog_coverage(strict=True)
+            except SystemExit as exc:
+                assert exc.code == 1
+            else:
+                raise AssertionError("unrelated UI features must remain release-note blockers")
+    finally:
+        (
+            build._read_version,
+            build._extract_changelog_release,
+            build._get_last_tag,
+            build.subprocess.run,
+        ) = originals
+
+    assert "批量归档候选人" in output.getvalue()
+    assert "未覆盖信号" in output.getvalue()
+
+
 def _with_build_context(tmp_path, dist_dir, *, is_win, is_mac):
     class BuildContext:
         def __enter__(self):
