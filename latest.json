@@ -1,29 +1,29 @@
 {
-  "version": "2.25.1",
+  "version": "2.25.2",
   "release_date": "2026-07-31",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.1/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.1/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.1/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.2/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.2/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.2/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "macos_dmg": {
-      "size": 33707778,
-      "sha256": "d89314e91eb31c46060fc6268071078c51ae663bfc71c7934003d3e77058fd7f"
+      "size": 33709622,
+      "sha256": "5067adcd6bed24a30859cc9b713c65f35bae73129ec6f683c608ed72a651225f"
     },
     "windows": {
-      "size": 36016500,
-      "sha256": "69a335a9b95e36dd855650b7f77f92f08fd85b58ea6485fe403b68e36d7f9392"
+      "size": 36028935,
+      "sha256": "ff21034709e551de46ba8a2337d7021ea416670c441b8c6ebecad8dd5df64e38"
     },
     "macos": {
-      "size": 34544024,
-      "sha256": "355874bfdffce74c021a96833731925691c47dd0b07433b2ef22ba029d483938"
+      "size": 34560122,
+      "sha256": "262c2d587d62d287f303af5f8524ee04ad5c0035769a66d396e2a7dc6ccfcb61"
     }
   },
-  "release_notes": "### 体验优化\n\n- **系统提示更加清晰紧凑**：统一成功、失败、提醒和风险确认窗口的内容层级与按钮布局；长文本、保存路径和错误详情分区显示，文件导出后可直接打开所在文件夹或复制路径。\n- **数据维护状态更容易掌握**：系统设置会显示最近一次数据备份、恢复和诊断包导出时间；备份、恢复和诊断结果集中展示数量、保存位置和注意事项。\n- **操作反馈减少重复打断**：模型连通性测试、候选人跟进与反馈校验、批量 AI 评估改用列表状态、行内提示或一次确认；更新失败会保留在当前窗口，可直接重试。\n- **风险操作提示更加明确**：删除候选人、岗位、模型、技能以及放弃未保存修改时，会明确说明影响范围并默认停留在取消选项，减少误操作。",
+  "release_notes": "### 新增功能\n\n- **安装确认**：更新包下载完成后，可先查看新版本升级内容，再由用户确认立即安装。\n- **安装进度**：新增独立安装进度窗口，清晰展示备份、安装、重启和启动确认状态。\n- **下载复用**：已从远端下载并校验通过的更新包会保留，稍后更新时无需重复下载。",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.1/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.1/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.1/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.2/BOSS_ResumeFilter.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.2/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.2/BOSS_ResumeFilter.dmg"
   }
 }
