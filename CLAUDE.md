@@ -14,7 +14,7 @@ boss-resume-filter/
 ├── release_user_audit.py # 用户视角发布审计模块
 ├── storage.py            # 候选人数据持久化模块（去重、原子写入、备份恢复）
 ├── contact_queue.py      # GUI 候选人联系清单持久化与恢复模块
-├── gui_main.py           # 图形界面主程序（v2.25.1）
+├── gui_main.py           # 图形界面主程序（v2.25.2）
 ├── gui_dialogs.py / ui_messagebox.py # 独立对话框与统一居中提示
 ├── changelog_parser.py   # CHANGELOG 解析模块（版本段落提取、标题解析）
 ├── updater.py            # 自动更新模块（Gitee/GitHub 双源检查、下载替换、完整性校验、启动时自动检查）

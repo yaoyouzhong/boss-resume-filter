@@ -436,18 +436,79 @@ def test_update_failures_stay_in_update_dialog_and_restore_actions():
     block = block[:block.index("\ndef _read_cooldown")]
 
     assert "def show_update_failure(headline, message, detail=None):" in block
-    assert 'update_btn.configure(text="重试更新", state="normal")' in block
-    assert 'cancel_btn.configure(text="关闭", state="normal")' in block
+    assert 'text="重试更新",' in block
+    assert "command=on_update," in block
+    assert 'text="关闭",' in block
+    assert "command=on_cancel," in block
     assert "button_frame.pack(pady=(pad(8), pad(20)))" in block
     assert "messagebox.showerror(" not in block
-    assert block.count("show_update_failure(") == 9
+    assert block.count("show_update_failure(") == 13
+
+
+def test_windows_download_completion_offers_details_and_immediate_install():
+    updater_source = Path("updater.py").read_text(encoding="utf-8")
+    dialog_block = updater_source[updater_source.index("def show_update_dialog"):]
+    dialog_block = dialog_block[:dialog_block.index("\ndef _read_cooldown")]
+    gui_source = Path("gui_main.py").read_text(encoding="utf-8")
+
+    completion_at = dialog_block.index(
+        'progress_label.configure(text="下载完成，新版本已准备就绪")'
+    )
+    details_at = dialog_block.index('text="升级内容"', completion_at)
+    install_at = dialog_block.index('text="立即安装"', details_at)
+    launch_at = dialog_block.index("success, error = update_windows(")
+    exit_at = dialog_block.index("exit_for_update(root)", launch_at)
+
+    assert completion_at < details_at < install_at
+    assert launch_at < exit_at
+    assert "command=show_update_details" in dialog_block
+    assert "command=install_downloaded_update" in dialog_block
+    assert "def show_update_details():" in dialog_block
+    assert "render_changelog_text(" in dialog_block
+    assert '.pack(side="bottom", pady=(pad(8), pad(18)))' in dialog_block
+    assert "content_frame.pack_forget()" in dialog_block
+    assert "_windows_update_cache_dir(result[\"latest\"])" in dialog_block
+    assert 'partial_exe = cache_dir / "BOSS_ResumeFilter_new.part.exe"' in dialog_block
+    assert "os.replace(partial_exe, cached_exe)" in dialog_block
+    assert "cached_update_path = result.get(\"cached_update_path\")" in dialog_block
+    assert "shutil.rmtree" not in dialog_block
+    assert "稍后重新打开应用也无需再次下载" in dialog_block
+    assert "int(230 * height_scale)" in dialog_block
+    assert "int(600 * layout_scale)" in dialog_block
+    assert "int(260 * height_scale)" in dialog_block
+    assert "messagebox.ask_confirmation(" not in dialog_block
+    assert 'dialog.protocol("WM_DELETE_WINDOW", on_cancel)' in dialog_block
+    assert 'dialog.bind(\'<Escape>\', lambda e: on_cancel())' in dialog_block
+    assert 'old_version=result["current"]' in dialog_block
+    assert 'sys.argv[1] == "--apply-windows-update"' in gui_source
+    assert "updater.run_windows_update_helper(sys.argv[2])" in gui_source
+
+
+def test_update_helper_reuses_the_main_window_search_icon():
+    updater_source = Path("updater.py").read_text(encoding="utf-8")
+    helper_block = updater_source[
+        updater_source.index("def run_windows_update_helper"):
+        updater_source.index("\ndef update_windows")
+    ]
+    gui_source = Path("gui_main.py").read_text(encoding="utf-8")
+    main_icon_block = gui_source[
+        gui_source.index("    def _set_window_icon(self):"):
+        gui_source.index("\n    def show_stat_detail", gui_source.index(
+            "    def _set_window_icon(self):"
+        ))
+    ]
+
+    assert "from gui_main import _set_search_window_icon" in helper_block
+    assert "_set_search_window_icon(root)" in helper_block
+    assert "iconbitmap(default=sys.executable)" not in helper_block
+    assert "self._icon_photo = _set_search_window_icon(self.root)" in main_icon_block
 
 
 def test_update_check_failures_separate_user_guidance_from_detail():
     source = Path("updater.py").read_text(encoding="utf-8")
     previous_failure = source[
         source.index("def notify_previous_update_failure"):
-        source.index("\ndef _escape_batch_string")
+        source.index("\ndef _clean_pyinstaller_environment")
     ]
     check_failure = source[
         source.index("def check_and_update_gui"):

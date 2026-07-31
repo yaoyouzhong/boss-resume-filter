@@ -37,6 +37,7 @@ contact_queue.json*
 # 打包输出
 dist/
 build/
+updates/
 *.spec
 *.rar
 *.zip

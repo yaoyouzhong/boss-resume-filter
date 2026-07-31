@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.25.1"
+__version__ = "2.25.2"
 
 import json
 import logging
@@ -928,6 +928,17 @@ def _draw_search_icon(S, fill, sw_ratio=0.10):
     cap_r = handle_w // 2
     d.ellipse([hx1 - cap_r, hy1 - cap_r, hx1 + cap_r, hy1 + cap_r], fill=handle_color)
     return img
+
+
+def _set_search_window_icon(window):
+    """为任意 Tk 窗口设置与主程序一致的放大镜图标。"""
+    from PIL import ImageTk
+
+    icon_img = _draw_search_icon(256, ui_theme.PRIMARY, sw_ratio=0.10)
+    icon_photo = ImageTk.PhotoImage(icon_img)
+    window.iconphoto(True, icon_photo)
+    window._search_icon_photo = icon_photo
+    return icon_photo
 
 
 class BossFilterGUI:
@@ -9534,11 +9545,8 @@ class BossFilterGUI:
     def _set_window_icon(self):
         """设置窗口图标，替换 tkinter 默认羽毛图标"""
         try:
-            from PIL import Image, ImageTk
-            icon_img = _draw_search_icon(256, ui_theme.PRIMARY, sw_ratio=0.10)
             # 用 iconphoto 设置高分图标，Windows 10/11 原生缩放比 ICO 清晰
-            self._icon_photo = ImageTk.PhotoImage(icon_img)
-            self.root.iconphoto(True, self._icon_photo)
+            self._icon_photo = _set_search_window_icon(self.root)
         except Exception:
             pass  # 图标设置失败不影响程序运行
 
@@ -24718,6 +24726,16 @@ class BossFilterGUI:
 
 
 def main():
+    if (
+        sys.platform == "win32"
+        and len(sys.argv) == 3
+        and sys.argv[1] == "--apply-windows-update"
+    ):
+        import updater
+
+        updater.run_windows_update_helper(sys.argv[2])
+        return
+
     _enable_high_dpi_awareness()
     startup_monitor_area = _get_windows_monitor_area()
     root = tk.Tk()
