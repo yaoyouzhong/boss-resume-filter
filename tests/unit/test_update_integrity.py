@@ -2172,7 +2172,7 @@ def test_current_platform_update_artifact_names_macos():
         build.IS_MAC = original_is_mac
 
 
-def test_windows_update_script_resets_pyinstaller_runtime_env():
+def test_windows_update_helper_receives_verified_payload_and_clean_runtime_env():
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         current_exe = tmp_path / "BOSS_ResumeFilter.exe"
@@ -2180,31 +2180,245 @@ def test_windows_update_script_resets_pyinstaller_runtime_env():
         new_exe.parent.mkdir()
         current_exe.write_bytes(b"old")
         new_exe.write_bytes(b"new")
-
-        original_popen = updater.subprocess.Popen
+        captured = {}
 
         class FakeProcess:
-            pass
+            def poll(self):
+                return None
 
-        try:
-            updater.subprocess.Popen = lambda *args, **kwargs: FakeProcess()
+        def fake_popen(args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            payload = json.loads(Path(args[2]).read_text(encoding="utf-8"))
+            Path(payload["ready_path"]).write_text("ready", encoding="utf-8")
+            return FakeProcess()
+
+        with (
+            patch.dict(updater.os.environ, {"_PYI_TEST": "stale"}, clear=False),
+            patch.object(updater.subprocess, "Popen", side_effect=fake_popen),
+        ):
             ok, error = updater.update_windows(
-                str(new_exe), str(current_exe), source="startup")
-        finally:
-            updater.subprocess.Popen = original_popen
-
-        bat_content = (tmp_path / "update.bat").read_text(encoding="utf-8")
+                str(new_exe),
+                str(current_exe),
+                source="startup",
+                asset_info={"size": 3, "sha256": "a" * 64},
+                old_version="2.25.1",
+            )
+        payload = json.loads(
+            (new_exe.parent / "update_payload.json").read_text(encoding="utf-8")
+        )
 
     assert ok is True
     assert error is None
-    assert 'set "PYINSTALLER_RESET_ENVIRONMENT=1"' in bat_content
-    assert "set _PYI_" in bat_content
-    assert "_MEI*" not in bat_content
-    assert 'set "UPDATE_SOURCE=startup"' in bat_content
-    assert "Source=%UPDATE_SOURCE%" in bat_content
-    assert 'if exist "%OLD_EXE%.old" del' not in bat_content
-    assert 'Previous version kept at %OLD_EXE%.old' in bat_content
-    assert 'if exist "%FAILED_FILE%" del /f /q "%FAILED_FILE%"' in bat_content
+    assert Path(captured["args"][0]).name == "BOSS_ResumeFilter_updater.exe"
+    assert captured["args"][1] == "--apply-windows-update"
+    assert captured["kwargs"]["env"]["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
+    assert "_PYI_TEST" not in captured["kwargs"]["env"]
+    assert payload["source"] == "startup"
+    assert payload["old_version"] == "2.25.1"
+    assert payload["asset_info"] == {"size": 3, "sha256": "a" * 64}
+    assert payload["old_exe"] == str(current_exe.resolve())
+    assert payload["new_exe"] == str(new_exe.resolve())
+
+
+def test_windows_backup_name_uses_the_running_old_version():
+    exe = Path("C:/Apps/BOSS_ResumeFilter.exe")
+
+    assert updater._versioned_backup_path(
+        exe, "v2.25.1"
+    ) == Path("C:/Apps/BOSS_ResumeFilter.exe.2.25.1")
+
+    for invalid in ("", "../2.25.1", "2.25.1-beta", "unknown"):
+        try:
+            updater._versioned_backup_path(exe, invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid backup version was accepted: {invalid}")
+
+
+def test_windows_update_cache_reuses_only_a_fully_verified_package():
+    with tempfile.TemporaryDirectory() as tmp:
+        with patch.object(updater, "get_base_dir", return_value=Path(tmp)):
+            cached_exe = updater._windows_update_cache_path("2.26")
+            assert cached_exe == (
+                Path(tmp).resolve()
+                / "updates"
+                / "2.26"
+                / "BOSS_ResumeFilter_new.exe"
+            )
+            cached_exe.parent.mkdir(parents=True)
+            cached_exe.write_bytes(b"MZcached-update")
+            result = {
+                "latest": "2.26",
+                "asset_info": {
+                    "size": cached_exe.stat().st_size,
+                    "sha256": updater._file_sha256(cached_exe),
+                },
+            }
+
+            assert updater._get_cached_windows_update(result) == cached_exe
+
+            result["asset_info"]["sha256"] = "0" * 64
+            assert updater._get_cached_windows_update(result) is None
+            assert cached_exe.exists()
+
+
+def test_update_check_marks_a_verified_windows_cache_for_immediate_reuse():
+    class ImmediateThread:
+        def __init__(self, target, daemon):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    class ImmediateRoot:
+        def after(self, _delay, callback):
+            callback()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        with patch.object(updater, "get_base_dir", return_value=Path(tmp)):
+            cached_exe = updater._windows_update_cache_path("2.26")
+            cached_exe.parent.mkdir(parents=True)
+            cached_exe.write_bytes(b"MZcached-update")
+            result = {
+                "latest": "2.26",
+                "current": "2.25.1",
+                "has_update": True,
+                "update_type": "version",
+                "content_changed": False,
+                "release_info": {"body": "notes"},
+                "download_url": "https://example.test/update.exe",
+                "download_url_fallback": None,
+                "asset_info": {
+                    "size": cached_exe.stat().st_size,
+                    "sha256": updater._file_sha256(cached_exe),
+                },
+                "error": None,
+            }
+
+            with (
+                patch.object(updater.sys, "platform", "win32"),
+                patch.object(updater, "check_gitee_latest", return_value=result),
+                patch.object(updater, "_fetch_changelog_section", return_value=None),
+                patch.object(updater.threading, "Thread", ImmediateThread),
+                patch.object(updater, "show_update_dialog") as show_dialog,
+            ):
+                updater.check_and_update_gui(ImmediateRoot(), silent=True)
+
+    shown_result = show_dialog.call_args.args[1]
+    assert shown_result["cached_update_path"] == str(cached_exe)
+
+
+def test_windows_update_cleanup_accepts_only_managed_update_directories():
+    with tempfile.TemporaryDirectory() as tmp:
+        app_dir = Path(tmp) / "app"
+        system_temp = Path(tmp) / "temp"
+        with patch.object(
+            updater.tempfile,
+            "gettempdir",
+            return_value=str(system_temp),
+        ):
+            temp_dir = system_temp / "boss_update_download_123"
+            outsider = Path(tmp) / "unrelated"
+
+            cache_dir = updater._windows_update_cache_dir("2.26", app_dir)
+            assert updater._is_managed_windows_update_dir(cache_dir, app_dir) is True
+            assert updater._is_managed_windows_update_dir(temp_dir, app_dir) is True
+            assert updater._is_managed_windows_update_dir(outsider, app_dir) is False
+
+
+def test_visible_windows_update_reports_stages_and_keeps_previous_version():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        old_exe = root / "BOSS_ResumeFilter.exe"
+        new_exe = root / "download" / "BOSS_ResumeFilter.exe"
+        new_exe.parent.mkdir()
+        old_exe.write_bytes(b"MZold-version")
+        new_exe.write_bytes(b"MZnew-version")
+        marker = root / "BOSS_ResumeFilter.exe.update_ok"
+        progress = []
+        payload = {
+            "old_exe": str(old_exe),
+            "new_exe": str(new_exe),
+            "marker_path": str(marker),
+            "old_pid": 123,
+            "source": "manual",
+            "old_version": "2.25.1",
+            "asset_info": {
+                "size": new_exe.stat().st_size,
+                "sha256": updater._file_sha256(new_exe),
+            },
+        }
+        stale_backup = Path(str(old_exe) + ".2.24.9")
+        legacy_backup = Path(str(old_exe) + ".old")
+        stale_backup.write_bytes(b"MZstale-version")
+        legacy_backup.write_bytes(b"MZlegacy-version")
+        process = Mock()
+        process.poll.return_value = None
+
+        with (
+            patch.object(updater, "_wait_for_windows_process_exit", return_value=True),
+            patch.object(updater, "_launch_updated_windows_app", return_value=process),
+            patch.object(updater, "_wait_for_file", return_value=True),
+        ):
+            success, error = updater._apply_windows_update(
+                payload,
+                lambda percent, stage, detail: progress.append(
+                    (percent, stage, detail)
+                ),
+            )
+
+        assert success is True
+        assert error is None
+        assert old_exe.read_bytes() == b"MZnew-version"
+        assert Path(str(old_exe) + ".2.25.1").read_bytes() == b"MZold-version"
+        assert not stale_backup.exists()
+        assert not legacy_backup.exists()
+        assert [item[0] for item in progress] == [8, 20, 35, 55, 75, 88, 100]
+        assert progress[-1][1] == "更新安装完成"
+
+
+def test_visible_windows_update_rolls_back_and_reopens_original_on_install_error():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        old_exe = root / "BOSS_ResumeFilter.exe"
+        new_exe = root / "download" / "BOSS_ResumeFilter.exe"
+        new_exe.parent.mkdir()
+        old_exe.write_bytes(b"MZold-version")
+        new_exe.write_bytes(b"MZnew-version")
+        existing_backup = Path(str(old_exe) + ".2.25.1")
+        existing_backup.write_bytes(b"MZprior-backup")
+        payload = {
+            "old_exe": str(old_exe),
+            "new_exe": str(new_exe),
+            "marker_path": str(root / "BOSS_ResumeFilter.exe.update_ok"),
+            "old_pid": 123,
+            "source": "manual",
+            "old_version": "2.25.1",
+            "asset_info": {
+                "size": new_exe.stat().st_size,
+                "sha256": updater._file_sha256(new_exe),
+            },
+        }
+
+        with (
+            patch.object(updater, "_wait_for_windows_process_exit", return_value=True),
+            patch.object(updater.shutil, "copy2", side_effect=OSError("copy failed")),
+            patch.object(updater.subprocess, "Popen", return_value=Mock()) as popen,
+        ):
+            success, error = updater._apply_windows_update(
+                payload,
+                lambda *_args: None,
+            )
+
+        assert success is False
+        assert "copy failed" in error
+        assert old_exe.read_bytes() == b"MZold-version"
+        assert existing_backup.read_bytes() == b"MZprior-backup"
+        assert not Path(str(existing_backup) + ".previous").exists()
+        assert Path(str(old_exe) + ".update_failed.txt").exists()
+        popen.assert_called_once()
 
 
 def test_current_exe_sha256_returns_none_in_source_mode():
