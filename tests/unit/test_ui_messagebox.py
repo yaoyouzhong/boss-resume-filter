@@ -29,6 +29,21 @@ def test_centered_messagebox_accepts_application_scaled_fonts():
     assert box._button_font == ("App Font", 15)
 
 
+def test_centered_messagebox_accepts_compact_structured_fonts():
+    box = CenteredMessageBox()
+    box.set_structured_ui_fonts(
+        headline=("App Font", 14, "bold"),
+        message=("App Font", 12),
+        meta=("App Font", 11),
+        button=("App Font", 12),
+    )
+
+    assert box._structured_headline_font == ("App Font", 14, "bold")
+    assert box._structured_message_font == ("App Font", 12)
+    assert box._structured_meta_font == ("App Font", 11)
+    assert box._structured_button_font == ("App Font", 12)
+
+
 def test_gui_uses_readable_dedicated_modal_fonts():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     setup = source[source.index("messagebox.set_ui_fonts("):]
@@ -36,14 +51,19 @@ def test_gui_uses_readable_dedicated_modal_fonts():
 
     assert "modal_font_size = max(9, self.font_log[1])" in source
     assert "headline=(FONT_FAMILY, max(10, self.font_log[1]), 'bold')" in setup
-    assert setup.count("modal_font_size") == 2
+    legacy_setup = setup[:setup.index("structured_message_size")]
+    assert legacy_setup.count("modal_font_size") == 2
     assert "message=self.font_label" not in setup
+    assert "structured_message_size = max(9, modal_font_size - 2)" in setup
+    assert "messagebox.set_structured_ui_fonts(" in setup
+    assert "headline=(FONT_FAMILY, structured_message_size + 2, 'bold')" in setup
+    assert "meta=(FONT_FAMILY, max(9, structured_message_size - 1))" in setup
 
 
 def test_api_probe_failure_copy_does_not_claim_connectivity_succeeded():
     source = Path("gui_main.py").read_text(encoding="utf-8")
 
-    assert "模型连接或兼容性验证未通过" in source
+    assert "模型不能用于 AI 评估" in source
     assert "API 可访问，但模型不能用于 AI 评估" not in source
 
 
@@ -183,7 +203,10 @@ def test_update_result_uses_compact_single_action_layout():
 
 def test_centered_messagebox_centers_buttons_vertically_in_footer():
     source = Path("ui_messagebox.py").read_text(encoding="utf-8")
-    footer_block = source[source.index('footer = tk.Frame(window, bg=ui_theme.BG_FOOTER)'):]
+    legacy_show = source[source.index("    def _show("):]
+    footer_block = legacy_show[
+        legacy_show.index('footer = tk.Frame(window, bg=ui_theme.BG_FOOTER)'):
+    ]
     footer_block = footer_block[:footer_block.index('window.protocol("WM_DELETE_WINDOW"')]
 
     assert 'footer.grid(row=2, column=0, sticky="ew")' in footer_block
@@ -218,6 +241,169 @@ def test_dialog_button_width_counts_cjk_glyphs_as_double_width():
     assert CenteredMessageBox._button_text_units("AI 确认") == 7
 
 
+def test_structured_dialog_splits_windows_and_posix_paths_for_display():
+    assert CenteredMessageBox._split_display_path(
+        r"C:\Users\user\Desktop\backup.zip"
+    ) == ("backup.zip", r"C:\Users\user\Desktop")
+    assert CenteredMessageBox._split_display_path(
+        "/Users/user/Desktop/backup.zip"
+    ) == ("backup.zip", "/Users/user/Desktop")
+
+
+def test_structured_dialog_fallback_keeps_sections_and_full_path():
+    message = CenteredMessageBox._structured_fallback_message(
+        headline="备份已完成",
+        message="已完成校验。",
+        metrics=(("岗位", "2 个"), ("候选人", "56 人")),
+        file_path=r"C:\Users\user\Desktop\backup.zip",
+        notice="此 ZIP 未加密。",
+        detail="校验详情",
+    )
+
+    assert message.split("\n\n") == [
+        "备份已完成",
+        "已完成校验。",
+        "岗位 2 个，候选人 56 人",
+        "保存位置：\nC:\\Users\\user\\Desktop\\backup.zip",
+        "此 ZIP 未加密。",
+        "详细信息：\n校验详情",
+    ]
+
+
+def test_show_result_uses_file_actions_and_structured_sections():
+    box = CenteredMessageBox()
+    parent = Mock()
+    metrics = (("岗位", "2 个"), ("候选人", "56 人"))
+    with patch.object(box, "_resolve_parent", return_value=parent), \
+            patch.object(
+                box, "_show_structured", return_value="open_location"
+            ) as show:
+        result = box.show_result(
+            "数据备份",
+            headline="备份已完成",
+            metrics=metrics,
+            file_path="D:/safe/backup.zip",
+            notice="此 ZIP 未加密。",
+            parent=parent,
+        )
+
+    assert result == "open_location"
+    assert show.call_args.kwargs["kind"] == "success"
+    assert show.call_args.kwargs["metrics"] == metrics
+    assert show.call_args.kwargs["file_path"] == "D:/safe/backup.zip"
+    assert show.call_args.kwargs["buttons"] == (
+        ("打开所在文件夹", "open_location"),
+        ("关闭", "close"),
+    )
+    assert show.call_args.kwargs["parent"] is parent
+
+
+def test_show_failure_separates_user_message_from_technical_detail():
+    box = CenteredMessageBox()
+    parent = Mock()
+    with patch.object(box, "_resolve_parent", return_value=parent), \
+            patch.object(box, "_show_structured", return_value="close") as show:
+        result = box.show_failure(
+            "数据备份",
+            headline="备份未完成",
+            message="没有生成可用备份。",
+            detail="磁盘空间不足",
+            parent=parent,
+        )
+
+    assert result == "close"
+    assert show.call_args.kwargs["kind"] == "error"
+    assert show.call_args.kwargs["message"] == "没有生成可用备份。"
+    assert show.call_args.kwargs["detail"] == "磁盘空间不足"
+    assert show.call_args.kwargs["buttons"] == (("关闭", "close"),)
+
+
+def test_structured_confirmation_preserves_boolean_result_and_action_labels():
+    box = CenteredMessageBox()
+    parent = Mock()
+    with patch.object(box, "_resolve_parent", return_value=parent), \
+            patch.object(box, "_show_structured", return_value=True) as show:
+        result = box.ask_confirmation(
+            "恢复数据备份",
+            headline="恢复这份数据备份？",
+            message="当前数据将被替换。",
+            metrics=(("候选人", "56 人"),),
+            notice="执行前会保存恢复点。",
+            yes_label="开始恢复",
+            no_label="取消",
+            parent=parent,
+        )
+
+    assert result is True
+    assert show.call_args.kwargs["kind"] == "question"
+    assert show.call_args.kwargs["buttons"] == (
+        ("开始恢复", True),
+        ("取消", False),
+    )
+    assert show.call_args.kwargs["close_value"] is False
+
+
+def test_show_notice_uses_structured_warning_sections():
+    box = CenteredMessageBox()
+    parent = Mock()
+    with patch.object(box, "_resolve_parent", return_value=parent), \
+            patch.object(box, "_show_structured", return_value="close") as show:
+        result = box.show_notice(
+            "模型能力提醒",
+            headline="当前模型可能不支持图片识别",
+            message="请切换支持图片输入的模型。",
+            detail="当前模型：demo-model",
+            parent=parent,
+        )
+
+    assert result == "close"
+    assert show.call_args.kwargs["kind"] == "warning"
+    assert show.call_args.kwargs["detail"] == "当前模型：demo-model"
+    assert show.call_args.kwargs["buttons"] == (("关闭", "close"),)
+
+
+def test_dangerous_confirmation_defaults_to_close_and_uses_danger_tone():
+    box = CenteredMessageBox()
+    parent = Mock()
+    with patch.object(box, "_resolve_parent", return_value=parent), \
+            patch.object(box, "_show_structured", return_value=False) as show:
+        result = box.ask_confirmation(
+            "清空候选人",
+            headline="清空全部候选人数据？",
+            message="操作前会创建备份。",
+            yes_label="清空数据",
+            dangerous=True,
+            parent=parent,
+        )
+
+    assert result is False
+    assert show.call_args.kwargs["primary_tone"] == "danger"
+    assert show.call_args.kwargs["default_to_close"] is True
+
+
+def test_structured_choice_preserves_three_way_result():
+    box = CenteredMessageBox()
+    parent = Mock()
+    choices = (
+        ("保存并继续", "save"),
+        ("不保存", "discard"),
+        ("取消", None),
+    )
+    with patch.object(box, "_resolve_parent", return_value=parent), \
+            patch.object(box, "_show_structured", return_value="discard") as show:
+        result = box.ask_choice(
+            "岗位配置尚未保存",
+            headline="当前岗位有未保存的修改",
+            message="请选择如何继续。",
+            choices=choices,
+            parent=parent,
+        )
+
+    assert result == "discard"
+    assert show.call_args.kwargs["buttons"] == choices
+    assert show.call_args.kwargs["close_value"] is None
+
+
 def test_all_gui_messagebox_calls_use_centered_proxy():
     gui_source = Path("gui_main.py").read_text(encoding="utf-8")
     dialogs_source = Path("gui_dialogs.py").read_text(encoding="utf-8")
@@ -242,3 +428,33 @@ def test_centered_messagebox_preserves_tkinter_style_results():
         assert box.showinfo("提示", "完成", parent=parent) == "ok"
         assert box.askokcancel("确认", "继续？", parent=parent) is False
         assert box.askyesnocancel("确认", "继续？", parent=parent) is None
+
+
+def test_update_failures_stay_in_update_dialog_and_restore_actions():
+    source = Path("updater.py").read_text(encoding="utf-8")
+    block = source[source.index("def show_update_dialog"):]
+    block = block[:block.index("\ndef _read_cooldown")]
+
+    assert "def show_update_failure(headline, message, detail=None):" in block
+    assert 'update_btn.configure(text="重试更新", state="normal")' in block
+    assert 'cancel_btn.configure(text="关闭", state="normal")' in block
+    assert "button_frame.pack(pady=(pad(8), pad(20)))" in block
+    assert "messagebox.showerror(" not in block
+    assert block.count("show_update_failure(") == 9
+
+
+def test_update_check_failures_separate_user_guidance_from_detail():
+    source = Path("updater.py").read_text(encoding="utf-8")
+    previous_failure = source[
+        source.index("def notify_previous_update_failure"):
+        source.index("\ndef _escape_batch_string")
+    ]
+    check_failure = source[
+        source.index("def check_and_update_gui"):
+        source.index("\ndef get_cached_release_notes")
+    ]
+
+    assert "messagebox.show_failure(" in previous_failure
+    assert "detail=detail or None" in previous_failure
+    assert "messagebox.show_failure(" in check_failure
+    assert "detail=result['error']" in check_failure

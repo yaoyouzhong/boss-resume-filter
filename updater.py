@@ -584,13 +584,15 @@ def notify_previous_update_failure(root):
     except OSError:
         detail = ""
 
-    message = "上次自动更新没有完成，程序已保留或回滚到可用版本。"
-    if detail:
-        message += f"\n\n{detail}"
-    message += "\n\n如需继续更新，请点“检查更新”重试。"
-
     try:
-        messagebox.showwarning("上次更新未完成", message, parent=root)
+        messagebox.show_failure(
+            "上次更新未完成",
+            headline="上次自动更新没有完成",
+            message="程序已保留或回滚到可用版本。",
+            detail=detail or None,
+            notice="如需继续更新，请点“检查更新”重试。",
+            parent=root,
+        )
     except tk.TclError:
         pass
 
@@ -1025,7 +1027,14 @@ def check_and_update_gui(root: tk.Tk, silent: bool = False, on_complete=None, gu
     def handle_result(result):
         if result['error']:
             if not silent:
-                messagebox.showerror("检查更新失败", result['error'], parent=root)
+                messagebox.show_failure(
+                    "检查更新",
+                    headline="暂时无法检查更新",
+                    message="没有获取到可用的版本信息。",
+                    detail=result['error'],
+                    notice="请检查网络连接后重试。",
+                    parent=root,
+                )
             if on_complete:
                 on_complete(result)
             return
@@ -1190,6 +1199,7 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
     dialog.title("发现新版本")
     dialog.transient(root)
     dialog.grab_set()
+    dialog.resizable(True, True)
     dialog.configure(bg=colors['bg_card'])
 
     # 居中显示（按缩放调整尺寸）
@@ -1198,6 +1208,7 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
     height_scale = max(layout_scale, font_scale)
     dw = int(700 * layout_scale)
     dh = int(520 * height_scale)
+    dialog.minsize(int(560 * layout_scale), int(420 * height_scale))
     _place_dialog_centered(dialog, root, dw, dh)
 
     pad = lambda v: int(v * layout_scale)
@@ -1227,7 +1238,9 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
                                   fg=colors['text_primary'])
     content_frame.pack(fill="both", expand=True, padx=pad(20), pady=pad(10))
 
-    content_text = tk.Text(content_frame, wrap="char", height=15,
+    content_row = tk.Frame(content_frame, bg=colors['bg_card'])
+    content_row.pack(fill="both", expand=True)
+    content_text = tk.Text(content_row, wrap="char", height=15,
                            font=(font_family, fs(10)),
                            bg=colors['bg_card'], fg=colors['text_primary'],
                            padx=pad(12), pady=pad(12),
@@ -1242,39 +1255,108 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
         font_scale, layout_scale, section_font_size=11, item_font_size=10)
 
     content_text.config(state="disabled")
-    content_text.pack(fill="both", expand=True)
+    content_scrollbar = ttk.Scrollbar(
+        content_row,
+        orient="vertical",
+        command=content_text.yview,
+    )
+    content_text.configure(yscrollcommand=content_scrollbar.set)
+    content_text.pack(side="left", fill="both", expand=True)
+    content_scrollbar.pack(side="right", fill="y")
 
     # 进度条（初始隐藏）
     progress_frame = tk.Frame(dialog, bg=colors['bg_card'])
-    progress_label = tk.Label(progress_frame, text="下载中...",
-                              font=(font_family, fs(10)),
-                              bg=colors['bg_card'], fg=colors['text_primary'])
+    progress_status_row = tk.Frame(progress_frame, bg=colors['bg_card'])
+    progress_status_row.pack(fill="x")
+    progress_label = tk.Label(
+        progress_status_row,
+        text="正在准备下载…",
+        font=(font_family, fs(10)),
+        bg=colors['bg_card'],
+        fg=colors['text_primary'],
+        anchor="w",
+    )
     progress_label.pack(side="left", padx=pad(5))
 
-    progress_bar = ttk.Progressbar(progress_frame, length=int(200 * layout_scale),
-                                   mode='determinate')
+    progress_bar = ttk.Progressbar(
+        progress_status_row,
+        length=int(200 * layout_scale),
+        mode='determinate',
+    )
     progress_bar.pack(side="left", padx=pad(5))
+    progress_detail_label = tk.Label(
+        progress_frame,
+        text="",
+        font=(font_family, fs(9)),
+        bg=colors['bg_card'],
+        fg=colors['text_secondary'],
+        justify="left",
+        anchor="w",
+        wraplength=max(pad(360), dw - pad(80)),
+    )
 
     # 按钮框
     button_frame = tk.Frame(dialog, bg=colors['bg_card'])
     button_frame.pack(pady=pad(20))
+    update_state = {"running": False, "failed": False}
 
     def on_cancel():
-        if on_defer:
+        if on_defer and not update_state["failed"]:
             on_defer()
         dialog.destroy()
 
+    def show_update_failure(headline, message, detail=None):
+        """Keep update failures actionable inside the existing update window."""
+        try:
+            if not dialog.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        update_state.update(running=False, failed=True)
+        progress_bar.configure(value=0)
+        progress_label.configure(
+            text=headline,
+            fg=colors.get('danger_text', ui_theme.DANGER_TEXT),
+        )
+        detail_text = str(detail or "").strip()
+        if detail_text:
+            if len(detail_text) > 220:
+                detail_text = detail_text[:219] + "…"
+            message = f"{message}\n详细信息：{detail_text}"
+        progress_detail_label.configure(text=message)
+        if not progress_detail_label.winfo_manager():
+            progress_detail_label.pack(fill="x", padx=pad(5), pady=(pad(5), 0))
+        update_btn.configure(text="重试更新", state="normal")
+        cancel_btn.configure(text="关闭", state="normal")
+        if not button_frame.winfo_manager():
+            button_frame.pack(pady=(pad(8), pad(20)))
+
     def on_update():
         """执行更新"""
+        update_state.update(running=True, failed=False)
+        progress_bar.configure(value=0)
+        progress_label.configure(
+            text="正在准备下载…",
+            fg=colors['text_primary'],
+        )
+        progress_detail_label.configure(text="")
+        if progress_detail_label.winfo_manager():
+            progress_detail_label.pack_forget()
         button_frame.pack_forget()
-        progress_frame.pack(pady=pad(20))
+        progress_frame.pack(fill="x", padx=pad(20), pady=(0, pad(12)))
 
         def do_update():
             if sys.platform == 'win32':
                 download_url = result['download_url']
                 if not download_url:
-                    root.after(0, lambda: messagebox.showerror(
-                        "更新失败", "未找到 Windows EXE 下载链接", parent=dialog))
+                    root.after(
+                        0,
+                        lambda: show_update_failure(
+                            "暂时无法更新",
+                            "版本信息中没有 Windows 安装包，请稍后重试或手动下载。",
+                        ),
+                    )
                     return
 
                 temp_dir = Path(tempfile.mkdtemp(prefix="boss_update_download_"))
@@ -1299,8 +1381,14 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
                         success, error = download_and_verify_file(
                             str(fallback_url), temp_exe, asset_info, progress_callback)
                     if not success:
-                        root.after(0, lambda: messagebox.showerror(
-                            "下载失败", f"下载新版本失败: {error}", parent=dialog))
+                        root.after(
+                            0,
+                            lambda failure=error: show_update_failure(
+                                "下载未完成",
+                                "未能下载并校验新版本，请检查网络连接后重试。",
+                                failure,
+                            ),
+                        )
                         return
 
                 root.after(0, lambda: progress_label.config(text="正在安装..."))
@@ -1314,15 +1402,26 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
                         exit_for_update(root)
                     ))
                 else:
-                    root.after(0, lambda: messagebox.showerror(
-                        "更新失败", f"安装失败: {error}", parent=dialog))
+                    root.after(
+                        0,
+                        lambda failure=error: show_update_failure(
+                            "安装未完成",
+                            "新版本已下载，但无法启动安装，请关闭可能占用程序文件的工具后重试。",
+                            failure,
+                        ),
+                    )
 
             else:
                 if getattr(sys, 'frozen', False):
                     download_url = result['download_url']
                     if not download_url:
-                        root.after(0, lambda: messagebox.showerror(
-                            "更新失败", "未找到 macOS ZIP 下载链接", parent=dialog))
+                        root.after(
+                            0,
+                            lambda: show_update_failure(
+                                "暂时无法更新",
+                                "版本信息中没有 macOS 安装包，请稍后重试或手动下载。",
+                            ),
+                        )
                         return
 
                     temp_dir = Path(tempfile.mkdtemp(prefix="boss_update_download_"))
@@ -1347,8 +1446,14 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
                             success, error = download_and_verify_file(
                                 str(fallback_url), temp_zip, asset_info, progress_callback)
                         if not success:
-                            root.after(0, lambda: messagebox.showerror(
-                                "下载失败", f"下载新版本失败: {error}", parent=dialog))
+                            root.after(
+                                0,
+                                lambda failure=error: show_update_failure(
+                                    "下载未完成",
+                                    "未能下载并校验新版本，请检查网络连接后重试。",
+                                    failure,
+                                ),
+                            )
                             return
 
                     root.after(0, lambda: progress_label.config(text="正在安装..."))
@@ -1358,8 +1463,13 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
                         current_app = current_app.parent
 
                     if current_app.suffix != '.app':
-                        root.after(0, lambda: messagebox.showerror(
-                            "更新失败", "无法定位当前 .app 路径", parent=dialog))
+                        root.after(
+                            0,
+                            lambda: show_update_failure(
+                                "安装未完成",
+                                "无法识别当前应用的安装位置，请从发布页手动下载安装包。",
+                            ),
+                        )
                         return
 
                     success, message = update_macos_app(
@@ -1371,21 +1481,35 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
                             exit_for_update(root)
                         ))
                     else:
-                        root.after(0, lambda: messagebox.showerror(
-                            "更新失败", f"安装失败: {message}", parent=dialog))
+                        root.after(
+                            0,
+                            lambda failure=message: show_update_failure(
+                                "安装未完成",
+                                "新版本已下载，但无法替换当前应用，请关闭可能占用程序文件的工具后重试。",
+                                failure,
+                            ),
+                        )
                 else:
                     success, message = update_macos()
                     if success:
                         root.after(0, lambda: (
-                            messagebox.showinfo(
+                            messagebox.show_result(
                                 "更新成功",
-                                message + "\n\n请手动重启应用以使用新版本",
+                                headline="应用更新已完成",
+                                message=message,
+                                notice="请手动重启应用以使用新版本。",
                                 parent=dialog),
                             dialog.destroy()
                         ))
                     else:
-                        root.after(0, lambda: messagebox.showerror(
-                            "更新失败", message, parent=dialog))
+                        root.after(
+                            0,
+                            lambda failure=message: show_update_failure(
+                                "更新未完成",
+                                "自动更新没有执行成功，请根据详细信息处理后重试。",
+                                failure,
+                            ),
+                        )
 
         threading.Thread(target=do_update, daemon=True).start()
 

@@ -1,8 +1,11 @@
 """Parent-centered modal message boxes with tkinter-compatible results."""
 
+from __future__ import annotations
+
 import math
 import tkinter as tk
 import unicodedata
+from collections.abc import Sequence
 from tkinter import messagebox as _native_messagebox, ttk
 
 import ui_theme
@@ -13,6 +16,7 @@ class CenteredMessageBox:
 
     _ICON_STYLE = {
         "info": ("i", ui_theme.PRIMARY),
+        "success": ("✓", ui_theme.SUCCESS),
         "warning": ("!", ui_theme.WARNING),
         "error": ("×", ui_theme.DANGER),
         "question": ("?", ui_theme.PRIMARY),
@@ -40,6 +44,10 @@ class CenteredMessageBox:
         self._headline_font = (ui_theme.FONT_FAMILY, 13, "bold")
         self._message_font = (ui_theme.FONT_FAMILY, 13)
         self._button_font = (ui_theme.FONT_FAMILY, 13)
+        self._structured_headline_font = (ui_theme.FONT_FAMILY, 13, "bold")
+        self._structured_message_font = (ui_theme.FONT_FAMILY, 11)
+        self._structured_meta_font = (ui_theme.FONT_FAMILY, 10)
+        self._structured_button_font = (ui_theme.FONT_FAMILY, 11)
 
     def __getattr__(self, name):
         return getattr(_native_messagebox, name)
@@ -54,6 +62,13 @@ class CenteredMessageBox:
         self._message_font = message
         self._button_font = button
 
+    def set_structured_ui_fonts(self, *, headline, message, meta, button):
+        """Configure the compact tier used by structured result dialogs."""
+        self._structured_headline_font = headline
+        self._structured_message_font = message
+        self._structured_meta_font = meta
+        self._structured_button_font = button
+
     @staticmethod
     def _font_with_delta(font_spec, delta):
         if not delta or not isinstance(font_spec, (tuple, list)) or len(font_spec) < 2:
@@ -63,6 +78,18 @@ class CenteredMessageBox:
             adjusted[1] = max(8, int(adjusted[1]) + int(delta))
         except (TypeError, ValueError):
             return font_spec
+        return tuple(adjusted)
+
+    @staticmethod
+    def _font_with_weight(font_spec, weight):
+        """Return a font tuple with the requested weight and unchanged family."""
+        if not isinstance(font_spec, (tuple, list)) or len(font_spec) < 2:
+            return font_spec
+        adjusted = list(font_spec)
+        if len(adjusted) == 2:
+            adjusted.append(weight)
+        else:
+            adjusted[2] = weight
         return tuple(adjusted)
 
     @staticmethod
@@ -118,6 +145,601 @@ class CenteredMessageBox:
             self._window_placer(window, width, height, parent=parent)
             return
         self._fallback_place(window, width, height, parent)
+
+    @staticmethod
+    def _structured_fallback_message(
+        *,
+        headline: str,
+        message: str = "",
+        metrics: Sequence[tuple[str, str]] = (),
+        file_path: str | None = None,
+        notice: str | None = None,
+        detail: str | None = None,
+    ) -> str:
+        """Flatten structured content when no Tk parent is available."""
+        parts = [str(headline).strip()]
+        if message:
+            parts.append(str(message).strip())
+        if metrics:
+            parts.append("，".join(f"{label} {value}" for label, value in metrics))
+        if file_path:
+            parts.append(f"保存位置：\n{file_path}")
+        if notice:
+            parts.append(str(notice).strip())
+        if detail:
+            parts.append(f"详细信息：\n{detail}")
+        return "\n\n".join(part for part in parts if part)
+
+    @staticmethod
+    def _structured_notice_colors(kind: str) -> tuple[str, str]:
+        """Return readable background/foreground colors for a notice strip."""
+        return {
+            "warning": (ui_theme.BANNER_WARNING_BG, ui_theme.WARNING_TEXT),
+            "error": (ui_theme.BANNER_ERROR_BG, ui_theme.DANGER_TEXT),
+            "success": (ui_theme.BANNER_SUCCESS_BG, ui_theme.SUCCESS),
+        }.get(kind, (ui_theme.BANNER_INFO_BG, ui_theme.PRIMARY_DARK))
+
+    @staticmethod
+    def _split_display_path(file_path: str) -> tuple[str, str]:
+        """Split Windows or POSIX paths without changing the visible separator."""
+        path_text = str(file_path)
+        normalized = path_text.replace("\\", "/")
+        if "/" not in normalized:
+            return normalized, ""
+        directory, file_name = normalized.rsplit("/", 1)
+        if "\\" in path_text:
+            directory = directory.replace("/", "\\")
+        return file_name, directory
+
+    def _show_structured(
+        self,
+        title: str,
+        *,
+        kind: str,
+        headline: str,
+        message: str = "",
+        metrics: Sequence[tuple[str, str]] = (),
+        file_path: str | None = None,
+        notice: str | None = None,
+        notice_kind: str = "info",
+        detail: str | None = None,
+        buttons: Sequence[tuple[str, object]],
+        close_value: object,
+        parent,
+        min_width: int = 600,
+        max_width: int = 660,
+        primary_tone: str = "accent",
+        default_to_close: bool = False,
+    ):
+        """Show a compact, sectioned dialog without changing legacy messages."""
+        min_width = max(520, int(min_width))
+        max_width = max(min_width, int(max_width))
+        content_wraplength = max(460, min(580, min_width - 48))
+        message_font = self._structured_message_font
+        meta_font = self._structured_meta_font
+        metric_value_font = self._font_with_weight(message_font, "bold")
+
+        window = tk.Toplevel(parent)
+        window.title(str(title or "提示"))
+        window.transient(parent)
+        window.resizable(False, False)
+        window.withdraw()
+        window.configure(bg=ui_theme.BG_CARD)
+        window.grid_columnconfigure(0, weight=1)
+        window.grid_rowconfigure(0, weight=1)
+
+        body = tk.Frame(window, bg=ui_theme.BG_CARD)
+        body.grid(row=0, column=0, sticky="nsew", padx=24, pady=(20, 18))
+
+        status_row = tk.Frame(body, bg=ui_theme.BG_CARD)
+        status_row.pack(fill="x")
+        self._make_icon(status_row, kind, size=28).pack(
+            side="left", anchor="n", padx=(0, 10)
+        )
+        tk.Label(
+            status_row,
+            text=str(headline),
+            font=self._structured_headline_font,
+            fg=ui_theme.TEXT_PRIMARY,
+            bg=ui_theme.BG_CARD,
+            justify="left",
+            anchor="w",
+            wraplength=content_wraplength - 38,
+        ).pack(side="left", fill="x", expand=True, anchor="w")
+
+        if message:
+            tk.Label(
+                body,
+                text=str(message),
+                font=message_font,
+                fg=ui_theme.TEXT_PRIMARY,
+                bg=ui_theme.BG_CARD,
+                justify="left",
+                anchor="w",
+                wraplength=content_wraplength,
+            ).pack(fill="x", anchor="w", pady=(12, 0))
+
+        if metrics:
+            metrics_frame = tk.Frame(
+                body,
+                bg=ui_theme.BG_ZEBRA,
+                highlightthickness=1,
+                highlightbackground=ui_theme.BORDER,
+            )
+            metrics_frame.pack(fill="x", pady=(14, 0))
+            for column, (label, value) in enumerate(metrics):
+                metrics_frame.grid_columnconfigure(column, weight=1, uniform="metric")
+                cell = tk.Frame(metrics_frame, bg=ui_theme.BG_ZEBRA)
+                cell.grid(row=0, column=column, sticky="nsew", padx=10, pady=9)
+                tk.Label(
+                    cell,
+                    text=str(label),
+                    font=meta_font,
+                    fg=ui_theme.TEXT_SECONDARY,
+                    bg=ui_theme.BG_ZEBRA,
+                ).pack(anchor="w")
+                tk.Label(
+                    cell,
+                    text=str(value),
+                    font=metric_value_font,
+                    fg=ui_theme.TEXT_PRIMARY,
+                    bg=ui_theme.BG_ZEBRA,
+                ).pack(anchor="w", pady=(2, 0))
+
+        copy_button = None
+        if file_path:
+            path_text = str(file_path)
+            file_name, directory = self._split_display_path(path_text)
+            file_frame = tk.Frame(
+                body,
+                bg=ui_theme.BG_INPUT,
+                highlightthickness=1,
+                highlightbackground=ui_theme.BORDER,
+            )
+            file_frame.pack(fill="x", pady=(14, 0))
+            file_content = tk.Frame(file_frame, bg=ui_theme.BG_INPUT)
+            file_content.pack(side="left", fill="both", expand=True, padx=12, pady=9)
+            tk.Label(
+                file_content,
+                text=file_name,
+                font=metric_value_font,
+                fg=ui_theme.TEXT_PRIMARY,
+                bg=ui_theme.BG_INPUT,
+                justify="left",
+                anchor="w",
+                wraplength=content_wraplength - 120,
+            ).pack(fill="x", anchor="w")
+            tk.Label(
+                file_content,
+                text=directory,
+                font=meta_font,
+                fg=ui_theme.TEXT_SECONDARY,
+                bg=ui_theme.BG_INPUT,
+                justify="left",
+                anchor="w",
+                wraplength=content_wraplength - 120,
+            ).pack(fill="x", anchor="w", pady=(3, 0))
+
+            inline_style = ttk.Style(window)
+            inline_style.configure(
+                "StructuredMessageBox.Inline.TButton",
+                font=meta_font,
+                padding=(7, 3),
+            )
+
+            def copy_path() -> None:
+                try:
+                    window.clipboard_clear()
+                    window.clipboard_append(path_text)
+                    window.update()
+                    copy_button.configure(text="已复制")
+                    window.after(
+                        1200,
+                        lambda: (
+                            copy_button.configure(text="复制路径")
+                            if copy_button.winfo_exists()
+                            else None
+                        ),
+                    )
+                except tk.TclError:
+                    if copy_button is not None and copy_button.winfo_exists():
+                        copy_button.configure(text="复制失败")
+
+            copy_button = ttk.Button(
+                file_frame,
+                text="复制路径",
+                command=copy_path,
+                style="StructuredMessageBox.Inline.TButton",
+                width=8,
+            )
+            copy_button.pack(side="right", padx=(8, 12), pady=9)
+
+        if notice:
+            notice_bg, notice_fg = self._structured_notice_colors(notice_kind)
+            notice_frame = tk.Frame(body, bg=notice_bg)
+            notice_frame.pack(fill="x", pady=(14, 0))
+            tk.Label(
+                notice_frame,
+                text=str(notice),
+                font=meta_font,
+                fg=notice_fg,
+                bg=notice_bg,
+                justify="left",
+                anchor="w",
+                wraplength=content_wraplength - 20,
+            ).pack(fill="x", padx=10, pady=8)
+
+        if detail:
+            detail_frame = tk.Frame(
+                body,
+                bg=ui_theme.BG_INPUT,
+                highlightthickness=1,
+                highlightbackground=ui_theme.BORDER,
+            )
+            detail_frame.pack(fill="x", pady=(14, 0))
+            tk.Label(
+                detail_frame,
+                text="详细信息",
+                font=self._font_with_weight(meta_font, "bold"),
+                fg=ui_theme.TEXT_SECONDARY,
+                bg=ui_theme.BG_INPUT,
+            ).pack(anchor="w", padx=10, pady=(8, 3))
+            detail_text = str(detail).strip()
+            if len(detail_text) > 220 or self._estimated_visual_lines(
+                detail_text, chars_per_line=52
+            ) > 4:
+                text_row = tk.Frame(detail_frame, bg=ui_theme.BG_INPUT)
+                text_row.pack(fill="x", padx=8, pady=(0, 8))
+                text_widget = tk.Text(
+                    text_row,
+                    width=68,
+                    height=4,
+                    wrap="word",
+                    font=meta_font,
+                    bg=ui_theme.BG_INPUT,
+                    fg=ui_theme.TEXT_PRIMARY,
+                    relief="flat",
+                    borderwidth=0,
+                    highlightthickness=0,
+                )
+                scrollbar = ttk.Scrollbar(
+                    text_row, orient="vertical", command=text_widget.yview
+                )
+                text_widget.configure(yscrollcommand=scrollbar.set)
+                text_widget.insert("1.0", detail_text)
+                text_widget.configure(state="disabled")
+                text_widget.pack(side="left", fill="x", expand=True)
+                scrollbar.pack(side="right", fill="y")
+            else:
+                tk.Label(
+                    detail_frame,
+                    text=detail_text,
+                    font=meta_font,
+                    fg=ui_theme.TEXT_PRIMARY,
+                    bg=ui_theme.BG_INPUT,
+                    justify="left",
+                    anchor="w",
+                    wraplength=content_wraplength - 20,
+                ).pack(fill="x", padx=10, pady=(0, 8))
+
+        tk.Frame(window, bg=ui_theme.BORDER, height=1).grid(
+            row=1, column=0, sticky="ew"
+        )
+        footer = tk.Frame(window, bg=ui_theme.BG_FOOTER)
+        footer.grid(row=2, column=0, sticky="ew")
+
+        result = {"value": close_value}
+        previous_grab = parent.grab_current()
+        primary_button = None
+
+        def finish(value) -> None:
+            result["value"] = value
+            try:
+                window.grab_release()
+            except tk.TclError:
+                pass
+            window.destroy()
+            if previous_grab is not None:
+                try:
+                    if previous_grab.winfo_exists():
+                        previous_grab.grab_set()
+                except tk.TclError:
+                    pass
+
+        button_style = ttk.Style(window)
+        button_style.configure(
+            "StructuredMessageBox.TButton",
+            font=self._structured_button_font,
+            padding=(11, 5),
+        )
+        button_style.configure(
+            "StructuredMessageBox.Accent.TButton",
+            font=self._structured_button_font,
+            padding=(11, 5),
+            background=ui_theme.PRIMARY,
+            foreground=ui_theme.BG_CARD,
+            bordercolor=ui_theme.PRIMARY_DARK,
+        )
+        button_style.map(
+            "StructuredMessageBox.Accent.TButton",
+            background=[
+                ("pressed", ui_theme.PRIMARY_DEEP),
+                ("active", ui_theme.PRIMARY_DARK),
+            ],
+        )
+        button_style.configure(
+            "StructuredMessageBox.Danger.TButton",
+            font=self._structured_button_font,
+            padding=(11, 5),
+            background=ui_theme.DANGER,
+            foreground=ui_theme.BG_CARD,
+            bordercolor=ui_theme.DANGER_TEXT,
+        )
+        button_style.map(
+            "StructuredMessageBox.Danger.TButton",
+            background=[
+                ("pressed", ui_theme.DANGER_DEEP),
+                ("active", ui_theme.DANGER_TEXT),
+            ],
+        )
+        secondary_button = None
+        for index, (label, value) in enumerate(buttons):
+            primary_style = (
+                "StructuredMessageBox.Danger.TButton"
+                if primary_tone == "danger"
+                else "StructuredMessageBox.Accent.TButton"
+            )
+            button = ttk.Button(
+                footer,
+                text=label,
+                command=lambda selected=value: finish(selected),
+                style=(
+                    primary_style
+                    if index == 0
+                    else "StructuredMessageBox.TButton"
+                ),
+                width=max(7, self._button_text_units(label) + 2),
+            )
+            button.pack(
+                side="right",
+                padx=(8, 24) if index == 0 else (8, 0),
+                pady=12,
+            )
+            if index == 0:
+                primary_button = button
+            elif secondary_button is None:
+                secondary_button = button
+
+        window.protocol("WM_DELETE_WINDOW", lambda: finish(close_value))
+        window.bind("<Escape>", lambda _event: finish(close_value))
+        if default_to_close:
+            # 危险操作默认聚焦取消按钮；由按钮自身处理回车，避免重复触发关闭回调。
+            window.bind("<Return>", lambda _event: "break")
+        else:
+            window.bind("<Return>", lambda _event: finish(buttons[0][1]))
+        window.update_idletasks()
+        width = max(min_width, min(max_width, window.winfo_reqwidth()))
+        max_height = self._max_dialog_height(window.winfo_screenheight())
+        height = max(220, min(max_height, window.winfo_reqheight()))
+        self._place(window, width, height, parent)
+        window.deiconify()
+        window.lift()
+        window.grab_set()
+        focus_button = (
+            secondary_button
+            if default_to_close and secondary_button is not None
+            else primary_button
+        )
+        if focus_button is not None:
+            focus_button.focus_set()
+        window.wait_window()
+        return result["value"]
+
+    def show_result(
+        self,
+        title: str,
+        *,
+        headline: str,
+        message: str = "",
+        metrics: Sequence[tuple[str, str]] = (),
+        file_path: str | None = None,
+        notice: str | None = None,
+        notice_kind: str = "warning",
+        detail: str | None = None,
+        parent=None,
+    ) -> str:
+        """Show a structured success/result dialog and return the selected action."""
+        resolved_parent = self._resolve_parent(parent)
+        if resolved_parent is None:
+            _native_messagebox.showinfo(
+                title,
+                self._structured_fallback_message(
+                    headline=headline,
+                    message=message,
+                    metrics=metrics,
+                    file_path=file_path,
+                    notice=notice,
+                    detail=detail,
+                ),
+                parent=parent,
+            )
+            return "close"
+        buttons = (
+            (("打开所在文件夹", "open_location"), ("关闭", "close"))
+            if file_path
+            else (("关闭", "close"),)
+        )
+        return str(self._show_structured(
+            title,
+            kind="success",
+            headline=headline,
+            message=message,
+            metrics=metrics,
+            file_path=file_path,
+            notice=notice,
+            notice_kind=notice_kind,
+            detail=detail,
+            buttons=buttons,
+            close_value="close",
+            parent=resolved_parent,
+        ))
+
+    def show_failure(
+        self,
+        title: str,
+        *,
+        headline: str,
+        message: str,
+        detail: str | None = None,
+        notice: str | None = None,
+        parent=None,
+    ) -> str:
+        """Show a user-facing failure summary with separate technical detail."""
+        resolved_parent = self._resolve_parent(parent)
+        if resolved_parent is None:
+            _native_messagebox.showerror(
+                title,
+                self._structured_fallback_message(
+                    headline=headline,
+                    message=message,
+                    notice=notice,
+                    detail=detail,
+                ),
+                parent=parent,
+            )
+            return "close"
+        return str(self._show_structured(
+            title,
+            kind="error",
+            headline=headline,
+            message=message,
+            notice=notice,
+            notice_kind="warning",
+            detail=detail,
+            buttons=(("关闭", "close"),),
+            close_value="close",
+            parent=resolved_parent,
+        ))
+
+    def show_notice(
+        self,
+        title: str,
+        *,
+        headline: str,
+        message: str = "",
+        metrics: Sequence[tuple[str, str]] = (),
+        notice: str | None = None,
+        detail: str | None = None,
+        kind: str = "warning",
+        parent=None,
+    ) -> str:
+        """Show a structured warning or informational notice."""
+        kind = "info" if kind == "info" else "warning"
+        resolved_parent = self._resolve_parent(parent)
+        if resolved_parent is None:
+            fallback = (
+                _native_messagebox.showinfo
+                if kind == "info"
+                else _native_messagebox.showwarning
+            )
+            fallback(
+                title,
+                self._structured_fallback_message(
+                    headline=headline,
+                    message=message,
+                    metrics=metrics,
+                    notice=notice,
+                    detail=detail,
+                ),
+                parent=parent,
+            )
+            return "close"
+        return str(self._show_structured(
+            title,
+            kind=kind,
+            headline=headline,
+            message=message,
+            metrics=metrics,
+            notice=notice,
+            notice_kind="warning" if kind == "warning" else "info",
+            detail=detail,
+            buttons=(("关闭", "close"),),
+            close_value="close",
+            parent=resolved_parent,
+        ))
+
+    def ask_confirmation(
+        self,
+        title: str,
+        *,
+        headline: str,
+        message: str,
+        metrics: Sequence[tuple[str, str]] = (),
+        notice: str | None = None,
+        detail: str | None = None,
+        yes_label: str = "继续",
+        no_label: str = "取消",
+        dangerous: bool = False,
+        parent=None,
+    ) -> bool:
+        """Show a structured confirmation while preserving boolean results."""
+        resolved_parent = self._resolve_parent(parent)
+        if resolved_parent is None:
+            return bool(_native_messagebox.askyesno(
+                title,
+                self._structured_fallback_message(
+                    headline=headline,
+                    message=message,
+                    metrics=metrics,
+                    notice=notice,
+                    detail=detail,
+                ),
+                parent=parent,
+            ))
+        return bool(self._show_structured(
+            title,
+            kind="question",
+            headline=headline,
+            message=message,
+            metrics=metrics,
+            notice=notice,
+            notice_kind="warning",
+            detail=detail,
+            buttons=((yes_label, True), (no_label, False)),
+            close_value=False,
+            parent=resolved_parent,
+            primary_tone="danger" if dangerous else "accent",
+            default_to_close=dangerous,
+        ))
+
+    def ask_choice(
+        self,
+        title: str,
+        *,
+        headline: str,
+        message: str,
+        choices: Sequence[tuple[str, object]],
+        close_value: object = None,
+        metrics: Sequence[tuple[str, str]] = (),
+        notice: str | None = None,
+        parent=None,
+    ):
+        """Show a structured multi-choice decision and return the selected value."""
+        resolved_parent = self._resolve_parent(parent)
+        if resolved_parent is None:
+            return close_value
+        return self._show_structured(
+            title,
+            kind="question",
+            headline=headline,
+            message=message,
+            metrics=metrics,
+            notice=notice,
+            notice_kind="warning",
+            buttons=choices,
+            close_value=close_value,
+            parent=resolved_parent,
+        )
 
     def _show(
         self,

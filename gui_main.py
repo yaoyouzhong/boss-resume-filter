@@ -172,6 +172,11 @@ CONFIG_BACKUP_PATH = BASE_DIR / "job_config.json.bak"
 RUN_LOG_DIR = BASE_DIR / "logs"
 RUNTIME_LOG_RETENTION_DAYS = 30
 RUN_PREFERENCES_PATH = BASE_DIR / ".run_preferences.json"
+MAINTENANCE_TIME_PREFERENCE_KEYS = {
+    "backup": "last_data_backup_at",
+    "restore": "last_data_restore_at",
+    "diagnostic_export": "last_diagnostic_export_at",
+}
 API_CONFIG_PATH = get_api_config_path()
 CHROME_DEBUG_PORT_FILE = BASE_DIR / ".chrome_debug_port"
 
@@ -458,6 +463,17 @@ def _save_run_preferences(preferences: dict) -> None:
 
 def _clamp(value, min_value, max_value):
     return max(min_value, min(max_value, value))
+
+
+def _open_containing_folder(file_path: str) -> None:
+    """Open the parent folder of an exported file using the host file manager."""
+    folder = Path(file_path).expanduser().parent
+    if sys.platform == "win32":
+        os.startfile(str(folder))
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(folder)], show_window=True)
+    else:
+        subprocess.Popen(["xdg-open", str(folder)], show_window=True)
 
 
 def _calculate_effective_scale(dpi_scale, screen_width, screen_height, platform=sys.platform):
@@ -1204,12 +1220,18 @@ class BossFilterGUI:
             self.append_log(f"[数据安全] 初始化失败，已阻止数据写入：{error}")
             self.root.after(
                 0,
-                lambda detail=error: messagebox.showerror(
-                    "数据安全检查失败",
-                    "候选人、岗位配置和联系清单未通过启动检查，"
-                    "本次已禁止继续写入。\n\n"
-                    f"{detail}\n\n"
-                    "请先从系统设置恢复有效备份，或检查数据文件后重新启动。",
+                lambda detail=error: messagebox.show_failure(
+                    "数据安全检查",
+                    headline="数据安全检查未通过",
+                    message=(
+                        "候选人、岗位配置和联系清单未通过启动检查，"
+                        "本次已禁止继续写入。"
+                    ),
+                    detail=detail,
+                    notice=(
+                        "请先从系统设置恢复有效备份，"
+                        "或检查数据文件后重新启动。"
+                    ),
                     parent=self.root,
                 ),
             )
@@ -1247,10 +1269,12 @@ class BossFilterGUI:
         if not error:
             return True
         if show_dialog:
-            messagebox.showerror(
+            messagebox.show_failure(
                 "数据写入已阻止",
-                f"无法{action}，因为数据安全检查尚未通过。\n\n{error}\n\n"
-                "可在系统设置中从有效备份恢复数据。",
+                headline=f"暂时无法{action}",
+                message="数据安全检查尚未通过，本次操作没有执行。",
+                detail=error,
+                notice="可在系统设置中从有效备份恢复数据。",
                 parent=getattr(self, "root", None),
             )
         return False
@@ -1394,7 +1418,16 @@ class BossFilterGUI:
         if len(selection) == 1:
             self._remove_candidate(selection[0])
             return
-        if not messagebox.askyesno("确认删除", f"确定要移除选中的 {len(selection)} 名候选人吗？"):
+        if not messagebox.ask_confirmation(
+            "移除候选人",
+            headline=f"移除选中的 {len(selection)} 名候选人？",
+            message="这些记录将从当前结果和本地候选人数据中移除。",
+            notice="重新扫描时仍可能再次发现这些候选人。",
+            yes_label="移除候选人",
+            no_label="取消",
+            dangerous=True,
+            parent=self.root,
+        ):
             return
         remove_keys = set()
         for sel_item in selection:
@@ -1465,6 +1498,13 @@ class BossFilterGUI:
             headline=(FONT_FAMILY, max(10, self.font_log[1]), 'bold'),
             message=(FONT_FAMILY, modal_font_size),
             button=(FONT_FAMILY, modal_font_size),
+        )
+        structured_message_size = max(9, modal_font_size - 2)
+        messagebox.set_structured_ui_fonts(
+            headline=(FONT_FAMILY, structured_message_size + 2, 'bold'),
+            message=(FONT_FAMILY, structured_message_size),
+            meta=(FONT_FAMILY, max(9, structured_message_size - 1)),
+            button=(FONT_FAMILY, structured_message_size),
         )
         # 警告/错误弹窗自动带语义图标，提升可扫读性
         messagebox.icon_kinds = frozenset({"warning", "error"})
@@ -4444,13 +4484,16 @@ class BossFilterGUI:
             padx=(int(10 * self.dpi_scale * self.zoom_factor), 0),
         )
 
-        self.data_backup_status_var = tk.StringVar(value="")
+        self.data_backup_status_var = tk.StringVar(
+            value=self._data_backup_note_text()
+        )
         ttk.Label(
             data_card,
             textvariable=self.data_backup_status_var,
             font=self.font_label,
             foreground=self.colors["text_secondary"],
             background=self.colors["bg_card"],
+            justify="left",
         ).pack(anchor="w", pady=(int(10 * self.dpi_scale * self.zoom_factor), 0))
 
         yield
@@ -4491,7 +4534,9 @@ class BossFilterGUI:
             anchor="w",
             pady=(int(12 * self.dpi_scale * self.zoom_factor), 0),
         )
-        self.diagnostic_package_status_var = tk.StringVar(value="")
+        self.diagnostic_package_status_var = tk.StringVar(
+            value=self._diagnostic_export_note_text()
+        )
         ttk.Label(
             diagnostic_card,
             textvariable=self.diagnostic_package_status_var,
@@ -4551,6 +4596,114 @@ class BossFilterGUI:
             f"简历副本 {int(result.get('resume_count') or 0)} 份"
         )
 
+    @staticmethod
+    def _backup_summary_metrics(result: dict) -> tuple[tuple[str, str], ...]:
+        """Return compact, privacy-safe metrics for backup result dialogs."""
+        return (
+            ("岗位", f"{int(result.get('job_count') or 0)} 个"),
+            ("候选人", f"{int(result.get('candidate_count') or 0)} 人"),
+            ("联系清单", f"{int(result.get('queue_count') or 0)} 项"),
+            ("简历副本", f"{int(result.get('resume_count') or 0)} 份"),
+        )
+
+    @staticmethod
+    def _format_maintenance_time(value) -> str:
+        """Format one persisted local activity timestamp for compact UI notes."""
+        text = str(value or "").strip()
+        if not text:
+            return "暂无记录"
+        try:
+            timestamp = datetime.fromisoformat(text)
+        except (TypeError, ValueError):
+            return "暂无记录"
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.astimezone()
+        return timestamp.strftime("%Y-%m-%d %H:%M")
+
+    def _maintenance_time_value(self, activity: str):
+        key = MAINTENANCE_TIME_PREFERENCE_KEYS.get(activity)
+        if not key:
+            return None
+        preferences = getattr(self, "_run_preferences", {}) or {}
+        return preferences.get(key)
+
+    def _remember_maintenance_success(
+        self,
+        activity: str,
+        *,
+        when: datetime | None = None,
+    ) -> str:
+        """Persist the latest successful local data-maintenance timestamp."""
+        key = MAINTENANCE_TIME_PREFERENCE_KEYS.get(activity)
+        if not key:
+            raise ValueError(f"未知的数据维护操作：{activity}")
+        timestamp = when or datetime.now().astimezone()
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.astimezone()
+        value = timestamp.isoformat(timespec="seconds")
+        preferences = dict(getattr(self, "_run_preferences", {}) or {})
+        preferences[key] = value
+        self._run_preferences = preferences
+        _save_run_preferences(preferences)
+        return value
+
+    def _data_backup_note_text(
+        self,
+        *,
+        backup_at=None,
+        restore_at=None,
+        backup_summary: str = "",
+        restore_summary: str = "",
+    ) -> str:
+        """Build the two-line backup/restore activity note."""
+        backup_value = (
+            self._maintenance_time_value("backup")
+            if backup_at is None
+            else backup_at
+        )
+        restore_value = (
+            self._maintenance_time_value("restore")
+            if restore_at is None
+            else restore_at
+        )
+        backup_line = f"最近备份：{self._format_maintenance_time(backup_value)}"
+        restore_line = f"最近恢复：{self._format_maintenance_time(restore_value)}"
+        if backup_summary:
+            backup_line += f" · {backup_summary}"
+        if restore_summary:
+            restore_line += f" · {restore_summary}"
+        return f"{backup_line}\n{restore_line}"
+
+    def _diagnostic_export_note_text(
+        self,
+        *,
+        exported_at=None,
+        summary: str = "",
+    ) -> str:
+        """Build the latest successful diagnostic-export note."""
+        value = (
+            self._maintenance_time_value("diagnostic_export")
+            if exported_at is None
+            else exported_at
+        )
+        line = f"最近导出：{self._format_maintenance_time(value)}"
+        if summary:
+            line += f" · {summary}"
+        return line
+
+    def _open_export_location(self, file_path: str) -> None:
+        """Open an exported file's folder and report file-manager failures."""
+        try:
+            _open_containing_folder(file_path)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            messagebox.show_failure(
+                "打开文件位置",
+                headline="无法打开所在文件夹",
+                message="文件已经生成，可以稍后从保存位置手动打开。",
+                detail=str(exc),
+                parent=getattr(self, "root", None),
+            )
+
     def _data_operation_busy(self) -> bool:
         """Prevent backup/restore from racing with active candidate writes."""
         return bool(
@@ -4591,23 +4744,35 @@ class BossFilterGUI:
             result = create_backup_package(BASE_DIR, destination)
         except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
             self._set_data_backup_status("备份失败")
-            messagebox.showerror(
-                "数据备份失败",
-                f"没有生成可用备份。\n\n{exc}",
+            messagebox.show_failure(
+                "数据备份",
+                headline="备份未完成",
+                message="没有生成可用备份。",
+                detail=str(exc),
                 parent=self.root,
             )
             return
         finally:
             self._data_maintenance_running = False
         summary = self._format_backup_summary(result)
-        self._set_data_backup_status(f"最近备份：{summary}")
+        backup_at = self._remember_maintenance_success("backup")
+        self._set_data_backup_status(
+            self._data_backup_note_text(
+                backup_at=backup_at,
+                backup_summary=summary,
+            )
+        )
         self.append_operation_log(f"[数据安全] 已导出数据备份：{summary}")
-        messagebox.showinfo(
-            "数据备份完成",
-            f"{summary}\n\n保存位置：\n{result['path']}\n\n"
-            "此 ZIP 未加密，请妥善保管。",
+        action = messagebox.show_result(
+            "数据备份",
+            headline="备份已完成",
+            metrics=self._backup_summary_metrics(result),
+            file_path=str(result["path"]),
+            notice="此 ZIP 未加密，请妥善保管。",
             parent=self.root,
         )
+        if action == "open_location":
+            self._open_export_location(str(result["path"]))
 
     def _restore_data_backup(self) -> None:
         """Validate and transactionally restore a user-selected backup ZIP."""
@@ -4628,19 +4793,27 @@ class BossFilterGUI:
         try:
             preview = inspect_backup(source)
         except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
-            messagebox.showerror(
-                "备份不可用",
-                f"完整性或数据格式检查未通过，未修改当前数据。\n\n{exc}",
+            messagebox.show_failure(
+                "恢复数据备份",
+                headline="这个备份无法使用",
+                message="完整性或数据格式检查未通过，当前数据没有修改。",
+                detail=str(exc),
                 parent=self.root,
             )
             return
 
         summary = self._format_backup_summary(preview)
-        if not messagebox.askyesno(
-            "确认恢复数据",
-            f"备份内容：{summary}\n\n"
-            "恢复将替换当前候选人、岗位配置和联系清单，并恢复备份中的简历副本。"
-            "执行前会自动保存当前数据恢复点。\n\n是否继续？",
+        if not messagebox.ask_confirmation(
+            "恢复数据备份",
+            headline="恢复这份数据备份？",
+            message=(
+                "将替换当前候选人、岗位配置和联系清单，"
+                "并恢复备份中的简历副本。"
+            ),
+            metrics=self._backup_summary_metrics(preview),
+            notice="执行前会自动保存当前数据恢复点。",
+            yes_label="开始恢复",
+            no_label="取消",
             parent=self.root,
         ):
             return
@@ -4651,9 +4824,14 @@ class BossFilterGUI:
             result = restore_backup(BASE_DIR, source)
         except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
             self._set_data_backup_status("恢复失败，当前数据已保留或自动回退")
-            messagebox.showerror(
-                "数据恢复失败",
-                f"未完成恢复；程序会在下次启动时继续完成或自动回退。\n\n{exc}",
+            messagebox.show_failure(
+                "恢复数据备份",
+                headline="恢复未完成",
+                message=(
+                    "当前数据已保留；程序会在下次启动时继续完成"
+                    "或自动回退。"
+                ),
+                detail=str(exc),
                 parent=self.root,
             )
             return
@@ -4693,11 +4871,25 @@ class BossFilterGUI:
             + int(result.get("unresolved_queue_count") or 0)
         )
         suffix = f"，另有 {unresolved} 条记录未自动关联岗位" if unresolved else ""
-        self._set_data_backup_status(f"最近恢复：{summary}{suffix}")
+        restore_at = self._remember_maintenance_success("restore")
+        self._set_data_backup_status(
+            self._data_backup_note_text(
+                restore_at=restore_at,
+                restore_summary=f"{summary}{suffix}",
+            )
+        )
         self.append_operation_log(f"[数据安全] 已从备份恢复：{summary}{suffix}")
-        messagebox.showinfo(
-            "数据恢复完成",
-            f"{summary}{suffix}\n\n界面已重新加载恢复后的数据。",
+        unresolved_notice = (
+            f"另有 {unresolved} 条记录未自动关联岗位，已原样保留。"
+            if unresolved
+            else None
+        )
+        messagebox.show_result(
+            "恢复数据备份",
+            headline="数据已恢复",
+            message="界面已重新加载恢复后的数据。",
+            metrics=self._backup_summary_metrics(result),
+            notice=unresolved_notice,
             parent=self.root,
         )
 
@@ -4778,30 +4970,37 @@ class BossFilterGUI:
         ) as exc:
             if status_var is not None:
                 status_var.set("诊断包导出失败")
-            messagebox.showerror(
-                "诊断包导出失败",
-                f"没有生成可分享的诊断包。\n\n{exc}",
+            messagebox.show_failure(
+                "导出诊断包",
+                headline="诊断包未导出",
+                message="没有生成可分享的诊断包。",
+                detail=str(exc),
                 parent=self.root,
             )
             return
         finally:
             self._data_maintenance_running = False
 
+        exported_at = self._remember_maintenance_success("diagnostic_export")
         if status_var is not None:
-            status_var.set(
-                f"最近导出：已脱敏并复核，包含 {result['log_count']} 个日志文件"
-            )
+            status_var.set(self._diagnostic_export_note_text(
+                exported_at=exported_at,
+                summary=f"已脱敏并复核，包含 {result['log_count']} 个日志文件",
+            ))
         self.append_operation_log(
             "[故障诊断] 已导出脱敏诊断包，"
             f"包含 {result['log_count']} 个日志文件"
         )
-        messagebox.showinfo(
-            "诊断包已导出",
-            "诊断包已完成自动脱敏和残留复核。\n\n"
-            f"保存位置：\n{result['path']}\n\n"
-            "分享前仍建议打开 ZIP，人工查看其中的文本内容。",
+        action = messagebox.show_result(
+            "导出诊断包",
+            headline="诊断包已导出",
+            message="已完成自动脱敏和残留复核。",
+            file_path=str(result["path"]),
+            notice="分享前，请检查 ZIP 内的文本内容。",
             parent=self.root,
         )
+        if action == "open_location":
+            self._open_export_location(str(result["path"]))
 
     def _api_config_file_mtime(self):
         """Return a stable file fingerprint for api_config.json."""
@@ -6723,20 +6922,35 @@ class BossFilterGUI:
                 from education_certificate import likely_supports_vision
                 if not likely_supports_vision(dict(self.api_config or {})):
                     model_name = str((self.api_config or {}).get("model") or "未配置")
-                    messagebox.showwarning(
-                        "模型可能不支持图片识别",
-                        f"当前模型「{model_name}」可能不支持图片输入。\n\n"
-                        "图片识别需要多模态视觉模型，如：\n"
-                        "  国外：GPT-4o / GPT-4.1、Claude Sonnet 4、Gemini 2.5 Pro\n"
-                        "  国内：qwen3.7-plus、mimo-v2.5、GLM-5V、Kimi K2.5、MiniMax-M2.7\n\n"
-                        "PDF 文件使用文本提取，不受此限制。\n\n"
-                        "请在「API 配置」中切换支持图片的模型后再识别。",
+                    messagebox.show_notice(
+                        "图片识别模型提醒",
+                        headline="当前模型可能无法识别图片",
+                        message="请先在「API 配置」中切换支持图片输入的模型。",
+                        metrics=(("当前模型", model_name),),
+                        notice="PDF 使用文本提取，不受图片模型限制。",
+                        detail=(
+                            "可选视觉模型示例：\n"
+                            "国外：GPT-4o / GPT-4.1、Claude Sonnet 4、Gemini 2.5 Pro\n"
+                            "国内：qwen3.7-plus、mimo-v2.5、GLM-5V、Kimi K2.5、MiniMax-M2.7"
+                        ),
                         parent=self.root,
                     )
         if invalid_files:
-            messagebox.showwarning(
+            omitted_count = max(0, len(invalid_files) - 10)
+            messagebox.show_notice(
                 "部分文件未导入",
-                "以下文件不是支持的格式（图片或 PDF）：\n" + "\n".join(invalid_files[:10]),
+                headline=f"{len(invalid_files)} 个文件未导入",
+                message="学历核验仅支持图片或 PDF 文件。",
+                metrics=(
+                    ("已加入队列", f"{len(added_ids)} 个"),
+                    ("未导入", f"{len(invalid_files)} 个"),
+                ),
+                detail="\n".join(invalid_files[:10]),
+                notice=(
+                    f"详细信息仅显示前 10 个，另有 {omitted_count} 个文件未列出。"
+                    if omitted_count
+                    else "请重新选择 JPG、PNG、BMP、WEBP 或 PDF 文件。"
+                ),
                 parent=self.root,
             )
 
@@ -7067,15 +7281,20 @@ class BossFilterGUI:
             from education_certificate import likely_supports_vision
             if not likely_supports_vision(edu_config):
                 model_name = str(edu_config.get("model") or "未配置")
-                if not messagebox.askyesno(
-                    "模型可能不支持图片识别",
-                    f"当前学历核验模型「{model_name}」可能不支持图片输入。\n\n"
-                    "图片识别需要多模态视觉模型，如：\n"
-                    "  国外：GPT-4o / GPT-4.1、Claude Sonnet 4、Gemini 2.5 Pro\n"
-                    "  国内：qwen3.7-plus、mimo-v2.5、GLM-5V、Kimi K2.5、MiniMax-M2.7\n\n"
-                    "PDF 文件使用文本提取，不受此限制。\n\n"
-                    "可在系统设置的“使用中的模型”中选择学历核验模型。\n\n"
-                    "是否仍要尝试识别？",
+                if not messagebox.ask_confirmation(
+                    "继续尝试图片识别？",
+                    headline="当前学历核验模型可能不支持图片输入",
+                    message="继续后仍会尝试识别，但可能直接失败或无法返回有效字段。",
+                    metrics=(("当前模型", model_name),),
+                    notice="建议先到系统设置的「使用中的模型」切换学历核验模型。",
+                    detail=(
+                        "可选视觉模型示例：\n"
+                        "国外：GPT-4o / GPT-4.1、Claude Sonnet 4、Gemini 2.5 Pro\n"
+                        "国内：qwen3.7-plus、mimo-v2.5、GLM-5V、Kimi K2.5、MiniMax-M2.7\n\n"
+                        "PDF 使用文本提取，不受图片模型限制。"
+                    ),
+                    yes_label="仍然尝试",
+                    no_label="返回切换模型",
                     parent=self.root,
                 ):
                     return
@@ -9491,7 +9710,16 @@ class BossFilterGUI:
                             self._run_export(selected_data, file_path)
 
                     def remove_selected():
-                        if not messagebox.askyesno("确认删除", f"确定要移除选中的 {len(selection)} 名候选人吗？"):
+                        if not messagebox.ask_confirmation(
+                            "移除候选人",
+                            headline=f"移除选中的 {len(selection)} 名候选人？",
+                            message="这些记录将从当前结果和本地候选人数据中移除。",
+                            notice="重新扫描时仍可能再次发现这些候选人。",
+                            yes_label="移除候选人",
+                            no_label="取消",
+                            dangerous=True,
+                            parent=detail_window,
+                        ):
                             return
                         selected_to_remove = self._collect_selected_candidates_for_queue(
                             selection, filtered_ref, tree
@@ -9574,7 +9802,16 @@ class BossFilterGUI:
                     self._open_candidate_review_workbench(candidate, filtered_ref[0])
 
                 def remove_candidate():
-                    if not messagebox.askyesno("确认删除", "确定要移除该候选人吗？"):
+                    if not messagebox.ask_confirmation(
+                        "移除候选人",
+                        headline=f"移除 {candidate.get('name') or '该候选人'}？",
+                        message="该记录将从当前结果和本地候选人数据中移除。",
+                        notice="重新扫描时仍可能再次发现该候选人。",
+                        yes_label="移除候选人",
+                        no_label="取消",
+                        dangerous=True,
+                        parent=detail_window,
+                    ):
                         return
                     candidate_key = self._candidate_identity_key(candidate)
                     if not candidate_key[0]:
@@ -9901,7 +10138,16 @@ class BossFilterGUI:
                             self._run_export(selected_data, file_path)
 
                     def remove_selected():
-                        if not messagebox.askyesno("确认删除", f"确定要移除选中的 {len(selection)} 名候选人吗？"):
+                        if not messagebox.ask_confirmation(
+                            "移除候选人",
+                            headline=f"移除选中的 {len(selection)} 名候选人？",
+                            message="这些记录将从当前结果和本地候选人数据中移除。",
+                            notice="重新扫描时仍可能再次发现这些候选人。",
+                            yes_label="移除候选人",
+                            no_label="取消",
+                            dangerous=True,
+                            parent=detail_window,
+                        ):
                             return
                         selected_to_remove = self._collect_selected_candidates_for_queue(
                             selection, filtered_ref, tree
@@ -9984,7 +10230,16 @@ class BossFilterGUI:
                     self._open_candidate_review_workbench(candidate, filtered_ref[0])
 
                 def remove_candidate():
-                    if not messagebox.askyesno("确认删除", "确定要移除该候选人吗？"):
+                    if not messagebox.ask_confirmation(
+                        "移除候选人",
+                        headline=f"移除 {candidate.get('name') or '该候选人'}？",
+                        message="该记录将从当前结果和本地候选人数据中移除。",
+                        notice="重新扫描时仍可能再次发现该候选人。",
+                        yes_label="移除候选人",
+                        no_label="取消",
+                        dangerous=True,
+                        parent=detail_window,
+                    ):
                         return
                     candidate_key = self._candidate_identity_key(candidate)
                     if not candidate_key[0]:
@@ -10362,11 +10617,21 @@ class BossFilterGUI:
                 return
 
         count = len(deleted)
-        prompt = f"确定要删除选中的 {count} 个模型吗？\n\n" + "\n".join(
-            f"  • {model_ref['model']} ({model_ref['provider_display']})"
-            for model_ref in deleted
-        )
-        if not messagebox.askyesno("确认", prompt):
+        if not messagebox.ask_confirmation(
+            "删除已保存模型",
+            headline=f"删除选中的 {count} 个模型？",
+            message="这些模型将从已保存模型列表中移除。",
+            metrics=(("模型", f"{count} 个"),),
+            detail="\n".join(
+                f"• {model_ref['model']}（{model_ref['provider_display']}）"
+                for model_ref in deleted
+            ),
+            notice="删除后如需再次使用，必须重新添加模型配置。",
+            yes_label="删除模型",
+            no_label="取消",
+            dangerous=True,
+            parent=self.root,
+        ):
             return
 
         # 从 saved_models 移除所有被选中的模型
@@ -10455,7 +10720,10 @@ class BossFilterGUI:
         """使用选中的模型 - 从系统钥匙串读取加密的 API Key（按服务商管理）"""
         selection = self.model_list_tree.selection()
         if not selection:
-            messagebox.showwarning("警告", "请先选择要使用的模型")
+            self._update_api_status(
+                text="⚠ 请先在已保存模型列表中选择一个模型",
+                foreground=self.colors['warning'],
+            )
             return
 
         # 获取选中的模型信息
@@ -10494,12 +10762,17 @@ class BossFilterGUI:
         saved_api_key = self._get_api_key_cached(provider_key, base_url)
 
         if not saved_api_key:
-            messagebox.showwarning("警告",
-                f"模型 '{model_name}' 的 API Key 未在系统钥匙串中找到\n\n"
-                f"可能原因：\n"
-                f"1. 系统钥匙串被清理\n"
-                f"2. 配置文件来自其他电脑\n\n"
-                f"请重新输入 API Key 并保存该模型")
+            self._update_api_status(
+                text=f"⚠ {model_name} 缺少 API Key，请重新保存",
+                foreground=self.colors['warning'],
+            )
+            messagebox.show_notice(
+                "模型配置不完整",
+                headline=f"{model_name} 缺少 API Key",
+                message="请重新输入 API Key 并保存该模型。",
+                detail="可能原因：系统凭据被清理，或配置文件来自其他电脑。",
+                parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
+            )
             return False
 
         self.api_provider_var.set(provider_display)
@@ -10522,7 +10795,7 @@ class BossFilterGUI:
         self._update_api_status(text=f"✓ 默认 AI 模型已设为 {provider_display} / {model_name}", foreground=self.colors['success'])
         self._update_ai_eval_status()
         if announce:
-            messagebox.showinfo("切换成功", f"已切换默认 AI 模型：\n\n{provider_display} / {model_name}")
+            self._status_flash(f"默认 AI 模型已切换为 {model_name}")
         return True
 
     def test_saved_model_connectivity(self, assigned_role=None, assigned_model_ref=None,
@@ -10780,13 +11053,22 @@ class BossFilterGUI:
             pending = list(getattr(self, '_pending_models_to_add', []) or [])
 
             if not model_name and not pending:
-                messagebox.showwarning("警告", "请输入模型名称")
+                self._update_api_status(
+                    text="⚠ 请输入模型名称",
+                    foreground=self.colors['warning'],
+                )
                 return
             if not api_key:
-                messagebox.showwarning("警告", "请输入 API Key")
+                self._update_api_status(
+                    text="⚠ 请输入 API Key",
+                    foreground=self.colors['warning'],
+                )
                 return
             if not base_url:
-                messagebox.showwarning("警告", "请输入 Base URL")
+                self._update_api_status(
+                    text="⚠ 请输入 Base URL",
+                    foreground=self.colors['warning'],
+                )
                 return
 
             normalized_base_url = normalize_api_base_url({
@@ -10890,8 +11172,15 @@ class BossFilterGUI:
             # 更新当前模型显示
             self.update_current_model_display()
 
-            status_text = "✓ 模型配置已保存"
-            self._update_api_status(text=status_text, foreground=self.colors['success'])
+            if len(pending) > 1:
+                summary = f"已保存 {len(pending)} 个模型到列表（新增 {added_count}，更新 {updated_count}）"
+            else:
+                summary = f"模型 {provider}/{pending[0]} 已保存到已保存模型列表"
+            default_summary = "本次保存的模型已设为默认 AI 模型" if should_set_default else "默认 AI 模型保持不变"
+            self._update_api_status(
+                text=f"✓ {summary}；{default_summary}",
+                foreground=self.colors['success'],
+            )
             # 更新 AI 评估状态标签（可能从未配置变为已配置）
             self._update_ai_eval_status()
 
@@ -10899,20 +11188,16 @@ class BossFilterGUI:
             if getattr(self, 'reconfig_card', None) and self.reconfig_card.winfo_exists():
                 self.reconfig_card.destroy()
                 self.reconfig_card = None
-
-            if len(pending) > 1:
-                summary = f"已保存 {len(pending)} 个模型到列表（新增 {added_count}，更新 {updated_count}）"
-            else:
-                summary = f"模型 {provider}/{pending[0]} 已保存到已保存模型列表"
-            default_summary = "本次保存的模型已设为默认 AI 模型" if should_set_default else "默认 AI 模型保持不变"
-            messagebox.showinfo(
-                "成功",
-                f"模型配置已保存\n{summary}\n{default_summary}\n\n"
-                "API Key 已按服务商 + Base URL 加密存储"
-            )
+            self._status_flash("模型配置已保存，API Key 已加密存储")
         except Exception as e:
             self._update_api_status(text=f"✗ 保存失败：{e}", foreground=self.colors['danger'])
-            messagebox.showerror("错误", f"保存 API 配置失败：{e}")
+            messagebox.show_failure(
+                "保存模型配置",
+                headline="模型配置未保存",
+                message="请检查输入内容和系统凭据服务后重试。",
+                detail=str(e),
+                parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
+            )
 
     def on_api_provider_changed(self, event):
         """API 服务商改变时更新默认配置"""
@@ -11178,10 +11463,17 @@ class BossFilterGUI:
                             _dlg_style.configure('Dialog.TLabel', background=self.colors['bg_card'])
 
                             # 对话框大小
-                            dialog_width = 750
-                            dialog_height = 800
+                            dialog_scale = max(
+                                1.0,
+                                min(self.dpi_scale * self.zoom_factor, 1.35),
+                            )
+                            dialog_width = int(760 * dialog_scale)
+                            dialog_height = int(680 * dialog_scale)
                             dialog.resizable(True, True)
-                            dialog.minsize(500, 400)
+                            dialog.minsize(
+                                int(560 * dialog_scale),
+                                int(440 * dialog_scale),
+                            )
 
                             # 关闭按钮（红叉）也走统一清理
                             dialog.protocol("WM_DELETE_WINDOW", _close_dialog)
@@ -11288,6 +11580,21 @@ class BossFilterGUI:
                             scrollbar.pack(side="right", fill="y")
                             listbox.pack(side="left", fill="both", expand=True)
 
+                            test_status_var = tk.StringVar(value="")
+                            test_status_label = ttk.Label(
+                                dialog,
+                                textvariable=test_status_var,
+                                font=(FONT_FAMILY, int(10 * self.font_scale)),
+                                foreground=self.colors['text_secondary'],
+                                style='Dialog.TLabel',
+                                anchor="w",
+                            )
+                            test_status_label.pack(
+                                fill="x",
+                                padx=20,
+                                pady=(0, 2),
+                            )
+
                             def _refresh_listbox(query=""):
                                 """根据搜索词刷新列表，保持新增模型绿色高亮"""
                                 listbox.delete(0, "end")
@@ -11361,6 +11668,12 @@ class BossFilterGUI:
                                         current_text = current_text.split(" [")[0]
                                     listbox.delete(idx)
                                     listbox.insert(idx, f"{current_text} [测试中...]")
+                                test_status_var.set(
+                                    f"正在测试 {len(test_models)} 个模型，请稍候…"
+                                )
+                                test_status_label.configure(
+                                    foreground=self.colors['warning']
+                                )
 
                                 # 测试结果收集
                                 results = {}
@@ -11421,7 +11734,7 @@ class BossFilterGUI:
                                     threads.append(t)
                                     t.start()
 
-                                # 等待所有测试完成并显示汇总
+                                # 等待所有测试完成，并在当前对话框内更新汇总。
                                 def _show_summary():
                                     for t in threads:
                                         t.join()
@@ -11430,30 +11743,37 @@ class BossFilterGUI:
                                     fail_count = len(results) - success_count
 
                                     if len(test_models) == 1:
-                                        # 单个模型测试，直接显示结果
                                         model_name = test_models[0]
                                         result = results[model_name]
                                         if result["status"] == "success":
-                                            self.root.after(0, lambda: messagebox.showinfo(
-                                                "测试成功",
-                                                f"模型 {model_name} 连通正常，响应时间 {result['time']:.1f} 秒",
-                                                parent=dialog
-                                            ))
+                                            summary = (
+                                                f"测试完成：{model_name} 可用，"
+                                                f"响应时间 {result['time']:.1f} 秒"
+                                            )
                                         else:
-                                            self.root.after(0, lambda: messagebox.showerror(
-                                                "测试失败",
-                                                f"模型 {model_name}: {result['msg']}",
-                                                parent=dialog
-                                            ))
+                                            summary = (
+                                                f"测试完成：{model_name} 不可用，"
+                                                "请查看列表中的失败原因"
+                                            )
                                     else:
-                                        # 多个模型测试，显示简要汇总
                                         summary = f"测试完成：{success_count} 个可用，{fail_count} 个不可用"
 
-                                        self.root.after(0, lambda: messagebox.showinfo(
-                                            "批量测试结果",
-                                            summary,
-                                            parent=dialog
-                                        ))
+                                    def _apply_summary():
+                                        try:
+                                            if not dialog.winfo_exists():
+                                                return
+                                        except tk.TclError:
+                                            return
+                                        test_status_var.set(summary)
+                                        test_status_label.configure(
+                                            foreground=(
+                                                self.colors['success']
+                                                if fail_count == 0
+                                                else self.colors['warning']
+                                            )
+                                        )
+
+                                    self.root.after(0, _apply_summary)
 
                                 threading.Thread(target=_show_summary, daemon=True).start()
 
@@ -11536,19 +11856,19 @@ class BossFilterGUI:
                         def _show_model_detail(detail_type):
                             """点击状态栏数字时显示详细列表"""
                             if detail_type == 'new' and new_models:
-                                messagebox.showinfo(
-                                    "新增模型列表",
-                                    f"{provider} 新增 {_new_count} 个模型：\n\n"
-                                    + "\n".join(f"  • {m}" for m in sorted(new_models)[:20])
-                                    + (f"\n  …等共 {_new_count} 个" if _new_count > 20 else "")
+                                self._show_text_dialog(
+                                    f"{provider} 新增模型",
+                                    "\n".join(f"• {m}" for m in sorted(new_models)),
+                                    width=640,
+                                    height=440,
                                 )
                             elif detail_type == 'removed' and removed_models:
-                                messagebox.showwarning(
-                                    "下线模型列表",
-                                    f"{provider} 有 {_removed_count} 个模型已下线：\n\n"
-                                    + "\n".join(f"  • {m}" for m in sorted(removed_models)[:20])
-                                    + (f"\n  …等共 {_removed_count} 个" if _removed_count > 20 else "")
-                                    + "\n\n如正在使用这些模型，请尽快切换。"
+                                self._show_text_dialog(
+                                    f"{provider} 下线模型",
+                                    "\n".join(f"• {m}" for m in sorted(removed_models))
+                                    + "\n\n如正在使用这些模型，请尽快切换。",
+                                    width=640,
+                                    height=440,
                                 )
 
                         def _update_status():
@@ -11613,56 +11933,41 @@ class BossFilterGUI:
                                 self._status_clickable_labels.append(lbl_close)
 
                         self.root.after(0, _update_status)
-                        if new_models or removed_models:
-                            def _show_models_alert():
-                                msg_parts = []
-                                if new_models:
-                                    msg_parts.append(f"✦ 新增 {len(new_models)} 个模型：\n"
-                                        + "\n".join(f"  • {m}" for m in sorted(new_models)[:10])
-                                        + (f"\n  …等共 {len(new_models)} 个" if len(new_models) > 10 else ""))
-                                if removed_models:
-                                    msg_parts.append(f"⚠ 下线 {len(removed_models)} 个模型：\n"
-                                        + "\n".join(f"  • {m}" for m in sorted(removed_models)[:10])
-                                        + (f"\n  …等共 {len(removed_models)} 个" if len(removed_models) > 10 else "")
-                                        + "\n\n如正在使用这些模型，请尽快切换。")
-                                messagebox.showinfo(
-                                    "模型列表变更",
-                                    f"{provider} 模型列表有变更：\n\n" + "\n\n".join(msg_parts)
-                                )
-                                self.root.after(100, show_model_dialog)
-                            self.root.after(0, _show_models_alert)
-                        else:
-                            self.root.after(100, show_model_dialog)
+                        self.root.after(100, show_model_dialog)
                     else:
                         self.root.after(0, lambda: self._update_api_status(
                             text="⚠ 未找到模型列表",
                             foreground=self.colors['warning']
                         ))
-                        self.root.after(0, lambda: messagebox.showwarning(
+                        self.root.after(0, lambda: messagebox.show_notice(
                             "未找到模型",
-                            f"API 返回的数据中没有模型列表\n\n响应内容：{json.dumps(data, ensure_ascii=False)[:500]}"
+                            headline="API 没有返回可用模型列表",
+                            message="可以手动输入模型名称后继续保存。",
+                            detail=json.dumps(data, ensure_ascii=False)[:500],
+                            parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
                         ))
                 elif not resolution_status and response_status == 401:
                     self.root.after(0, lambda: self._update_api_status(
                         text="✗ 认证失败",
                         foreground=self.colors['danger']
                     ))
-                    self.root.after(0, lambda: messagebox.showerror(
+                    self.root.after(0, lambda: messagebox.show_failure(
                         "认证失败",
-                        "API Key 无效或已过期\n\n请检查 API Key 是否正确"
+                        headline="API Key 无效或已过期",
+                        message="请检查 API Key 后重新获取模型列表。",
+                        parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
                     ))
                 elif not resolution_status and response_status == 404:
                     self.root.after(0, lambda: self._update_api_status(
                         text="✗ 接口不存在",
                         foreground=self.colors['danger']
                     ))
-                    self.root.after(0, lambda: messagebox.showwarning(
+                    self.root.after(0, lambda: messagebox.show_notice(
                         "接口不支持",
-                        f"该服务商不支持 /models 接口获取模型列表\n\n"
-                        f"HTTP 状态码：404\n\n"
-                        f"建议：\n"
-                        f"• 手动输入模型名称\n"
-                        f"• 参考服务商文档获取可用模型"
+                        headline="服务商不支持自动获取模型列表",
+                        message="请手动输入模型名称，或参考服务商文档。",
+                        metrics=(("HTTP 状态码", "404"),),
+                        parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
                     ))
                 else:
                     is_temporary = resolution_status in ("probable", "unavailable")
@@ -11672,46 +11977,69 @@ class BossFilterGUI:
                         text=f"{status_prefix} 请求失败 ({response_status or '未确认'})",
                         foreground=status_color,
                     ))
-                    dialog = messagebox.showwarning if is_temporary else messagebox.showerror
-                    self.root.after(0, lambda s=response_status, m=response_text, d=dialog: d(
-                        "自动识别暂未完成" if is_temporary else (
-                            "自动识别失败" if has_endpoint_discovery(provider) else "请求失败"
-                        ),
-                        (f"HTTP 状态码：{s}\n\n" if s else "") + str(m)[:300],
-                    ))
+                    def _show_request_failure(
+                        status=response_status,
+                        response=response_text,
+                        temporary=is_temporary,
+                    ):
+                        title = (
+                            "自动识别暂未完成"
+                            if temporary else
+                            ("自动识别失败" if has_endpoint_discovery(provider) else "请求失败")
+                        )
+                        if temporary:
+                            messagebox.show_notice(
+                                title,
+                                headline="暂时无法自动识别服务商模型",
+                                message="可以稍后重试，或先手动输入模型名称。",
+                                metrics=(("HTTP 状态码", str(status or "未确认")),),
+                                detail=str(response)[:300],
+                                parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
+                            )
+                        else:
+                            messagebox.show_failure(
+                                title,
+                                headline="模型列表获取失败",
+                                message="请检查服务地址和网络后重试。",
+                                detail=str(response)[:300],
+                                parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
+                            )
+                    self.root.after(0, _show_request_failure)
 
             except requests.exceptions.Timeout:
                 self.root.after(0, lambda: self._update_api_status(
                     text="⏱ 请求超时",
                     foreground=self.colors['warning']
                 ))
-                self.root.after(0, lambda: messagebox.showwarning(
+                self.root.after(0, lambda: messagebox.show_notice(
                     "请求超时",
-                    "获取模型列表超时\n\n"
-                    "可能原因：\n"
-                    "• 网络连接不稳定\n"
-                    "• 服务商不支持模型列表接口\n"
-                    "• 需要配置代理"
+                    headline="获取模型列表超时",
+                    message="请检查网络、代理或服务商是否支持模型列表接口。",
+                    parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
                 ))
             except requests.exceptions.ConnectionError as e:
                 self.root.after(0, lambda: self._update_api_status(
                     text="✗ 连接失败",
                     foreground=self.colors['danger']
                 ))
-                self.root.after(0, lambda m=str(e)[:200]: messagebox.showerror(
+                self.root.after(0, lambda m=str(e)[:200]: messagebox.show_failure(
                     "连接失败",
-                    f"无法连接到 API 服务器\n\n"
-                    f"错误详情：{m}"
+                    headline="无法连接到 API 服务器",
+                    message="请检查 Base URL、网络或代理设置。",
+                    detail=m,
+                    parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
                 ))
             except Exception as e:
                 self.root.after(0, lambda: self._update_api_status(
                     text="✗ 请求失败",
                     foreground=self.colors['danger']
                 ))
-                self.root.after(0, lambda m=str(e)[:200]: messagebox.showerror(
+                self.root.after(0, lambda m=str(e)[:200]: messagebox.show_failure(
                     "请求失败",
-                    f"获取模型列表时发生错误\n\n"
-                    f"错误详情：{m}"
+                    headline="获取模型列表时发生错误",
+                    message="模型列表没有更新。",
+                    detail=m,
+                    parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
                 ))
 
         threading.Thread(target=fetch_thread, daemon=True).start()
@@ -11737,15 +12065,24 @@ class BossFilterGUI:
         provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
 
         if not api_key:
-            messagebox.showwarning("警告", "请先输入 API Key")
+            self._update_api_status(
+                text="⚠ 请先输入 API Key",
+                foreground=self.colors['warning'],
+            )
             return
 
         if not base_url:
-            messagebox.showwarning("警告", "请先输入 Base URL")
+            self._update_api_status(
+                text="⚠ 请先输入 Base URL",
+                foreground=self.colors['warning'],
+            )
             return
 
         if not model:
-            messagebox.showwarning("警告", "请先输入模型名称")
+            self._update_api_status(
+                text="⚠ 请先输入模型名称",
+                foreground=self.colors['warning'],
+            )
             return
 
 
@@ -11780,13 +12117,12 @@ class BossFilterGUI:
             except socket.gaierror:
                 elapsed = time.time() - start_time
                 self.root.after(0, lambda: self._update_api_status(text="✗ DNS 解析失败", foreground=self.colors['danger']))
-                self.root.after(0, lambda: messagebox.showerror(
+                self.root.after(0, lambda: messagebox.show_failure(
                     "DNS 解析失败",
-                    f"无法解析域名：{hostname}\n\n"
-                    f"请检查：\n"
-                    f"• Base URL 中的域名是否正确\n"
-                    f"• DNS 服务器是否可用\n"
-                    f"• 是否需要配置 hosts 文件"
+                    headline=f"无法解析域名 {hostname}",
+                    message="请检查 Base URL、DNS 设置或 hosts 配置。",
+                    detail=f"DNS 检查耗时 {elapsed:.1f} 秒",
+                    parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
                 ))
                 return
 
@@ -11801,29 +12137,28 @@ class BossFilterGUI:
                 elapsed = time.time() - start_time
                 if capability.get("status") in ("compatible", "limited"):
                     compatibility = "完整兼容" if capability.get("status") == "compatible" else "兼容模式"
-                    output_mode = "结构化工具调用" if capability.get("output_mode") == "tool" else "JSON 文本自动纠错"
                     self.root.after(0, lambda: self._update_api_status(
                         text=f"✓ {compatibility} ({elapsed:.1f}s)",
                         foreground=self.colors['success'],
                     ))
-                    self.root.after(0, lambda: messagebox.showinfo(
-                        "连接测试成功",
-                        f"模型可用于 AI 评估\n\n"
-                        f"响应时间：{elapsed:.1f}秒\n"
-                        f"服务商：{provider_display}\n"
-                        f"模型：{model}\n"
-                        f"兼容状态：{compatibility}\n"
-                        f"输出方式：{output_mode}",
-                    ))
+                    self.root.after(
+                        0,
+                        lambda: self._status_flash(
+                            f"{model} 连接正常，可用于 AI 评估"
+                        ),
+                    )
                 else:
                     error_message = capability.get("message", "模型无法生成程序所需评估格式")
                     self.root.after(0, lambda: self._update_api_status(
                         text="✗ 验证未通过",
                         foreground=self.colors['danger'],
                     ))
-                    self.root.after(0, lambda: messagebox.showerror(
+                    self.root.after(0, lambda: messagebox.show_failure(
                         "连接测试失败",
-                        f"模型连接或兼容性验证未通过\n\n原因：{error_message}",
+                        headline="模型不能用于 AI 评估",
+                        message="连接或兼容性验证未通过。",
+                        detail=error_message,
+                        parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
                     ))
                 return
             except Exception as e:
@@ -11832,9 +12167,12 @@ class BossFilterGUI:
                     text="✗ 能力验证失败",
                     foreground=self.colors['danger'],
                 ))
-                self.root.after(0, lambda: messagebox.showerror(
+                self.root.after(0, lambda: messagebox.show_failure(
                     "连接测试失败",
-                    f"模型能力验证异常：{error_message}",
+                    headline="模型能力验证异常",
+                    message="连接测试没有得到可用结论。",
+                    detail=error_message,
+                    parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
                 ))
                 return
 
@@ -11896,32 +12234,39 @@ class BossFilterGUI:
                             text=f"✓ 验证成功 ({elapsed:.1f}s)",
                             foreground=self.colors['success']
                         ))
-                        self.root.after(0, lambda: messagebox.showinfo(
-                            "连接测试成功",
-                            f"API 连接正常\n\n"
-                            f"响应时间：{elapsed:.1f}秒\n"
-                            f"服务商：{self.api_provider_var.get().upper()}\n"
-                            f"模型：{model}"
-                        ))
+                        self.root.after(
+                            0,
+                            lambda: self._status_flash(
+                                f"API 连接正常，响应时间 {elapsed:.1f} 秒"
+                            ),
+                        )
                         return
                     elif response.status_code == 401:
                         session.close()
                         self.root.after(0, lambda: self._update_api_status(text="✗ 认证失败", foreground=self.colors['danger']))
-                        self.root.after(0, lambda: messagebox.showerror(
+                        self.root.after(0, lambda: messagebox.show_failure(
                             "认证失败",
-                            f"API Key 无效或已过期\n\n"
-                            f"状态码：401\n"
-                            f"请检查 API Key 是否正确"
+                            headline="API Key 无效或已过期",
+                            message="请检查 API Key 是否正确后重新测试。",
+                            detail="HTTP 401",
+                            parent=(
+                                getattr(self, "api_config_page", None)
+                                or getattr(self, "root", None)
+                            ),
                         ))
                         return
                     elif response.status_code == 429:
                         session.close()
                         self.root.after(0, lambda: self._update_api_status(text="⚠ 请求受限", foreground=self.colors['warning']))
-                        self.root.after(0, lambda: messagebox.showwarning(
-                            "请求限额",
-                            f"API 请求超限额\n\n"
-                            f"状态码：429\n"
-                            f"请稍后重试"
+                        self.root.after(0, lambda: messagebox.show_notice(
+                            "请求暂时受限",
+                            headline="API 请求已达到限额",
+                            message="请稍后再试。",
+                            metrics=(("状态码", "HTTP 429"),),
+                            parent=(
+                                getattr(self, "api_config_page", None)
+                                or getattr(self, "root", None)
+                            ),
                         ))
                         return
                     else:
@@ -11955,13 +12300,27 @@ class BossFilterGUI:
 
                         # 重试耗尽或业务错误
                         self.root.after(0, lambda: self._update_api_status(text="✗ 验证失败", foreground=self.colors['danger']))
-                        if friendly:
-                            self.root.after(0, lambda: messagebox.showerror("连接测试失败", friendly))
-                        else:
-                            self.root.after(0, lambda: messagebox.showerror(
-                                "连接测试失败",
-                                f"无法连接到 API 服务\n\nHTTP {response.status_code}"
-                            ))
+                        failure_message = friendly or "无法连接到 API 服务。"
+                        failure_detail = (
+                            f"HTTP {response.status_code}"
+                            if friendly
+                            else f"HTTP {response.status_code}\n\n{err_msg}"
+                        )
+                        self.root.after(
+                            0,
+                            lambda msg=failure_message, detail=failure_detail: (
+                                messagebox.show_failure(
+                                    "连接测试失败",
+                                    headline="API 验证未通过",
+                                    message=msg,
+                                    detail=detail,
+                                    parent=(
+                                        getattr(self, "api_config_page", None)
+                                        or getattr(self, "root", None)
+                                    ),
+                                )
+                            ),
+                        )
                         return
 
                 except requests.exceptions.Timeout as e:
@@ -12061,14 +12420,21 @@ class BossFilterGUI:
         """Protect unsaved job edits before switching or starting another draft."""
         if not self._job_form_has_unsaved_changes():
             return True
-        choice = messagebox.askyesnocancel(
+        choice = messagebox.ask_choice(
             "岗位配置尚未保存",
-            "当前岗位有未保存的修改。\n\n是否先保存再继续？",
+            headline="当前岗位有未保存的修改",
+            message="请选择如何处理这些修改。",
+            choices=(
+                ("保存并继续", "save"),
+                ("不保存", "discard"),
+                ("取消", None),
+            ),
+            notice="不保存将放弃当前表单中的修改。",
             parent=self.root,
         )
         if choice is None:
             return False
-        if choice:
+        if choice == "save":
             return bool(self.save_current_job())
         return True
 
@@ -12590,12 +12956,7 @@ class BossFilterGUI:
         self.skills_data.append({"name": skill_name, "weight": weight, "source": "手动"})
         self.refresh_skills_tree()
         self.new_skill_var.set("")
-        messagebox.showinfo(
-            "成功",
-            f"已添加技能：{skill_name}（权重{weight}）",
-            parent=self.root,
-            show_icon=False,
-        )
+        self._status_flash(f"已添加技能：{skill_name}（权重 {weight}）")
 
     def delete_skill(self):
         """删除选中技能"""
@@ -12603,7 +12964,16 @@ class BossFilterGUI:
         if not selection:
             messagebox.showwarning("警告", "请先在列表中选择要删除的技能")
             return
-        if messagebox.askyesno("确认删除", f"确定要删除选中的 {len(selection)} 个技能吗？"):
+        if messagebox.ask_confirmation(
+            "删除技能",
+            headline=f"删除选中的 {len(selection)} 个技能？",
+            message="这些技能将从当前岗位配置中移除。",
+            notice="保存岗位配置后，删除结果才会写入配置文件。",
+            yes_label="删除技能",
+            no_label="取消",
+            dangerous=True,
+            parent=self.root,
+        ):
             for item in selection:
                 values = self.skills_tree.item(item, "values")
                 skill_name = values[0]
@@ -12646,12 +13016,7 @@ class BossFilterGUI:
                     s["weight"] = weight
                     break
         self.refresh_skills_tree()
-        messagebox.showinfo(
-            "成功",
-            f"已更新技能权重为 {weight}",
-            parent=self.root,
-            show_icon=False,
-        )
+        self._status_flash(f"已更新技能权重为 {weight}")
 
     def add_required_condition(self):
         """添加必要条件"""
@@ -13312,26 +13677,16 @@ class BossFilterGUI:
             )
 
             if skills_count == 0:
-                self._set_parse_result_text(f"⚠ 解析成功但无技术关键字：{summary_base}", self.colors['warning'])
-                messagebox.showwarning(
-                    "关键字缺失",
-                    "解析成功，但未提取到任何技术关键字。\n\n"
-                    "没有技术关键字无法精确筛选简历，筛选将仅依赖\n"
-                    "经验和学历，匹配精度会大幅下降。\n\n"
-                    "建议：\n"
-                    "1. 完善招聘需求文档，详细列出技术栈要求\n"
-                    "2. 在下方「技能关键词」区域手工添加关键字"
+                self._set_parse_result_text(
+                    f"⚠ 未提取到技术关键字：{summary_base}\n"
+                    "请完善招聘需求，或在下方手工添加技能关键词。",
+                    self.colors['warning'],
                 )
             elif skills_count <= 5:
-                self._set_parse_result_text(f"⚠ 关键字较少：{summary_base}", self.colors['warning'])
-                messagebox.showwarning(
-                    "关键字偏少",
-                    f"仅提取到 {skills_count} 个技术关键字（建议 6 个以上）。\n\n"
-                    "关键字偏少会导致评分区分度不足，\n"
-                    "无法有效排序候选人。\n\n"
-                    "建议：\n"
-                    "1. 完善招聘需求文档，补充更多技术栈要求\n"
-                    "2. 在下方「技能关键词」区域手工添加关键字"
+                self._set_parse_result_text(
+                    f"⚠ 仅提取到 {skills_count} 个技术关键字：{summary_base}\n"
+                    "建议补充更多技术栈要求，或在下方手工添加关键词。",
+                    self.colors['warning'],
                 )
             else:
                 if getattr(self, '_ai_enhance_pending', False):
@@ -13344,11 +13699,11 @@ class BossFilterGUI:
                         self._humanize_ai_parse_warning(w)
                         for w in ai_parse_warnings[:5]
                     ]
-                    messagebox.showwarning(
-                        "请确认解析结果",
-                        "AI 已帮你补全解析结果。下面这些地方可能需要你看一眼：\n\n"
-                        + "\n".join(f"- {w}" for w in friendly_warnings)
-                        + "\n\n不影响继续使用；确认无误后保存岗位配置即可。"
+                    self._show_inline_banner(
+                        self.config_page,
+                        "warning",
+                        "AI 已补全解析结果，请确认："
+                        + "；".join(friendly_warnings),
                     )
 
             self.result_detail_frame.pack(
@@ -13514,8 +13869,11 @@ class BossFilterGUI:
         self._stop_requirement_parse_progress()
         self._complete_requirement_parse(parse_id)
         self._finish_parse_button()
-        messagebox.showerror("解析失败", f"这段招聘需求暂时没能解析出来。\n\n原因：{self._friendly_ai_parse_reason(str(exc))}\n\n可以稍后再试，或先手工填写岗位配置。")
-        self._set_parse_result_text(f"解析失败：{self._friendly_ai_parse_reason(str(exc))}", self.colors['danger'])
+        friendly_reason = self._friendly_ai_parse_reason(str(exc))
+        self._set_parse_result_text(
+            f"解析失败：{friendly_reason}\n可以稍后再试，或先手工填写岗位配置。",
+            self.colors['danger'],
+        )
 
     def _start_requirement_parse_progress(self, use_ai, parse_id):
         self._stop_requirement_parse_progress()
@@ -13646,10 +14004,15 @@ class BossFilterGUI:
         """删除岗位"""
         job_name = self.config_job_combo.get()
         if job_name in self.job_rules:
-            if messagebox.askyesno(
+            if messagebox.ask_confirmation(
                 "删除岗位",
-                f"确定删除岗位“{job_name}”吗？\n删除后需要重新配置该岗位。",
-                parent=self.root,
+                headline=f"删除岗位“{job_name}”？",
+                message="该岗位的筛选配置将从本地配置中移除。",
+                notice="删除后需要重新配置该岗位。",
+                yes_label="删除岗位",
+                no_label="取消",
+                dangerous=True,
+                parent=getattr(self, "root", None),
             ):
                 del self.job_rules[job_name]
                 self.save_config()
@@ -13873,9 +14236,14 @@ class BossFilterGUI:
             and matching_key
             and matching_key != normalized_job_name
         ):
-            if not messagebox.askyesno(
+            if not messagebox.ask_confirmation(
                 "岗位已存在",
-                f"检测到重复岗位：'{matching_key}'\n是否覆盖更新？",
+                headline=f"覆盖岗位“{matching_key}”？",
+                message="当前表单内容将替换这个岗位已保存的配置。",
+                notice="原配置不会单独保留。",
+                yes_label="覆盖更新",
+                no_label="取消",
+                dangerous=True,
                 parent=self.root,
             ):
                 return False
@@ -13920,23 +14288,38 @@ class BossFilterGUI:
             self._hide_job_step_bar()
         self._show_btn_add_hint()
         self._set_job_form_baseline(normalized_job_name)
-        messagebox.showinfo("成功", "岗位配置已保存")
+        self._status_flash(f"岗位配置已保存：{normalized_job_name}")
         return True
 
     def _restore_or_clear_job_form(self):
         """Restore an existing job or clear the current new-job draft."""
         selected_job = self.config_job_combo.get()
         if selected_job in self.job_rules:
-            if not messagebox.askyesno(
+            if not messagebox.ask_confirmation(
                 "恢复已保存",
-                "放弃当前修改，恢复这个岗位已保存的配置？",
+                headline=f"恢复“{selected_job}”已保存的配置？",
+                message="当前尚未保存的表单修改将被放弃。",
+                notice="此操作不会修改已经保存的岗位配置。",
+                yes_label="放弃修改并恢复",
+                no_label="继续编辑",
+                dangerous=True,
+                parent=self.root,
             ):
                 return
             self.load_job_to_form(self.job_rules[selected_job])
             self._set_requirement_section_expanded(False)
             return
 
-        if not messagebox.askyesno("清空内容", "清空当前新岗位的全部内容？"):
+        if not messagebox.ask_confirmation(
+            "清空岗位草稿",
+            headline="清空当前新岗位的全部内容？",
+            message="岗位名称、筛选条件、技能和必要条件都会被清空。",
+            notice="尚未保存的内容无法恢复。",
+            yes_label="清空草稿",
+            no_label="继续编辑",
+            dangerous=True,
+            parent=getattr(self, "root", None),
+        ):
             return
         self._initialize_new_job_draft()
 
@@ -13997,10 +14380,16 @@ class BossFilterGUI:
                 self.config_job_combo.set("")
                 self.reset_job_form()
                 self._set_requirement_section_expanded(True)
-            messagebox.showinfo("成功", "配置已加载")
+            self._status_flash(f"已加载岗位配置：{len(self.job_rules)} 个岗位")
             return True
         except Exception as e:
-            messagebox.showerror("错误", f"加载配置失败：{e}")
+            messagebox.show_failure(
+                "导入岗位配置",
+                headline="岗位配置未加载",
+                message="原有岗位配置保持不变。",
+                detail=str(e),
+                parent=self.root,
+            )
             return False
 
     def save_config_dialog(self):
@@ -14011,9 +14400,15 @@ class BossFilterGUI:
                 config = {"jobs": self.job_rules}
                 with open(filename, 'w', encoding='utf-8') as f:
                     json.dump(config, f, ensure_ascii=False, indent=4)
-                messagebox.showinfo("成功", "配置已保存")
+                self._status_flash("岗位配置文件已导出")
             except Exception as e:
-                messagebox.showerror("错误", f"保存配置失败：{e}")
+                messagebox.show_failure(
+                    "导出岗位配置",
+                    headline="岗位配置文件未保存",
+                    message="请检查保存位置后重试。",
+                    detail=str(e),
+                    parent=self.root,
+                )
 
     def import_config(self):
         """导入配置"""
@@ -14260,11 +14655,17 @@ class BossFilterGUI:
 
                 self.append_run_log("⚠ 选择器异常可能导致扫描功能不正常，可编辑 selectors.json 修复")
                 # 主线程弹窗提醒（线程安全）
-                self.run_on_ui(lambda: messagebox.showwarning(
+                self.run_on_ui(lambda: messagebox.show_notice(
                     "选择器异常",
-                    f"选择器检查发现 {fail_count} 个失败、{warn_count} 个警告，"
-                    f"可能导致扫描功能不正常。\n\n"
-                    f"可编辑 selectors.json 修复，详见日志。"
+                    headline="部分页面选择器未通过自动检查",
+                    message="这些异常可能导致扫描功能无法正常读取页面。",
+                    metrics=(
+                        ("失败", str(fail_count)),
+                        ("警告", str(warn_count)),
+                        ("正常", str(ok_count)),
+                    ),
+                    notice="可编辑 selectors.json 修复；具体项目已写入运行日志。",
+                    parent=self.root,
                 ))
         except Exception as e:
             self._selectors_auto_checked = False
@@ -15008,13 +15409,18 @@ class BossFilterGUI:
             total = confirm_data['total']
             next_job_name = confirm_data['next_job_name']
 
-            result = messagebox.askokcancel(
+            result = messagebox.ask_confirmation(
                 "岗位切换确认",
-                f"请手动切换到下一个岗位的推荐页面\n\n"
-                f"进度：{current_idx}/{total}\n"
-                f"下一个岗位：{next_job_name}\n\n"
-                f"请在 BOSS 直聘页面手动切换到该岗位的推荐页面后，\n"
-                f"点击「确定」继续，或点击「取消」停止扫描。"
+                headline="切换到下一个岗位后继续扫描",
+                message="请在 BOSS 直聘的推荐牛人页面手动切换岗位。",
+                metrics=(
+                    ("扫描进度", f"{current_idx}/{total}"),
+                    ("下一个岗位", next_job_name),
+                ),
+                notice="页面切换完成后再继续；取消将停止本轮扫描。",
+                yes_label="已切换，继续扫描",
+                no_label="停止扫描",
+                parent=self.root,
             )
             event.result = result
             event.set()
@@ -15100,9 +15506,13 @@ class BossFilterGUI:
                 int(guard_state.get("remaining_seconds", 0) + 0.999),
             )
             reason = guard_state.get("reason") or "已触发 BOSS 访问保护"
-            messagebox.showwarning(
+            messagebox.show_notice(
                 "BOSS 访问保护",
-                f"BOSS 访问仍在冷却中，剩余约 {remaining} 秒。\n\n{reason}",
+                headline="当前仍在访问冷却期",
+                message="为避免继续触发访问限制，本轮扫描暂不能开始。",
+                metrics=(("剩余时间", f"约 {remaining} 秒"),),
+                detail=reason,
+                parent=getattr(self, "root", None),
             )
             return
 
@@ -15166,18 +15576,18 @@ class BossFilterGUI:
                     "请确认当前 BOSS 页面就是要使用上述本地配置筛选的岗位。\n"
                     "确认无误后，本轮将继续运行。"
                 )
-            result[0] = messagebox.askyesno(
+            result[0] = messagebox.ask_confirmation(
                 "确认岗位对应关系",
-                "岗位名称不同，但可能指向同一个岗位。\n\n"
-                f"本地岗位配置：{expected_job_name}\n"
-                f"BOSS 当前岗位：{actual_job_name}\n\n"
-                f"{prompt}",
+                headline="岗位名称不同，需要人工确认",
+                message=prompt,
+                metrics=(
+                    ("本地岗位配置", expected_job_name),
+                    ("BOSS 当前岗位", actual_job_name),
+                ),
+                notice="只有确认两个名称对应同一岗位后才会继续。",
                 parent=parent,
-                yes_label="确认并继续",
+                yes_label="确认对应，继续",
                 no_label="暂不继续",
-                headline="岗位名称需要确认",
-                show_icon=False,
-                min_width=620,
             )
             event.set()
 
@@ -15387,12 +15797,14 @@ class BossFilterGUI:
                 done = threading.Event()
 
                 def show_dialog():
-                    answer = messagebox.askyesno(
+                    answer = messagebox.ask_confirmation(
                         "检测到安全验证弹窗",
-                        f"程序检测到安全验证弹窗\n（{detail}）\n\n"
-                        "请在浏览器中手动完成验证。\n\n"
-                        "点击「是」继续等待验证完成\n"
-                        "点击「否」跳过验证等待，停止当前操作",
+                        headline="需要在浏览器中完成人工验证",
+                        message="程序已暂停后续访问，请先处理 BOSS 安全验证。",
+                        detail=str(detail),
+                        notice="继续等待不会自动绕过验证；停止将结束当前操作。",
+                        yes_label="继续等待验证",
+                        no_label="停止当前操作",
                         parent=self.root,
                     )
                     result[0] = answer
@@ -15544,10 +15956,15 @@ class BossFilterGUI:
                 operations.append("候选人扫描")
             if active_contact:
                 operations.append("候选人联系")
-            if not messagebox.askokcancel(
+            if not messagebox.ask_confirmation(
                 "退出",
-                f"{'、'.join(operations)}正在运行，确定退出吗？\n\n"
-                "程序会停止当前任务并保留联系清单；发送中的候选人下次启动后需要人工核实。",
+                headline=f"{'、'.join(operations)}仍在运行",
+                message="退出将停止当前任务，并保留现有联系清单。",
+                notice="发送中的候选人下次启动后需要人工核实。",
+                yes_label="停止任务并退出",
+                no_label="继续运行",
+                dangerous=True,
+                parent=self.root,
             ):
                 return
 
@@ -18451,52 +18868,32 @@ class BossFilterGUI:
         icon_check = self.icons.button('check', self.colors['primary'])
         icon_close = self.icons.button('close', self.colors['text_secondary'])
         button_pad = int(8 * dialog_scale)
-        button_width = int(108 * dialog_scale)
-        button_height = int(32 * dialog_scale)
-
-        def create_dialog_button(icon, text, command):
-            frame = tk.Frame(
-                button_frame,
-                bg=self.colors['bg_card'],
-                highlightbackground=self.colors['border'],
-                highlightthickness=1,
-                width=button_width,
-                height=button_height,
-                cursor='hand2'
-            )
-            frame.pack_propagate(False)
-            content = tk.Frame(frame, bg=self.colors['bg_card'])
-            content.pack(expand=True)
-            icon_label = tk.Label(content, image=icon, bg=self.colors['bg_card'])
-            icon_label.image = icon
-            icon_label.pack(side='left', padx=(0, 2), anchor='center')
-            text_label = tk.Label(
-                content,
-                text=text,
-                bg=self.colors['bg_card'],
-                font=self.font_label,
-                fg=self.colors['text_primary']
-            )
-            text_label.pack(side='left', padx=(2, 0), anchor='center')
-
-            children = [frame, content, icon_label, text_label]
-
-            def on_enter(_event):
-                for widget in children:
-                    widget.config(bg=self.colors['bg_hover'])
-
-            def on_leave(_event):
-                for widget in children:
-                    widget.config(bg=self.colors['bg_card'])
-
-            for widget in children:
-                widget.bind('<Enter>', on_enter)
-                widget.bind('<Leave>', on_leave)
-                widget.bind('<Button-1>', lambda _event, cmd=command: cmd())
-            return frame
-
-        create_dialog_button(icon_check, "确定", save).pack(side="left", padx=button_pad)
-        create_dialog_button(icon_close, "取消", close).pack(side="left", padx=button_pad)
+        dialog_button_style = ttk.Style(win)
+        dialog_button_style.configure(
+            'BlacklistDialog.TButton',
+            font=self.font_label,
+            padding=(int(12 * dialog_scale), int(5 * dialog_scale)),
+        )
+        save_button = ttk.Button(
+            button_frame,
+            image=icon_check,
+            text=" 确认加入",
+            compound=tk.LEFT,
+            command=save,
+            style='BlacklistDialog.TButton',
+        )
+        save_button._icon_ref = icon_check
+        save_button.pack(side="left", padx=button_pad)
+        cancel_button = ttk.Button(
+            button_frame,
+            image=icon_close,
+            text=" 取消",
+            compound=tk.LEFT,
+            command=close,
+            style='BlacklistDialog.TButton',
+        )
+        cancel_button._icon_ref = icon_close
+        cancel_button.pack(side="left", padx=button_pad)
 
         win.protocol("WM_DELETE_WINDOW", close)
         reason_text.bind("<FocusIn>", lambda _event: hide_placeholder())
@@ -18567,18 +18964,26 @@ class BossFilterGUI:
                 try:
                     from pdfminer.high_level import extract_text as _pdfminer_extract
                 except ImportError:
-                    messagebox.showwarning("缺少依赖",
-                        "需要安装 pdfminer.six 才能解析 PDF 文件。\n\n"
-                        "安装命令：pip install pdfminer.six")
+                    messagebox.show_notice(
+                        "无法解析 PDF 简历",
+                        headline="当前环境缺少 PDF 解析组件",
+                        message="安装 pdfminer.six 后可继续导入该文件。",
+                        detail="安装命令：pip install pdfminer.six",
+                        parent=self.root,
+                    )
                     return
                 resume_text = _pdfminer_extract(filepath) or ""
             elif ext == '.docx':
                 try:
                     import docx
                 except ImportError:
-                    messagebox.showwarning("缺少依赖",
-                        "需要安装 python-docx 才能解析 Word 文件。\n\n"
-                        "安装命令：pip install python-docx")
+                    messagebox.show_notice(
+                        "无法解析 Word 简历",
+                        headline="当前环境缺少 Word 解析组件",
+                        message="安装 python-docx 后可继续导入该文件。",
+                        detail="安装命令：pip install python-docx",
+                        parent=self.root,
+                    )
                     return
                 doc = docx.Document(filepath)
                 resume_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
@@ -18592,15 +18997,26 @@ class BossFilterGUI:
                     except (UnicodeDecodeError, UnicodeError):
                         continue
                 if not resume_text:
-                    messagebox.showwarning("读取失败", "无法以常见编码读取文件，请检查文件是否为文本格式。")
+                    messagebox.show_failure(
+                        "读取简历",
+                        headline="未能读取简历文本",
+                        message="无法使用常见编码读取这个文件。",
+                        detail=Path(filepath).name,
+                        notice="请确认文件是有效的纯文本文件后重试。",
+                        parent=parent or self.root,
+                    )
                     return
             elif ext == '.rtf':
                 try:
                     from striprtf.striprtf import rtf_to_text
                 except ImportError:
-                    messagebox.showwarning("缺少依赖",
-                        "需要安装 striprtf 才能解析 RTF 文件。\n\n"
-                        "安装命令：pip install striprtf")
+                    messagebox.show_notice(
+                        "无法解析 RTF 简历",
+                        headline="当前环境缺少 RTF 解析组件",
+                        message="安装 striprtf 后可继续导入该文件。",
+                        detail="安装命令：pip install striprtf",
+                        parent=self.root,
+                    )
                     return
                 with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
                     rtf_content = f.read()
@@ -18616,7 +19032,14 @@ class BossFilterGUI:
                     except (UnicodeDecodeError, UnicodeError):
                         continue
                 if not html_content:
-                    messagebox.showwarning("读取失败", "无法以常见编码读取 HTML 文件。")
+                    messagebox.show_failure(
+                        "读取简历",
+                        headline="未能读取 HTML 简历",
+                        message="无法使用常见编码读取这个文件。",
+                        detail=Path(filepath).name,
+                        notice="请确认文件内容完整后重试。",
+                        parent=parent or self.root,
+                    )
                     return
                 # 去除 <script>/<style> 块，再剥离标签
                 html_content = re.sub(r'<(script|style)[^>]*>.*?</\1>', '', html_content, flags=re.S | re.I)
@@ -18626,23 +19049,50 @@ class BossFilterGUI:
                 import html as _html_module
                 resume_text = _html_module.unescape(resume_text)
             else:
-                messagebox.showwarning("不支持的格式",
-                    f"支持的格式：PDF、DOCX、TXT、MD、RTF、HTML\n当前文件：{ext}")
+                messagebox.show_notice(
+                    "无法导入简历",
+                    headline="不支持这种文件格式",
+                    message="请选择 PDF、DOCX、TXT、MD、RTF 或 HTML 文件。",
+                    metrics=(("当前格式", ext or "无扩展名"),),
+                    detail=Path(filepath).name,
+                    parent=parent or self.root,
+                )
                 return
         except Exception as e:
-            messagebox.showerror("解析失败", f"无法解析简历文件：\n{e}")
+            messagebox.show_failure(
+                "解析简历",
+                headline="简历文件解析失败",
+                message="没有从所选文件中提取到可用内容。",
+                detail=str(e),
+                notice="请检查文件是否损坏，或转换为 PDF、DOCX 后重试。",
+                parent=parent or self.root,
+            )
             return
 
         resume_text = resume_text.strip()
         if len(resume_text) < 50:
-            messagebox.showwarning("内容过少", "简历提取的文本内容过少，可能不是有效的简历文件。")
+            messagebox.show_notice(
+                "简历内容过少",
+                headline="提取到的文本不足以评估",
+                message="这个文件可能不是有效简历，或主要内容无法被当前解析器读取。",
+                metrics=(("提取文本", f"{len(resume_text)} 字"),),
+                notice="可将文件转换为可复制文本的 PDF 或 DOCX 后重试。",
+                parent=parent or self.root,
+            )
             return
 
         # 3. 保存到受管简历目录；磁盘文件名不包含候选人身份。
         try:
             managed_resume = store_resume_copy(filepath, base_dir=get_base_dir())
         except Exception as e:
-            messagebox.showerror("存储失败", f"无法保存简历文件：\n{e}")
+            messagebox.show_failure(
+                "保存简历",
+                headline="简历文件未保存",
+                message="无法将所选文件复制到受管简历目录。",
+                detail=str(e),
+                notice="请检查磁盘空间和目录写入权限后重试。",
+                parent=parent or self.root,
+            )
             return
 
         # 更新候选人记录（文件路径和导入时间）
@@ -18668,7 +19118,13 @@ class BossFilterGUI:
                 delete_managed_resume(managed_resume.reference, base_dir=get_base_dir())
             except (OSError, UnmanagedResumePathError):
                 pass
-            messagebox.showerror("存储失败", "候选人记录已变化，未能关联导入的简历。")
+            messagebox.show_failure(
+                "保存简历",
+                headline="简历未关联到候选人",
+                message="本地候选人记录已发生变化，本次导入没有保存。",
+                notice="请刷新候选人列表后重新导入。",
+                parent=parent or self.root,
+            )
             return
 
         # 4. 预览确认（只显示前 300 字）
@@ -18676,9 +19132,15 @@ class BossFilterGUI:
         if len(resume_text) > 300:
             preview += f"\n\n... (共 {len(resume_text)} 字)"
 
-        confirm = messagebox.askyesno(
+        confirm = messagebox.ask_confirmation(
             "简历预览",
-            f"成功提取简历文本（{len(resume_text)} 字）：\n\n{preview}\n\n是否进行 AI 二次评估？",
+            headline="已提取简历文本",
+            message=preview,
+            metrics=(("文本长度", f"{len(resume_text)} 字"),),
+            notice="继续后将调用当前 AI 模型进行二次评估。",
+            yes_label="开始二次评估",
+            no_label="暂不评估",
+            parent=parent or self.root,
         )
 
         if not confirm:
@@ -18687,9 +19149,11 @@ class BossFilterGUI:
 
         job_requirement, job_rule = self._get_job_requirement_for_candidates([candidate])
         if not job_requirement or not job_rule:
-            messagebox.showwarning(
-                "未找到岗位配置",
-                "未找到该候选人对应的已保存岗位规则。简历已保留，但不能开始二次评估。",
+            messagebox.show_notice(
+                "简历二次评估",
+                headline="暂时不能开始二次评估",
+                message="没有找到该候选人对应的已保存岗位规则。",
+                notice="简历已保留。请先恢复或重新保存对应岗位配置。",
                 parent=parent or self.root,
             )
             self.refresh_results()
@@ -18772,60 +19236,27 @@ class BossFilterGUI:
                         self.append_log(
                             f"[简历评估] ✓ {name}: {sign}{result.adjustment} "
                             f"→ 总分 {candidate.get('match_score', '?')}")
-                        # 自定义对话框
-                        eval_dialog = tk.Toplevel(_parent)
-                        eval_dialog.transient(_parent)
-                        eval_dialog.grab_set()
-                        eval_dialog.title("简历二次评估完成")
-                        eval_dialog.configure(bg=self.colors['bg_main'])
-                        dialog_scale = self.dpi_scale * self.zoom_factor
-                        dialog_width = int(520 * dialog_scale)
                         reason_text = candidate.get('resume_eval_reason', '')
-                        # 估算文本行数：每行约 25 个中文字符
-                        line_count = max(3, len(reason_text) // 25 + 1)
-                        line_count = min(line_count, 12)  # 最多 12 行
-                        # 高度 = 摘要区 + 文本区 + 按钮区，保持完成弹窗留白不过度拥挤
-                        dialog_height = int((108 + line_count * 18 + 58) * dialog_scale)
-                        self._center_window(eval_dialog, dialog_width, dialog_height)
-                        # 摘要信息（较小字体）
-                        summary_frame = ttk.Frame(eval_dialog, style='Page.TFrame')
-                        outer_pad_x = int(24 * dialog_scale)
-                        summary_frame.pack(fill="x", padx=outer_pad_x, pady=(int(18 * dialog_scale), int(8 * dialog_scale)))
-                        summary_font = (FONT_FAMILY, int(11 * self.font_scale))
-                        ttk.Label(summary_frame, text=f"候选人：{name}",
-                                  font=summary_font, background=self.colors['bg_main']).pack(anchor="w")
-                        ttk.Label(summary_frame, text=f"调整分：{sign}{result.adjustment}  最终分：{candidate.get('match_score', '?')}",
-                                  font=summary_font, background=self.colors['bg_main'],
-                                  foreground=self.colors['success']).pack(anchor="w")
-                        # 评估理由（小字体，紧凑）
-                        reason_frame = ttk.Frame(eval_dialog, style='Card.TFrame')
-                        reason_frame.pack(fill="x", padx=outer_pad_x, pady=(int(6 * dialog_scale), int(12 * dialog_scale)))
-                        reason_font = (FONT_FAMILY, int(10 * self.font_scale))
-                        reason_text_widget = tk.Text(reason_frame, wrap='char', font=reason_font,
-                                                     bg=self.colors['bg_card'], relief='flat',
-                                                     padx=int(8 * dialog_scale), pady=int(8 * dialog_scale),
-                                                     height=line_count)
-                        reason_text_widget.insert('1.0', reason_text)
-                        reason_text_widget.config(state='disabled')
-                        reason_text_widget.pack(fill="x")
-                        # 关闭按钮
-                        btn_container = ttk.Frame(eval_dialog, style='Page.TFrame')
-                        btn_container.pack(fill="x", pady=(int(8 * dialog_scale), int(6 * dialog_scale)))
-                        btn_style = ttk.Style()
-                        btn_style.configure(
-                            'ResumeEval.TButton',
-                            font=(FONT_FAMILY, int(11 * self.font_scale)),
-                            padding=(int(18 * dialog_scale), int(5 * dialog_scale)),
+                        messagebox.show_result(
+                            "简历二次评估",
+                            headline=f"{name} 的简历评估已完成",
+                            metrics=(
+                                ("调整分", f"{sign}{result.adjustment}"),
+                                ("最终分", str(candidate.get('match_score', '?'))),
+                            ),
+                            detail=reason_text,
+                            parent=_parent,
                         )
-                        ok_btn = ttk.Button(btn_container, text="确定",
-                                            command=eval_dialog.destroy,
-                                            style='ResumeEval.TButton')
-                        ok_btn.pack(anchor="center")
                     else:
                         self.append_log(f"[简历评估] ✗ {name}: {result.reason}")
-                        messagebox.showwarning("评估失败",
-                            f"LLM 返回错误：{result.reason}",
-                            parent=_parent)
+                        messagebox.show_failure(
+                            "简历二次评估",
+                            headline=f"{name} 的简历评估未完成",
+                            message="简历已保留，候选人分数没有更新。",
+                            detail=result.reason,
+                            notice="请检查模型配置或网络连接后重试。",
+                            parent=_parent,
+                        )
 
                 _parent.after(0, _on_done)
 
@@ -18838,8 +19269,14 @@ class BossFilterGUI:
                                 self._format_candidate_status(candidate))
                         except Exception:
                             pass
-                    messagebox.showerror("评估异常",
-                        f"二次评估出错：\n{error}", parent=_parent)
+                    messagebox.show_failure(
+                        "简历二次评估",
+                        headline=f"{name} 的简历评估未完成",
+                        message="评估过程中出现异常，候选人分数没有更新。",
+                        detail=str(error),
+                        notice="请检查模型配置或网络连接后重试。",
+                        parent=_parent,
+                    )
                 _parent.after(0, _on_error)
 
         threading.Thread(target=_eval_worker, daemon=True).start()
@@ -18854,10 +19291,14 @@ class BossFilterGUI:
 
         _parent = parent or self.root
         name = candidate.get('name', '')
-        confirm = messagebox.askyesno(
+        confirm = messagebox.ask_confirmation(
             "撤销简历评估",
-            f"确定要撤销 {name} 的简历评估吗？\n\n"
-            f"将清空简历文件和二次评估结果，分数回退到一次评估状态。",
+            headline=f"撤销 {name} 的简历评估？",
+            message="候选人分数将回退到一次评估状态。",
+            notice="关联的简历文件和二次评估结果将被清除。",
+            yes_label="撤销评估",
+            no_label="保留结果",
+            dangerous=True,
             parent=_parent,
         )
         if not confirm:
@@ -19031,24 +19472,43 @@ class BossFilterGUI:
                 f"{reason} {count} 人"
                 for reason, count in Counter(item['reason'] for item in skipped).items()
             )
-            messagebox.showinfo("提示", f"所选候选人没有可执行的 AI 评估：{detail}")
+            messagebox.show_notice(
+                "AI 评估",
+                headline="没有可执行的 AI 评估",
+                message="所选候选人当前均不满足评估条件。",
+                detail=detail,
+                kind="info",
+                parent=self.root,
+            )
             return
 
+        skipped_detail = ""
         if skipped:
-            detail = "，".join(
+            skipped_detail = "，".join(
                 f"{reason} {count} 人"
                 for reason, count in Counter(item['reason'] for item in skipped).items()
             )
-            messagebox.showinfo(
-                "提示",
-                f"将跳过 {len(skipped)} 人（{detail}）\n"
-                f"评估剩余 {len(candidates_to_eval)} 人",
-            )
 
-        # 确认操作
+        # 批量操作只确认一次，同时说明可执行和将跳过的人数。
         count = len(candidates_to_eval)
-        if count > 1:
-            if not messagebox.askyesno("确认", f"确定要对 {count} 名候选人进行AI评估吗？"):
+        if batch_requested:
+            metrics = [("将评估", f"{count} 人")]
+            if skipped:
+                metrics.append(("将跳过", f"{len(skipped)} 人"))
+            if not messagebox.ask_confirmation(
+                "批量 AI 评估",
+                headline=f"开始评估 {count} 名候选人？",
+                message="评估将在后台运行，完成结果会显示在候选人状态列。",
+                metrics=tuple(metrics),
+                notice=(
+                    f"跳过原因：{skipped_detail}"
+                    if skipped_detail
+                    else None
+                ),
+                yes_label="开始评估",
+                no_label="取消",
+                parent=self.root,
+            ):
                 return
 
         # 设置评估中标记（使用全局集合，refresh_results 后仍有效）
@@ -19754,13 +20214,14 @@ class BossFilterGUI:
 
         name = candidate.get('name') or '该候选人'
         score = candidate.get('match_score', 0)
-        review_reason = f"匹配分为 {score}，处于待定区间"
-        if not messagebox.askyesno(
+        if not messagebox.ask_confirmation(
             "确认联系候选人",
-            f"{name} 当前{review_reason}。\n\n"
-            "确认你已完成复核，并认为可以联系？\n\n"
-            "确认后会记录人工批准并加入联系清单；"
-            "不会修改匹配分或推荐指数。",
+            headline=f"确认 {name} 可以联系？",
+            message="确认后会记录人工批准并加入联系清单。",
+            metrics=(("匹配分", f"{score} 分"), ("当前结论", "待定")),
+            notice="此操作不会修改匹配分或推荐指数。",
+            yes_label="批准并加入清单",
+            no_label="返回复核",
             parent=parent or self.root,
         ):
             return 0
@@ -19816,11 +20277,14 @@ class BossFilterGUI:
             if contact_approval_reason
             else "确认后将清除「需人工确认」标记。"
         )
-        if not messagebox.askyesno(
+        if not messagebox.ask_confirmation(
             "确认通过",
-            f"确认 {name} 的人工审查已通过？\n\n"
-            f"审查原因：\n{risk_text}\n\n"
-            f"{confirmation_effect}\n\n如需联系此人，可加入联系清单。",
+            headline=f"确认 {name} 通过人工复核？",
+            message=confirmation_effect,
+            detail=risk_text,
+            notice="通过复核不会自动联系；仍需加入联系清单。",
+            yes_label="确认通过",
+            no_label="继续复核",
             parent=parent or self.root
         ):
             return
@@ -19873,11 +20337,15 @@ class BossFilterGUI:
         name = candidate.get('name') or '该候选人'
         reasons = list(decision.review_reasons or ["人工复核不通过"])
         reason_text = "\n".join(f"- {reason}" for reason in reasons)
-        if not messagebox.askyesno(
+        if not messagebox.ask_confirmation(
             "确认不通过",
-            f"确认 {name} 未通过人工复核？\n\n"
-            f"复核事项：\n{reason_text}\n\n"
-            "确认后将结束待复核并禁止联系；候选人会保留在淘汰记录中。",
+            headline=f"确认 {name} 不通过人工复核？",
+            message="确认后将结束待复核并禁止联系。",
+            detail=reason_text,
+            notice="候选人仍会保留在淘汰记录中。",
+            yes_label="确认不通过",
+            no_label="继续复核",
+            dangerous=True,
             parent=parent or self.root,
         ):
             return
@@ -19949,15 +20417,19 @@ class BossFilterGUI:
         }
         approval_count = sum(bool(reason) for reason in approval_reasons.values())
         approval_text = (
-            f"\n其中 {approval_count} 名待定候选人"
-            "将同时记录为人工确认可联系；不会修改匹配分或推荐指数。"
-            if approval_count else ""
+            f"其中 {approval_count} 名待定候选人将同时记录为人工确认可联系。"
+            if approval_count else
+            "本次只会清除人工确认标记。"
         )
-        if not messagebox.askyesno(
+        if not messagebox.ask_confirmation(
             "批量确认通过",
-            f"确认以下 {len(to_confirm)} 人的人工审查已通过？\n\n{names}\n\n"
-            f"确认后将清除「需人工确认」标记。{approval_text}\n\n"
-            "如需联系，请加入联系清单。",
+            headline=f"确认 {len(to_confirm)} 人通过人工复核？",
+            message=approval_text,
+            metrics=(("待确认", f"{len(to_confirm)} 人"),),
+            detail=names,
+            notice="不会修改匹配分或推荐指数，也不会自动联系。",
+            yes_label="确认全部通过",
+            no_label="取消",
             parent=parent or self.root
         ):
             return
@@ -20081,6 +20553,7 @@ class BossFilterGUI:
             quick_date_frame.grid_columnconfigure(column, weight=1, uniform='followup_quick_date')
 
         def set_quick_date(days):
+            clear_form_error()
             if days is None:
                 next_followup_var.set("")
                 return
@@ -20107,6 +20580,7 @@ class BossFilterGUI:
             )
 
         def reset_due_for_status(_event=None):
+            clear_form_error()
             default_value = default_next_followup_at(status_var.get().strip())
             formatted = format_followup_due_at(default_value)
             next_followup_var.set("" if formatted == "未安排" else formatted)
@@ -20134,18 +20608,46 @@ class BossFilterGUI:
         if candidate.get('followup_note'):
             note_text.insert('1.0', candidate.get('followup_note', ''))
 
+        form_error_label = ttk.Label(
+            frame,
+            text=" ",
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            foreground=self.colors.get('danger_text', ui_theme.DANGER_TEXT),
+            background=self.colors['bg_main'],
+            justify="left",
+            wraplength=int(440 * self.dpi_scale * self.zoom_factor),
+        )
         btn_frame = ttk.Frame(frame, style='Page.TFrame')
         btn_frame.pack(anchor='center')
+        form_error_label.pack(
+            anchor="w",
+            fill="x",
+            before=btn_frame,
+            pady=(0, int(8 * self.dpi_scale * self.zoom_factor)),
+        )
+
+        def clear_form_error(_event=None):
+            form_error_label.configure(text=" ")
+
+        def show_form_error(message, focus_widget):
+            form_error_label.configure(text=message)
+            try:
+                focus_widget.focus_set()
+            except tk.TclError:
+                pass
+
+        next_followup_entry.bind("<KeyRelease>", clear_form_error)
 
         def close():
             win.grab_release()
             win.destroy()
 
         def save_followup():
+            clear_form_error()
             status = status_var.get().strip()
             note = note_text.get('1.0', 'end').strip()
             if status not in FOLLOWUP_STATUS_OPTIONS:
-                messagebox.showerror("错误", "请选择有效的跟进状态", parent=win)
+                show_form_error("请选择有效的跟进状态。", status_combo)
                 return
             due_input = next_followup_var.get().strip()
             next_due = normalize_followup_at(due_input)
@@ -20154,11 +20656,12 @@ class BossFilterGUI:
                     error_text = "下次跟进日期无效，请检查年月日是否正确"
                 else:
                     error_text = "下次跟进日期格式不正确，请使用 YYYY-MM-DD"
-                messagebox.showerror("日期错误", error_text, parent=win)
+                show_form_error(error_text, next_followup_entry)
                 return
             if status in {"待约面", "已约面"} and not next_due:
-                messagebox.showerror(
-                    "错误", f"{status}状态必须安排下次跟进日期", parent=win
+                show_form_error(
+                    f"{status}状态必须安排下次跟进日期。",
+                    next_followup_entry,
                 )
                 return
             if (
@@ -20167,10 +20670,14 @@ class BossFilterGUI:
                     candidate.get('greet_sent')
                     or candidate.get('followup_status') in CONTACTED_FOLLOWUP_STATUSES
                 )
-                and not messagebox.askyesno(
+                and not messagebox.ask_confirmation(
                     "纠正沟通状态",
-                    "将状态改为“未沟通”会同时清除本地的已打招呼事实、"
-                    "发送方式和跟进日期。\n\n仅在先前记录确实有误时继续。",
+                    headline="将沟通状态纠正为“未沟通”？",
+                    message="仅在先前记录确实有误时执行。",
+                    notice="本地已打招呼事实、发送方式和跟进日期会同时清除。",
+                    yes_label="确认纠正",
+                    no_label="保留原状态",
+                    dangerous=True,
                     parent=win,
                 )
             ):
@@ -20186,8 +20693,12 @@ class BossFilterGUI:
                     followup_time,
                 )
                 if not updated:
-                    messagebox.showerror(
-                        "错误", "保存跟进状态失败：未找到候选人", parent=win
+                    messagebox.show_failure(
+                        "保存跟进状态",
+                        headline="跟进状态未保存",
+                        message="本地候选人记录已发生变化，未找到当前候选人。",
+                        notice="请关闭窗口并刷新候选人列表后重试。",
+                        parent=win,
                     )
                     return
                 if status == "未沟通":
@@ -20227,15 +20738,30 @@ class BossFilterGUI:
                         ),
                     )
             except Exception as exc:
-                messagebox.showerror(
-                    "错误", f"保存跟进状态失败：{exc}", parent=win
+                messagebox.show_failure(
+                    "保存跟进状态",
+                    headline="跟进状态未保存",
+                    message="保存过程中出现异常，本次修改没有完成。",
+                    detail=str(exc),
+                    notice="请检查数据文件是否可写后重试。",
+                    parent=win,
                 )
 
         ttk.Button(btn_frame, text="保存", command=save_followup).pack(side='left', padx=(0, int(8 * self.dpi_scale * self.zoom_factor)))
         ttk.Button(btn_frame, text="取消", command=close).pack(side='left')
 
         win.protocol("WM_DELETE_WINDOW", close)
-        _place_window_centered(win, int(500 * self.dpi_scale * self.zoom_factor), int(500 * self.dpi_scale * self.zoom_factor), parent=_parent)
+        win.update_idletasks()
+        followup_height = max(
+            int(500 * self.dpi_scale * self.zoom_factor),
+            win.winfo_reqheight() + int(12 * self.dpi_scale * self.zoom_factor),
+        )
+        _place_window_centered(
+            win,
+            int(500 * self.dpi_scale * self.zoom_factor),
+            followup_height,
+            parent=_parent,
+        )
         win.deiconify()
 
     def _update_candidate_feedback(self, geek_id, job_name, status, reasons, note):
@@ -20395,22 +20921,56 @@ class BossFilterGUI:
         if candidate.get('feedback_note'):
             note_text.insert('1.0', candidate.get('feedback_note', ''))
 
+        form_error_label = ttk.Label(
+            frame,
+            text=" ",
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            foreground=self.colors.get('danger_text', ui_theme.DANGER_TEXT),
+            background=self.colors['bg_main'],
+            justify="left",
+            wraplength=int(390 * scale),
+        )
         btn_frame = ttk.Frame(frame, style='Page.TFrame')
         btn_frame.pack(anchor='center')
+        form_error_label.pack(
+            anchor="w",
+            fill="x",
+            before=btn_frame,
+            pady=(0, int(8 * scale)),
+        )
+
+        def clear_form_error(_event=None):
+            form_error_label.configure(text=" ")
+
+        def show_form_error(message, focus_widget):
+            form_error_label.configure(text=message)
+            try:
+                focus_widget.focus_set()
+            except tk.TclError:
+                pass
+
+        status_combo.bind("<<ComboboxSelected>>", clear_form_error, add="+")
+        for child in reasons_frame.winfo_children():
+            child.configure(command=lambda: clear_form_error())
 
         def close():
             win.grab_release()
             win.destroy()
 
         def save_feedback():
+            clear_form_error()
             status = status_var.get().strip()
             reasons = [reason for reason, var in reason_vars.items() if var.get()]
             note = note_text.get('1.0', 'end').strip()
             if status not in FEEDBACK_STATUS_OPTIONS:
-                messagebox.showerror("错误", "请选择有效的反馈状态")
+                show_form_error("请选择有效的反馈状态。", status_combo)
                 return
             if status in {"误推", "误杀"} and not reasons:
-                messagebox.showerror("错误", "标记误推或误杀时，请至少选择一个原因")
+                first_reason = next(iter(reasons_frame.winfo_children()), status_combo)
+                show_form_error(
+                    "标记误推或误杀时，请至少选择一个原因。",
+                    first_reason,
+                )
                 return
             try:
                 updated = self._update_candidate_feedback(
@@ -20421,7 +20981,13 @@ class BossFilterGUI:
                     note
                 )
                 if not updated:
-                    messagebox.showerror("错误", "保存反馈失败：未找到候选人")
+                    messagebox.show_failure(
+                        "保存候选人反馈",
+                        headline="候选人反馈未保存",
+                        message="本地候选人记录已发生变化，未找到当前候选人。",
+                        notice="请关闭窗口并刷新候选人列表后重试。",
+                        parent=win,
+                    )
                     return
                 candidate['feedback_status'] = status
                 candidate['feedback_reasons'] = reasons
@@ -20450,7 +21016,14 @@ class BossFilterGUI:
                     on_saved()
                 close()
             except Exception as exc:
-                messagebox.showerror("错误", f"保存反馈失败：{exc}")
+                messagebox.show_failure(
+                    "保存候选人反馈",
+                    headline="候选人反馈未保存",
+                    message="保存过程中出现异常，本次修改没有完成。",
+                    detail=str(exc),
+                    notice="请检查数据文件是否可写后重试。",
+                    parent=win,
+                )
 
         ttk.Button(btn_frame, text="保存", command=save_feedback).pack(side='left', padx=(0, int(8 * self.dpi_scale * self.zoom_factor)))
         ttk.Button(btn_frame, text="取消", command=close).pack(side='left')
@@ -21668,10 +22241,17 @@ class BossFilterGUI:
         if not selected:
             return
         action = "已发送" if sent else "未发送"
-        if not messagebox.askyesno(
+        if not messagebox.ask_confirmation(
             f"确认{action}",
-            f"请确认已在 BOSS 沟通列表逐一核实。\n\n"
-            f"将选中的 {len(selected)} 人标记为“{action}”，是否继续？",
+            headline=f"将 {len(selected)} 人标记为“{action}”？",
+            message="请确认已在 BOSS 沟通列表逐一核实。",
+            notice=(
+                "标记为未发送后，这些候选人可以重新进入发送流程。"
+                if not sent else
+                "标记为已发送后，不会再次自动发送。"
+            ),
+            yes_label=f"标记为{action}",
+            no_label="取消",
             parent=self.greet_queue_window or self.root,
         ):
             return
@@ -21920,15 +22500,15 @@ class BossFilterGUI:
 
     def _confirm_start_greet_queue(self, pending):
         headline, message = self._build_greet_queue_confirmation_content(pending)
-        return messagebox.askyesno(
+        return messagebox.ask_confirmation(
             "确认联系",
-            message,
+            headline=headline,
+            message=message,
+            metrics=(("本次联系", f"{len(pending)} 人"),),
+            notice="开始后仍会在每次发送前复核候选人最新状态。",
             parent=self.greet_queue_window or self.root,
             yes_label="开始联系",
             no_label="取消",
-            headline=headline,
-            show_icon=False,
-            min_width=620,
         )
 
     def _make_greet_queue_captcha_callback(self, parent):
@@ -21937,12 +22517,14 @@ class BossFilterGUI:
             done = threading.Event()
 
             def show_dialog():
-                answer = messagebox.askyesno(
+                answer = messagebox.ask_confirmation(
                     "检测到安全验证弹窗",
-                    f"程序检测到安全验证弹窗\n（{detail}）\n\n"
-                    "请在浏览器中手动完成验证。\n\n"
-                    "点击「是」继续等待验证完成\n"
-                    "点击「否」停止当前队列",
+                    headline="需要在浏览器中完成人工验证",
+                    message="联系队列已暂停，请先处理 BOSS 安全验证。",
+                    detail=str(detail),
+                    notice="继续等待不会自动绕过验证；停止将结束当前队列。",
+                    yes_label="继续等待验证",
+                    no_label="停止联系队列",
                     parent=parent,
                 )
                 result[0] = answer
@@ -22514,11 +23096,18 @@ class BossFilterGUI:
                         self.append_operation_log(
                             f"[联系候选人] {diagnosis.title}，已停止后续发送"
                         )
-                        self.root.after(0, lambda: messagebox.showwarning(
-                            diagnosis.title,
-                            f"{diagnosis.action}\n\n原始信息：{msg}",
-                            parent=parent,
-                        ))
+                        self.root.after(
+                            0,
+                            lambda diag=diagnosis, raw_message=msg: (
+                                messagebox.show_notice(
+                                    diag.title,
+                                    headline="后续发送已停止",
+                                    message=diag.action,
+                                    detail=f"原始信息：{raw_message}",
+                                    parent=parent,
+                                )
+                            ),
+                        )
                         break
 
                 if self.stop_event.is_set():
@@ -23669,48 +24258,57 @@ class BossFilterGUI:
 
     def _remove_candidate(self, item):
         """移除选中候选人"""
-        if messagebox.askyesno("确认删除", "确定要移除该候选人吗？"):
-            try:
-                candidate = self._find_candidate_by_tree_item(item)
-                name = candidate.get('name', '该候选人') if candidate else '该候选人'
-                target_geek_id = candidate.get('geek_id') if candidate else None
-                target_job_name = candidate.get('job_name', '') if candidate else ''
+        candidate = self._find_candidate_by_tree_item(item)
+        name = candidate.get('name', '该候选人') if candidate else '该候选人'
+        target_geek_id = candidate.get('geek_id') if candidate else None
+        target_job_name = candidate.get('job_name', '') if candidate else ''
+        if not target_geek_id:
+            messagebox.showerror("错误", f"未找到候选人：{name}")
+            return
+        if not messagebox.ask_confirmation(
+            "移除候选人",
+            headline=f"移除 {name}？",
+            message="该记录将从当前结果和本地候选人数据中移除。",
+            notice="重新扫描时仍可能再次发现该候选人。",
+            yes_label="移除候选人",
+            no_label="取消",
+            dangerous=True,
+            parent=self.root,
+        ):
+            return
 
-                if not target_geek_id:
-                    messagebox.showerror("错误", f"未找到候选人：{name}")
-                    return
-
-                # 同一候选人可能出现在多个岗位，只移除当前岗位记录。
-                if hasattr(self, 'result_tree_data'):
-                    self.result_tree_data = [
-                        c for c in self.result_tree_data
-                        if not (
-                            c.get('geek_id') == target_geek_id
-                            and normalize_job_name(c.get('job_name'))
-                            == normalize_job_name(target_job_name)
-                        )
-                    ]
-
-                # 从 JSON 文件中移除
-                if CANDIDATES_PATH.exists():
-                    remove_candidates_all(
-                        lambda persisted: (
-                            persisted.get('geek_id') == target_geek_id
-                            and normalize_job_name(persisted.get('job_name'))
-                            == normalize_job_name(target_job_name)
-                        ),
-                        CANDIDATES_PATH,
+        try:
+            # 同一候选人可能出现在多个岗位，只移除当前岗位记录。
+            if hasattr(self, 'result_tree_data'):
+                self.result_tree_data = [
+                    c for c in self.result_tree_data
+                    if not (
+                        c.get('geek_id') == target_geek_id
+                        and normalize_job_name(c.get('job_name'))
+                        == normalize_job_name(target_job_name)
                     )
+                ]
 
-                    # 从树中移除
-                    self.result_tree.delete(item)
+            # 从 JSON 文件中移除
+            if CANDIDATES_PATH.exists():
+                remove_candidates_all(
+                    lambda persisted: (
+                        persisted.get('geek_id') == target_geek_id
+                        and normalize_job_name(persisted.get('job_name'))
+                        == normalize_job_name(target_job_name)
+                    ),
+                    CANDIDATES_PATH,
+                )
 
-                    # 刷新统计
-                    self.refresh_results()
+                # 从树中移除
+                self.result_tree.delete(item)
 
-                    self._status_flash(f"已移除：{name}")
-            except Exception as e:
-                messagebox.showerror("错误", f"移除失败：{e}")
+                # 刷新统计
+                self.refresh_results()
+
+                self._status_flash(f"已移除：{name}")
+        except Exception as e:
+            messagebox.showerror("错误", f"移除失败：{e}")
 
     def _run_export(self, candidates, file_path, preserve_input=False):
         """后台线程写 Excel，避免大数据量导出冻结界面；完成 toast 反馈，失败弹窗。"""
@@ -23848,6 +24446,8 @@ class BossFilterGUI:
         dialog = tk.Toplevel(self.root)
         dialog.title("清空候选人")
         dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
         dialog.configure(background=self.colors['bg_main'])
         dialog.withdraw()
 
@@ -23915,7 +24515,7 @@ class BossFilterGUI:
             keep_greeted_var.set(False)
 
         # 提示
-        ttk.Label(dialog, text="操作前会自动备份；已屏蔽候选人会保留为黑名单",
+        ttk.Label(dialog, text="操作前会自动创建恢复点；已屏蔽候选人会保留为黑名单",
                   font=(FONT_FAMILY, int(13 * dialog_fs)),
                   foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
                   style='ClearDialog.TLabel').pack(pady=(int(12 * _s), 0))
@@ -23928,12 +24528,6 @@ class BossFilterGUI:
             choice = choice_var.get()
             keep_greeted = keep_greeted_var.get()
             dialog.destroy()
-
-            confirm_msg = "确定要清空候选人数据吗？\n\n操作前会自动备份，但清空后不可恢复。"
-            if keep_greeted and greeted_count > 0:
-                confirm_msg = f"确定要清空候选人数据吗？\n\n已打招呼的 {greeted_count} 人将被保留。\n操作前会自动备份，但清空后不可恢复。"
-            if not messagebox.askyesno("确认", confirm_msg):
-                return
 
             try:
                 backup_path = CANDIDATES_PATH.with_suffix('.json.bak')
@@ -24022,7 +24616,19 @@ class BossFilterGUI:
                     log_msg += f"，保留 {blacklist_kept_count} 条黑名单记录"
                     info_msg += f"，保留 {blacklist_kept_count} 条黑名单记录"
                 self.append_log(log_msg)
-                messagebox.showinfo("完成", info_msg)
+                messagebox.show_result(
+                    "清空候选人",
+                    headline="候选人数据已清理",
+                    message=info_msg,
+                    metrics=(
+                        ("已清理", f"{removed} 条"),
+                        ("已打招呼保留", f"{kept_count} 条"),
+                        ("黑名单保留", f"{blacklist_kept_count} 条"),
+                    ),
+                    notice=f"操作前的恢复点已保存为 {backup_path.name}。",
+                    notice_kind="success",
+                    parent=self.root,
+                )
 
                 # 同步 Excel
                 self._regenerate_excel()
@@ -24033,37 +24639,44 @@ class BossFilterGUI:
                 self.refresh_stats()
 
             except Exception as e:
-                messagebox.showerror("错误", f"清空失败：{e}")
+                messagebox.show_failure(
+                    "清空候选人",
+                    headline="候选人数据未清理",
+                    message="原有候选人数据保持不变。",
+                    detail=str(e),
+                    parent=self.root,
+                )
 
-        icon_check = self.icons.button('check', self.colors['primary'])
-        icon_close = self.icons.button('close', self.colors['text_secondary'])
-        _pad = int(10 * _s)
+        button_style = ttk.Style(dialog)
+        button_style.configure(
+            'ClearDialog.Danger.TButton',
+            font=(FONT_FAMILY, int(11 * self.font_scale)),
+            padding=(int(14 * _s), int(5 * _s)),
+            background=self.colors['danger'],
+            foreground=self.colors['bg_card'],
+        )
+        button_style.map(
+            'ClearDialog.Danger.TButton',
+            background=[
+                ('pressed', self.colors.get('danger_deep', ui_theme.DANGER_DEEP)),
+                ('active', self.colors.get('danger_text', ui_theme.DANGER_TEXT)),
+            ],
+        )
+        ttk.Button(
+            btn_frame,
+            text="清空所选数据",
+            command=do_clear,
+            style='ClearDialog.Danger.TButton',
+        ).pack(side='left', padx=int(8 * _s))
+        cancel_button = ttk.Button(
+            btn_frame,
+            text="取消",
+            command=dialog.destroy,
+        )
+        cancel_button.pack(side='left', padx=int(8 * _s))
 
-        def _icon_btn(parent, icon, text, command):
-            frame = tk.Frame(parent, bg=self.colors['bg_main'],
-                           highlightbackground=self.colors['border'],
-                           highlightthickness=1, cursor='hand2')
-            tk.Label(frame, image=icon, bg=self.colors['bg_main']).pack(
-                side='left', padx=(_pad, 2), pady=4, anchor='center')
-            tk.Label(frame, text=text, bg=self.colors['bg_main'],
-                    font=(FONT_FAMILY, int(13 * dialog_fs)), fg=self.colors['text_primary']).pack(
-                side='left', padx=(2, _pad), pady=4, anchor='center')
-            _children = [frame] + list(frame.winfo_children())
-            def _on_enter(e, f=frame, ch=_children, c=self.colors['bg_hover']):
-                for w in ch:
-                    w.config(bg=c)
-            def _on_leave(e, f=frame, ch=_children, c=self.colors['bg_main']):
-                for w in ch:
-                    w.config(bg=c)
-            for widget in _children:
-                widget.bind('<Enter>', _on_enter)
-                widget.bind('<Leave>', _on_leave)
-                widget.bind('<Button-1>', lambda e, cmd=command: cmd())
-            return frame
-
-        _icon_btn(btn_frame, icon_check, '确定', do_clear).pack(side='left', padx=_pad)
-        _icon_btn(btn_frame, icon_close, '取消', dialog.destroy).pack(side='left', padx=_pad)
-
+        dialog.bind('<Return>', lambda _event: None)
+        cancel_button.focus_set()
         dialog.deiconify()
 
     def show_help(self):
@@ -24088,7 +24701,12 @@ class BossFilterGUI:
 - 需要 Chrome 浏览器
 - 程序启动后需手动导航到 BOSS 直聘推荐页面
 - 定期备份 candidates_all.json 文件"""
-        messagebox.showinfo("使用说明", help_text)
+        self._show_text_dialog(
+            "使用说明",
+            help_text,
+            width=640,
+            height=460,
+        )
 
     def show_about(self):
         """显示关于弹窗"""

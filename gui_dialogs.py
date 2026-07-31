@@ -180,50 +180,34 @@ def show_about_dialog(gui, version):
     icon_refresh = gui.icons.button('refresh', gui.colors['primary'])
     icon_close = gui.icons.button('close', gui.colors['text_secondary'])
     _pad = int(10 * _s)
-    btn_w = int(130 * _s)
-    btn_h = int(32 * _s)
-
-    def _icon_btn(parent, icon, text, command):
-        frame = tk.Frame(parent, bg=gui.colors['bg_card'],
-                       highlightbackground=gui.colors['border'],
-                       highlightthickness=1, cursor='hand2',
-                       width=btn_w, height=btn_h)
-        frame.pack_propagate(False)
-        content = tk.Frame(frame, bg=gui.colors['bg_card'])
-        content.pack(expand=True)
-        tk.Label(content, image=icon, bg=gui.colors['bg_card']).pack(
-            side='left', padx=(0, 2), anchor='center')
-        tk.Label(content, text=text, bg=gui.colors['bg_card'],
-                font=(FONT_FAMILY, int(13 * about_fs)), fg=gui.colors['text_primary']).pack(
-            side='left', padx=(2, 0), anchor='center')
-
-        def _all_descendants(w):
-            result = [w]
-            for child in w.winfo_children():
-                result.extend(_all_descendants(child))
-            return result
-
-        _children = _all_descendants(frame)
-
-        def _on_enter(e, ch=_children, c=gui.colors['bg_hover']):
-            for w in ch:
-                w.config(bg=c)
-
-        def _on_leave(e, ch=_children, c=gui.colors['bg_card']):
-            for w in ch:
-                w.config(bg=c)
-
-        for widget in _children:
-            widget.bind('<Enter>', _on_enter)
-            widget.bind('<Leave>', _on_leave)
-            widget.bind('<Button-1>', lambda e, cmd=command: cmd())
-        return frame
-
-    _icon_btn(btn_frame, icon_refresh, '检查更新',
-              lambda: updater.check_and_update_gui(
-                  gui.root, silent=False, gui=gui, source="manual")
-              ).pack(side="left", padx=_pad)
-    _icon_btn(btn_frame, icon_close, '关闭', dialog.destroy).pack(side="left", padx=_pad)
+    about_button_style = ttk.Style(dialog)
+    about_button_style.configure(
+        'AboutDialog.TButton',
+        font=(FONT_FAMILY, int(11 * about_fs)),
+        padding=(int(12 * _s), int(5 * _s)),
+    )
+    refresh_button = ttk.Button(
+        btn_frame,
+        image=icon_refresh,
+        text=' 检查更新',
+        compound=tk.LEFT,
+        command=lambda: updater.check_and_update_gui(
+            gui.root, silent=False, gui=gui, source="manual"
+        ),
+        style='AboutDialog.TButton',
+    )
+    refresh_button._icon_ref = icon_refresh
+    refresh_button.pack(side="left", padx=_pad)
+    close_button = ttk.Button(
+        btn_frame,
+        image=icon_close,
+        text=' 关闭',
+        compound=tk.LEFT,
+        command=dialog.destroy,
+        style='AboutDialog.TButton',
+    )
+    close_button._icon_ref = icon_close
+    close_button.pack(side="left", padx=_pad)
 
     tk.Label(dialog, text="MIT License · 开源免费",
              font=(FONT_FAMILY, int(10 * about_fs)),
