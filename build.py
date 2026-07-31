@@ -1211,15 +1211,29 @@ def _check_code_to_changelog_coverage(strict=False):
     # 按文件解析 diff，保留 + / - 行。删除和限制类变更经常只出现在 - 行。
     file_additions: dict[str, list[str]] = {}
     file_removals: dict[str, list[str]] = {}
+    file_hunks: dict[str, list[dict[str, list[str]]]] = {}
     current_file = None
+    current_hunk = None
     for line in diff_result.stdout.splitlines():
         if line.startswith("diff --git"):
             m = re.search(r"b/(\S+)$", line)
             current_file = m.group(1) if m else None
+            current_hunk = None
+        elif current_file and line.startswith("@@"):
+            current_hunk = {"additions": [], "removals": [], "context": []}
+            file_hunks.setdefault(current_file, []).append(current_hunk)
         elif current_file and line.startswith("+") and not line.startswith("+++"):
-            file_additions.setdefault(current_file, []).append(line[1:])
+            added_line = line[1:]
+            file_additions.setdefault(current_file, []).append(added_line)
+            if current_hunk is not None:
+                current_hunk["additions"].append(added_line)
         elif current_file and line.startswith("-") and not line.startswith("---"):
-            file_removals.setdefault(current_file, []).append(line[1:])
+            removed_line = line[1:]
+            file_removals.setdefault(current_file, []).append(removed_line)
+            if current_hunk is not None:
+                current_hunk["removals"].append(removed_line)
+        elif current_file and current_hunk is not None and line.startswith(" "):
+            current_hunk["context"].append(line[1:])
 
     def _keywords(text: str) -> list[str]:
         """提取中英文关键词，用于与 CHANGELOG 做宽松交叉比对。"""
@@ -1375,7 +1389,13 @@ def _check_code_to_changelog_coverage(strict=False):
         return False
 
     def _context_keywords(fpath: str, line: str) -> list[str]:
-        lowered = f"{fpath} {line}".lower()
+        context_parts = [line]
+        for hunk in file_hunks.get(fpath, ()):
+            if line in hunk["additions"] or line in hunk["removals"]:
+                context_parts.extend(hunk["context"])
+                context_parts.extend(hunk["additions"])
+                context_parts.extend(hunk["removals"])
+        lowered = f"{fpath} {' '.join(context_parts)}".lower()
         keywords: list[str] = []
         if fpath.endswith("api_config.json"):
             # 发布模板中的服务商、模型库和探测缓存都属于“模型配置”语义。
@@ -1408,10 +1428,20 @@ def _check_code_to_changelog_coverage(strict=False):
             (r"blacklist", ["黑名单"]),
             (r"resume", ["简历"]),
             (r"export|excel", ["导出"]),
+            (r"backup|restore|diagnostic|maintenance", ["备份", "恢复", "诊断", "数据维护"]),
             (r"followup", ["跟进"]),
             (r"feedback", ["反馈"]),
             (r"\bstats?\b|statistics", ["统计"]),
             (r"detail", ["明细"]),
+            (
+                r"messagebox|show_result|show_failure|show_notice|"
+                r"ask_confirmation|ask_choice|_show_structured",
+                ["弹窗", "提示", "操作反馈"],
+            ),
+            (
+                r"_set_[a-z_]*(?:text|status)|_update_[a-z_]*status",
+                ["行内提示", "操作反馈"],
+            ),
         )
         for pattern, words in semantic_keywords:
             if re.search(pattern, lowered):

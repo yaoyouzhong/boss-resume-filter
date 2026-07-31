@@ -8,7 +8,7 @@ import tempfile
 import threading
 import time
 import types
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, call, patch
 
@@ -697,7 +697,7 @@ def test_clear_new_job_draft_uses_complete_initializer():
     gui.job_rules = {"已有岗位": {}}
     gui._initialize_new_job_draft = Mock()
 
-    with patch("gui_main.messagebox.askyesno", return_value=True):
+    with patch("gui_main.messagebox.ask_confirmation", return_value=True):
         gui._restore_or_clear_job_form()
 
     gui._initialize_new_job_draft.assert_called_once_with()
@@ -709,14 +709,14 @@ def test_unsaved_job_transition_can_save_discard_or_cancel():
     gui._job_form_has_unsaved_changes = Mock(return_value=True)
     gui.save_current_job = Mock(return_value=True)
 
-    with patch("gui_main.messagebox.askyesnocancel", return_value=True):
+    with patch("gui_main.messagebox.ask_choice", return_value="save"):
         assert gui._confirm_job_form_transition() is True
     gui.save_current_job.assert_called_once_with()
 
-    with patch("gui_main.messagebox.askyesnocancel", return_value=False):
+    with patch("gui_main.messagebox.ask_choice", return_value="discard"):
         assert gui._confirm_job_form_transition() is True
 
-    with patch("gui_main.messagebox.askyesnocancel", return_value=None):
+    with patch("gui_main.messagebox.ask_choice", return_value=None):
         assert gui._confirm_job_form_transition() is False
 
 
@@ -3230,9 +3230,9 @@ def test_save_api_config_preserves_existing_default_model():
         config_path = Path(tmp_dir) / "api_config.json"
         with patch.object(gui_main, "get_api_config_path", return_value=config_path), \
              patch.object(gui_main, "save_api_key", return_value=True), \
-             patch.object(gui_main.messagebox, "showinfo") as showinfo, \
              patch.object(gui_main.messagebox, "showwarning") as showwarning, \
-             patch.object(gui_main.messagebox, "showerror") as showerror:
+             patch.object(gui_main.messagebox, "showerror") as showerror, \
+             patch.object(gui, "_status_flash"):
             gui.save_api_config()
 
     showwarning.assert_not_called()
@@ -3241,7 +3241,10 @@ def test_save_api_config_preserves_existing_default_model():
     assert gui.api_config["base_url"] == "https://one.example/v1/"
     assert gui.api_config["api_key"] == "current-secret"
     assert any(m["model"] == "new-model" for m in gui.api_config["saved_models"])
-    assert "默认 AI 模型保持不变" in showinfo.call_args.args[1]
+    assert any(
+        "默认 AI 模型保持不变" in config.get("text", "")
+        for config in gui.api_status_label.configs
+    )
     gui.ai_eval_available_var.set.assert_called_once_with(True)
     gui.ai_eval_var.set.assert_not_called()
     gui.ai_status_label.config.assert_called_once_with(
@@ -3310,13 +3313,13 @@ def test_save_api_config_stops_when_system_credential_write_fails():
     with (
         patch.object(gui_main, "save_api_key", return_value=False),
         patch.object(gui_main.messagebox, "showinfo") as showinfo,
-        patch.object(gui_main.messagebox, "showerror") as showerror,
+        patch.object(gui_main.messagebox, "show_failure") as show_failure,
     ):
         gui.save_api_config()
 
     gui._remember_api_key.assert_not_called()
     showinfo.assert_not_called()
-    assert "未能写入系统凭据存储" in showerror.call_args.args[1]
+    assert "未能写入系统凭据存储" in show_failure.call_args.kwargs["detail"]
     assert "未能写入系统凭据存储" in gui._update_api_status.call_args.kwargs["text"]
 
 
@@ -3973,7 +3976,7 @@ def test_confirm_manual_review_once_approves_pending_contact_without_changing_sc
         "qualification_reasons": ["学历形式待确认"],
     }
 
-    with patch("gui_main.messagebox.askyesno", return_value=True):
+    with patch("gui_main.messagebox.ask_confirmation", return_value=True):
         gui._confirm_manual_review(
             None,
             candidate=candidate,
@@ -4226,7 +4229,7 @@ def test_manual_contact_confirmation_persists_before_queue_without_changing_scor
         "match_score": 64,
     }
 
-    with patch("gui_main.messagebox.askyesno", return_value=True):
+    with patch("gui_main.messagebox.ask_confirmation", return_value=True):
         added = gui._approve_candidate_contact_and_queue(
             candidate,
             parent=parent,
@@ -5305,7 +5308,7 @@ def test_job_name_mismatch_confirmation_explains_names_may_differ():
     gui.stop_event.is_set.return_value = False
     gui.run_on_ui = lambda callback: callback()
 
-    with patch("gui_main.messagebox.askyesno", return_value=True) as confirm:
+    with patch("gui_main.messagebox.ask_confirmation", return_value=True) as confirm:
         assert gui._confirm_job_name_mismatch(
             "中高级AI工程师",
             "精选",
@@ -5313,11 +5316,13 @@ def test_job_name_mismatch_confirmation_explains_names_may_differ():
             parent=object(),
         ) is True
 
-    _title, message = confirm.call_args.args[:2]
-    assert "岗位名称不同，但可能指向同一个岗位" in message
-    assert "本地岗位配置：中高级AI工程师" in message
-    assert "BOSS 当前岗位：精选" in message
-    assert confirm.call_args.kwargs["yes_label"] == "确认并继续"
+    assert confirm.call_args.args == ("确认岗位对应关系",)
+    assert confirm.call_args.kwargs["headline"] == "岗位名称不同，需要人工确认"
+    assert confirm.call_args.kwargs["metrics"] == (
+        ("本地岗位配置", "中高级AI工程师"),
+        ("BOSS 当前岗位", "精选"),
+    )
+    assert confirm.call_args.kwargs["yes_label"] == "确认对应，继续"
 
 
 def test_legacy_gui_contact_methods_only_add_to_contact_list():
@@ -6217,10 +6222,12 @@ def test_followup_dialog_supports_due_date_quick_choices_and_persistence():
     assert 're.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", due_input)' in block
     assert "下次跟进日期无效，请检查年月日是否正确" in block
     assert "下次跟进日期格式不正确，请使用 YYYY-MM-DD" in block
-    assert 'messagebox.showerror("日期错误", error_text, parent=win)' in block
+    assert "show_form_error(error_text, next_followup_entry)" in block
+    assert 'next_followup_entry.bind("<KeyRelease>", clear_form_error)' in block
     assert 'status in {"待约面", "已约面"} and not next_due' in block
     assert 'status == "未沟通"' in block
-    assert "会同时清除本地的已打招呼事实" in block
+    assert "本地已打招呼事实、发送方式和跟进日期会同时清除" in block
+    assert "messagebox.ask_confirmation(" in block
     assert "apply_followup_state(" in block
     assert 'needs_feedback = status == "不合适"' in block
     assert 'default_status="放弃"' in block
@@ -6238,14 +6245,13 @@ def test_greet_queue_start_requires_confirmation():
     assert 'yes_label="开始联系"' in confirm_block
     assert 'no_label="取消"' in confirm_block
     assert 'headline=headline' in confirm_block
-    assert 'show_icon=False' in confirm_block
-    assert 'min_width=620' in confirm_block
-    assert "font_delta=" not in confirm_block
+    assert 'metrics=(("本次联系", f"{len(pending)} 人"),)' in confirm_block
+    assert "每次发送前复核候选人最新状态" in confirm_block
     assert "当前已就绪" not in confirm_block
     assert "待核实不会自动重发" not in confirm_block
     assert "失败待重试" not in confirm_block
     assert "每位候选人发送前都会重新检查" not in confirm_block
-    assert "messagebox.askyesno" in confirm_block
+    assert "messagebox.ask_confirmation" in confirm_block
 
 
 def test_greet_queue_confirmation_explains_page_requirements_by_send_path():
@@ -6389,7 +6395,11 @@ def test_contact_browser_readiness_only_checks_selected_pending_candidates():
     )
     gui._is_boss_recommend_url = Mock(return_value=False)
 
-    assert gui._ensure_greet_queue_browser(None, [selected]) is True
+    with patch(
+        "bossmaster.get_boss_access_block_state",
+        return_value={"blocked": False},
+    ):
+        assert gui._ensure_greet_queue_browser(None, [selected]) is True
 
     gui._is_boss_recommend_url.assert_not_called()
 
@@ -6695,7 +6705,12 @@ def test_start_run_accepts_frame_recommend_page():
         def start(self):
             started.append(self.target)
 
-    with patch("gui_main.threading.Thread", FakeThread), patch("gui_main.messagebox.showwarning") as showwarning:
+    with patch.object(
+        BossFilterGUI,
+        "_boss_access_cooldown_state",
+        return_value={"blocked": False},
+    ), patch("gui_main.threading.Thread", FakeThread), \
+            patch("gui_main.messagebox.showwarning") as showwarning:
         gui.start_run()
 
     showwarning.assert_not_called()
@@ -6746,14 +6761,14 @@ def test_start_run_rejects_shared_cooldown_before_touching_browser():
                 "reason": "安全验证",
             },
         ),
-        patch("gui_main.messagebox.showwarning") as showwarning,
+        patch("gui_main.messagebox.show_notice") as show_notice,
     ):
         gui.start_run()
 
-    showwarning.assert_called_once()
-    assert showwarning.call_args.args[0] == "BOSS 访问保护"
-    assert "剩余约 30 秒" in showwarning.call_args.args[1]
-    assert "安全验证" in showwarning.call_args.args[1]
+    show_notice.assert_called_once()
+    assert show_notice.call_args.args == ("BOSS 访问保护",)
+    assert show_notice.call_args.kwargs["metrics"] == (("剩余时间", "约 30 秒"),)
+    assert show_notice.call_args.kwargs["detail"] == "安全验证"
 
 
 def test_run_page_readiness_rejects_bare_frame_shell():
@@ -8118,8 +8133,8 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
         resume_path = tmp_path / "resume.txt"
         resume_path.write_text("Java 开发经验 " * 10, encoding="utf-8")
         with patch("gui_main.filedialog.askopenfilename", return_value=str(resume_path)), \
-                patch("gui_main.messagebox.askyesno", return_value=True), \
-                patch("gui_main.messagebox.showerror") as showerror, \
+                patch("gui_main.messagebox.ask_confirmation", return_value=True), \
+                patch("gui_main.messagebox.show_failure") as show_failure, \
                 patch("gui_main.update_candidate_records", return_value=1), \
                 patch("gui_main.get_api_key", return_value="secret"), \
                 patch("gui_main.get_base_dir", return_value=tmp_path), \
@@ -8139,9 +8154,12 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
     assert gui.append_log.call_args_list[-1].args == (
         "[简历评估] ✗ 张三 异常：模型故障",
     )
-    showerror.assert_called_once_with(
-        "评估异常",
-        "二次评估出错：\n模型故障",
+    show_failure.assert_called_once_with(
+        "简历二次评估",
+        headline="张三 的简历评估未完成",
+        message="评估过程中出现异常，候选人分数没有更新。",
+        detail="模型故障",
+        notice="请检查模型配置或网络连接后重试。",
         parent=parent,
     )
     tree.set.assert_any_call("row-1", "status", "已导入简历")
@@ -8175,7 +8193,7 @@ def test_revert_resume_eval_never_deletes_file_outside_managed_directory():
             updater(candidate)
             return 1
 
-        with patch("gui_main.messagebox.askyesno", return_value=True), \
+        with patch("gui_main.messagebox.ask_confirmation", return_value=True), \
                 patch("gui_main.update_candidate_records", side_effect=apply_update), \
                 patch("gui_main.get_base_dir", return_value=root):
             gui._revert_resume_eval(None, candidate=candidate, parent=gui.root)
@@ -8424,7 +8442,7 @@ def test_batch_ai_eval_groups_candidates_by_job_and_counts_all_skips():
 
     with patch('security.get_api_key', return_value='secret'), \
             patch('gui_main.messagebox.showinfo') as showinfo, \
-            patch('gui_main.messagebox.askyesno', return_value=True), \
+            patch('gui_main.messagebox.ask_confirmation', return_value=True) as confirm, \
             patch('gui_main.threading.Thread') as thread:
         gui._ai_eval_selected_candidates([java, python, evaluated])
 
@@ -8439,7 +8457,12 @@ def test_batch_ai_eval_groups_candidates_by_job_and_counts_all_skips():
         {'name': '丙', 'reason': '已评估过'},
     ]
     assert gui._ai_evaluating_ids == {'java-1', 'python-1'}
-    showinfo.assert_called_once()
+    showinfo.assert_not_called()
+    assert confirm.call_args.kwargs["metrics"] == (
+        ("将评估", "2 人"),
+        ("将跳过", "1 人"),
+    )
+    assert confirm.call_args.kwargs["notice"] == "跳过原因：已评估过 1 人"
     thread.return_value.start.assert_called_once()
 
 
@@ -8676,6 +8699,51 @@ def test_data_backup_summary_does_not_include_candidate_identity():
     assert summary == "岗位 2 个，候选人 18 人，联系清单 4 项，简历副本 3 份"
 
 
+def test_data_backup_summary_metrics_are_compact_and_privacy_safe():
+    metrics = BossFilterGUI._backup_summary_metrics({
+        "job_count": 2,
+        "candidate_count": 18,
+        "queue_count": 4,
+        "resume_count": 3,
+    })
+
+    assert metrics == (
+        ("岗位", "2 个"),
+        ("候选人", "18 人"),
+        ("联系清单", "4 项"),
+        ("简历副本", "3 份"),
+    )
+
+
+def test_data_maintenance_notes_restore_persisted_success_times():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._run_preferences = {
+        "last_data_backup_at": "2026-07-31T09:05:42",
+        "last_data_restore_at": "2026-07-30T18:40:00",
+        "last_diagnostic_export_at": "invalid",
+    }
+
+    assert gui._data_backup_note_text() == (
+        "最近备份：2026-07-31 09:05\n"
+        "最近恢复：2026-07-30 18:40"
+    )
+    assert gui._diagnostic_export_note_text() == "最近导出：暂无记录"
+
+
+def test_remember_maintenance_success_preserves_other_local_preferences():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._run_preferences = {"last_run_job_name": "Java 工程师"}
+    when = datetime(2026, 7, 31, 9, 5, 42)
+
+    with patch.object(gui_main, "_save_run_preferences") as save:
+        value = gui._remember_maintenance_success("backup", when=when)
+
+    assert BossFilterGUI._format_maintenance_time(value) == "2026-07-31 09:05"
+    assert gui._run_preferences["last_run_job_name"] == "Java 工程师"
+    assert gui._run_preferences["last_data_backup_at"] == value
+    save.assert_called_once_with(gui._run_preferences)
+
+
 def test_export_data_backup_blocks_while_scan_is_running():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = Mock()
@@ -8704,6 +8772,9 @@ def test_export_data_backup_reports_verified_counts():
     gui._data_storage_error = ""
     gui.data_backup_status_var = Mock()
     gui.append_operation_log = Mock()
+    gui._run_preferences = {
+        "last_data_restore_at": "2026-07-30T18:40:00",
+    }
 
     result = {
         "path": "D:/safe/backup.zip",
@@ -8723,15 +8794,41 @@ def test_export_data_backup_reports_verified_counts():
             "create_backup_package",
             return_value=result,
         ) as create,
-        patch.object(gui_main.messagebox, "showinfo") as info,
+        patch.object(
+            gui_main.messagebox,
+            "show_result",
+            return_value="open_location",
+        ) as show_result,
+        patch.object(
+            gui,
+            "_remember_maintenance_success",
+            return_value="2026-07-31T09:05:42",
+        ) as remember,
     ):
+        gui._open_export_location = Mock()
         gui._export_data_backup()
 
     create.assert_called_once_with(gui_main.BASE_DIR, result["path"])
     gui.data_backup_status_var.set.assert_called_with(
-        "最近备份：岗位 2 个，候选人 18 人，联系清单 4 项，简历副本 3 份"
+        "最近备份：2026-07-31 09:05 · "
+        "岗位 2 个，候选人 18 人，联系清单 4 项，简历副本 3 份\n"
+        "最近恢复：2026-07-30 18:40"
     )
-    info.assert_called_once()
+    remember.assert_called_once_with("backup")
+    show_result.assert_called_once_with(
+        "数据备份",
+        headline="备份已完成",
+        metrics=(
+            ("岗位", "2 个"),
+            ("候选人", "18 人"),
+            ("联系清单", "4 项"),
+            ("简历副本", "3 份"),
+        ),
+        file_path=result["path"],
+        notice="此 ZIP 未加密，请妥善保管。",
+        parent=gui.root,
+    )
+    gui._open_export_location.assert_called_once_with(result["path"])
     assert gui._data_maintenance_running is False
 
 
@@ -8754,12 +8851,299 @@ def test_restore_data_backup_rejects_tampered_package_before_confirmation():
             "inspect_backup",
             side_effect=ValueError("完整性校验失败"),
         ),
-        patch.object(gui_main.messagebox, "showerror") as error,
-        patch.object(gui_main.messagebox, "askyesno") as confirm,
+        patch.object(gui_main.messagebox, "show_failure") as error,
+        patch.object(gui_main.messagebox, "ask_confirmation") as confirm,
         patch.object(gui_main, "restore_backup") as restore,
     ):
         gui._restore_data_backup()
 
     error.assert_called_once()
+    assert error.call_args.kwargs["headline"] == "这个备份无法使用"
+    assert error.call_args.kwargs["detail"] == "完整性校验失败"
     confirm.assert_not_called()
     restore.assert_not_called()
+
+
+def test_restore_data_backup_uses_structured_confirmation_and_result():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.is_running = False
+    gui.greet_queue_running = False
+    gui.greet_queue_preparing = False
+    gui._data_maintenance_running = False
+    gui._set_data_backup_status = Mock()
+    gui.append_operation_log = Mock()
+    gui.load_config = Mock()
+    gui._refresh_contact_queue_badge = Mock()
+    gui.job_rules = {}
+    gui._run_preferences = {
+        "last_data_backup_at": "2026-07-31T09:05:42",
+    }
+
+    preview = {
+        "job_count": 2,
+        "candidate_count": 18,
+        "queue_count": 4,
+        "resume_count": 3,
+    }
+    restored = {
+        **preview,
+        "unresolved_candidate_count": 1,
+        "unresolved_queue_count": 1,
+    }
+    with (
+        patch.object(
+            gui_main.filedialog,
+            "askopenfilename",
+            return_value="D:/safe/backup.zip",
+        ),
+        patch.object(gui_main, "inspect_backup", return_value=preview),
+        patch.object(
+            gui_main.messagebox,
+            "ask_confirmation",
+            return_value=True,
+        ) as confirm,
+        patch.object(
+            gui_main,
+            "restore_backup",
+            return_value=restored,
+        ) as restore,
+        patch.object(gui_main.messagebox, "show_result") as show_result,
+        patch.object(
+            gui,
+            "_remember_maintenance_success",
+            return_value="2026-07-31T10:15:00",
+        ) as remember,
+    ):
+        gui._restore_data_backup()
+
+    confirm.assert_called_once_with(
+        "恢复数据备份",
+        headline="恢复这份数据备份？",
+        message="将替换当前候选人、岗位配置和联系清单，并恢复备份中的简历副本。",
+        metrics=(
+            ("岗位", "2 个"),
+            ("候选人", "18 人"),
+            ("联系清单", "4 项"),
+            ("简历副本", "3 份"),
+        ),
+        notice="执行前会自动保存当前数据恢复点。",
+        yes_label="开始恢复",
+        no_label="取消",
+        parent=gui.root,
+    )
+    restore.assert_called_once_with(gui_main.BASE_DIR, "D:/safe/backup.zip")
+    remember.assert_called_once_with("restore")
+    gui._set_data_backup_status.assert_called_with(
+        "最近备份：2026-07-31 09:05\n"
+        "最近恢复：2026-07-31 10:15 · "
+        "岗位 2 个，候选人 18 人，联系清单 4 项，简历副本 3 份，"
+        "另有 2 条记录未自动关联岗位"
+    )
+    show_result.assert_called_once_with(
+        "恢复数据备份",
+        headline="数据已恢复",
+        message="界面已重新加载恢复后的数据。",
+        metrics=(
+            ("岗位", "2 个"),
+            ("候选人", "18 人"),
+            ("联系清单", "4 项"),
+            ("简历副本", "3 份"),
+        ),
+        notice="另有 2 条记录未自动关联岗位，已原样保留。",
+        parent=gui.root,
+    )
+    assert gui._data_maintenance_running is False
+
+
+def test_export_diagnostic_package_uses_structured_file_result():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui._data_maintenance_running = False
+    gui.diagnostic_package_status_var = Mock()
+    gui.append_operation_log = Mock()
+    gui._diagnostic_runtime_context = Mock(return_value={"current_page": "系统设置"})
+    gui._open_export_location = Mock()
+    gui._run_preferences = {}
+    result = {
+        "path": "D:/safe/diagnostic.zip",
+        "log_count": 3,
+    }
+
+    with (
+        patch.object(
+            gui_main.filedialog,
+            "asksaveasfilename",
+            return_value=result["path"],
+        ),
+        patch.object(
+            gui_main,
+            "create_diagnostic_package",
+            return_value=result,
+        ) as create,
+        patch.object(
+            gui_main.messagebox,
+            "show_result",
+            return_value="open_location",
+        ) as show_result,
+        patch.object(
+            gui,
+            "_remember_maintenance_success",
+            return_value="2026-07-31T11:25:00",
+        ) as remember,
+    ):
+        gui._export_diagnostic_package()
+
+    create.assert_called_once_with(
+        gui_main.BASE_DIR,
+        result["path"],
+        app_version=gui_main.__version__,
+        runtime_context={"current_page": "系统设置"},
+    )
+    remember.assert_called_once_with("diagnostic_export")
+    gui.diagnostic_package_status_var.set.assert_called_with(
+        "最近导出：2026-07-31 11:25 · 已脱敏并复核，包含 3 个日志文件"
+    )
+    show_result.assert_called_once_with(
+        "导出诊断包",
+        headline="诊断包已导出",
+        message="已完成自动脱敏和残留复核。",
+        file_path=result["path"],
+        notice="分享前，请检查 ZIP 内的文本内容。",
+        parent=gui.root,
+    )
+    gui._open_export_location.assert_called_once_with(result["path"])
+    assert gui._data_maintenance_running is False
+
+
+def test_startup_data_failure_uses_structured_failure_sections():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.root.after.side_effect = lambda _delay, callback: callback()
+    gui.append_log = Mock()
+    gui._data_storage_error = "候选人文件校验失败"
+
+    with patch.object(gui_main.messagebox, "show_failure") as show_failure:
+        gui._report_startup_data_state()
+
+    show_failure.assert_called_once_with(
+        "数据安全检查",
+        headline="数据安全检查未通过",
+        message="候选人、岗位配置和联系清单未通过启动检查，本次已禁止继续写入。",
+        detail="候选人文件校验失败",
+        notice="请先从系统设置恢复有效备份，或检查数据文件后重新启动。",
+        parent=gui.root,
+    )
+
+
+def test_blocked_data_write_uses_structured_failure_sections():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui._data_storage_error = "岗位配置文件损坏"
+
+    with patch.object(gui_main.messagebox, "show_failure") as show_failure:
+        available = gui._ensure_data_storage_available("保存岗位配置")
+
+    assert available is False
+    show_failure.assert_called_once_with(
+        "数据写入已阻止",
+        headline="暂时无法保存岗位配置",
+        message="数据安全检查尚未通过，本次操作没有执行。",
+        detail="岗位配置文件损坏",
+        notice="可在系统设置中从有效备份恢复数据。",
+        parent=gui.root,
+    )
+
+
+def test_data_maintenance_multisection_dialogs_use_structured_templates():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    data_block = source[
+        source.index("def _export_data_backup"):
+        source.index("def _api_config_file_mtime")
+    ]
+    startup_block = source[
+        source.index("def _report_startup_data_state"):
+        source.index("def _setup_global_shortcuts")
+    ]
+
+    assert data_block.count("messagebox.show_result(") == 3
+    assert data_block.count("messagebox.show_failure(") == 4
+    assert data_block.count("messagebox.ask_confirmation(") == 1
+    assert startup_block.count("messagebox.show_failure(") == 2
+    assert "messagebox.showinfo(" not in data_block
+    assert "messagebox.askyesno(" not in data_block
+
+
+def test_open_containing_folder_uses_windows_file_manager():
+    target = r"C:\Users\user\Desktop\backup.zip"
+    with (
+        patch.object(gui_main.sys, "platform", "win32"),
+        patch.object(gui_main.os, "startfile", create=True) as startfile,
+    ):
+        gui_main._open_containing_folder(target)
+
+    startfile.assert_called_once_with(str(Path(target).expanduser().parent))
+
+
+def test_model_connectivity_summary_stays_inside_selection_dialog():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[
+        source.index("def _test_model_in_dialog"):
+        source.index('listbox.bind("<Button-3>"')
+    ]
+
+    assert "test_status_var.set(" in block
+    assert "test_status_label.configure(" in block
+    assert "messagebox.showinfo(" not in block
+    assert "messagebox.showerror(" not in block
+
+
+def test_followup_and_feedback_validation_use_inline_errors():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    followup = source[
+        source.index("def _mark_candidate_followup"):
+        source.index("\n    def _update_candidate_feedback")
+    ]
+    feedback = source[
+        source.index("def _mark_candidate_feedback"):
+        source.index("\n    def _format_candidate_detail")
+    ]
+
+    assert "show_form_error(error_text, next_followup_entry)" in followup
+    assert 'show_form_error("请选择有效的跟进状态。", status_combo)' in followup
+    assert "messagebox.show_failure(" in followup
+    assert 'show_form_error("请选择有效的反馈状态。", status_combo)' in feedback
+    assert "标记误推或误杀时，请至少选择一个原因。" in feedback
+    assert "messagebox.show_failure(" in feedback
+
+
+def test_only_reversible_unblacklist_keeps_plain_yes_no_confirmation():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+
+    assert source.count("messagebox.askyesno(") == 1
+    unblacklist = source[
+        source.index("def _unblacklist_candidate"):
+        source.index("\n    def _batch_confirm_manual_review")
+    ]
+    assert "messagebox.askyesno(" in unblacklist
+    assert source.count("dangerous=True") >= 12
+
+
+def test_file_import_failures_use_structured_user_and_detail_sections():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    education = source[
+        source.index("def _select_education_images"):
+        source.index("\n    def _refresh_education_queue_summary")
+    ]
+    resume = source[
+        source.index("def _import_resume"):
+        source.index("\n    def _revert_resume_eval")
+    ]
+
+    assert "messagebox.show_notice(" in education
+    assert 'headline=f"{len(invalid_files)} 个文件未导入"' in education
+    assert 'detail="\\n".join(invalid_files[:10])' in education
+    assert resume.count("messagebox.show_failure(") >= 7
+    assert "detail=str(e)" in resume
+    assert "detail=result.reason" in resume
+    assert "detail=str(error)" in resume
