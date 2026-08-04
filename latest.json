@@ -1,29 +1,29 @@
 {
-  "version": "2.25.2",
-  "release_date": "2026-07-31",
+  "version": "2.26",
+  "release_date": "2026-08-04",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.2/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.2/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.2/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.26/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.26/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.26/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "macos_dmg": {
-      "size": 33709622,
-      "sha256": "5067adcd6bed24a30859cc9b713c65f35bae73129ec6f683c608ed72a651225f"
+      "size": 33667950,
+      "sha256": "730e817874f158fd970ffd3e24b7a04beee7078b7e2c1f8ac82295ae2d0d6e81"
     },
     "windows": {
-      "size": 36028935,
-      "sha256": "ff21034709e551de46ba8a2337d7021ea416670c441b8c6ebecad8dd5df64e38"
+      "size": 36051080,
+      "sha256": "ef8ecc9f357512c3a32d6cd5d3a431499c82fd6362edd88ea5e19bf3ea9da98d"
     },
     "macos": {
-      "size": 34560122,
-      "sha256": "262c2d587d62d287f303af5f8524ee04ad5c0035769a66d396e2a7dc6ccfcb61"
+      "size": 34512971,
+      "sha256": "1544a7d4a79d3ce26253d26bb85949826bec5133af288b8924b2ed02ca5f1917"
     }
   },
-  "release_notes": "### 新增功能\n\n- **安装确认**：更新包下载完成后，可先查看新版本升级内容，再由用户确认立即安装。\n- **安装进度**：新增独立安装进度窗口，清晰展示备份、安装、重启和启动确认状态。\n- **下载复用**：已从远端下载并校验通过的更新包会保留，稍后更新时无需重复下载。",
+  "release_notes": "### 新增功能\n\n- **简历存储体检**：在系统设置中检查简历引用、异常路径和未被候选人使用的文件，并在用户确认后完成修复。\n\n### 体验优化\n\n- **简历文件管理**：导入替换、撤回评估、删除候选人、清空数据和恢复备份时，自动清理不再使用的简历文件；多个候选人共用的文件会继续保留。\n- **扫描日志聚焦**：运行日志只显示候选人扫描过程，浏览器检测和配置诊断改记到应用日志。\n- **更新安装响应**：更新包校验和安装窗口准备改在后台执行，减少安装前主界面无响应。\n\n### 问题修复\n\n- **联系冷却保护**：修复 BOSS 访问冷却期间仍可能启动或导航浏览器的问题，冷却结束前不再准备联系发送。\n- **更新失败恢复**：修复更新安装异常时已有备份可能恢复不完整的问题，并限制安装助手只处理本次更新文件。",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.2/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.2/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.25.2/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.26/BOSS_ResumeFilter.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.26/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.26/BOSS_ResumeFilter.dmg"
   }
 }
