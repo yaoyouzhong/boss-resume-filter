@@ -887,59 +887,6 @@ def _show_main_window_centered(root, monitor_area=None):
 # 需要通过 ObjC Runtime swizzle 拦截并转发。Windows (Tk 8.6) 不受影响。
 _NEED_COCOA_SCROLL_HOOK = sys.platform == 'darwin' and tk.TkVersion >= 9.0
 
-def _draw_search_icon(S, fill, sw_ratio=0.10):
-    """在 S×S 画布上绘制放大镜图标（🔍 风格），返回 RGBA Image"""
-    from PIL import Image, ImageDraw
-    import math
-    img = Image.new('RGBA', (S, S), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    # 镜片
-    rim_color = ui_theme.PRIMARY      # 品牌蓝边框
-    glass_fill = (147, 197, 253, 80)  # 淡蓝玻璃
-    rim_w = max(3, int(S * 0.07))
-    r = int(S * 0.24)
-    cx, cy = int(S * 0.33), int(S * 0.33)
-    # 镜片玻璃底色
-    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=glass_fill)
-    # 金属边框
-    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=rim_color, width=rim_w)
-    # 反光斜线（白色）
-    shine_color = (255, 255, 255, 140)
-    shine_w = max(2, int(S * 0.025))
-    shine_y = int(cy - r * 0.4)
-    shine_len = int(r * 1.1)
-    angle = math.radians(-30)
-    sx1 = int(cx - shine_len * math.cos(angle))
-    sy1 = int(shine_y - shine_len * math.sin(angle))
-    sx2 = int(cx + shine_len * math.cos(angle))
-    sy2 = int(shine_y + shine_len * math.sin(angle))
-    d.line([(sx1, sy1), (sx2, sy2)], fill=shine_color, width=shine_w)
-    # 手柄
-    handle_color = ui_theme.PRIMARY_DARK
-    handle_w = max(3, int(S * 0.07))
-    angle45 = math.radians(45)
-    hx0 = int(cx + (r + rim_w // 2) * math.cos(angle45))
-    hy0 = int(cy + (r + rim_w // 2) * math.sin(angle45))
-    handle_len = int(S * 0.42)
-    hx1 = int(hx0 + handle_len * math.cos(angle45))
-    hy1 = int(hy0 + handle_len * math.sin(angle45))
-    d.line([(hx0, hy0), (hx1, hy1)], fill=handle_color, width=handle_w)
-    # 手柄圆头
-    cap_r = handle_w // 2
-    d.ellipse([hx1 - cap_r, hy1 - cap_r, hx1 + cap_r, hy1 + cap_r], fill=handle_color)
-    return img
-
-
-def _set_search_window_icon(window):
-    """为任意 Tk 窗口设置与主程序一致的放大镜图标。"""
-    from PIL import ImageTk
-
-    icon_img = _draw_search_icon(256, ui_theme.PRIMARY, sw_ratio=0.10)
-    icon_photo = ImageTk.PhotoImage(icon_img)
-    window.iconphoto(True, icon_photo)
-    window._search_icon_photo = icon_photo
-    return icon_photo
-
 
 class BossFilterGUI:
     """BOSS 简历筛选器图形界面 - 优化版"""
@@ -9546,7 +9493,7 @@ class BossFilterGUI:
         """设置窗口图标，替换 tkinter 默认羽毛图标"""
         try:
             # 用 iconphoto 设置高分图标，Windows 10/11 原生缩放比 ICO 清晰
-            self._icon_photo = _set_search_window_icon(self.root)
+            icons.set_search_window_icon(self.root)
         except Exception:
             pass  # 图标设置失败不影响程序运行
 
@@ -14449,16 +14396,11 @@ class BossFilterGUI:
             log_queue.put(safe_message)
         self._append_run_log_file(safe_message)
 
-    def append_operation_log(self, message, *, show_in_run_ui=False):
+    def append_operation_log(self, message):
         """Record a foreground business event without polluting the scan UI."""
         safe_message = self._sanitize_runtime_log_message(message)
         logger.info("[GUI] %s", safe_message)
         self._append_runtime_log_file("app", safe_message, add_timestamp=True)
-        if show_in_run_ui:
-            log_queue = getattr(self, "log_queue", None)
-            if log_queue is not None:
-                log_queue.put(safe_message)
-        self._append_run_log_file(safe_message)
 
     @staticmethod
     def _sanitize_runtime_log_message(message):
@@ -14633,7 +14575,7 @@ class BossFilterGUI:
                 return
             current_url = str(getattr(page, 'url', '') or '')
             if not self._is_boss_recommend_url(current_url):
-                self.append_run_log("选择器自动检查已跳过：当前页面不是 BOSS 推荐牛人页面")
+                self.append_log("选择器自动检查已跳过：当前页面不是 BOSS 推荐牛人页面")
                 return
             from bossmaster import check_selectors_health
             results = check_selectors_health(page)
@@ -14647,11 +14589,11 @@ class BossFilterGUI:
 
             for r in results:
                 if r['status'] == 'skip':
-                    self.append_run_log(f"选择器自动检查已跳过 [{r['group']}]：{r['detail']}")
+                    self.append_log(f"选择器自动检查已跳过 [{r['group']}]：{r['detail']}")
 
             # 只在有异常时输出日志
             if warn_count + fail_count > 0:
-                self.append_run_log(
+                self.append_log(
                     f"选择器自动检查：{ok_count} 正常 / {skip_count} 跳过 / "
                     f"{warn_count} 警告 / {fail_count} 失败"
                 )
@@ -14659,9 +14601,9 @@ class BossFilterGUI:
                 for r in results:
                     if r['status'] in ('warn', 'fail'):
                         icon = {'warn': '⚠', 'fail': '✗'}.get(r['status'], '?')
-                        self.append_run_log(f"  {icon} [{r['group']}] {r['name']}: {r['detail']}")
+                        self.append_log(f"  {icon} [{r['group']}] {r['name']}: {r['detail']}")
 
-                self.append_run_log("⚠ 选择器异常可能导致扫描功能不正常，可编辑 selectors.json 修复")
+                self.append_log("⚠ 选择器异常可能导致扫描功能不正常，可编辑 selectors.json 修复")
                 # 主线程弹窗提醒（线程安全）
                 self.run_on_ui(lambda: messagebox.show_notice(
                     "选择器异常",
@@ -14672,7 +14614,7 @@ class BossFilterGUI:
                         ("警告", str(warn_count)),
                         ("正常", str(ok_count)),
                     ),
-                    notice="可编辑 selectors.json 修复；具体项目已写入运行日志。",
+                    notice="可编辑 selectors.json 修复；具体项目已写入应用日志。",
                     parent=self.root,
                 ))
         except Exception as e:
@@ -14681,7 +14623,7 @@ class BossFilterGUI:
             from bossmaster import is_transient_page_refresh_error
             if is_transient_page_refresh_error(e):
                 if not getattr(self, '_selector_check_retry_pending', False):
-                    self.append_run_log("选择器自动检查暂缓：页面正在加载，稳定后将自动重试")
+                    self.append_log("选择器自动检查暂缓：页面正在加载，稳定后将自动重试")
                 self._selector_check_retry_pending = True
                 return
             from bossmaster import is_page_connection_error
@@ -14689,9 +14631,9 @@ class BossFilterGUI:
                 self.browser_connected = False
                 if page is self.browser_page:
                     self.browser_page = None
-                self.append_run_log("浏览器页面连接短暂中断，等待自动重连...")
+                self.append_log("浏览器页面连接短暂中断，等待自动重连...")
                 return
-            self.append_run_log(f"选择器自动检查失败：{error_text}")
+            self.append_log(f"选择器自动检查失败：{error_text}")
 
     def _reactivate_and_navigate(self, page, target_url):
         """激活已有的 Chrome 进程并导航到目标页面。
@@ -14786,14 +14728,14 @@ class BossFilterGUI:
                 silent=silent,
             )
             if cooldown_log:
-                self.append_run_log(cooldown_log)
+                self.append_log(cooldown_log)
             return
         self._boss_cooldown_log_signature = None
         if getattr(self, '_browser_check_running', False):
             # 手动点击优先：标记待处理，当前 silent 检查结束后自动重试
             if not silent:
                 self._pending_manual_check = True
-                self.append_run_log("⏳ 正在执行其他检测，稍后自动重试...")
+                self.append_log("⏳ 正在执行其他检测，稍后自动重试...")
             return
         self._browser_check_running = True
 
@@ -14804,7 +14746,7 @@ class BossFilterGUI:
                 if not connection_lock_acquired:
                     return
                 if not silent:
-                    self.append_run_log("正在检测浏览器连接...")
+                    self.append_log("正在检测浏览器连接...")
 
                 # 已有可用连接，直接复用，不做端口检查
                 if self.browser_page is not None:
@@ -14832,21 +14774,21 @@ class BossFilterGUI:
                             self.browser_connected = True
                             self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
                             if prev_help != "已连接到 BOSS 直聘推荐牛人页面":
-                                self.append_run_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
+                                self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                         elif 'zhipin.com' in current_url.lower() or 'boss' in current_url.lower():
                             if self._should_defer_browser_navigation_warning(silent):
                                 return
                             self.browser_connected = False
                             self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
                             if prev_help != "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面":
-                                self.append_run_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                         else:
                             if self._should_defer_browser_navigation_warning(silent):
                                 return
                             self.browser_connected = False
                             self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
                             if prev_help != "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面":
-                                self.append_run_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                         return
                     except Exception:
                         # 页面对象已失效，清理后走完整检测流程
@@ -14880,7 +14822,7 @@ class BossFilterGUI:
                     # 自动启动 Chrome（仅在手动点击时）
                     if not silent:
                         self.set_browser_ui(help_text="正在启动 Chrome 浏览器...")
-                        self.append_run_log("正在启动 Chrome 浏览器...")
+                        self.append_log("正在启动 Chrome 浏览器...")
 
                         # 找到 Chrome 可执行文件
                         if sys.platform == 'darwin':
@@ -14897,7 +14839,7 @@ class BossFilterGUI:
                         chrome_path = next((p for p in candidates if os.path.exists(p)), None)
                         if not chrome_path:
                             self.set_browser_ui(help_text="未找到 Chrome 浏览器，请安装后重试")
-                            self.append_run_log("✗ 未找到 Chrome 浏览器")
+                            self.append_log("✗ 未找到 Chrome 浏览器")
                             return
 
                         # 自动选一个空闲端口，避免 9222 被占用
@@ -14919,7 +14861,7 @@ class BossFilterGUI:
                                     pass
 
                         # 用 subprocess 直接启动 Chrome（不依赖 DrissionPage 的启动逻辑）
-                        self.append_run_log(f"正在启动 Chrome（调试端口 {debug_port}）...")
+                        self.append_log(f"正在启动 Chrome（调试端口 {debug_port}）...")
                         subprocess.Popen(
                             [
                                 chrome_path,
@@ -14951,13 +14893,13 @@ class BossFilterGUI:
                                 break
                             s.close()
                             if i == 0:
-                                self.append_run_log("⏳ 等待 Chrome 就绪...")
+                                self.append_log("⏳ 等待 Chrome 就绪...")
                             elif i % 5 == 4:
-                                self.append_run_log(f"⏳ 等待 Chrome 就绪... ({i+1}/30)")
+                                self.append_log(f"⏳ 等待 Chrome 就绪... ({i+1}/30)")
 
                         if not port_ready:
                             self.set_browser_ui("● 未连接", self.colors['danger'], "Chrome 启动超时，请关闭所有 Chrome 窗口后重试")
-                            self.append_run_log("✗ Chrome 启动超时，调试端口未开启")
+                            self.append_log("✗ Chrome 启动超时，调试端口未开启")
                             return
 
                         # 端口已开，用 DrissionPage 连接
@@ -14997,25 +14939,25 @@ class BossFilterGUI:
                                 self.browser_page = page
                                 self.browser_address = page.address
                                 self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
-                                self.append_run_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
+                                self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                             else:
                                 self.browser_connected = True
                                 self.browser_page = page
                                 self.browser_address = page.address
                                 self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
-                                self.append_run_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                         except Exception as e:
                             self.browser_connected = False
                             self.browser_page = None
                             self._selectors_auto_checked = False
                             self.set_browser_ui("● 未连接", self.colors['danger'], "Chrome 已启动，但页面连接失败", "disabled")
                             error_text = str(e).splitlines()[0] if str(e) else type(e).__name__
-                            self.append_run_log(f"✗ Chrome 已启动，但页面连接失败：{error_text}")
+                            self.append_log(f"✗ Chrome 已启动，但页面连接失败：{error_text}")
                         return
                     else:
                         self.set_browser_ui(help_text="未检测到 Chrome，请确保浏览器已启动")
                         if not silent and prev_state != "● 未连接":
-                            self.append_run_log("✗ 未检测到 Chrome 调试端口")
+                            self.append_log("✗ 未检测到 Chrome 调试端口")
                     return
 
                 from DrissionPage import ChromiumPage, ChromiumOptions
@@ -15057,7 +14999,7 @@ class BossFilterGUI:
                     target_url = 'https://www.zhipin.com/web/chat/recommend'
                     if current_url in ('about:blank', ''):
                         if not silent:
-                            self.append_run_log("⚠ Chrome 进程存在但无有效页面，正在激活并导航...")
+                            self.append_log("⚠ Chrome 进程存在但无有效页面，正在激活并导航...")
                             nav_page = self._reactivate_and_navigate(page, target_url)
                             if nav_page is not None:
                                 self.browser_connected = True
@@ -15069,15 +15011,15 @@ class BossFilterGUI:
                                     nav_url = ''
                                 if self._is_boss_recommend_url(nav_url):
                                     self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
-                                    self.append_run_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
+                                    self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                                 else:
                                     self.set_browser_ui("● 需导航", self.colors['warning'], "已激活 Chrome，正在加载页面...", "disabled")
-                                    self.append_run_log("⚠ 已激活 Chrome，请等待页面加载完成")
+                                    self.append_log("⚠ 已激活 Chrome，请等待页面加载完成")
                             else:
                                 self.browser_connected = False
                                 self.browser_page = None
                                 self.set_browser_ui("● 需导航", self.colors['warning'], "请手动打开 Chrome 窗口", "disabled")
-                                self.append_run_log("⚠ 无法激活 Chrome 页面，请手动打开 Chrome 窗口后点击重试")
+                                self.append_log("⚠ 无法激活 Chrome 页面，请手动打开 Chrome 窗口后点击重试")
                         else:
                             # 自动轮询：不尝试导航，避免 page.get() 挂起
                             self.browser_connected = False
@@ -15085,7 +15027,7 @@ class BossFilterGUI:
                             prev_state = self._browser_status_text
                             self.set_browser_ui("● 需导航", self.colors['warning'], "Chrome 进程存在但无有效页面", "disabled")
                             if prev_state != "● 需导航":
-                                self.append_run_log("⚠ Chrome 进程存在但无有效页面，请点击按钮激活")
+                                self.append_log("⚠ Chrome 进程存在但无有效页面，请点击按钮激活")
                         # 处理完毕，不再往下走 URL 检查
                         return
 
@@ -15097,7 +15039,7 @@ class BossFilterGUI:
                         self.browser_address = page.address
                         self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
                         if not silent or not prev_connected:
-                            self.append_run_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
+                            self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                     elif 'zhipin.com' in current_url.lower() or 'boss' in current_url.lower():
                         if self._should_defer_browser_navigation_warning(silent):
                             return
@@ -15107,7 +15049,7 @@ class BossFilterGUI:
                         self.browser_address = page.address
                         self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
                         if not silent or prev_state != "● 需导航":
-                            self.append_run_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                            self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                     else:
                         if self._should_defer_browser_navigation_warning(silent):
                             return
@@ -15117,7 +15059,7 @@ class BossFilterGUI:
                         self.browser_address = page.address
                         self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
                         if not silent or prev_state != "● 需导航":
-                            self.append_run_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                            self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
 
                 except Exception as e:
                     if self._should_defer_browser_connection_failure(silent):
@@ -15139,11 +15081,11 @@ class BossFilterGUI:
                     self.set_browser_ui("● 未连接", self.colors['danger'], "浏览器页面连接失败", "disabled")
                     if not silent or prev_state != "● 未连接":
                         error_text = str(e).splitlines()[0] if str(e) else type(e).__name__
-                        self.append_run_log(f"✗ 浏览器页面连接失败：{error_text}")
+                        self.append_log(f"✗ 浏览器页面连接失败：{error_text}")
 
                     # 手动点击时，尝试杀掉彻底挂掉的调试 Chrome 进程并重启
                     if not silent:
-                        self.append_run_log("⚠ 正在尝试清理残留的调试 Chrome 进程...")
+                        self.append_log("⚠ 正在尝试清理残留的调试 Chrome 进程...")
                         killed = False
                         try:
                             port_num = int(port)
@@ -15176,20 +15118,20 @@ class BossFilterGUI:
                                                      timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                                         killed = True
                         except Exception as kill_err:
-                            self.append_run_log(f"清理残留进程失败：{kill_err}")
+                            self.append_log(f"清理残留进程失败：{kill_err}")
 
                         if killed:
                             time.sleep(1)
-                            self.append_run_log("✓ 已清理残留的调试 Chrome 进程，2秒后自动重新启动...")
+                            self.append_log("✓ 已清理残留的调试 Chrome 进程，2秒后自动重新启动...")
                             self._pending_chrome_restart = True
                         else:
-                            self.append_run_log("⚠ Chrome 调试端口被占用但无法清理，请手动关闭所有 Chrome 窗口后重试")
+                            self.append_log("⚠ Chrome 调试端口被占用但无法清理，请手动关闭所有 Chrome 窗口后重试")
                             self.set_browser_ui("● 未连接", self.colors['danger'],
                                               "请关闭所有 Chrome 窗口后点击重试", "disabled")
 
             except ImportError:
                 self.set_browser_ui("● 错误", self.colors['danger'], "未安装 DrissionPage，请运行：pip install DrissionPage")
-                self.append_run_log("✗ DrissionPage 未安装")
+                self.append_log("✗ DrissionPage 未安装")
             finally:
                 # 连接成功后自动检查选择器（仅首次）
                 if self.browser_connected and self.browser_page and not self._selectors_auto_checked:
@@ -22308,6 +22250,27 @@ class BossFilterGUI:
         self.append_operation_log("[联系候选人] 已继续")
         self._update_greet_queue_action_states()
 
+    def _greet_queue_cooldown_error(self):
+        """Return a fail-closed user message while BOSS access is cooling down."""
+        guard_state = self._boss_access_cooldown_state()
+        if not guard_state.get("blocked"):
+            return ""
+        remaining = max(
+            1,
+            int(guard_state.get("remaining_seconds", 0) + 0.999),
+        )
+        reason = str(
+            guard_state.get("reason") or "已触发 BOSS 访问保护"
+        )
+        message = (
+            f"BOSS 访问仍在冷却中，剩余约 {remaining} 秒。\n\n{reason}"
+        )
+        self.append_operation_log(
+            f"[访问保护] 联系候选人操作已阻止：{reason}。"
+            f"剩余冷却约 {remaining} 秒。"
+        )
+        return message
+
     def _start_greet_queue(self):
         self._ensure_greet_queue_loaded()
         if getattr(self, 'greet_queue_preparing', False):
@@ -22325,6 +22288,14 @@ class BossFilterGUI:
             message = "选中的候选人当前不可联系" if selected else "没有待联系候选人"
             messagebox.showinfo(
                 "联系候选人", message, parent=self.greet_queue_window or self.root
+            )
+            return
+        cooldown_error = self._greet_queue_cooldown_error()
+        if cooldown_error:
+            messagebox.showwarning(
+                "BOSS 访问保护",
+                cooldown_error,
+                parent=self.greet_queue_window or self.root,
             )
             return
         self.stop_event.clear()
@@ -22372,6 +22343,10 @@ class BossFilterGUI:
                 error = "浏览器正在执行其他操作，请稍后再试。"
                 return
 
+            error = self._greet_queue_cooldown_error()
+            if error:
+                return
+
             self._set_greet_queue_prepare_status("正在连接 Chrome...")
             if not self.browser_page or not self._is_browser_page_alive(self.browser_page):
                 if not self._reconnect_browser_or_warn(
@@ -22392,6 +22367,9 @@ class BossFilterGUI:
             navigation_attempted = False
             login_prompted = False
             while time.monotonic() < deadline and not self.stop_event.is_set():
+                error = self._greet_queue_cooldown_error()
+                if error:
+                    return
                 ok, current_url, _page_text, reason = self._get_greet_queue_page_state()
                 if ok and self._is_boss_recommend_url(current_url):
                     self.append_operation_log(
@@ -22410,9 +22388,26 @@ class BossFilterGUI:
                     time.sleep(1)
                     continue
 
+                if "安全验证" in reason:
+                    try:
+                        from bossmaster import activate_boss_access_block
+                        activate_boss_access_block(
+                            "安全验证",
+                            reason,
+                            "联系候选人页面检查",
+                        )
+                    except Exception:
+                        error = "检测到 BOSS 安全验证页面，已停止联系候选人操作。"
+                    else:
+                        error = self._greet_queue_cooldown_error()
+                    return
+
                 if not navigation_attempted and self._is_browser_page_alive(
                     self.browser_page
                 ):
+                    error = self._greet_queue_cooldown_error()
+                    if error:
+                        return
                     self._set_greet_queue_prepare_status("正在打开推荐牛人页面...")
                     try:
                         self.browser_page.get(recommend_url)
@@ -22651,11 +22646,19 @@ class BossFilterGUI:
 
     def _reconnect_browser_or_warn(self, parent, log_prefix, warn_title, warn_text):
         """Try to reconnect the browser and retain an actionable failure reason."""
+        cooldown_error = self._greet_queue_cooldown_error()
+        if cooldown_error:
+            self._greet_queue_browser_error = cooldown_error
+            return False
         self.append_operation_log(f"[联系候选人] {log_prefix}，正在尝试重连...")
         if self._try_reconnect_browser():
             self.append_operation_log("[联系候选人] 浏览器重连成功")
             return True
 
+        cooldown_error = self._greet_queue_cooldown_error()
+        if cooldown_error:
+            self._greet_queue_browser_error = cooldown_error
+            return False
         self.append_operation_log(
             "[联系候选人] 未检测到可用 Chrome，正在自动启动推荐牛人页面..."
         )
@@ -22677,22 +22680,9 @@ class BossFilterGUI:
             )
         )
         self._greet_queue_browser_error = ""
-        try:
-            from bossmaster import get_boss_access_block_state
-            guard_state = get_boss_access_block_state()
-        except Exception:
-            guard_state = {"blocked": False}
-        if guard_state.get("blocked"):
-            remaining = max(1, int(guard_state.get("remaining_seconds", 0) + 0.999))
-            reason = guard_state.get("reason") or "已触发 BOSS 访问保护"
-            self._greet_queue_browser_error = (
-                f"BOSS 访问仍在冷却中，剩余约 {remaining} 秒。\n\n{reason}"
-            )
-            self.append_operation_log(
-                f"[访问保护] 联系候选人操作已阻止：{reason}。"
-                f"剩余冷却约 {remaining} 秒。",
-                show_in_run_ui=True,
-            )
+        cooldown_error = self._greet_queue_cooldown_error()
+        if cooldown_error:
+            self._greet_queue_browser_error = cooldown_error
             return False
         if not self.browser_page:
             if not self._reconnect_browser_or_warn(
@@ -22719,8 +22709,7 @@ class BossFilterGUI:
                         "联系候选人页面检查",
                     )
                     self.append_operation_log(
-                        f"[访问保护] {risk_exc.reason}。已停止联系候选人操作。",
-                        show_in_run_ui=True,
+                        f"[访问保护] {risk_exc.reason}。已停止联系候选人操作。"
                     )
                 except Exception:
                     pass
@@ -23041,8 +23030,7 @@ class BossFilterGUI:
                     self._set_greet_queue_item_state(item, "发送失败", risk_message)
                     self.append_operation_log(
                         f"[访问保护] 联系候选人时 BOSS 返回 {signal}：{exc.reason}。"
-                        f"已停止后续发送，冷却约 {remaining} 秒。",
-                        show_in_run_ui=True,
+                        f"已停止后续发送，冷却约 {remaining} 秒。"
                     )
                     self.root.after(0, lambda message=risk_message: messagebox.showwarning(
                         "BOSS 访问保护",
@@ -23097,8 +23085,7 @@ class BossFilterGUI:
                     )
                     if re.search(r"\bHTTP\s+4\d\d\b", str(msg), re.IGNORECASE):
                         self.append_operation_log(
-                            f"[BOSS接口] 联系候选人返回 4xx：{name}，{fail_message}",
-                            show_in_run_ui=True,
+                            f"[BOSS接口] 联系候选人返回 4xx：{name}，{fail_message}"
                         )
                     if diagnosis.terminal:
                         self.append_operation_log(
@@ -23147,8 +23134,7 @@ class BossFilterGUI:
                 active_item["updated_at"] = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.append_operation_log(
                 f"[访问保护] 联系候选人准备阶段 BOSS 返回 {signal}：{exc.reason}。"
-                f"已停止后续发送，冷却约 {remaining} 秒。",
-                show_in_run_ui=True,
+                f"已停止后续发送，冷却约 {remaining} 秒。"
             )
             self.root.after(
                 0,

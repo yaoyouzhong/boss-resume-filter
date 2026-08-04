@@ -498,10 +498,10 @@ def test_update_helper_reuses_the_main_window_search_icon():
         ))
     ]
 
-    assert "from gui_main import _set_search_window_icon" in helper_block
-    assert "_set_search_window_icon(root)" in helper_block
+    assert "from icons import set_search_window_icon" in helper_block
+    assert "set_search_window_icon(root)" in helper_block
     assert "iconbitmap(default=sys.executable)" not in helper_block
-    assert "self._icon_photo = _set_search_window_icon(self.root)" in main_icon_block
+    assert "icons.set_search_window_icon(self.root)" in main_icon_block
 
 
 def test_update_check_failures_separate_user_guidance_from_detail():

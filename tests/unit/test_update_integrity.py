@@ -2189,8 +2189,8 @@ def test_windows_update_helper_receives_verified_payload_and_clean_runtime_env()
         def fake_popen(args, **kwargs):
             captured["args"] = args
             captured["kwargs"] = kwargs
-            payload = json.loads(Path(args[2]).read_text(encoding="utf-8"))
-            Path(payload["ready_path"]).write_text("ready", encoding="utf-8")
+            ready_path = Path(args[2]).parent / "update_helper.ready"
+            ready_path.write_text("ready", encoding="utf-8")
             return FakeProcess()
 
         with (
@@ -2324,7 +2324,8 @@ def test_windows_update_cleanup_accepts_only_managed_update_directories():
 
             cache_dir = updater._windows_update_cache_dir("2.26", app_dir)
             assert updater._is_managed_windows_update_dir(cache_dir, app_dir) is True
-            assert updater._is_managed_windows_update_dir(temp_dir, app_dir) is True
+            # 旧版系统临时目录不再由更新助手管理，必须拒绝清理
+            assert updater._is_managed_windows_update_dir(temp_dir, app_dir) is False
             assert updater._is_managed_windows_update_dir(outsider, app_dir) is False
 
 

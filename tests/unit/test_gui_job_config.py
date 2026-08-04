@@ -4702,7 +4702,7 @@ def test_scan_messages_feed_run_log_explicitly():
     append_file.assert_called_once_with("开始扫描候选人")
 
 
-def test_operation_log_writes_both_files_without_feeding_scan_ui():
+def test_operation_log_writes_only_app_file_without_feeding_scan_ui():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.log_queue = queue.Queue()
 
@@ -4716,21 +4716,21 @@ def test_operation_log_writes_both_files_without_feeding_scan_ui():
         "[联系候选人] Candidate A 发送成功",
         add_timestamp=True,
     )
-    append_run.assert_called_once_with("[联系候选人] Candidate A 发送成功")
+    append_run.assert_not_called()
 
 
-def test_operation_log_can_surface_critical_event_to_scan_ui():
+def test_operation_log_keeps_critical_event_out_of_scan_ui_and_run_file():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.log_queue = queue.Queue()
     message = "[访问保护] 联系候选人返回 HTTP 429，已停止后续发送"
 
     with patch.object(gui, "_append_runtime_log_file") as append_runtime, \
             patch.object(gui, "_append_run_log_file") as append_run:
-        gui.append_operation_log(message, show_in_run_ui=True)
+        gui.append_operation_log(message)
 
-    assert gui.log_queue.get_nowait() == message
+    assert gui.log_queue.empty()
     append_runtime.assert_called_once_with("app", message, add_timestamp=True)
-    append_run.assert_called_once_with(message)
+    append_run.assert_not_called()
 
 
 def test_boss_access_protection_message_reaches_ui_and_file_logs():
@@ -4853,8 +4853,6 @@ def test_scan_ui_log_sink_is_limited_to_run_control():
     }
 
     assert actual_methods == {
-        "_auto_check_selectors",
-        "check_browser_connection",
         "start_run",
         "stop_run",
         "run_worker",
@@ -5643,7 +5641,7 @@ def test_contact_worker_stops_after_terminal_http_403():
     assert second_item["status"] == "待发送"
     assert any(
         "4xx" in call.args[0]
-        and call.kwargs.get("show_in_run_ui") is True
+        and not call.kwargs
         for call in gui.append_operation_log.call_args_list
     )
     assert any(
@@ -5691,7 +5689,7 @@ def test_contact_worker_stops_after_shared_access_block():
     assert second_item["status"] == "待发送"
     assert any(
         "[访问保护]" in call.args[0]
-        and call.kwargs.get("show_in_run_ui") is True
+        and not call.kwargs
         for call in gui.append_operation_log.call_args_list
     )
 
@@ -5732,7 +5730,7 @@ def test_contact_worker_stops_when_job_page_identity_triggers_access_block():
     assert second_item["status"] == "待发送"
     assert any(
         "准备阶段" in call.args[0]
-        and call.kwargs.get("show_in_run_ui") is True
+        and not call.kwargs
         for call in gui.append_operation_log.call_args_list
     )
 
@@ -6312,6 +6310,35 @@ def test_greet_queue_click_prepares_browser_before_confirmation():
     thread.return_value.start.assert_called_once_with()
 
 
+def test_greet_queue_click_stops_before_preparation_during_cooldown():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.greet_queue_running = False
+    gui.greet_queue_preparing = False
+    gui.is_running = False
+    gui.greet_queue_window = None
+    gui.root = Mock()
+    gui.greet_queue_items = [{"status": "待发送", "candidate": {"geek_id": "g1"}}]
+    gui.greet_queue_tree = None
+    gui.stop_event = Mock()
+    gui._ensure_greet_queue_loaded = Mock()
+    gui._update_greet_queue_action_states = Mock()
+    gui.append_operation_log = Mock()
+    gui._boss_access_cooldown_state = Mock(return_value={
+        "blocked": True,
+        "remaining_seconds": 90,
+        "reason": "请求过于频繁",
+    })
+
+    with patch("gui_main.threading.Thread") as thread, \
+            patch("gui_main.messagebox.showwarning") as showwarning:
+        gui._start_greet_queue()
+
+    thread.assert_not_called()
+    gui.stop_event.clear.assert_not_called()
+    showwarning.assert_called_once()
+    assert "剩余约 90 秒" in showwarning.call_args.args[1]
+
+
 def test_greet_queue_preparation_status_is_not_rendered_inside_send_button():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.greet_queue_items = [
@@ -6547,6 +6574,63 @@ def test_browser_preflight_navigates_existing_chrome_to_recommend_page():
     gui._finish_greet_queue_preparation.assert_called_once_with(pending, "")
 
 
+def test_browser_preflight_cooldown_performs_no_browser_action():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    pending = [{"status": "待发送", "candidate": {"geek_id": "g1"}}]
+    gui.greet_queue_window = None
+    gui.root = Mock()
+    gui.browser_page = Mock()
+    gui.stop_event = threading.Event()
+    gui._browser_connection_lock = threading.Lock()
+    gui._is_browser_page_alive = Mock(return_value=True)
+    gui._set_greet_queue_prepare_status = Mock()
+    gui._finish_greet_queue_preparation = Mock()
+    gui._get_greet_queue_page_state = Mock()
+    gui.append_operation_log = Mock()
+    gui._boss_access_cooldown_state = Mock(return_value={
+        "blocked": True,
+        "remaining_seconds": 900,
+        "reason": "HTTP 429",
+    })
+
+    gui._prepare_greet_queue_start(pending)
+
+    gui._is_browser_page_alive.assert_not_called()
+    gui._get_greet_queue_page_state.assert_not_called()
+    gui.browser_page.get.assert_not_called()
+    callback = gui.root.after.call_args.args[1]
+    callback()
+    error = gui._finish_greet_queue_preparation.call_args.args[1]
+    assert "剩余约 900 秒" in error
+
+
+def test_browser_reconnect_rechecks_cooldown_before_launch():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._try_reconnect_browser = Mock(return_value=False)
+    gui._launch_boss_browser = Mock(return_value=True)
+    gui.append_operation_log = Mock()
+    gui._boss_access_cooldown_state = Mock(side_effect=[
+        {"blocked": False},
+        {
+            "blocked": True,
+            "remaining_seconds": 30,
+            "reason": "另一进程触发访问保护",
+        },
+    ])
+
+    result = gui._reconnect_browser_or_warn(
+        None,
+        "浏览器未连接",
+        "浏览器未连接",
+        "无法连接到 Chrome 浏览器。",
+    )
+
+    assert result is False
+    gui._try_reconnect_browser.assert_called_once_with()
+    gui._launch_boss_browser.assert_not_called()
+    assert "剩余约 30 秒" in gui._greet_queue_browser_error
+
+
 def test_gui_run_builds_contact_list_without_direct_sending():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     run_page_block = source[source.index("def create_run_page"):]
@@ -6725,7 +6809,7 @@ def test_browser_check_skips_all_connection_work_during_shared_cooldown():
     updates = []
     logs = []
     gui.set_browser_ui = lambda *args: updates.append(args)
-    gui.append_run_log = logs.append
+    gui.append_log = logs.append
 
     with patch.object(
         BossFilterGUI,
@@ -6745,6 +6829,18 @@ def test_browser_check_skips_all_connection_work_during_shared_cooldown():
     ]
     assert logs == ["[访问保护] 操作频繁。剩余冷却约 90 秒。"]
     assert not getattr(gui, "_browser_check_running", False)
+
+
+def test_boss_access_state_read_failure_is_fail_closed():
+    with patch(
+        "bossmaster.get_boss_access_block_state",
+        side_effect=RuntimeError("state unavailable"),
+    ):
+        state = BossFilterGUI._boss_access_cooldown_state()
+
+    assert state["blocked"] is True
+    assert state["remaining_seconds"] == 15 * 60
+    assert state["status"] == "状态读取失败"
 
 
 def test_start_run_rejects_shared_cooldown_before_touching_browser():
@@ -6861,7 +6957,7 @@ def test_selector_auto_check_does_not_warn_for_skipped_card_check():
     gui.browser_page = FakePage()
     logs = []
     ui_callbacks = []
-    gui.append_run_log = logs.append
+    gui.append_log = logs.append
     gui.run_on_ui = ui_callbacks.append
     results = [{
         "group": "candidate_card",
@@ -6894,7 +6990,7 @@ def test_selector_auto_check_defers_refresh_errors_and_keeps_page_for_retry():
     gui.browser_connected = True
     gui.browser_page = FakePage()
     logs = []
-    gui.append_run_log = logs.append
+    gui.append_log = logs.append
 
     with patch(
         "bossmaster.check_selectors_health",
@@ -6926,7 +7022,7 @@ def test_selector_auto_check_treats_closed_browser_as_disconnect_not_selector_fa
     gui.browser_connected = True
     gui.browser_page = FakePage()
     logs = []
-    gui.append_run_log = logs.append
+    gui.append_log = logs.append
 
     with patch(
         "bossmaster.check_selectors_health",
