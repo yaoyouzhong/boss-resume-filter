@@ -449,6 +449,48 @@ diff --git a/updater.py b/updater.py
     assert "未覆盖信号" not in output.getvalue()
 
 
+def test_changelog_coverage_ignores_update_helper_cleanup_command():
+    diff_text = """\
+diff --git a/updater.py b/updater.py
+--- a/updater.py
++++ b/updater.py
++        ["cmd", "/c", f'timeout /t 3 /nobreak >nul & rmdir /s /q "{temp_dir}"'],
+"""
+
+    class Result:
+        returncode = 0
+        stdout = diff_text
+
+    originals = (
+        build._read_version,
+        build._extract_changelog_release,
+        build._get_last_tag,
+        build.subprocess.run,
+    )
+    try:
+        build._read_version = lambda: "2.26"
+        build._extract_changelog_release = lambda _version: (
+            "v2.26 — 测试",
+            "### 体验优化\n\n- 测试",
+        )
+        build._get_last_tag = lambda: "v2.25.2"
+        build.subprocess.run = lambda *args, **kwargs: Result()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            build._check_code_to_changelog_coverage(strict=True)
+    finally:
+        (
+            build._read_version,
+            build._extract_changelog_release,
+            build._get_last_tag,
+            build.subprocess.run,
+        ) = originals
+
+    assert "未检测到用户可见的新增代码信号" in output.getvalue()
+    assert "未覆盖信号" not in output.getvalue()
+
+
 def test_changelog_coverage_groups_structured_dialog_copy_by_diff_hunk():
     diff_text = """\
 diff --git a/gui_main.py b/gui_main.py

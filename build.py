@@ -1376,6 +1376,14 @@ def _check_code_to_changelog_coverage(strict=False):
             return True
         if re.search(r"getattr\(.*cache|source_cache|preview_render", lowered):
             return True
+        if (
+            fpath.endswith("updater.py")
+            and re.search(r"[\"']cmd[\"']\s*,\s*[\"']/c[\"']", stripped)
+            and "rmdir" in lowered
+        ):
+            # The delayed removal command only cleans the already-managed
+            # update-helper directory; it is not a separate user feature.
+            return True
         if "pingfang sc" in lowered or "microsoft yahei" in lowered:
             return True
         if re.search(r"\b(font_family|font_family_semibold)\b", lowered):
