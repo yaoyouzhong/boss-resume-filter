@@ -7,6 +7,7 @@ import json
 import os
 import tempfile
 import threading
+from pathlib import Path
 
 from storage import (
     CandidateRepository,
@@ -24,10 +25,114 @@ from storage import (
     mutate_candidates_all,
     persist_candidate_greeted,
     persist_candidate_greeting_pending,
+    read_candidates_snapshot,
+    remove_candidates_all_with_resume_cleanup,
+    repair_candidate_resume_storage,
     resolve_candidate_greeting_confirmation,
     save_candidates_all,
     update_candidate_greeted,
 )
+
+
+def test_read_candidates_snapshot_never_restores_missing_primary_file():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = os.path.join(tmpdir, "candidates_all.json")
+        backup = target + ".bak"
+        with open(backup, "w", encoding="utf-8") as handle:
+            json.dump([{"geek_id": "g1"}], handle)
+
+        try:
+            read_candidates_snapshot(target)
+            assert False, "Expected FileNotFoundError"
+        except FileNotFoundError:
+            pass
+
+        assert not os.path.exists(target)
+        with open(backup, "r", encoding="utf-8") as handle:
+            assert json.load(handle) == [{"geek_id": "g1"}]
+
+
+def test_remove_candidates_cleanup_retains_shared_resume_until_last_reference():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        target = root / "candidates_all.json"
+        resume = root / "resumes" / "shared.pdf"
+        resume.parent.mkdir()
+        resume.write_bytes(b"shared")
+        save_candidates_all(
+            [
+                {"geek_id": "g1", "resume_file": "resumes/shared.pdf"},
+                {"geek_id": "g2", "resume_file": "resumes/shared.pdf"},
+            ],
+            str(target),
+        )
+
+        removed, first_cleanup = remove_candidates_all_with_resume_cleanup(
+            lambda candidate: candidate.get("geek_id") == "g1",
+            str(target),
+            base_dir=root,
+        )
+
+        assert removed == 1
+        assert first_cleanup.deleted_file_count == 0
+        assert first_cleanup.target_file_count == 0
+        assert resume.exists()
+
+        removed, second_cleanup = remove_candidates_all_with_resume_cleanup(
+            lambda candidate: candidate.get("geek_id") == "g2",
+            str(target),
+            base_dir=root,
+        )
+
+        assert removed == 1
+        assert second_cleanup.deleted_file_count == 1
+        assert second_cleanup.reclaimed_bytes == len(b"shared")
+        assert not resume.exists()
+
+
+def test_repair_candidate_resume_storage_persists_repairs_and_cleans_orphans():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        target = root / "candidates_all.json"
+        orphan = root / "resumes" / "orphan.pdf"
+        orphan.parent.mkdir()
+        orphan.write_bytes(b"orphan")
+        external = root / "external.pdf"
+        external.write_bytes(b"external")
+        save_candidates_all(
+            [
+                {
+                    "geek_id": "missing",
+                    "resume_file": "resumes/missing.pdf",
+                    "resume_eval_adjustment": 10,
+                    "rule_score": 60,
+                    "match_score": 70,
+                },
+                {
+                    "geek_id": "external",
+                    "resume_file": str(external),
+                    "resume_eval_reason": "旧评估",
+                    "rule_score": 65,
+                    "match_score": 75,
+                },
+            ],
+            str(target),
+        )
+
+        repair, cleanup = repair_candidate_resume_storage(
+            str(target),
+            base_dir=root,
+        )
+
+        assert repair.repaired_candidate_count == 2
+        assert repair.missing_reference_count == 1
+        assert repair.unmanaged_reference_count == 1
+        assert cleanup.deleted_file_count == 1
+        assert not orphan.exists()
+        assert external.exists()
+        repaired = load_candidates_all(str(target))
+        assert all("resume_file" not in candidate for candidate in repaired)
+        assert {candidate["match_score"] for candidate in repaired} == {60, 65}
 
 
 def test_candidate_key_uses_shared_unicode_whitespace_normalization():
