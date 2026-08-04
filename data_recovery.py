@@ -35,7 +35,10 @@ from job_config_store import (
     validate_job_config,
 )
 from job_identity import normalize_job_name
-from resume_store import resolve_managed_resume
+from resume_store import (
+    cleanup_orphan_managed_resumes,
+    resolve_managed_resume,
+)
 from storage import load_candidates_all, validate_candidates_snapshot
 
 
@@ -900,6 +903,10 @@ def restore_backup(
                 reason="从备份恢复数据",
                 failure_injector=failure_injector,
             )
+            resume_cleanup = cleanup_orphan_managed_resumes(
+                candidates,
+                base_dir=paths.root,
+            )
     return {
         "restored": True,
         "transaction_id": transaction_id,
@@ -909,6 +916,9 @@ def restore_backup(
         "resume_count": sum(
             1 for name in files if name.startswith("resumes/")
         ),
+        "resume_cleanup_count": resume_cleanup.deleted_file_count,
+        "resume_cleanup_bytes": resume_cleanup.reclaimed_bytes,
+        "resume_cleanup_failed_count": resume_cleanup.failure_count,
         "unresolved_candidate_count": len(unresolved_candidates),
         "unresolved_queue_count": len(unresolved_queue),
     }

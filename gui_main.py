@@ -141,14 +141,20 @@ from storage import (
     mark_candidate_greeted,
     mark_candidate_not_greeted,
     mutate_candidates_all,
+    mutate_candidates_with_resume_cleanup,
     persist_candidate_greeted,
     persist_candidate_greeting_pending,
-    remove_candidates_all,
+    read_candidates_snapshot,
+    remove_candidates_all_with_resume_cleanup,
+    repair_candidate_resume_storage,
     resolve_candidate_greeting_confirmation,
     update_candidate_records,
 )
 from resume_store import (
+    RESUME_STATE_FIELDS,
     UnmanagedResumePathError,
+    audit_managed_resumes,
+    clear_candidate_resume_state,
     delete_managed_resume,
     store_resume_copy,
 )
@@ -474,6 +480,19 @@ def _open_containing_folder(file_path: str) -> None:
         subprocess.Popen(["open", str(folder)], show_window=True)
     else:
         subprocess.Popen(["xdg-open", str(folder)], show_window=True)
+
+
+def _format_storage_bytes(byte_count: int) -> str:
+    """Format a non-negative byte count for storage audit summaries."""
+    value = float(max(0, byte_count))
+    units = ("B", "KB", "MB", "GB", "TB")
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} B"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return "0 B"
 
 
 def _calculate_effective_scale(dpi_scale, screen_width, screen_height, platform=sys.platform):
@@ -1380,7 +1399,10 @@ class BossFilterGUI:
             "移除候选人",
             headline=f"移除选中的 {len(selection)} 名候选人？",
             message="这些记录将从当前结果和本地候选人数据中移除。",
-            notice="重新扫描时仍可能再次发现这些候选人。",
+            notice=(
+                "无人继续引用的受管简历副本也会删除，共享副本保留；"
+                "重新扫描时仍可能再次发现这些候选人。"
+            ),
             yes_label="移除候选人",
             no_label="取消",
             dangerous=True,
@@ -1397,9 +1419,8 @@ class BossFilterGUI:
             if self._candidate_identity_key(candidate) not in remove_keys
         ]
         if remove_keys and CANDIDATES_PATH.exists():
-            remove_candidates_all(
+            self._remove_candidate_records(
                 lambda candidate: self._candidate_identity_key(candidate) in remove_keys,
-                CANDIDATES_PATH,
             )
         for sel_item in selection:
             if self.result_tree.exists(sel_item):
@@ -4442,6 +4463,23 @@ class BossFilterGUI:
             padx=(int(10 * self.dpi_scale * self.zoom_factor), 0),
         )
 
+        audit_icon = self.icons.button(
+            "health_shield",
+            self.colors["text_primary"],
+        )
+        audit_button = ttk.Button(
+            data_button_row,
+            image=audit_icon,
+            text=" 简历存储体检",
+            compound=tk.LEFT,
+            command=self._show_resume_storage_audit,
+        )
+        audit_button._icon_ref = audit_icon
+        audit_button.pack(
+            side="left",
+            padx=(int(10 * self.dpi_scale * self.zoom_factor), 0),
+        )
+
         self.data_backup_status_var = tk.StringVar(
             value=self._data_backup_note_text()
         )
@@ -4676,6 +4714,153 @@ class BossFilterGUI:
         if status_var is not None:
             status_var.set(text)
 
+    def _show_resume_storage_audit(self) -> None:
+        """Audit resume storage and optionally repair it after confirmation."""
+        if self._data_operation_busy():
+            messagebox.showwarning(
+                "暂时不能体检",
+                "扫描、联系或数据维护正在进行，请结束后再执行体检。",
+                parent=self.root,
+            )
+            return
+        try:
+            candidates = read_candidates_snapshot(CANDIDATES_PATH)
+            report = audit_managed_resumes(candidates, base_dir=BASE_DIR)
+        except (OSError, TypeError, ValueError, RuntimeError) as exc:
+            messagebox.show_failure(
+                "简历存储体检",
+                headline="体检未完成",
+                message="无法可靠核对候选人引用与受管简历目录。",
+                detail=str(exc),
+                notice="本次体检没有修改或恢复任何数据。",
+                parent=self.root,
+            )
+            return
+
+        abnormal_references = (
+            report.missing_reference_count
+            + report.unmanaged_reference_count
+            + report.stale_metadata_count
+        )
+        metrics = (
+            ("候选人引用", str(report.reference_count)),
+            ("有效引用", str(report.valid_reference_count)),
+            ("异常状态", str(abnormal_references)),
+            (
+                "孤立文件",
+                f"{report.orphan_file_count} / "
+                f"{_format_storage_bytes(report.orphan_bytes)}",
+            ),
+        )
+        if not report.issue_count:
+            messagebox.show_result(
+                "简历存储体检",
+                headline="简历引用与受管目录一致",
+                message=(
+                    f"受管目录共 {report.managed_file_count} 个文件，"
+                    f"占用 {_format_storage_bytes(report.managed_bytes)}。"
+                ),
+                metrics=metrics,
+                notice="本次仅执行只读体检，没有修改任何数据或文件。",
+                notice_kind="info",
+                parent=self.root,
+            )
+            return
+
+        confirmed = messagebox.ask_confirmation(
+            "简历存储体检",
+            headline="发现需要处理的简历存储问题",
+            message=(
+                f"缺失引用 {report.missing_reference_count} 条，"
+                f"非受管引用 {report.unmanaged_reference_count} 条，"
+                f"无文件的残留评估状态 {report.stale_metadata_count} 条。"
+            ),
+            metrics=metrics,
+            notice=(
+                "修复会清除失效引用及对应简历评估状态，并删除无人引用的"
+                "受管副本；目录外文件和仍被其他记录引用的副本不会删除。"
+            ),
+            yes_label="修复并清理",
+            no_label="暂不处理",
+            dangerous=True,
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+
+        self._data_maintenance_running = True
+        try:
+            repair, cleanup = repair_candidate_resume_storage(
+                CANDIDATES_PATH,
+                base_dir=BASE_DIR,
+            )
+        except (OSError, TypeError, ValueError, RuntimeError) as exc:
+            messagebox.show_failure(
+                "简历存储体检",
+                headline="修复未完成",
+                message="候选人数据和简历目录未能完成一致性处理。",
+                detail=str(exc),
+                notice="请重新运行体检确认当前状态。",
+                parent=self.root,
+            )
+            return
+        finally:
+            self._data_maintenance_running = False
+
+        self._result_tree_fingerprint = None
+        self._stats_tree_fingerprint = None
+        self._home_stats_fingerprint = None
+        if hasattr(self, "result_tree"):
+            self.refresh_results(force=True)
+        if hasattr(self, "stats_tree"):
+            self.refresh_stats()
+        if hasattr(self, "home_stats_labels"):
+            self.refresh_home_stats()
+
+        try:
+            refreshed_candidates = read_candidates_snapshot(CANDIDATES_PATH)
+            remaining = audit_managed_resumes(
+                refreshed_candidates,
+                base_dir=BASE_DIR,
+            )
+        except (OSError, TypeError, ValueError, RuntimeError) as exc:
+            messagebox.show_failure(
+                "简历存储体检",
+                headline="修复已执行，复核未完成",
+                message="候选人数据已更新，但无法重新读取完整体检结果。",
+                detail=str(exc),
+                notice="请关闭占用文件的程序后重新运行体检。",
+                parent=self.root,
+            )
+            return
+
+        incomplete = bool(cleanup.failure_count or remaining.issue_count)
+        messagebox.show_result(
+            "简历存储体检",
+            headline=(
+                "简历存储仍有未处理项目"
+                if incomplete
+                else "简历存储已完成修复"
+            ),
+            message=(
+                "失效引用及残留评估状态已按当前候选人数据重新核对。"
+            ),
+            metrics=(
+                ("修复候选人", str(repair.repaired_candidate_count)),
+                ("删除孤立文件", str(cleanup.deleted_file_count)),
+                ("释放空间", _format_storage_bytes(cleanup.reclaimed_bytes)),
+                ("剩余问题", str(remaining.issue_count)),
+            ),
+            notice=(
+                f"有 {cleanup.failure_count} 项受管简历清理失败，"
+                "可关闭占用文件的程序后重试。"
+                if cleanup.failure_count
+                else "目录外文件和共享受管副本均未删除。"
+            ),
+            notice_kind="warning" if incomplete else "success",
+            parent=self.root,
+        )
+
     def _export_data_backup(self) -> None:
         """Export one verified plaintext ZIP from the current runtime data."""
         if self._data_operation_busy():
@@ -4766,7 +4951,7 @@ class BossFilterGUI:
             headline="恢复这份数据备份？",
             message=(
                 "将替换当前候选人、岗位配置和联系清单，"
-                "并恢复备份中的简历副本。"
+                "恢复备份中的简历副本，并删除恢复后无人引用的旧受管副本。"
             ),
             metrics=self._backup_summary_metrics(preview),
             notice="执行前会自动保存当前数据恢复点。",
@@ -4829,6 +5014,16 @@ class BossFilterGUI:
             + int(result.get("unresolved_queue_count") or 0)
         )
         suffix = f"，另有 {unresolved} 条记录未自动关联岗位" if unresolved else ""
+        resume_cleanup_count = int(result.get("resume_cleanup_count") or 0)
+        resume_cleanup_bytes = int(result.get("resume_cleanup_bytes") or 0)
+        resume_cleanup_failures = int(
+            result.get("resume_cleanup_failed_count") or 0
+        )
+        if resume_cleanup_count:
+            suffix += (
+                f"，清理 {resume_cleanup_count} 个旧简历副本"
+                f"（{_format_storage_bytes(resume_cleanup_bytes)}）"
+            )
         restore_at = self._remember_maintenance_success("restore")
         self._set_data_backup_status(
             self._data_backup_note_text(
@@ -4837,17 +5032,22 @@ class BossFilterGUI:
             )
         )
         self.append_operation_log(f"[数据安全] 已从备份恢复：{summary}{suffix}")
-        unresolved_notice = (
-            f"另有 {unresolved} 条记录未自动关联岗位，已原样保留。"
-            if unresolved
-            else None
-        )
+        restore_notices = []
+        if unresolved:
+            restore_notices.append(
+                f"另有 {unresolved} 条记录未自动关联岗位，已原样保留。"
+            )
+        if resume_cleanup_failures:
+            restore_notices.append(
+                f"有 {resume_cleanup_failures} 项旧简历清理失败，"
+                "可稍后运行简历存储体检。"
+            )
         messagebox.show_result(
             "恢复数据备份",
             headline="数据已恢复",
             message="界面已重新加载恢复后的数据。",
             metrics=self._backup_summary_metrics(result),
-            notice=unresolved_notice,
+            notice=" ".join(restore_notices) or None,
             parent=self.root,
         )
 
@@ -9669,7 +9869,10 @@ class BossFilterGUI:
                             "移除候选人",
                             headline=f"移除选中的 {len(selection)} 名候选人？",
                             message="这些记录将从当前结果和本地候选人数据中移除。",
-                            notice="重新扫描时仍可能再次发现这些候选人。",
+                            notice=(
+                                "无人继续引用的受管简历副本也会删除，共享副本保留；"
+                                "重新扫描时仍可能再次发现这些候选人。"
+                            ),
                             yes_label="移除候选人",
                             no_label="取消",
                             dangerous=True,
@@ -9689,9 +9892,8 @@ class BossFilterGUI:
                             if self._candidate_identity_key(candidate) not in remove_keys
                         ]
                         if remove_keys and CANDIDATES_PATH.exists():
-                            remove_candidates_all(
+                            self._remove_candidate_records(
                                 lambda item: self._candidate_identity_key(item) in remove_keys,
-                                CANDIDATES_PATH,
                             )
                         # 删除 Treeview 中的项
                         for sel_item in selection:
@@ -9761,7 +9963,10 @@ class BossFilterGUI:
                         "移除候选人",
                         headline=f"移除 {candidate.get('name') or '该候选人'}？",
                         message="该记录将从当前结果和本地候选人数据中移除。",
-                        notice="重新扫描时仍可能再次发现该候选人。",
+                        notice=(
+                            "无人继续引用的受管简历副本也会删除，共享副本保留；"
+                            "重新扫描时仍可能再次发现该候选人。"
+                        ),
                         yes_label="移除候选人",
                         no_label="取消",
                         dangerous=True,
@@ -9776,9 +9981,8 @@ class BossFilterGUI:
                         if self._candidate_identity_key(item) != candidate_key
                     ]
                     if CANDIDATES_PATH.exists():
-                        remove_candidates_all(
+                        self._remove_candidate_records(
                             lambda item: self._candidate_identity_key(item) == candidate_key,
-                            CANDIDATES_PATH,
                         )
                     tree.delete(clicked_item)
                     new_greeted = len([c for c in filtered_ref[0] if c.get('greet_sent', False)])
@@ -10097,7 +10301,10 @@ class BossFilterGUI:
                             "移除候选人",
                             headline=f"移除选中的 {len(selection)} 名候选人？",
                             message="这些记录将从当前结果和本地候选人数据中移除。",
-                            notice="重新扫描时仍可能再次发现这些候选人。",
+                            notice=(
+                                "无人继续引用的受管简历副本也会删除，共享副本保留；"
+                                "重新扫描时仍可能再次发现这些候选人。"
+                            ),
                             yes_label="移除候选人",
                             no_label="取消",
                             dangerous=True,
@@ -10117,9 +10324,8 @@ class BossFilterGUI:
                             if self._candidate_identity_key(candidate) not in remove_keys
                         ]
                         if remove_keys and CANDIDATES_PATH.exists():
-                            remove_candidates_all(
+                            self._remove_candidate_records(
                                 lambda item: self._candidate_identity_key(item) in remove_keys,
-                                CANDIDATES_PATH,
                             )
                         # 删除 Treeview 中的项
                         for sel_item in selection:
@@ -10189,7 +10395,10 @@ class BossFilterGUI:
                         "移除候选人",
                         headline=f"移除 {candidate.get('name') or '该候选人'}？",
                         message="该记录将从当前结果和本地候选人数据中移除。",
-                        notice="重新扫描时仍可能再次发现该候选人。",
+                        notice=(
+                            "无人继续引用的受管简历副本也会删除，共享副本保留；"
+                            "重新扫描时仍可能再次发现该候选人。"
+                        ),
                         yes_label="移除候选人",
                         no_label="取消",
                         dangerous=True,
@@ -10204,9 +10413,8 @@ class BossFilterGUI:
                         if self._candidate_identity_key(item) != candidate_key
                     ]
                     if CANDIDATES_PATH.exists():
-                        remove_candidates_all(
+                        self._remove_candidate_records(
                             lambda item: self._candidate_identity_key(item) == candidate_key,
-                            CANDIDATES_PATH,
                         )
                     tree.delete(clicked_item)
                     new_greeted = len([c for c in filtered_ref[0] if c.get('greet_sent', False)])
@@ -19045,24 +19253,65 @@ class BossFilterGUI:
             )
             return
 
-        # 更新候选人记录（文件路径和导入时间）
-        candidate['resume_file'] = managed_resume.reference
-        candidate['resume_artifact_id'] = managed_resume.artifact_id
-        candidate['resume_original_name'] = managed_resume.original_name
-        candidate['resume_imported_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 原子替换候选人引用；保存成功后才清理不再使用的旧副本。
         resume_identity = self._candidate_identity_key(candidate)
+        imported_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        updated_snapshot = {}
 
         def save_resume_reference(persisted):
-            persisted['resume_file'] = candidate['resume_file']
-            persisted['resume_artifact_id'] = candidate['resume_artifact_id']
-            persisted['resume_original_name'] = candidate['resume_original_name']
-            persisted['resume_imported_at'] = candidate['resume_imported_at']
+            clear_candidate_resume_state(persisted)
+            persisted['resume_file'] = managed_resume.reference
+            persisted['resume_artifact_id'] = managed_resume.artifact_id
+            persisted['resume_original_name'] = managed_resume.original_name
+            persisted['resume_imported_at'] = imported_at
+            updated_snapshot.update(persisted)
 
-        saved = update_candidate_records(
-            lambda persisted: self._candidate_identity_key(persisted) == resume_identity,
-            save_resume_reference,
-            CANDIDATES_PATH,
-        )
+        def replace_resume_reference(candidates):
+            for persisted in candidates:
+                if self._candidate_identity_key(persisted) != resume_identity:
+                    continue
+                save_resume_reference(persisted)
+                return 1
+            return 0
+
+        try:
+            saved, cleanup = mutate_candidates_with_resume_cleanup(
+                replace_resume_reference,
+                CANDIDATES_PATH,
+                base_dir=BASE_DIR,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            persisted_new_reference = True
+            try:
+                latest_candidates = read_candidates_snapshot(CANDIDATES_PATH)
+                persisted_new_reference = any(
+                    self._candidate_identity_key(persisted) == resume_identity
+                    and persisted.get("resume_file") == managed_resume.reference
+                    for persisted in latest_candidates
+                )
+            except (OSError, RuntimeError, TypeError, ValueError):
+                pass
+            if not persisted_new_reference:
+                try:
+                    delete_managed_resume(
+                        managed_resume.reference,
+                        base_dir=get_base_dir(),
+                    )
+                except (OSError, UnmanagedResumePathError):
+                    pass
+            messagebox.show_failure(
+                "保存简历",
+                headline="简历保存状态需要核对",
+                message="候选人数据保存过程未能正常结束。",
+                detail=str(exc),
+                notice=(
+                    "无法确认最终写入状态，新副本已保留；请刷新后运行简历存储体检。"
+                    if persisted_new_reference
+                    else "候选人引用未写入，新复制的简历已回收。"
+                ),
+                parent=parent or self.root,
+            )
+            return
         if not saved:
             try:
                 delete_managed_resume(managed_resume.reference, base_dir=get_base_dir())
@@ -19076,6 +19325,13 @@ class BossFilterGUI:
                 parent=parent or self.root,
             )
             return
+        candidate.clear()
+        candidate.update(updated_snapshot)
+        if cleanup.failure_count:
+            self.append_log(
+                "[简历导入] 新简历已保存，但旧受管副本清理失败，"
+                "可运行简历存储体检重试"
+            )
 
         # 4. 预览确认（只显示前 300 字）
         preview = resume_text[:300]
@@ -19255,28 +19511,15 @@ class BossFilterGUI:
             return
 
         from llm_eval import _resolve_rule_score
-        resume_fields = (
-            'resume_file',
-            'resume_artifact_id',
-            'resume_original_name',
-            'resume_imported_at',
-            'resume_eval_adjustment',
-            'resume_eval_reason',
-            'resume_eval_model',
-            'resume_eval_at',
-            'resume_eval_dimension_scores',
-        )
         identity = self._candidate_identity_key(candidate)
-        resume_reference = [candidate.get('resume_file')]
         updated_snapshot = {}
         reverted_score = [candidate.get('match_score', 0)]
 
         def revert_resume(persisted):
-            resume_reference[0] = persisted.get('resume_file') or resume_reference[0]
             rule_score = _resolve_rule_score(persisted)
             llm_adj = persisted.get('llm_adjustment', 0) or 0
             reverted_score[0] = max(0, min(100, rule_score + llm_adj))
-            for field in resume_fields:
+            for field in RESUME_STATE_FIELDS:
                 persisted.pop(field, None)
             persisted['rule_score'] = rule_score
             persisted['match_score'] = reverted_score[0]
@@ -19287,10 +19530,18 @@ class BossFilterGUI:
                 breakdown['total'] = reverted_score[0]
             updated_snapshot.update(persisted)
 
-        updated = update_candidate_records(
-            lambda persisted: self._candidate_identity_key(persisted) == identity,
-            revert_resume,
+        def persist_revert(candidates):
+            for persisted in candidates:
+                if self._candidate_identity_key(persisted) != identity:
+                    continue
+                revert_resume(persisted)
+                return 1
+            return 0
+
+        updated, cleanup = mutate_candidates_with_resume_cleanup(
+            persist_revert,
             CANDIDATES_PATH,
+            base_dir=BASE_DIR,
         )
         if not updated:
             messagebox.showerror(
@@ -19302,16 +19553,12 @@ class BossFilterGUI:
 
         candidate.clear()
         candidate.update(updated_snapshot)
-        if resume_reference[0]:
-            try:
-                delete_managed_resume(
-                    resume_reference[0],
-                    base_dir=get_base_dir(),
-                )
-            except UnmanagedResumePathError:
-                self.append_log("[撤销评估] 已清除记录，但未删除受管目录外的简历文件")
-            except OSError as e:
-                self.append_log(f"[撤销评估] 删除受管简历文件失败：{e}")
+        if cleanup.unmanaged_reference_count:
+            self.append_log("[撤销评估] 已清除记录，但未删除受管目录外的简历文件")
+        if cleanup.failure_count:
+            self.append_log(
+                "[撤销评估] 受管简历副本删除失败，可运行简历存储体检重试"
+            )
 
         self.refresh_results()
         self.refresh_home_stats()
@@ -24250,6 +24497,24 @@ class BossFilterGUI:
         except Exception as e:
             self.append_log(f"[Excel] 同步更新失败：{e}")
 
+    def _remove_candidate_records(self, predicate) -> int:
+        """Remove records and reclaim only managed resumes no longer referenced."""
+        removed, cleanup = remove_candidates_all_with_resume_cleanup(
+            predicate,
+            CANDIDATES_PATH,
+            base_dir=BASE_DIR,
+        )
+        if cleanup.failure_count:
+            messagebox.showwarning(
+                "简历副本未完全清理",
+                (
+                    f"候选人记录已更新，但有 {cleanup.failure_count} 项"
+                    "受管简历清理失败，可稍后运行简历存储体检。"
+                ),
+                parent=self.root,
+            )
+        return removed
+
     def _remove_candidate(self, item):
         """移除选中候选人"""
         candidate = self._find_candidate_by_tree_item(item)
@@ -24263,7 +24528,10 @@ class BossFilterGUI:
             "移除候选人",
             headline=f"移除 {name}？",
             message="该记录将从当前结果和本地候选人数据中移除。",
-            notice="重新扫描时仍可能再次发现该候选人。",
+            notice=(
+                "无人继续引用的受管简历副本也会删除，共享副本保留；"
+                "重新扫描时仍可能再次发现该候选人。"
+            ),
             yes_label="移除候选人",
             no_label="取消",
             dangerous=True,
@@ -24285,13 +24553,12 @@ class BossFilterGUI:
 
             # 从 JSON 文件中移除
             if CANDIDATES_PATH.exists():
-                remove_candidates_all(
+                self._remove_candidate_records(
                     lambda persisted: (
                         persisted.get('geek_id') == target_geek_id
                         and normalize_job_name(persisted.get('job_name'))
                         == normalize_job_name(target_job_name)
                     ),
-                    CANDIDATES_PATH,
                 )
 
                 # 从树中移除
@@ -24509,7 +24776,7 @@ class BossFilterGUI:
             keep_greeted_var.set(False)
 
         # 提示
-        ttk.Label(dialog, text="操作前会自动创建恢复点；已屏蔽候选人会保留为黑名单",
+        ttk.Label(dialog, text="候选人数据会自动备份；无人引用的受管简历副本将一并删除",
                   font=(FONT_FAMILY, int(13 * dialog_fs)),
                   foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
                   style='ClearDialog.TLabel').pack(pady=(int(12 * _s), 0))
@@ -24590,7 +24857,11 @@ class BossFilterGUI:
                     outcome["removed"] = len(removed_list)
                     return outcome["removed"]
 
-                mutate_candidates_all(clear_snapshot, CANDIDATES_PATH)
+                _result, cleanup = mutate_candidates_with_resume_cleanup(
+                    clear_snapshot,
+                    CANDIDATES_PATH,
+                    base_dir=BASE_DIR,
+                )
                 removed = outcome["removed"]
                 kept_count = outcome["kept"]
                 blacklist_kept_count = outcome["blacklist_kept"]
@@ -24618,9 +24889,24 @@ class BossFilterGUI:
                         ("已清理", f"{removed} 条"),
                         ("已打招呼保留", f"{kept_count} 条"),
                         ("黑名单保留", f"{blacklist_kept_count} 条"),
+                        (
+                            "简历副本清理",
+                            f"{cleanup.deleted_file_count} 个 / "
+                            f"{_format_storage_bytes(cleanup.reclaimed_bytes)}",
+                        ),
                     ),
-                    notice=f"操作前的恢复点已保存为 {backup_path.name}。",
-                    notice_kind="success",
+                    notice=(
+                        f"候选人数据备份已保存为 {backup_path.name}。"
+                        + (
+                            f"另有 {cleanup.failure_count} 项受管简历清理失败，"
+                            "可稍后运行存储体检。"
+                            if cleanup.failure_count
+                            else "已删除的无人引用简历副本不包含在 JSON 备份中。"
+                        )
+                    ),
+                    notice_kind=(
+                        "warning" if cleanup.failure_count else "success"
+                    ),
                     parent=self.root,
                 )
 

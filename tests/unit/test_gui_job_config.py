@@ -25,9 +25,11 @@ from gui_main import (
     _parse_optional_int_entry,
     _candidate_has_ai_eval,
     _filter_candidates_by_result_view,
+    _format_storage_bytes,
 )
 from job_config_diagnostics import summarize_job_config_diagnostics
 from llm_eval import _resolve_rule_score
+from storage import load_candidates_all, save_candidates_all
 
 
 def test_optional_max_age_none_displays_as_blank():
@@ -8228,10 +8230,23 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
         tmp_path = Path(tmpdir)
         resume_path = tmp_path / "resume.txt"
         resume_path.write_text("Java 开发经验 " * 10, encoding="utf-8")
+
+        def persist_resume(mutator, _path, *, base_dir):
+            assert base_dir == gui_main.BASE_DIR
+            updated = mutator([candidate])
+            cleanup = types.SimpleNamespace(
+                failed_file_count=0,
+                failure_count=0,
+            )
+            return updated, cleanup
+
         with patch("gui_main.filedialog.askopenfilename", return_value=str(resume_path)), \
                 patch("gui_main.messagebox.ask_confirmation", return_value=True), \
                 patch("gui_main.messagebox.show_failure") as show_failure, \
-                patch("gui_main.update_candidate_records", return_value=1), \
+                patch(
+                    "gui_main.mutate_candidates_with_resume_cleanup",
+                    side_effect=persist_resume,
+                ), \
                 patch("gui_main.get_api_key", return_value="secret"), \
                 patch("gui_main.get_base_dir", return_value=tmp_path), \
                 patch("llm_eval.evaluate_with_resume", side_effect=RuntimeError("模型故障")), \
@@ -8261,6 +8276,79 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
     tree.set.assert_any_call("row-1", "status", "已导入简历")
 
 
+def test_import_resume_replaces_old_copy_and_clears_old_resume_evaluation():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.append_log = Mock()
+    gui.refresh_results = Mock()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        candidates_path = root / "candidates_all.json"
+        old_resume = root / "resumes" / "old.pdf"
+        old_resume.parent.mkdir()
+        old_resume.write_bytes(b"old")
+        new_resume = root / "new.txt"
+        new_resume.write_text("Java 开发经验 " * 10, encoding="utf-8")
+        candidate = {
+            "geek_id": "g1",
+            "job_name": "Java",
+            "name": "张三",
+            "rule_score": 70,
+            "llm_adjustment": 5,
+            "match_score": 90,
+            "resume_file": "resumes/old.pdf",
+            "resume_eval_adjustment": 15,
+            "resume_eval_reason": "旧简历评估",
+        }
+        save_candidates_all([candidate], str(candidates_path))
+        gui._resolve_candidate = Mock(return_value=candidate)
+
+        with (
+            patch.object(
+                gui_main.filedialog,
+                "askopenfilename",
+                return_value=str(new_resume),
+            ),
+            patch.object(
+                gui_main.messagebox,
+                "ask_confirmation",
+                return_value=False,
+            ),
+            patch.object(gui_main, "BASE_DIR", root),
+            patch.object(gui_main, "CANDIDATES_PATH", candidates_path),
+            patch.object(gui_main, "get_base_dir", return_value=root),
+        ):
+            gui._import_resume(None, candidate=candidate, parent=gui.root)
+
+        persisted = load_candidates_all(str(candidates_path))[0]
+        assert not old_resume.exists()
+        assert persisted["resume_file"] != "resumes/old.pdf"
+        assert (root / persisted["resume_file"]).is_file()
+        assert "resume_eval_adjustment" not in persisted
+        assert "resume_eval_reason" not in persisted
+        assert persisted["match_score"] == 75
+        assert candidate["resume_file"] == persisted["resume_file"]
+
+
+def test_candidate_removal_uses_reference_aware_resume_cleanup():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    cleanup = types.SimpleNamespace(failed_file_count=0, failure_count=0)
+
+    with patch.object(
+        gui_main,
+        "remove_candidates_all_with_resume_cleanup",
+        return_value=(2, cleanup),
+    ) as remove:
+        removed = gui._remove_candidate_records(lambda candidate: True)
+
+    assert removed == 2
+    remove.assert_called_once()
+    assert remove.call_args.args[1] == gui_main.CANDIDATES_PATH
+    assert remove.call_args.kwargs == {"base_dir": gui_main.BASE_DIR}
+
+
 def test_revert_resume_eval_never_deletes_file_outside_managed_directory():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = Mock()
@@ -8285,13 +8373,21 @@ def test_revert_resume_eval_never_deletes_file_outside_managed_directory():
         }
         gui._resolve_candidate = Mock(return_value=candidate)
 
-        def apply_update(_predicate, updater, _path):
-            updater(candidate)
-            return 1
+        def apply_update(mutator, _path, *, base_dir):
+            assert base_dir == gui_main.BASE_DIR
+            updated = mutator([candidate])
+            cleanup = types.SimpleNamespace(
+                unmanaged_reference_count=1,
+                failed_file_count=0,
+                failure_count=0,
+            )
+            return updated, cleanup
 
         with patch("gui_main.messagebox.ask_confirmation", return_value=True), \
-                patch("gui_main.update_candidate_records", side_effect=apply_update), \
-                patch("gui_main.get_base_dir", return_value=root):
+                patch(
+                    "gui_main.mutate_candidates_with_resume_cleanup",
+                    side_effect=apply_update,
+                ):
             gui._revert_resume_eval(None, candidate=candidate, parent=gui.root)
 
         assert external.read_bytes() == b"private"
@@ -9016,7 +9112,10 @@ def test_restore_data_backup_uses_structured_confirmation_and_result():
     confirm.assert_called_once_with(
         "恢复数据备份",
         headline="恢复这份数据备份？",
-        message="将替换当前候选人、岗位配置和联系清单，并恢复备份中的简历副本。",
+        message=(
+            "将替换当前候选人、岗位配置和联系清单，恢复备份中的简历副本，"
+            "并删除恢复后无人引用的旧受管副本。"
+        ),
         metrics=(
             ("岗位", "2 个"),
             ("候选人", "18 人"),
@@ -9168,6 +9267,155 @@ def test_data_maintenance_multisection_dialogs_use_structured_templates():
     assert startup_block.count("messagebox.show_failure(") == 2
     assert "messagebox.showinfo(" not in data_block
     assert "messagebox.askyesno(" not in data_block
+
+
+def test_resume_storage_audit_button_is_in_data_maintenance_card():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    data_card = source[
+        source.index('data_card = self._create_card('):
+        source.index('diagnostic_card = self._create_card(')
+    ]
+
+    assert 'text=" 简历存储体检"' in data_card
+    assert 'command=self._show_resume_storage_audit' in data_card
+    assert 'self.icons.button(\n            "health_shield"' in data_card
+
+
+def test_resume_storage_audit_shows_privacy_safe_read_only_summary():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui._data_operation_busy = Mock(return_value=False)
+    report = types.SimpleNamespace(
+        reference_count=4,
+        valid_reference_count=2,
+        missing_reference_count=1,
+        unmanaged_reference_count=1,
+        stale_metadata_count=0,
+        managed_file_count=3,
+        orphan_file_count=1,
+        managed_bytes=3072,
+        orphan_bytes=1024,
+        issue_count=3,
+    )
+
+    with (
+        patch.object(
+            gui_main,
+            "read_candidates_snapshot",
+            return_value=[{}],
+        ) as read,
+        patch.object(
+            gui_main,
+            "audit_managed_resumes",
+            return_value=report,
+        ) as audit,
+        patch.object(
+            gui_main.messagebox,
+            "ask_confirmation",
+            return_value=False,
+        ) as confirm,
+        patch.object(gui_main.messagebox, "show_result") as show_result,
+    ):
+        gui._show_resume_storage_audit()
+
+    read.assert_called_once_with(gui_main.CANDIDATES_PATH)
+    audit.assert_called_once_with([{}], base_dir=gui_main.BASE_DIR)
+    confirm.assert_called_once_with(
+        "简历存储体检",
+        headline="发现需要处理的简历存储问题",
+        message="缺失引用 1 条，非受管引用 1 条，无文件的残留评估状态 0 条。",
+        metrics=(
+            ("候选人引用", "4"),
+            ("有效引用", "2"),
+            ("异常状态", "2"),
+            ("孤立文件", "1 / 1.0 KB"),
+        ),
+        notice=(
+            "修复会清除失效引用及对应简历评估状态，并删除无人引用的"
+            "受管副本；目录外文件和仍被其他记录引用的副本不会删除。"
+        ),
+        yes_label="修复并清理",
+        no_label="暂不处理",
+        dangerous=True,
+        parent=gui.root,
+    )
+    show_result.assert_not_called()
+
+
+def test_resume_storage_audit_repairs_only_after_confirmation():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui._data_operation_busy = Mock(return_value=False)
+    initial = types.SimpleNamespace(
+        reference_count=2,
+        valid_reference_count=0,
+        missing_reference_count=1,
+        unmanaged_reference_count=0,
+        stale_metadata_count=0,
+        managed_file_count=1,
+        orphan_file_count=1,
+        managed_bytes=2048,
+        orphan_bytes=2048,
+        issue_count=2,
+    )
+    remaining = types.SimpleNamespace(issue_count=0)
+    repair = types.SimpleNamespace(repaired_candidate_count=1)
+    cleanup = types.SimpleNamespace(
+        deleted_file_count=1,
+        reclaimed_bytes=2048,
+        failed_file_count=0,
+        failure_count=0,
+    )
+
+    with (
+        patch.object(
+            gui_main,
+            "read_candidates_snapshot",
+            side_effect=[[{"before": True}], [{"after": True}]],
+        ),
+        patch.object(
+            gui_main,
+            "audit_managed_resumes",
+            side_effect=[initial, remaining],
+        ),
+        patch.object(
+            gui_main.messagebox,
+            "ask_confirmation",
+            return_value=True,
+        ),
+        patch.object(
+            gui_main,
+            "repair_candidate_resume_storage",
+            return_value=(repair, cleanup),
+        ) as repair_storage,
+        patch.object(gui_main.messagebox, "show_result") as show_result,
+    ):
+        gui._show_resume_storage_audit()
+
+    repair_storage.assert_called_once_with(
+        gui_main.CANDIDATES_PATH,
+        base_dir=gui_main.BASE_DIR,
+    )
+    show_result.assert_called_once_with(
+        "简历存储体检",
+        headline="简历存储已完成修复",
+        message="失效引用及残留评估状态已按当前候选人数据重新核对。",
+        metrics=(
+            ("修复候选人", "1"),
+            ("删除孤立文件", "1"),
+            ("释放空间", "2.0 KB"),
+            ("剩余问题", "0"),
+        ),
+        notice="目录外文件和共享受管副本均未删除。",
+        notice_kind="success",
+        parent=gui.root,
+    )
+
+
+def test_format_storage_bytes_uses_compact_binary_units():
+    assert _format_storage_bytes(0) == "0 B"
+    assert _format_storage_bytes(1023) == "1023 B"
+    assert _format_storage_bytes(1024) == "1.0 KB"
 
 
 def test_open_containing_folder_uses_windows_file_manager():
