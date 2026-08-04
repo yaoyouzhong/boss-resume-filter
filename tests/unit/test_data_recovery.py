@@ -160,9 +160,15 @@ def test_manual_backup_and_restore_include_managed_resume():
             "changed",
             encoding="utf-8",
         )
+        old_orphan = root / "resumes" / "old-orphan.txt"
+        old_orphan.write_text("obsolete", encoding="utf-8")
         restored = restore_backup(root, package)
 
         assert restored["candidate_count"] == 1
+        assert restored["resume_cleanup_count"] == 1
+        assert restored["resume_cleanup_bytes"] == len(b"obsolete")
+        assert restored["resume_cleanup_failed_count"] == 0
+        assert not old_orphan.exists()
         assert (
             (root / "resumes" / "resume-a.txt").read_text(
                 encoding="utf-8"

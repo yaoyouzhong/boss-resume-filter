@@ -359,6 +359,138 @@ diff --git a/gui_main.py b/gui_main.py
     assert "未覆盖信号" not in output.getvalue()
 
 
+def test_changelog_coverage_ignores_ui_code_moved_between_files():
+    diff_text = """\
+diff --git a/gui_main.py b/gui_main.py
+--- a/gui_main.py
++++ b/gui_main.py
+-    rim_color = ui_theme.PRIMARY      # 品牌蓝边框
+diff --git a/icons.py b/icons.py
+--- a/icons.py
++++ b/icons.py
++    rim_color = ui_theme.PRIMARY      # 品牌蓝边框
+"""
+
+    class Result:
+        returncode = 0
+        stdout = diff_text
+
+    originals = (
+        build._read_version,
+        build._extract_changelog_release,
+        build._get_last_tag,
+        build.subprocess.run,
+    )
+    try:
+        build._read_version = lambda: "2.26"
+        build._extract_changelog_release = lambda _version: (
+            "v2.26 — 测试",
+            "### 体验优化\n\n- 测试",
+        )
+        build._get_last_tag = lambda: "v2.25.2"
+        build.subprocess.run = lambda *args, **kwargs: Result()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            build._check_code_to_changelog_coverage(strict=True)
+    finally:
+        (
+            build._read_version,
+            build._extract_changelog_release,
+            build._get_last_tag,
+            build.subprocess.run,
+        ) = originals
+
+    assert "未检测到用户可见的新增代码信号" in output.getvalue()
+    assert "未覆盖信号" not in output.getvalue()
+
+
+def test_changelog_coverage_maps_updater_install_waits_to_update_installation():
+    diff_text = """\
+diff --git a/updater.py b/updater.py
+--- a/updater.py
++++ b/updater.py
+@@ -30,2 +30,3 @@
++    UPDATE_TIMEOUT_HELPER_READY,
++    lambda path=cached_update: show_download_complete_actions(path),
+"""
+
+    class Result:
+        returncode = 0
+        stdout = diff_text
+
+    originals = (
+        build._read_version,
+        build._extract_changelog_release,
+        build._get_last_tag,
+        build.subprocess.run,
+    )
+    try:
+        build._read_version = lambda: "2.26"
+        build._extract_changelog_release = lambda _version: (
+            "v2.26 — 测试",
+            "### 体验优化\n\n- 优化更新安装等待和缓存复用。",
+        )
+        build._get_last_tag = lambda: "v2.25.2"
+        build.subprocess.run = lambda *args, **kwargs: Result()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            build._check_code_to_changelog_coverage(strict=True)
+    finally:
+        (
+            build._read_version,
+            build._extract_changelog_release,
+            build._get_last_tag,
+            build.subprocess.run,
+        ) = originals
+
+    assert "均已在 CHANGELOG 中体现" in output.getvalue()
+    assert "未覆盖信号" not in output.getvalue()
+
+
+def test_changelog_coverage_ignores_update_helper_cleanup_command():
+    diff_text = """\
+diff --git a/updater.py b/updater.py
+--- a/updater.py
++++ b/updater.py
++        ["cmd", "/c", f'timeout /t 3 /nobreak >nul & rmdir /s /q "{temp_dir}"'],
+"""
+
+    class Result:
+        returncode = 0
+        stdout = diff_text
+
+    originals = (
+        build._read_version,
+        build._extract_changelog_release,
+        build._get_last_tag,
+        build.subprocess.run,
+    )
+    try:
+        build._read_version = lambda: "2.26"
+        build._extract_changelog_release = lambda _version: (
+            "v2.26 — 测试",
+            "### 体验优化\n\n- 测试",
+        )
+        build._get_last_tag = lambda: "v2.25.2"
+        build.subprocess.run = lambda *args, **kwargs: Result()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            build._check_code_to_changelog_coverage(strict=True)
+    finally:
+        (
+            build._read_version,
+            build._extract_changelog_release,
+            build._get_last_tag,
+            build.subprocess.run,
+        ) = originals
+
+    assert "未检测到用户可见的新增代码信号" in output.getvalue()
+    assert "未覆盖信号" not in output.getvalue()
+
+
 def test_changelog_coverage_groups_structured_dialog_copy_by_diff_hunk():
     diff_text = """\
 diff --git a/gui_main.py b/gui_main.py
@@ -2189,8 +2321,8 @@ def test_windows_update_helper_receives_verified_payload_and_clean_runtime_env()
         def fake_popen(args, **kwargs):
             captured["args"] = args
             captured["kwargs"] = kwargs
-            payload = json.loads(Path(args[2]).read_text(encoding="utf-8"))
-            Path(payload["ready_path"]).write_text("ready", encoding="utf-8")
+            ready_path = Path(args[2]).parent / "update_helper.ready"
+            ready_path.write_text("ready", encoding="utf-8")
             return FakeProcess()
 
         with (
@@ -2324,7 +2456,8 @@ def test_windows_update_cleanup_accepts_only_managed_update_directories():
 
             cache_dir = updater._windows_update_cache_dir("2.26", app_dir)
             assert updater._is_managed_windows_update_dir(cache_dir, app_dir) is True
-            assert updater._is_managed_windows_update_dir(temp_dir, app_dir) is True
+            # 旧版系统临时目录不再由更新助手管理，必须拒绝清理
+            assert updater._is_managed_windows_update_dir(temp_dir, app_dir) is False
             assert updater._is_managed_windows_update_dir(outsider, app_dir) is False
 
 

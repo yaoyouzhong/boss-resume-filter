@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.25.2"
+__version__ = "2.26"
 
 import json
 import logging
@@ -141,14 +141,20 @@ from storage import (
     mark_candidate_greeted,
     mark_candidate_not_greeted,
     mutate_candidates_all,
+    mutate_candidates_with_resume_cleanup,
     persist_candidate_greeted,
     persist_candidate_greeting_pending,
-    remove_candidates_all,
+    read_candidates_snapshot,
+    remove_candidates_all_with_resume_cleanup,
+    repair_candidate_resume_storage,
     resolve_candidate_greeting_confirmation,
     update_candidate_records,
 )
 from resume_store import (
+    RESUME_STATE_FIELDS,
     UnmanagedResumePathError,
+    audit_managed_resumes,
+    clear_candidate_resume_state,
     delete_managed_resume,
     store_resume_copy,
 )
@@ -474,6 +480,19 @@ def _open_containing_folder(file_path: str) -> None:
         subprocess.Popen(["open", str(folder)], show_window=True)
     else:
         subprocess.Popen(["xdg-open", str(folder)], show_window=True)
+
+
+def _format_storage_bytes(byte_count: int) -> str:
+    """Format a non-negative byte count for storage audit summaries."""
+    value = float(max(0, byte_count))
+    units = ("B", "KB", "MB", "GB", "TB")
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} B"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return "0 B"
 
 
 def _calculate_effective_scale(dpi_scale, screen_width, screen_height, platform=sys.platform):
@@ -886,59 +905,6 @@ def _show_main_window_centered(root, monitor_area=None):
 # Tk 9.0 的 Cocoa 后端不向 Canvas 派发触控板滚动事件（scrollWheel: 在 NSView 层被消费），
 # 需要通过 ObjC Runtime swizzle 拦截并转发。Windows (Tk 8.6) 不受影响。
 _NEED_COCOA_SCROLL_HOOK = sys.platform == 'darwin' and tk.TkVersion >= 9.0
-
-def _draw_search_icon(S, fill, sw_ratio=0.10):
-    """在 S×S 画布上绘制放大镜图标（🔍 风格），返回 RGBA Image"""
-    from PIL import Image, ImageDraw
-    import math
-    img = Image.new('RGBA', (S, S), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    # 镜片
-    rim_color = ui_theme.PRIMARY      # 品牌蓝边框
-    glass_fill = (147, 197, 253, 80)  # 淡蓝玻璃
-    rim_w = max(3, int(S * 0.07))
-    r = int(S * 0.24)
-    cx, cy = int(S * 0.33), int(S * 0.33)
-    # 镜片玻璃底色
-    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=glass_fill)
-    # 金属边框
-    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=rim_color, width=rim_w)
-    # 反光斜线（白色）
-    shine_color = (255, 255, 255, 140)
-    shine_w = max(2, int(S * 0.025))
-    shine_y = int(cy - r * 0.4)
-    shine_len = int(r * 1.1)
-    angle = math.radians(-30)
-    sx1 = int(cx - shine_len * math.cos(angle))
-    sy1 = int(shine_y - shine_len * math.sin(angle))
-    sx2 = int(cx + shine_len * math.cos(angle))
-    sy2 = int(shine_y + shine_len * math.sin(angle))
-    d.line([(sx1, sy1), (sx2, sy2)], fill=shine_color, width=shine_w)
-    # 手柄
-    handle_color = ui_theme.PRIMARY_DARK
-    handle_w = max(3, int(S * 0.07))
-    angle45 = math.radians(45)
-    hx0 = int(cx + (r + rim_w // 2) * math.cos(angle45))
-    hy0 = int(cy + (r + rim_w // 2) * math.sin(angle45))
-    handle_len = int(S * 0.42)
-    hx1 = int(hx0 + handle_len * math.cos(angle45))
-    hy1 = int(hy0 + handle_len * math.sin(angle45))
-    d.line([(hx0, hy0), (hx1, hy1)], fill=handle_color, width=handle_w)
-    # 手柄圆头
-    cap_r = handle_w // 2
-    d.ellipse([hx1 - cap_r, hy1 - cap_r, hx1 + cap_r, hy1 + cap_r], fill=handle_color)
-    return img
-
-
-def _set_search_window_icon(window):
-    """为任意 Tk 窗口设置与主程序一致的放大镜图标。"""
-    from PIL import ImageTk
-
-    icon_img = _draw_search_icon(256, ui_theme.PRIMARY, sw_ratio=0.10)
-    icon_photo = ImageTk.PhotoImage(icon_img)
-    window.iconphoto(True, icon_photo)
-    window._search_icon_photo = icon_photo
-    return icon_photo
 
 
 class BossFilterGUI:
@@ -1433,7 +1399,10 @@ class BossFilterGUI:
             "移除候选人",
             headline=f"移除选中的 {len(selection)} 名候选人？",
             message="这些记录将从当前结果和本地候选人数据中移除。",
-            notice="重新扫描时仍可能再次发现这些候选人。",
+            notice=(
+                "无人继续引用的受管简历副本也会删除，共享副本保留；"
+                "重新扫描时仍可能再次发现这些候选人。"
+            ),
             yes_label="移除候选人",
             no_label="取消",
             dangerous=True,
@@ -1450,9 +1419,8 @@ class BossFilterGUI:
             if self._candidate_identity_key(candidate) not in remove_keys
         ]
         if remove_keys and CANDIDATES_PATH.exists():
-            remove_candidates_all(
+            self._remove_candidate_records(
                 lambda candidate: self._candidate_identity_key(candidate) in remove_keys,
-                CANDIDATES_PATH,
             )
         for sel_item in selection:
             if self.result_tree.exists(sel_item):
@@ -4495,6 +4463,23 @@ class BossFilterGUI:
             padx=(int(10 * self.dpi_scale * self.zoom_factor), 0),
         )
 
+        audit_icon = self.icons.button(
+            "health_shield",
+            self.colors["text_primary"],
+        )
+        audit_button = ttk.Button(
+            data_button_row,
+            image=audit_icon,
+            text=" 简历存储体检",
+            compound=tk.LEFT,
+            command=self._show_resume_storage_audit,
+        )
+        audit_button._icon_ref = audit_icon
+        audit_button.pack(
+            side="left",
+            padx=(int(10 * self.dpi_scale * self.zoom_factor), 0),
+        )
+
         self.data_backup_status_var = tk.StringVar(
             value=self._data_backup_note_text()
         )
@@ -4729,6 +4714,153 @@ class BossFilterGUI:
         if status_var is not None:
             status_var.set(text)
 
+    def _show_resume_storage_audit(self) -> None:
+        """Audit resume storage and optionally repair it after confirmation."""
+        if self._data_operation_busy():
+            messagebox.showwarning(
+                "暂时不能体检",
+                "扫描、联系或数据维护正在进行，请结束后再执行体检。",
+                parent=self.root,
+            )
+            return
+        try:
+            candidates = read_candidates_snapshot(CANDIDATES_PATH)
+            report = audit_managed_resumes(candidates, base_dir=BASE_DIR)
+        except (OSError, TypeError, ValueError, RuntimeError) as exc:
+            messagebox.show_failure(
+                "简历存储体检",
+                headline="体检未完成",
+                message="无法可靠核对候选人引用与受管简历目录。",
+                detail=str(exc),
+                notice="本次体检没有修改或恢复任何数据。",
+                parent=self.root,
+            )
+            return
+
+        abnormal_references = (
+            report.missing_reference_count
+            + report.unmanaged_reference_count
+            + report.stale_metadata_count
+        )
+        metrics = (
+            ("候选人引用", str(report.reference_count)),
+            ("有效引用", str(report.valid_reference_count)),
+            ("异常状态", str(abnormal_references)),
+            (
+                "孤立文件",
+                f"{report.orphan_file_count} / "
+                f"{_format_storage_bytes(report.orphan_bytes)}",
+            ),
+        )
+        if not report.issue_count:
+            messagebox.show_result(
+                "简历存储体检",
+                headline="简历引用与受管目录一致",
+                message=(
+                    f"受管目录共 {report.managed_file_count} 个文件，"
+                    f"占用 {_format_storage_bytes(report.managed_bytes)}。"
+                ),
+                metrics=metrics,
+                notice="本次仅执行只读体检，没有修改任何数据或文件。",
+                notice_kind="info",
+                parent=self.root,
+            )
+            return
+
+        confirmed = messagebox.ask_confirmation(
+            "简历存储体检",
+            headline="发现需要处理的简历存储问题",
+            message=(
+                f"缺失引用 {report.missing_reference_count} 条，"
+                f"非受管引用 {report.unmanaged_reference_count} 条，"
+                f"无文件的残留评估状态 {report.stale_metadata_count} 条。"
+            ),
+            metrics=metrics,
+            notice=(
+                "修复会清除失效引用及对应简历评估状态，并删除无人引用的"
+                "受管副本；目录外文件和仍被其他记录引用的副本不会删除。"
+            ),
+            yes_label="修复并清理",
+            no_label="暂不处理",
+            dangerous=True,
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+
+        self._data_maintenance_running = True
+        try:
+            repair, cleanup = repair_candidate_resume_storage(
+                CANDIDATES_PATH,
+                base_dir=BASE_DIR,
+            )
+        except (OSError, TypeError, ValueError, RuntimeError) as exc:
+            messagebox.show_failure(
+                "简历存储体检",
+                headline="修复未完成",
+                message="候选人数据和简历目录未能完成一致性处理。",
+                detail=str(exc),
+                notice="请重新运行体检确认当前状态。",
+                parent=self.root,
+            )
+            return
+        finally:
+            self._data_maintenance_running = False
+
+        self._result_tree_fingerprint = None
+        self._stats_tree_fingerprint = None
+        self._home_stats_fingerprint = None
+        if hasattr(self, "result_tree"):
+            self.refresh_results(force=True)
+        if hasattr(self, "stats_tree"):
+            self.refresh_stats()
+        if hasattr(self, "home_stats_labels"):
+            self.refresh_home_stats()
+
+        try:
+            refreshed_candidates = read_candidates_snapshot(CANDIDATES_PATH)
+            remaining = audit_managed_resumes(
+                refreshed_candidates,
+                base_dir=BASE_DIR,
+            )
+        except (OSError, TypeError, ValueError, RuntimeError) as exc:
+            messagebox.show_failure(
+                "简历存储体检",
+                headline="修复已执行，复核未完成",
+                message="候选人数据已更新，但无法重新读取完整体检结果。",
+                detail=str(exc),
+                notice="请关闭占用文件的程序后重新运行体检。",
+                parent=self.root,
+            )
+            return
+
+        incomplete = bool(cleanup.failure_count or remaining.issue_count)
+        messagebox.show_result(
+            "简历存储体检",
+            headline=(
+                "简历存储仍有未处理项目"
+                if incomplete
+                else "简历存储已完成修复"
+            ),
+            message=(
+                "失效引用及残留评估状态已按当前候选人数据重新核对。"
+            ),
+            metrics=(
+                ("修复候选人", str(repair.repaired_candidate_count)),
+                ("删除孤立文件", str(cleanup.deleted_file_count)),
+                ("释放空间", _format_storage_bytes(cleanup.reclaimed_bytes)),
+                ("剩余问题", str(remaining.issue_count)),
+            ),
+            notice=(
+                f"有 {cleanup.failure_count} 项受管简历清理失败，"
+                "可关闭占用文件的程序后重试。"
+                if cleanup.failure_count
+                else "目录外文件和共享受管副本均未删除。"
+            ),
+            notice_kind="warning" if incomplete else "success",
+            parent=self.root,
+        )
+
     def _export_data_backup(self) -> None:
         """Export one verified plaintext ZIP from the current runtime data."""
         if self._data_operation_busy():
@@ -4819,7 +4951,7 @@ class BossFilterGUI:
             headline="恢复这份数据备份？",
             message=(
                 "将替换当前候选人、岗位配置和联系清单，"
-                "并恢复备份中的简历副本。"
+                "恢复备份中的简历副本，并删除恢复后无人引用的旧受管副本。"
             ),
             metrics=self._backup_summary_metrics(preview),
             notice="执行前会自动保存当前数据恢复点。",
@@ -4882,6 +5014,16 @@ class BossFilterGUI:
             + int(result.get("unresolved_queue_count") or 0)
         )
         suffix = f"，另有 {unresolved} 条记录未自动关联岗位" if unresolved else ""
+        resume_cleanup_count = int(result.get("resume_cleanup_count") or 0)
+        resume_cleanup_bytes = int(result.get("resume_cleanup_bytes") or 0)
+        resume_cleanup_failures = int(
+            result.get("resume_cleanup_failed_count") or 0
+        )
+        if resume_cleanup_count:
+            suffix += (
+                f"，清理 {resume_cleanup_count} 个旧简历副本"
+                f"（{_format_storage_bytes(resume_cleanup_bytes)}）"
+            )
         restore_at = self._remember_maintenance_success("restore")
         self._set_data_backup_status(
             self._data_backup_note_text(
@@ -4890,17 +5032,22 @@ class BossFilterGUI:
             )
         )
         self.append_operation_log(f"[数据安全] 已从备份恢复：{summary}{suffix}")
-        unresolved_notice = (
-            f"另有 {unresolved} 条记录未自动关联岗位，已原样保留。"
-            if unresolved
-            else None
-        )
+        restore_notices = []
+        if unresolved:
+            restore_notices.append(
+                f"另有 {unresolved} 条记录未自动关联岗位，已原样保留。"
+            )
+        if resume_cleanup_failures:
+            restore_notices.append(
+                f"有 {resume_cleanup_failures} 项旧简历清理失败，"
+                "可稍后运行简历存储体检。"
+            )
         messagebox.show_result(
             "恢复数据备份",
             headline="数据已恢复",
             message="界面已重新加载恢复后的数据。",
             metrics=self._backup_summary_metrics(result),
-            notice=unresolved_notice,
+            notice=" ".join(restore_notices) or None,
             parent=self.root,
         )
 
@@ -9546,7 +9693,7 @@ class BossFilterGUI:
         """设置窗口图标，替换 tkinter 默认羽毛图标"""
         try:
             # 用 iconphoto 设置高分图标，Windows 10/11 原生缩放比 ICO 清晰
-            self._icon_photo = _set_search_window_icon(self.root)
+            icons.set_search_window_icon(self.root)
         except Exception:
             pass  # 图标设置失败不影响程序运行
 
@@ -9722,7 +9869,10 @@ class BossFilterGUI:
                             "移除候选人",
                             headline=f"移除选中的 {len(selection)} 名候选人？",
                             message="这些记录将从当前结果和本地候选人数据中移除。",
-                            notice="重新扫描时仍可能再次发现这些候选人。",
+                            notice=(
+                                "无人继续引用的受管简历副本也会删除，共享副本保留；"
+                                "重新扫描时仍可能再次发现这些候选人。"
+                            ),
                             yes_label="移除候选人",
                             no_label="取消",
                             dangerous=True,
@@ -9742,9 +9892,8 @@ class BossFilterGUI:
                             if self._candidate_identity_key(candidate) not in remove_keys
                         ]
                         if remove_keys and CANDIDATES_PATH.exists():
-                            remove_candidates_all(
+                            self._remove_candidate_records(
                                 lambda item: self._candidate_identity_key(item) in remove_keys,
-                                CANDIDATES_PATH,
                             )
                         # 删除 Treeview 中的项
                         for sel_item in selection:
@@ -9814,7 +9963,10 @@ class BossFilterGUI:
                         "移除候选人",
                         headline=f"移除 {candidate.get('name') or '该候选人'}？",
                         message="该记录将从当前结果和本地候选人数据中移除。",
-                        notice="重新扫描时仍可能再次发现该候选人。",
+                        notice=(
+                            "无人继续引用的受管简历副本也会删除，共享副本保留；"
+                            "重新扫描时仍可能再次发现该候选人。"
+                        ),
                         yes_label="移除候选人",
                         no_label="取消",
                         dangerous=True,
@@ -9829,9 +9981,8 @@ class BossFilterGUI:
                         if self._candidate_identity_key(item) != candidate_key
                     ]
                     if CANDIDATES_PATH.exists():
-                        remove_candidates_all(
+                        self._remove_candidate_records(
                             lambda item: self._candidate_identity_key(item) == candidate_key,
-                            CANDIDATES_PATH,
                         )
                     tree.delete(clicked_item)
                     new_greeted = len([c for c in filtered_ref[0] if c.get('greet_sent', False)])
@@ -10150,7 +10301,10 @@ class BossFilterGUI:
                             "移除候选人",
                             headline=f"移除选中的 {len(selection)} 名候选人？",
                             message="这些记录将从当前结果和本地候选人数据中移除。",
-                            notice="重新扫描时仍可能再次发现这些候选人。",
+                            notice=(
+                                "无人继续引用的受管简历副本也会删除，共享副本保留；"
+                                "重新扫描时仍可能再次发现这些候选人。"
+                            ),
                             yes_label="移除候选人",
                             no_label="取消",
                             dangerous=True,
@@ -10170,9 +10324,8 @@ class BossFilterGUI:
                             if self._candidate_identity_key(candidate) not in remove_keys
                         ]
                         if remove_keys and CANDIDATES_PATH.exists():
-                            remove_candidates_all(
+                            self._remove_candidate_records(
                                 lambda item: self._candidate_identity_key(item) in remove_keys,
-                                CANDIDATES_PATH,
                             )
                         # 删除 Treeview 中的项
                         for sel_item in selection:
@@ -10242,7 +10395,10 @@ class BossFilterGUI:
                         "移除候选人",
                         headline=f"移除 {candidate.get('name') or '该候选人'}？",
                         message="该记录将从当前结果和本地候选人数据中移除。",
-                        notice="重新扫描时仍可能再次发现该候选人。",
+                        notice=(
+                            "无人继续引用的受管简历副本也会删除，共享副本保留；"
+                            "重新扫描时仍可能再次发现该候选人。"
+                        ),
                         yes_label="移除候选人",
                         no_label="取消",
                         dangerous=True,
@@ -10257,9 +10413,8 @@ class BossFilterGUI:
                         if self._candidate_identity_key(item) != candidate_key
                     ]
                     if CANDIDATES_PATH.exists():
-                        remove_candidates_all(
+                        self._remove_candidate_records(
                             lambda item: self._candidate_identity_key(item) == candidate_key,
-                            CANDIDATES_PATH,
                         )
                     tree.delete(clicked_item)
                     new_greeted = len([c for c in filtered_ref[0] if c.get('greet_sent', False)])
@@ -14449,16 +14604,11 @@ class BossFilterGUI:
             log_queue.put(safe_message)
         self._append_run_log_file(safe_message)
 
-    def append_operation_log(self, message, *, show_in_run_ui=False):
+    def append_operation_log(self, message):
         """Record a foreground business event without polluting the scan UI."""
         safe_message = self._sanitize_runtime_log_message(message)
         logger.info("[GUI] %s", safe_message)
         self._append_runtime_log_file("app", safe_message, add_timestamp=True)
-        if show_in_run_ui:
-            log_queue = getattr(self, "log_queue", None)
-            if log_queue is not None:
-                log_queue.put(safe_message)
-        self._append_run_log_file(safe_message)
 
     @staticmethod
     def _sanitize_runtime_log_message(message):
@@ -14633,7 +14783,7 @@ class BossFilterGUI:
                 return
             current_url = str(getattr(page, 'url', '') or '')
             if not self._is_boss_recommend_url(current_url):
-                self.append_run_log("选择器自动检查已跳过：当前页面不是 BOSS 推荐牛人页面")
+                self.append_log("选择器自动检查已跳过：当前页面不是 BOSS 推荐牛人页面")
                 return
             from bossmaster import check_selectors_health
             results = check_selectors_health(page)
@@ -14647,11 +14797,11 @@ class BossFilterGUI:
 
             for r in results:
                 if r['status'] == 'skip':
-                    self.append_run_log(f"选择器自动检查已跳过 [{r['group']}]：{r['detail']}")
+                    self.append_log(f"选择器自动检查已跳过 [{r['group']}]：{r['detail']}")
 
             # 只在有异常时输出日志
             if warn_count + fail_count > 0:
-                self.append_run_log(
+                self.append_log(
                     f"选择器自动检查：{ok_count} 正常 / {skip_count} 跳过 / "
                     f"{warn_count} 警告 / {fail_count} 失败"
                 )
@@ -14659,9 +14809,9 @@ class BossFilterGUI:
                 for r in results:
                     if r['status'] in ('warn', 'fail'):
                         icon = {'warn': '⚠', 'fail': '✗'}.get(r['status'], '?')
-                        self.append_run_log(f"  {icon} [{r['group']}] {r['name']}: {r['detail']}")
+                        self.append_log(f"  {icon} [{r['group']}] {r['name']}: {r['detail']}")
 
-                self.append_run_log("⚠ 选择器异常可能导致扫描功能不正常，可编辑 selectors.json 修复")
+                self.append_log("⚠ 选择器异常可能导致扫描功能不正常，可编辑 selectors.json 修复")
                 # 主线程弹窗提醒（线程安全）
                 self.run_on_ui(lambda: messagebox.show_notice(
                     "选择器异常",
@@ -14672,7 +14822,7 @@ class BossFilterGUI:
                         ("警告", str(warn_count)),
                         ("正常", str(ok_count)),
                     ),
-                    notice="可编辑 selectors.json 修复；具体项目已写入运行日志。",
+                    notice="可编辑 selectors.json 修复；具体项目已写入应用日志。",
                     parent=self.root,
                 ))
         except Exception as e:
@@ -14681,7 +14831,7 @@ class BossFilterGUI:
             from bossmaster import is_transient_page_refresh_error
             if is_transient_page_refresh_error(e):
                 if not getattr(self, '_selector_check_retry_pending', False):
-                    self.append_run_log("选择器自动检查暂缓：页面正在加载，稳定后将自动重试")
+                    self.append_log("选择器自动检查暂缓：页面正在加载，稳定后将自动重试")
                 self._selector_check_retry_pending = True
                 return
             from bossmaster import is_page_connection_error
@@ -14689,9 +14839,9 @@ class BossFilterGUI:
                 self.browser_connected = False
                 if page is self.browser_page:
                     self.browser_page = None
-                self.append_run_log("浏览器页面连接短暂中断，等待自动重连...")
+                self.append_log("浏览器页面连接短暂中断，等待自动重连...")
                 return
-            self.append_run_log(f"选择器自动检查失败：{error_text}")
+            self.append_log(f"选择器自动检查失败：{error_text}")
 
     def _reactivate_and_navigate(self, page, target_url):
         """激活已有的 Chrome 进程并导航到目标页面。
@@ -14786,14 +14936,14 @@ class BossFilterGUI:
                 silent=silent,
             )
             if cooldown_log:
-                self.append_run_log(cooldown_log)
+                self.append_log(cooldown_log)
             return
         self._boss_cooldown_log_signature = None
         if getattr(self, '_browser_check_running', False):
             # 手动点击优先：标记待处理，当前 silent 检查结束后自动重试
             if not silent:
                 self._pending_manual_check = True
-                self.append_run_log("⏳ 正在执行其他检测，稍后自动重试...")
+                self.append_log("⏳ 正在执行其他检测，稍后自动重试...")
             return
         self._browser_check_running = True
 
@@ -14804,7 +14954,7 @@ class BossFilterGUI:
                 if not connection_lock_acquired:
                     return
                 if not silent:
-                    self.append_run_log("正在检测浏览器连接...")
+                    self.append_log("正在检测浏览器连接...")
 
                 # 已有可用连接，直接复用，不做端口检查
                 if self.browser_page is not None:
@@ -14832,21 +14982,21 @@ class BossFilterGUI:
                             self.browser_connected = True
                             self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
                             if prev_help != "已连接到 BOSS 直聘推荐牛人页面":
-                                self.append_run_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
+                                self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                         elif 'zhipin.com' in current_url.lower() or 'boss' in current_url.lower():
                             if self._should_defer_browser_navigation_warning(silent):
                                 return
                             self.browser_connected = False
                             self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
                             if prev_help != "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面":
-                                self.append_run_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                         else:
                             if self._should_defer_browser_navigation_warning(silent):
                                 return
                             self.browser_connected = False
                             self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
                             if prev_help != "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面":
-                                self.append_run_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                         return
                     except Exception:
                         # 页面对象已失效，清理后走完整检测流程
@@ -14880,7 +15030,7 @@ class BossFilterGUI:
                     # 自动启动 Chrome（仅在手动点击时）
                     if not silent:
                         self.set_browser_ui(help_text="正在启动 Chrome 浏览器...")
-                        self.append_run_log("正在启动 Chrome 浏览器...")
+                        self.append_log("正在启动 Chrome 浏览器...")
 
                         # 找到 Chrome 可执行文件
                         if sys.platform == 'darwin':
@@ -14897,7 +15047,7 @@ class BossFilterGUI:
                         chrome_path = next((p for p in candidates if os.path.exists(p)), None)
                         if not chrome_path:
                             self.set_browser_ui(help_text="未找到 Chrome 浏览器，请安装后重试")
-                            self.append_run_log("✗ 未找到 Chrome 浏览器")
+                            self.append_log("✗ 未找到 Chrome 浏览器")
                             return
 
                         # 自动选一个空闲端口，避免 9222 被占用
@@ -14919,7 +15069,7 @@ class BossFilterGUI:
                                     pass
 
                         # 用 subprocess 直接启动 Chrome（不依赖 DrissionPage 的启动逻辑）
-                        self.append_run_log(f"正在启动 Chrome（调试端口 {debug_port}）...")
+                        self.append_log(f"正在启动 Chrome（调试端口 {debug_port}）...")
                         subprocess.Popen(
                             [
                                 chrome_path,
@@ -14951,13 +15101,13 @@ class BossFilterGUI:
                                 break
                             s.close()
                             if i == 0:
-                                self.append_run_log("⏳ 等待 Chrome 就绪...")
+                                self.append_log("⏳ 等待 Chrome 就绪...")
                             elif i % 5 == 4:
-                                self.append_run_log(f"⏳ 等待 Chrome 就绪... ({i+1}/30)")
+                                self.append_log(f"⏳ 等待 Chrome 就绪... ({i+1}/30)")
 
                         if not port_ready:
                             self.set_browser_ui("● 未连接", self.colors['danger'], "Chrome 启动超时，请关闭所有 Chrome 窗口后重试")
-                            self.append_run_log("✗ Chrome 启动超时，调试端口未开启")
+                            self.append_log("✗ Chrome 启动超时，调试端口未开启")
                             return
 
                         # 端口已开，用 DrissionPage 连接
@@ -14997,25 +15147,25 @@ class BossFilterGUI:
                                 self.browser_page = page
                                 self.browser_address = page.address
                                 self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
-                                self.append_run_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
+                                self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                             else:
                                 self.browser_connected = True
                                 self.browser_page = page
                                 self.browser_address = page.address
                                 self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
-                                self.append_run_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                         except Exception as e:
                             self.browser_connected = False
                             self.browser_page = None
                             self._selectors_auto_checked = False
                             self.set_browser_ui("● 未连接", self.colors['danger'], "Chrome 已启动，但页面连接失败", "disabled")
                             error_text = str(e).splitlines()[0] if str(e) else type(e).__name__
-                            self.append_run_log(f"✗ Chrome 已启动，但页面连接失败：{error_text}")
+                            self.append_log(f"✗ Chrome 已启动，但页面连接失败：{error_text}")
                         return
                     else:
                         self.set_browser_ui(help_text="未检测到 Chrome，请确保浏览器已启动")
                         if not silent and prev_state != "● 未连接":
-                            self.append_run_log("✗ 未检测到 Chrome 调试端口")
+                            self.append_log("✗ 未检测到 Chrome 调试端口")
                     return
 
                 from DrissionPage import ChromiumPage, ChromiumOptions
@@ -15057,7 +15207,7 @@ class BossFilterGUI:
                     target_url = 'https://www.zhipin.com/web/chat/recommend'
                     if current_url in ('about:blank', ''):
                         if not silent:
-                            self.append_run_log("⚠ Chrome 进程存在但无有效页面，正在激活并导航...")
+                            self.append_log("⚠ Chrome 进程存在但无有效页面，正在激活并导航...")
                             nav_page = self._reactivate_and_navigate(page, target_url)
                             if nav_page is not None:
                                 self.browser_connected = True
@@ -15069,15 +15219,15 @@ class BossFilterGUI:
                                     nav_url = ''
                                 if self._is_boss_recommend_url(nav_url):
                                     self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
-                                    self.append_run_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
+                                    self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                                 else:
                                     self.set_browser_ui("● 需导航", self.colors['warning'], "已激活 Chrome，正在加载页面...", "disabled")
-                                    self.append_run_log("⚠ 已激活 Chrome，请等待页面加载完成")
+                                    self.append_log("⚠ 已激活 Chrome，请等待页面加载完成")
                             else:
                                 self.browser_connected = False
                                 self.browser_page = None
                                 self.set_browser_ui("● 需导航", self.colors['warning'], "请手动打开 Chrome 窗口", "disabled")
-                                self.append_run_log("⚠ 无法激活 Chrome 页面，请手动打开 Chrome 窗口后点击重试")
+                                self.append_log("⚠ 无法激活 Chrome 页面，请手动打开 Chrome 窗口后点击重试")
                         else:
                             # 自动轮询：不尝试导航，避免 page.get() 挂起
                             self.browser_connected = False
@@ -15085,7 +15235,7 @@ class BossFilterGUI:
                             prev_state = self._browser_status_text
                             self.set_browser_ui("● 需导航", self.colors['warning'], "Chrome 进程存在但无有效页面", "disabled")
                             if prev_state != "● 需导航":
-                                self.append_run_log("⚠ Chrome 进程存在但无有效页面，请点击按钮激活")
+                                self.append_log("⚠ Chrome 进程存在但无有效页面，请点击按钮激活")
                         # 处理完毕，不再往下走 URL 检查
                         return
 
@@ -15097,7 +15247,7 @@ class BossFilterGUI:
                         self.browser_address = page.address
                         self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
                         if not silent or not prev_connected:
-                            self.append_run_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
+                            self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
                     elif 'zhipin.com' in current_url.lower() or 'boss' in current_url.lower():
                         if self._should_defer_browser_navigation_warning(silent):
                             return
@@ -15107,7 +15257,7 @@ class BossFilterGUI:
                         self.browser_address = page.address
                         self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
                         if not silent or prev_state != "● 需导航":
-                            self.append_run_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                            self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                     else:
                         if self._should_defer_browser_navigation_warning(silent):
                             return
@@ -15117,7 +15267,7 @@ class BossFilterGUI:
                         self.browser_address = page.address
                         self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
                         if not silent or prev_state != "● 需导航":
-                            self.append_run_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
+                            self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
 
                 except Exception as e:
                     if self._should_defer_browser_connection_failure(silent):
@@ -15139,11 +15289,11 @@ class BossFilterGUI:
                     self.set_browser_ui("● 未连接", self.colors['danger'], "浏览器页面连接失败", "disabled")
                     if not silent or prev_state != "● 未连接":
                         error_text = str(e).splitlines()[0] if str(e) else type(e).__name__
-                        self.append_run_log(f"✗ 浏览器页面连接失败：{error_text}")
+                        self.append_log(f"✗ 浏览器页面连接失败：{error_text}")
 
                     # 手动点击时，尝试杀掉彻底挂掉的调试 Chrome 进程并重启
                     if not silent:
-                        self.append_run_log("⚠ 正在尝试清理残留的调试 Chrome 进程...")
+                        self.append_log("⚠ 正在尝试清理残留的调试 Chrome 进程...")
                         killed = False
                         try:
                             port_num = int(port)
@@ -15176,20 +15326,20 @@ class BossFilterGUI:
                                                      timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                                         killed = True
                         except Exception as kill_err:
-                            self.append_run_log(f"清理残留进程失败：{kill_err}")
+                            self.append_log(f"清理残留进程失败：{kill_err}")
 
                         if killed:
                             time.sleep(1)
-                            self.append_run_log("✓ 已清理残留的调试 Chrome 进程，2秒后自动重新启动...")
+                            self.append_log("✓ 已清理残留的调试 Chrome 进程，2秒后自动重新启动...")
                             self._pending_chrome_restart = True
                         else:
-                            self.append_run_log("⚠ Chrome 调试端口被占用但无法清理，请手动关闭所有 Chrome 窗口后重试")
+                            self.append_log("⚠ Chrome 调试端口被占用但无法清理，请手动关闭所有 Chrome 窗口后重试")
                             self.set_browser_ui("● 未连接", self.colors['danger'],
                                               "请关闭所有 Chrome 窗口后点击重试", "disabled")
 
             except ImportError:
                 self.set_browser_ui("● 错误", self.colors['danger'], "未安装 DrissionPage，请运行：pip install DrissionPage")
-                self.append_run_log("✗ DrissionPage 未安装")
+                self.append_log("✗ DrissionPage 未安装")
             finally:
                 # 连接成功后自动检查选择器（仅首次）
                 if self.browser_connected and self.browser_page and not self._selectors_auto_checked:
@@ -19103,24 +19253,65 @@ class BossFilterGUI:
             )
             return
 
-        # 更新候选人记录（文件路径和导入时间）
-        candidate['resume_file'] = managed_resume.reference
-        candidate['resume_artifact_id'] = managed_resume.artifact_id
-        candidate['resume_original_name'] = managed_resume.original_name
-        candidate['resume_imported_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 原子替换候选人引用；保存成功后才清理不再使用的旧副本。
         resume_identity = self._candidate_identity_key(candidate)
+        imported_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        updated_snapshot = {}
 
         def save_resume_reference(persisted):
-            persisted['resume_file'] = candidate['resume_file']
-            persisted['resume_artifact_id'] = candidate['resume_artifact_id']
-            persisted['resume_original_name'] = candidate['resume_original_name']
-            persisted['resume_imported_at'] = candidate['resume_imported_at']
+            clear_candidate_resume_state(persisted)
+            persisted['resume_file'] = managed_resume.reference
+            persisted['resume_artifact_id'] = managed_resume.artifact_id
+            persisted['resume_original_name'] = managed_resume.original_name
+            persisted['resume_imported_at'] = imported_at
+            updated_snapshot.update(persisted)
 
-        saved = update_candidate_records(
-            lambda persisted: self._candidate_identity_key(persisted) == resume_identity,
-            save_resume_reference,
-            CANDIDATES_PATH,
-        )
+        def replace_resume_reference(candidates):
+            for persisted in candidates:
+                if self._candidate_identity_key(persisted) != resume_identity:
+                    continue
+                save_resume_reference(persisted)
+                return 1
+            return 0
+
+        try:
+            saved, cleanup = mutate_candidates_with_resume_cleanup(
+                replace_resume_reference,
+                CANDIDATES_PATH,
+                base_dir=BASE_DIR,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            persisted_new_reference = True
+            try:
+                latest_candidates = read_candidates_snapshot(CANDIDATES_PATH)
+                persisted_new_reference = any(
+                    self._candidate_identity_key(persisted) == resume_identity
+                    and persisted.get("resume_file") == managed_resume.reference
+                    for persisted in latest_candidates
+                )
+            except (OSError, RuntimeError, TypeError, ValueError):
+                pass
+            if not persisted_new_reference:
+                try:
+                    delete_managed_resume(
+                        managed_resume.reference,
+                        base_dir=get_base_dir(),
+                    )
+                except (OSError, UnmanagedResumePathError):
+                    pass
+            messagebox.show_failure(
+                "保存简历",
+                headline="简历保存状态需要核对",
+                message="候选人数据保存过程未能正常结束。",
+                detail=str(exc),
+                notice=(
+                    "无法确认最终写入状态，新副本已保留；请刷新后运行简历存储体检。"
+                    if persisted_new_reference
+                    else "候选人引用未写入，新复制的简历已回收。"
+                ),
+                parent=parent or self.root,
+            )
+            return
         if not saved:
             try:
                 delete_managed_resume(managed_resume.reference, base_dir=get_base_dir())
@@ -19134,6 +19325,13 @@ class BossFilterGUI:
                 parent=parent or self.root,
             )
             return
+        candidate.clear()
+        candidate.update(updated_snapshot)
+        if cleanup.failure_count:
+            self.append_log(
+                "[简历导入] 新简历已保存，但旧受管副本清理失败，"
+                "可运行简历存储体检重试"
+            )
 
         # 4. 预览确认（只显示前 300 字）
         preview = resume_text[:300]
@@ -19313,28 +19511,15 @@ class BossFilterGUI:
             return
 
         from llm_eval import _resolve_rule_score
-        resume_fields = (
-            'resume_file',
-            'resume_artifact_id',
-            'resume_original_name',
-            'resume_imported_at',
-            'resume_eval_adjustment',
-            'resume_eval_reason',
-            'resume_eval_model',
-            'resume_eval_at',
-            'resume_eval_dimension_scores',
-        )
         identity = self._candidate_identity_key(candidate)
-        resume_reference = [candidate.get('resume_file')]
         updated_snapshot = {}
         reverted_score = [candidate.get('match_score', 0)]
 
         def revert_resume(persisted):
-            resume_reference[0] = persisted.get('resume_file') or resume_reference[0]
             rule_score = _resolve_rule_score(persisted)
             llm_adj = persisted.get('llm_adjustment', 0) or 0
             reverted_score[0] = max(0, min(100, rule_score + llm_adj))
-            for field in resume_fields:
+            for field in RESUME_STATE_FIELDS:
                 persisted.pop(field, None)
             persisted['rule_score'] = rule_score
             persisted['match_score'] = reverted_score[0]
@@ -19345,10 +19530,18 @@ class BossFilterGUI:
                 breakdown['total'] = reverted_score[0]
             updated_snapshot.update(persisted)
 
-        updated = update_candidate_records(
-            lambda persisted: self._candidate_identity_key(persisted) == identity,
-            revert_resume,
+        def persist_revert(candidates):
+            for persisted in candidates:
+                if self._candidate_identity_key(persisted) != identity:
+                    continue
+                revert_resume(persisted)
+                return 1
+            return 0
+
+        updated, cleanup = mutate_candidates_with_resume_cleanup(
+            persist_revert,
             CANDIDATES_PATH,
+            base_dir=BASE_DIR,
         )
         if not updated:
             messagebox.showerror(
@@ -19360,16 +19553,12 @@ class BossFilterGUI:
 
         candidate.clear()
         candidate.update(updated_snapshot)
-        if resume_reference[0]:
-            try:
-                delete_managed_resume(
-                    resume_reference[0],
-                    base_dir=get_base_dir(),
-                )
-            except UnmanagedResumePathError:
-                self.append_log("[撤销评估] 已清除记录，但未删除受管目录外的简历文件")
-            except OSError as e:
-                self.append_log(f"[撤销评估] 删除受管简历文件失败：{e}")
+        if cleanup.unmanaged_reference_count:
+            self.append_log("[撤销评估] 已清除记录，但未删除受管目录外的简历文件")
+        if cleanup.failure_count:
+            self.append_log(
+                "[撤销评估] 受管简历副本删除失败，可运行简历存储体检重试"
+            )
 
         self.refresh_results()
         self.refresh_home_stats()
@@ -22308,6 +22497,27 @@ class BossFilterGUI:
         self.append_operation_log("[联系候选人] 已继续")
         self._update_greet_queue_action_states()
 
+    def _greet_queue_cooldown_error(self):
+        """Return a fail-closed user message while BOSS access is cooling down."""
+        guard_state = self._boss_access_cooldown_state()
+        if not guard_state.get("blocked"):
+            return ""
+        remaining = max(
+            1,
+            int(guard_state.get("remaining_seconds", 0) + 0.999),
+        )
+        reason = str(
+            guard_state.get("reason") or "已触发 BOSS 访问保护"
+        )
+        message = (
+            f"BOSS 访问仍在冷却中，剩余约 {remaining} 秒。\n\n{reason}"
+        )
+        self.append_operation_log(
+            f"[访问保护] 联系候选人操作已阻止：{reason}。"
+            f"剩余冷却约 {remaining} 秒。"
+        )
+        return message
+
     def _start_greet_queue(self):
         self._ensure_greet_queue_loaded()
         if getattr(self, 'greet_queue_preparing', False):
@@ -22325,6 +22535,14 @@ class BossFilterGUI:
             message = "选中的候选人当前不可联系" if selected else "没有待联系候选人"
             messagebox.showinfo(
                 "联系候选人", message, parent=self.greet_queue_window or self.root
+            )
+            return
+        cooldown_error = self._greet_queue_cooldown_error()
+        if cooldown_error:
+            messagebox.showwarning(
+                "BOSS 访问保护",
+                cooldown_error,
+                parent=self.greet_queue_window or self.root,
             )
             return
         self.stop_event.clear()
@@ -22372,6 +22590,10 @@ class BossFilterGUI:
                 error = "浏览器正在执行其他操作，请稍后再试。"
                 return
 
+            error = self._greet_queue_cooldown_error()
+            if error:
+                return
+
             self._set_greet_queue_prepare_status("正在连接 Chrome...")
             if not self.browser_page or not self._is_browser_page_alive(self.browser_page):
                 if not self._reconnect_browser_or_warn(
@@ -22392,6 +22614,9 @@ class BossFilterGUI:
             navigation_attempted = False
             login_prompted = False
             while time.monotonic() < deadline and not self.stop_event.is_set():
+                error = self._greet_queue_cooldown_error()
+                if error:
+                    return
                 ok, current_url, _page_text, reason = self._get_greet_queue_page_state()
                 if ok and self._is_boss_recommend_url(current_url):
                     self.append_operation_log(
@@ -22410,9 +22635,26 @@ class BossFilterGUI:
                     time.sleep(1)
                     continue
 
+                if "安全验证" in reason:
+                    try:
+                        from bossmaster import activate_boss_access_block
+                        activate_boss_access_block(
+                            "安全验证",
+                            reason,
+                            "联系候选人页面检查",
+                        )
+                    except Exception:
+                        error = "检测到 BOSS 安全验证页面，已停止联系候选人操作。"
+                    else:
+                        error = self._greet_queue_cooldown_error()
+                    return
+
                 if not navigation_attempted and self._is_browser_page_alive(
                     self.browser_page
                 ):
+                    error = self._greet_queue_cooldown_error()
+                    if error:
+                        return
                     self._set_greet_queue_prepare_status("正在打开推荐牛人页面...")
                     try:
                         self.browser_page.get(recommend_url)
@@ -22651,11 +22893,19 @@ class BossFilterGUI:
 
     def _reconnect_browser_or_warn(self, parent, log_prefix, warn_title, warn_text):
         """Try to reconnect the browser and retain an actionable failure reason."""
+        cooldown_error = self._greet_queue_cooldown_error()
+        if cooldown_error:
+            self._greet_queue_browser_error = cooldown_error
+            return False
         self.append_operation_log(f"[联系候选人] {log_prefix}，正在尝试重连...")
         if self._try_reconnect_browser():
             self.append_operation_log("[联系候选人] 浏览器重连成功")
             return True
 
+        cooldown_error = self._greet_queue_cooldown_error()
+        if cooldown_error:
+            self._greet_queue_browser_error = cooldown_error
+            return False
         self.append_operation_log(
             "[联系候选人] 未检测到可用 Chrome，正在自动启动推荐牛人页面..."
         )
@@ -22677,22 +22927,9 @@ class BossFilterGUI:
             )
         )
         self._greet_queue_browser_error = ""
-        try:
-            from bossmaster import get_boss_access_block_state
-            guard_state = get_boss_access_block_state()
-        except Exception:
-            guard_state = {"blocked": False}
-        if guard_state.get("blocked"):
-            remaining = max(1, int(guard_state.get("remaining_seconds", 0) + 0.999))
-            reason = guard_state.get("reason") or "已触发 BOSS 访问保护"
-            self._greet_queue_browser_error = (
-                f"BOSS 访问仍在冷却中，剩余约 {remaining} 秒。\n\n{reason}"
-            )
-            self.append_operation_log(
-                f"[访问保护] 联系候选人操作已阻止：{reason}。"
-                f"剩余冷却约 {remaining} 秒。",
-                show_in_run_ui=True,
-            )
+        cooldown_error = self._greet_queue_cooldown_error()
+        if cooldown_error:
+            self._greet_queue_browser_error = cooldown_error
             return False
         if not self.browser_page:
             if not self._reconnect_browser_or_warn(
@@ -22719,8 +22956,7 @@ class BossFilterGUI:
                         "联系候选人页面检查",
                     )
                     self.append_operation_log(
-                        f"[访问保护] {risk_exc.reason}。已停止联系候选人操作。",
-                        show_in_run_ui=True,
+                        f"[访问保护] {risk_exc.reason}。已停止联系候选人操作。"
                     )
                 except Exception:
                     pass
@@ -23041,8 +23277,7 @@ class BossFilterGUI:
                     self._set_greet_queue_item_state(item, "发送失败", risk_message)
                     self.append_operation_log(
                         f"[访问保护] 联系候选人时 BOSS 返回 {signal}：{exc.reason}。"
-                        f"已停止后续发送，冷却约 {remaining} 秒。",
-                        show_in_run_ui=True,
+                        f"已停止后续发送，冷却约 {remaining} 秒。"
                     )
                     self.root.after(0, lambda message=risk_message: messagebox.showwarning(
                         "BOSS 访问保护",
@@ -23097,8 +23332,7 @@ class BossFilterGUI:
                     )
                     if re.search(r"\bHTTP\s+4\d\d\b", str(msg), re.IGNORECASE):
                         self.append_operation_log(
-                            f"[BOSS接口] 联系候选人返回 4xx：{name}，{fail_message}",
-                            show_in_run_ui=True,
+                            f"[BOSS接口] 联系候选人返回 4xx：{name}，{fail_message}"
                         )
                     if diagnosis.terminal:
                         self.append_operation_log(
@@ -23147,8 +23381,7 @@ class BossFilterGUI:
                 active_item["updated_at"] = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.append_operation_log(
                 f"[访问保护] 联系候选人准备阶段 BOSS 返回 {signal}：{exc.reason}。"
-                f"已停止后续发送，冷却约 {remaining} 秒。",
-                show_in_run_ui=True,
+                f"已停止后续发送，冷却约 {remaining} 秒。"
             )
             self.root.after(
                 0,
@@ -24264,6 +24497,24 @@ class BossFilterGUI:
         except Exception as e:
             self.append_log(f"[Excel] 同步更新失败：{e}")
 
+    def _remove_candidate_records(self, predicate) -> int:
+        """Remove records and reclaim only managed resumes no longer referenced."""
+        removed, cleanup = remove_candidates_all_with_resume_cleanup(
+            predicate,
+            CANDIDATES_PATH,
+            base_dir=BASE_DIR,
+        )
+        if cleanup.failure_count:
+            messagebox.showwarning(
+                "简历副本未完全清理",
+                (
+                    f"候选人记录已更新，但有 {cleanup.failure_count} 项"
+                    "受管简历清理失败，可稍后运行简历存储体检。"
+                ),
+                parent=self.root,
+            )
+        return removed
+
     def _remove_candidate(self, item):
         """移除选中候选人"""
         candidate = self._find_candidate_by_tree_item(item)
@@ -24277,7 +24528,10 @@ class BossFilterGUI:
             "移除候选人",
             headline=f"移除 {name}？",
             message="该记录将从当前结果和本地候选人数据中移除。",
-            notice="重新扫描时仍可能再次发现该候选人。",
+            notice=(
+                "无人继续引用的受管简历副本也会删除，共享副本保留；"
+                "重新扫描时仍可能再次发现该候选人。"
+            ),
             yes_label="移除候选人",
             no_label="取消",
             dangerous=True,
@@ -24299,13 +24553,12 @@ class BossFilterGUI:
 
             # 从 JSON 文件中移除
             if CANDIDATES_PATH.exists():
-                remove_candidates_all(
+                self._remove_candidate_records(
                     lambda persisted: (
                         persisted.get('geek_id') == target_geek_id
                         and normalize_job_name(persisted.get('job_name'))
                         == normalize_job_name(target_job_name)
                     ),
-                    CANDIDATES_PATH,
                 )
 
                 # 从树中移除
@@ -24523,7 +24776,7 @@ class BossFilterGUI:
             keep_greeted_var.set(False)
 
         # 提示
-        ttk.Label(dialog, text="操作前会自动创建恢复点；已屏蔽候选人会保留为黑名单",
+        ttk.Label(dialog, text="候选人数据会自动备份；无人引用的受管简历副本将一并删除",
                   font=(FONT_FAMILY, int(13 * dialog_fs)),
                   foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
                   style='ClearDialog.TLabel').pack(pady=(int(12 * _s), 0))
@@ -24604,7 +24857,11 @@ class BossFilterGUI:
                     outcome["removed"] = len(removed_list)
                     return outcome["removed"]
 
-                mutate_candidates_all(clear_snapshot, CANDIDATES_PATH)
+                _result, cleanup = mutate_candidates_with_resume_cleanup(
+                    clear_snapshot,
+                    CANDIDATES_PATH,
+                    base_dir=BASE_DIR,
+                )
                 removed = outcome["removed"]
                 kept_count = outcome["kept"]
                 blacklist_kept_count = outcome["blacklist_kept"]
@@ -24632,9 +24889,24 @@ class BossFilterGUI:
                         ("已清理", f"{removed} 条"),
                         ("已打招呼保留", f"{kept_count} 条"),
                         ("黑名单保留", f"{blacklist_kept_count} 条"),
+                        (
+                            "简历副本清理",
+                            f"{cleanup.deleted_file_count} 个 / "
+                            f"{_format_storage_bytes(cleanup.reclaimed_bytes)}",
+                        ),
                     ),
-                    notice=f"操作前的恢复点已保存为 {backup_path.name}。",
-                    notice_kind="success",
+                    notice=(
+                        f"候选人数据备份已保存为 {backup_path.name}。"
+                        + (
+                            f"另有 {cleanup.failure_count} 项受管简历清理失败，"
+                            "可稍后运行存储体检。"
+                            if cleanup.failure_count
+                            else "已删除的无人引用简历副本不包含在 JSON 备份中。"
+                        )
+                    ),
+                    notice_kind=(
+                        "warning" if cleanup.failure_count else "success"
+                    ),
                     parent=self.root,
                 )
 

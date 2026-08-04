@@ -8,7 +8,7 @@ import shutil
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar
 
 from candidate_workflow import default_next_followup_at
 from constants import SCORE_THRESHOLD_PASS, SCORE_THRESHOLD_RECOMMEND
@@ -19,6 +19,12 @@ from data_schema import (
     validate_candidate_schema,
 )
 from job_identity import normalize_job_name
+
+if TYPE_CHECKING:
+    from resume_store import (
+        ResumeCleanupResult,
+        ResumeReferenceRepair,
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -128,6 +134,19 @@ def validate_candidates_snapshot(payload: Any) -> None:
         ):
             raise ValueError("候选人 Schema 版本无效")
         normalize_job_uuid(item.get("job_uuid"))
+
+
+def read_candidates_snapshot(path: Optional[str] = None) -> list[dict[str, Any]]:
+    """Read the primary candidate snapshot without restoring or writing files."""
+    with _CANDIDATES_FILE_LOCK:
+        candidate_path, backup_path = _candidate_paths(path)
+        if candidate_path.exists():
+            return _read_candidate_file(candidate_path)
+        if backup_path.exists():
+            raise FileNotFoundError(
+                "候选人主数据不存在；只读体检未自动从备份恢复"
+            )
+        return []
 
 
 def _sync_file(file_obj: Any) -> None:
@@ -432,6 +451,48 @@ def mutate_candidates_all(
         return result
 
 
+def mutate_candidates_with_resume_cleanup(
+    mutator: Callable[[list[dict[str, Any]]], _MutationResult],
+    path: Optional[str] = None,
+    *,
+    base_dir: str | Path,
+) -> tuple[_MutationResult, "ResumeCleanupResult"]:
+    """Persist one mutation, then delete resume files no longer referenced."""
+    from resume_store import (
+        ResumeCleanupResult,
+        cleanup_unreferenced_managed_resumes,
+    )
+
+    with _CANDIDATES_FILE_LOCK:
+        candidates = _load_candidates_all_unlocked(path)
+        previous_references = [
+            candidate.get("resume_file") for candidate in candidates
+        ]
+        result = mutator(candidates)
+        if not result:
+            return result, ResumeCleanupResult()
+        _save_candidates_all_unlocked(candidates, path)
+        active_references = {
+            str(candidate.get("resume_file")).strip()
+            for candidate in candidates
+            if isinstance(candidate.get("resume_file"), (str, os.PathLike))
+            and str(candidate.get("resume_file")).strip()
+        }
+        retired_references = [
+            reference
+            for reference in previous_references
+            if isinstance(reference, (str, os.PathLike))
+            and str(reference).strip()
+            and str(reference).strip() not in active_references
+        ]
+        cleanup = cleanup_unreferenced_managed_resumes(
+            retired_references,
+            candidates,
+            base_dir=Path(base_dir),
+        )
+        return result, cleanup
+
+
 def remove_candidates_all(
     predicate: Callable[[dict[str, Any]], bool],
     path: Optional[str] = None,
@@ -445,6 +506,53 @@ def remove_candidates_all(
         return removed
 
     return mutate_candidates_all(remove, path)
+
+
+def remove_candidates_all_with_resume_cleanup(
+    predicate: Callable[[dict[str, Any]], bool],
+    path: Optional[str] = None,
+    *,
+    base_dir: str | Path,
+) -> tuple[int, "ResumeCleanupResult"]:
+    """Remove matching records and reclaim only newly unreferenced resumes."""
+    def remove(candidates: list[dict[str, Any]]) -> int:
+        retained = [candidate for candidate in candidates if not predicate(candidate)]
+        removed = len(candidates) - len(retained)
+        if removed:
+            candidates[:] = retained
+        return removed
+
+    return mutate_candidates_with_resume_cleanup(
+        remove,
+        path,
+        base_dir=base_dir,
+    )
+
+
+def repair_candidate_resume_storage(
+    path: Optional[str] = None,
+    *,
+    base_dir: str | Path,
+) -> tuple["ResumeReferenceRepair", "ResumeCleanupResult"]:
+    """Repair invalid resume state and remove current orphan managed files."""
+    from resume_store import (
+        cleanup_orphan_managed_resumes,
+        repair_invalid_resume_references,
+    )
+
+    with _CANDIDATES_FILE_LOCK:
+        candidates = _load_candidates_all_unlocked(path)
+        repair = repair_invalid_resume_references(
+            candidates,
+            base_dir=Path(base_dir),
+        )
+        if repair.repaired_candidate_count:
+            _save_candidates_all_unlocked(candidates, path)
+        cleanup = cleanup_orphan_managed_resumes(
+            candidates,
+            base_dir=Path(base_dir),
+        )
+        return repair, cleanup
 
 
 def update_candidate_records(
@@ -488,7 +596,17 @@ class CandidateRepository:
         return mutate_candidates_all(mutator, self.path)
 
     def remove(self, predicate: Callable[[dict[str, Any]], bool]) -> int:
-        return remove_candidates_all(predicate, self.path)
+        base_dir = (
+            Path(self.path).resolve().parent
+            if self.path is not None
+            else Path.cwd()
+        )
+        removed, _cleanup = remove_candidates_all_with_resume_cleanup(
+            predicate,
+            self.path,
+            base_dir=base_dir,
+        )
+        return removed
 
     def update(
         self,

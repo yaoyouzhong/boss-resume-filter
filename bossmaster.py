@@ -87,7 +87,7 @@ from storage import (
     load_candidates_all,
     merge_candidate_business_state,
     merge_candidates_all,
-    mutate_candidates_all,
+    mutate_candidates_with_resume_cleanup,
     persist_candidate_greeting_pending,
     persist_candidate_greeted,
     save_candidates_all,
@@ -6022,7 +6022,10 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
             candidates[:] = kept
             return clear_outcome["removed"]
 
-        mutate_candidates_all(clear_candidates_snapshot)
+        _result, resume_cleanup = mutate_candidates_with_resume_cleanup(
+            clear_candidates_snapshot,
+            base_dir=BASE_DIR,
+        )
         kept_count = clear_outcome["kept"]
         removed = clear_outcome["removed"]
         if args.keep_greeted:
@@ -6033,6 +6036,17 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                 print(f"已清空 candidates_all.json（保留 {blacklist_count} 条黑名单记录，删除 {removed} 条）")
             else:
                 print("已清空 candidates_all.json")
+        if resume_cleanup.deleted_file_count:
+            print(
+                "已清理无人引用的受管简历副本 "
+                f"{resume_cleanup.deleted_file_count} 个"
+            )
+        if resume_cleanup.failure_count:
+            print(
+                "警告：有 "
+                f"{resume_cleanup.failure_count} 项受管简历清理失败，"
+                "请稍后运行简历存储体检"
+            )
 
     # 补打招呼模式：直接处理，不需要打开浏览器扫描
     if re_greet_mode:

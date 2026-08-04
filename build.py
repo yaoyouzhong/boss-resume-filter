@@ -1376,6 +1376,14 @@ def _check_code_to_changelog_coverage(strict=False):
             return True
         if re.search(r"getattr\(.*cache|source_cache|preview_render", lowered):
             return True
+        if (
+            fpath.endswith("updater.py")
+            and re.search(r"[\"']cmd[\"']\s*,\s*[\"']/c[\"']", stripped)
+            and "rmdir" in lowered
+        ):
+            # The delayed removal command only cleans the already-managed
+            # update-helper directory; it is not a separate user feature.
+            return True
         if "pingfang sc" in lowered or "microsoft yahei" in lowered:
             return True
         if re.search(r"\b(font_family|font_family_semibold)\b", lowered):
@@ -1411,8 +1419,14 @@ def _check_code_to_changelog_coverage(strict=False):
             or "release_notes" in lowered
             or "changelog" in lowered
         ):
-            if re.search(r"release|changelog|notes|cache|cached|timeout|retry|gitee|github", lowered):
+            if re.search(r"release|changelog|notes|gitee|github", lowered):
                 keywords.extend(["更新日志", "远端", "release", "notes"])
+        if "updater.py" in fpath and re.search(
+            r"install|helper|startup|process_exit|marker_path|asset_info|"
+            r"update_windows|cached_update",
+            lowered,
+        ):
+            keywords.extend(["更新", "安装"])
         if "bossmaster.py" in fpath and re.search(r"captcha|verify|risk|403|412|429", lowered):
             keywords.extend(["风控", "验证码", "验证"])
         semantic_keywords = (
@@ -1464,6 +1478,12 @@ def _check_code_to_changelog_coverage(strict=False):
     )
     ui_files = ("gui_main.py", "gui_dialogs.py", "ui_messagebox.py", "updater.py")
 
+    all_normalized_additions = {
+        line.strip()
+        for additions in file_additions.values()
+        for line in additions
+        if line.strip()
+    }
     for fpath in sorted(set(file_additions) | set(file_removals)):
         additions = file_additions.get(fpath, [])
         removals = file_removals.get(fpath, [])
@@ -1595,7 +1615,6 @@ def _check_code_to_changelog_coverage(strict=False):
                     ))
 
         # 7. 删除 / 限制：删除 UI 文案、函数入口、配置键，或新增限制逻辑
-        normalized_additions = {line.strip() for line in additions if line.strip()}
         added_function_names = {
             match.group(1)
             for line in additions
@@ -1609,7 +1628,7 @@ def _check_code_to_changelog_coverage(strict=False):
             if re.search(r'\\"[A-Za-z_][A-Za-z0-9_]+\\"\s*:', line):
                 # Removed JSON examples inside prompts are implementation details.
                 continue
-            if line.strip() in normalized_additions:
+            if line.strip() in all_normalized_additions:
                 continue
             any_removed_func = re.search(r"\bdef\s+([a-zA-Z_]\w*)\s*\(", line)
             if any_removed_func:
