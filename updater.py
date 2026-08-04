@@ -30,9 +30,13 @@ from constants import (
     UPDATE_TIMEOUT_GITEE,
     UPDATE_TIMEOUT_GITHUB,
     UPDATE_TIMEOUT_GIT_PULL,
+    UPDATE_TIMEOUT_HELPER_READY,
+    UPDATE_TIMEOUT_PROCESS_EXIT,
     UPDATE_TIMEOUT_RELEASE_NOTES_GITEE,
     UPDATE_TIMEOUT_RELEASE_NOTES_GITEE_RETRY,
     UPDATE_TIMEOUT_RELEASE_NOTES_GITHUB,
+    UPDATE_TIMEOUT_STARTUP_MARKER,
+    UPDATE_TIMEOUT_STARTUP_MARKER_RETRY,
 )
 from paths import get_base_dir
 from subprocess_utils import hidden_subprocess
@@ -599,6 +603,10 @@ def notify_previous_update_failure(root):
         pass
 
 
+# 版本号格式（X.Y 或 X.Y.Z），同时是更新缓存目录与版本备份命名的安全白名单
+_UPDATE_VERSION_RE = re.compile(r"\d+\.\d+(?:\.\d+)?")
+
+
 def _windows_update_cache_root(base_dir=None):
     """返回主程序目录下的 Windows 更新缓存根目录。"""
     return Path(base_dir or get_base_dir()).resolve() / "updates"
@@ -640,16 +648,12 @@ def _get_cached_windows_update(result, base_dir=None):
 
 
 def _is_managed_windows_update_dir(path, app_dir=None):
-    """只允许更新助手清理自己创建的临时目录或版本缓存目录。"""
+    """只允许更新助手清理自己创建的版本缓存目录。"""
     path = Path(path).resolve()
-    system_temp = Path(tempfile.gettempdir()).resolve()
-    if path.parent == system_temp and path.name.startswith("boss_update_download_"):
-        return True
-
     cache_root = _windows_update_cache_root(app_dir)
     return (
         path.parent == cache_root
-        and re.fullmatch(r"\d+\.\d+(?:\.\d+)?", path.name) is not None
+        and _UPDATE_VERSION_RE.fullmatch(path.name) is not None
     )
 
 
@@ -728,18 +732,10 @@ def _schedule_update_temp_cleanup(temp_dir, app_dir=None):
     if not _is_managed_windows_update_dir(temp_dir, app_dir):
         return
 
-    system_temp = Path(tempfile.gettempdir()).resolve()
-    cleanup_script = system_temp / f"boss_update_cleanup_{os.getpid()}.bat"
-    cleanup_script.write_text(
-        "@echo off\n"
-        "timeout /t 3 /nobreak >nul\n"
-        f'rmdir /s /q "{temp_dir}"\n'
-        'del /f /q "%~f0"\n',
-        encoding="utf-8",
-    )
+    # 助手 exe 就在待删目录里，只能交给独立 cmd 延迟删除（不落盘脚本）
     subprocess.Popen(
-        ["cmd", "/c", str(cleanup_script)],
-        cwd=str(system_temp),
+        ["cmd", "/c", f'timeout /t 3 /nobreak >nul & rmdir /s /q "{temp_dir}"'],
+        cwd=str(Path(tempfile.gettempdir()).resolve()),
         close_fds=True,
     )
 
@@ -747,7 +743,7 @@ def _schedule_update_temp_cleanup(temp_dir, app_dir=None):
 def _normalize_update_version(version):
     """规范备份文件使用的版本号，拒绝把任意文本拼入文件名。"""
     normalized = str(version or "").strip().lstrip("vV")
-    if not re.fullmatch(r"\d+\.\d+(?:\.\d+)?", normalized):
+    if not _UPDATE_VERSION_RE.fullmatch(normalized):
         raise ValueError(f"无法识别升级前版本号：{version}")
     return normalized
 
@@ -763,7 +759,7 @@ def _other_versioned_backups(exe_path, keep_path):
     exe_path = Path(exe_path)
     keep_path = Path(keep_path)
     pattern = re.compile(
-        rf"^{re.escape(exe_path.name)}\.\d+\.\d+(?:\.\d+)?$"
+        rf"^{re.escape(exe_path.name)}\.{_UPDATE_VERSION_RE.pattern}$"
     )
     return [
         candidate
@@ -796,8 +792,12 @@ def _apply_windows_update(payload, on_progress):
     try:
         log(f"Starting visible update; source={payload.get('source', 'manual')}")
         on_progress(8, "正在准备安装", "正在等待原程序安全退出…")
-        if not _wait_for_windows_process_exit(payload.get("old_pid"), 60):
-            raise RuntimeError("原程序未能在 60 秒内退出")
+        if not _wait_for_windows_process_exit(
+            payload.get("old_pid"), UPDATE_TIMEOUT_PROCESS_EXIT
+        ):
+            raise RuntimeError(
+                f"原程序未能在 {UPDATE_TIMEOUT_PROCESS_EXIT} 秒内退出"
+            )
         old_process_exited = True
 
         on_progress(20, "正在校验更新包", "确认下载文件完整且可用…")
@@ -821,7 +821,10 @@ def _apply_windows_update(payload, on_progress):
         shutil.copy2(new_exe, old_exe)
         if old_exe.stat().st_size != new_exe.stat().st_size:
             raise RuntimeError("安装后的文件大小与下载文件不一致")
-        if _file_sha256(old_exe) != _file_sha256(new_exe):
+        # new_exe 已通过 verify_downloaded_file 校验，直接复用其元数据摘要，
+        # 只哈希安装后的 old_exe 一次
+        expected_sha256 = str(payload["asset_info"]["sha256"]).lower()
+        if _file_sha256(old_exe) != expected_sha256:
             raise RuntimeError("安装后的文件校验值与下载文件不一致")
 
         on_progress(75, "正在启动新版本", "应用即将自动重新打开…")
@@ -829,12 +832,12 @@ def _apply_windows_update(payload, on_progress):
         launched_process = _launch_updated_windows_app(old_exe, marker_path)
 
         on_progress(88, "正在确认启动结果", "请稍候，正在确认新版本可以正常启动…")
-        if not _wait_for_file(marker_path, 45):
+        if not _wait_for_file(marker_path, UPDATE_TIMEOUT_STARTUP_MARKER):
             log("First startup marker not found; retrying once")
             _terminate_process(launched_process)
             time.sleep(3)
             launched_process = _launch_updated_windows_app(old_exe, marker_path)
-            if not _wait_for_file(marker_path, 90):
+            if not _wait_for_file(marker_path, UPDATE_TIMEOUT_STARTUP_MARKER_RETRY):
                 raise RuntimeError("新版本两次启动均未返回成功确认")
 
         try:
@@ -867,25 +870,19 @@ def _apply_windows_update(payload, on_progress):
                 old_exe.unlink(missing_ok=True)
                 shutil.move(str(backup_exe), str(old_exe))
                 log("Rolled back to previous executable")
-                if previous_backup_rotated and previous_backup.exists():
-                    shutil.move(str(previous_backup), str(backup_exe))
             except (OSError, shutil.Error) as rollback_exc:
                 rollback_error = str(rollback_exc)
                 log(f"Rollback failed: {rollback_error}")
-        elif previous_backup_rotated and previous_backup.exists():
+        if previous_backup_rotated and previous_backup.exists():
             try:
                 shutil.move(str(previous_backup), str(backup_exe))
             except (OSError, shutil.Error) as restore_exc:
-                rollback_error = f"原备份恢复失败：{restore_exc}"
-                log(rollback_error)
+                log(f"原备份恢复失败：{restore_exc}")
+                if not rollback_error:
+                    rollback_error = f"原备份恢复失败：{restore_exc}"
         if old_process_exited and not rollback_error and old_exe.exists():
             try:
-                subprocess.Popen(
-                    [str(old_exe)],
-                    cwd=str(old_exe.parent),
-                    env=_clean_pyinstaller_environment(),
-                    close_fds=True,
-                )
+                _launch_updated_windows_app(old_exe, None)
             except OSError as relaunch_exc:
                 rollback_error = f"原版本重新打开失败：{relaunch_exc}"
                 log(rollback_error)
@@ -910,32 +907,31 @@ def run_windows_update_helper(payload_path):
 
     payload_path = Path(payload_path).resolve()
     payload = json.loads(payload_path.read_text(encoding="utf-8"))
-    payload["old_version"] = _normalize_update_version(payload.get("old_version"))
-    temp_dir = Path(payload["temp_dir"]).resolve()
-    new_exe = Path(payload["new_exe"]).resolve()
-    ready_path = Path(payload["ready_path"]).resolve()
     old_exe = Path(payload["old_exe"]).resolve()
-    marker_path = Path(payload["marker_path"]).resolve()
+    new_exe = Path(payload["new_exe"]).resolve()
+    # temp_dir / ready_path / marker_path 由可信字段派生，不接受载荷注入
+    temp_dir = new_exe.parent
+    ready_path = temp_dir / "update_helper.ready"
+    marker_path = Path(str(old_exe) + ".update_ok")
+    payload["marker_path"] = str(marker_path)
     if (
         payload_path.parent != temp_dir
         or not _is_managed_windows_update_dir(temp_dir, old_exe.parent)
-        or new_exe.parent != temp_dir
-        or ready_path.parent != temp_dir
         or old_exe.suffix.lower() != ".exe"
         or new_exe.suffix.lower() != ".exe"
-        or marker_path != Path(str(old_exe) + ".update_ok")
     ):
         raise ValueError("更新助手参数不合法")
 
+    colors = ui_theme.build_palette()
     events = queue.Queue()
     root = tk.Tk()
     root.title("正在安装更新")
-    root.configure(bg="#FFFFFF")
+    root.configure(bg=colors["bg_card"])
     root.resizable(False, False)
     try:
-        from gui_main import _set_search_window_icon
+        from icons import set_search_window_icon
 
-        _set_search_window_icon(root)
+        set_search_window_icon(root)
     except Exception:
         pass
     width, height = 620, 270
@@ -947,16 +943,16 @@ def run_windows_update_helper(payload_path):
         root,
         text="正在安装更新",
         font=(_FONT_FAMILY, 22, "bold"),
-        bg="#FFFFFF",
-        fg="#172033",
+        bg=colors["bg_card"],
+        fg=colors["text_primary"],
     ).pack(pady=(34, 10))
     detail_var = tk.StringVar(value="更新即将完成，应用将自动重启，请稍候…")
     tk.Label(
         root,
         textvariable=detail_var,
         font=(_FONT_FAMILY, 11),
-        bg="#FFFFFF",
-        fg="#667085",
+        bg=colors["bg_card"],
+        fg=colors["text_secondary"],
     ).pack()
     progress_var = tk.DoubleVar(value=3)
     ttk.Progressbar(
@@ -971,8 +967,8 @@ def run_windows_update_helper(payload_path):
         root,
         textvariable=stage_var,
         font=(_FONT_FAMILY, 10),
-        bg="#FFFFFF",
-        fg="#98A2B3",
+        bg=colors["bg_card"],
+        fg=colors["text_muted"],
     )
     stage_label.pack()
     close_button = ttk.Button(root, text="关闭", command=root.destroy, state="disabled")
@@ -1043,15 +1039,11 @@ def update_windows(
         helper_exe = temp_dir / "BOSS_ResumeFilter_updater.exe"
         payload_path = temp_dir / "update_payload.json"
         ready_path = temp_dir / "update_helper.ready"
-        marker_path = Path(str(current_exe) + ".update_ok")
 
         shutil.copy2(current_exe, helper_exe)
         payload = {
             "old_exe": str(current_exe),
             "new_exe": str(new_exe),
-            "temp_dir": str(temp_dir),
-            "marker_path": str(marker_path),
-            "ready_path": str(ready_path),
             "old_pid": os.getpid(),
             "source": str(source or "manual"),
             "asset_info": dict(asset_info or {}),
@@ -1069,7 +1061,7 @@ def update_windows(
             env=_clean_pyinstaller_environment(),
             close_fds=True,
         )
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + UPDATE_TIMEOUT_HELPER_READY
         while time.monotonic() < deadline:
             if ready_path.exists():
                 return True, None
@@ -1617,7 +1609,6 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
     button_frame = tk.Frame(dialog, bg=colors['bg_card'])
     button_frame.pack(pady=pad(20))
     update_state = {
-        "running": False,
         "failed": False,
         "downloaded_path": None,
     }
@@ -1721,7 +1712,7 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
         except tk.TclError:
             return
 
-        update_state.update(running=False, failed=True)
+        update_state.update(failed=True)
         progress_bar.configure(value=0)
         progress_label.configure(
             text=headline,
@@ -1758,44 +1749,55 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
             )
             return
 
-        cached_exe = Path(downloaded_path)
-        asset_info = result.get("asset_info") or {}
-        verified, verify_error = verify_downloaded_file(cached_exe, asset_info)
-        if not verified:
-            update_state["downloaded_path"] = None
-            show_update_failure(
-                "安装包不可用",
-                "已保存的更新包未通过完整性校验，请重新下载。",
-                verify_error,
-            )
-            return
-
-        update_state.update(running=True, failed=False)
+        update_state["failed"] = False
         button_frame.pack_forget()
-        progress_label.configure(text="正在打开安装进度窗口…")
-        dialog.update_idletasks()
-        success, error = update_windows(
-            str(cached_exe),
-            sys.executable,
-            source=source,
-            asset_info=asset_info,
-            old_version=result["current"],
+        progress_label.configure(
+            text="正在校验并打开安装进度窗口…",
+            fg=colors['text_primary'],
         )
-        if success:
-            update_state["downloaded_path"] = None
-            dialog.destroy()
-            exit_for_update(root)
-        else:
-            show_update_failure(
-                "安装未完成",
-                "新版本已下载，但独立安装窗口未能启动，请稍后重试。",
-                error,
+
+        def do_install():
+            # 校验、复制助手和就绪等待可能耗时数秒，全部放在工作线程
+            cached_exe = Path(downloaded_path)
+            asset_info = result.get("asset_info") or {}
+            verified, verify_error = verify_downloaded_file(cached_exe, asset_info)
+            if not verified:
+                def fail_verify(error=verify_error):
+                    update_state["downloaded_path"] = None
+                    show_update_failure(
+                        "安装包不可用",
+                        "已保存的更新包未通过完整性校验，请重新下载。",
+                        error,
+                    )
+                root.after(0, fail_verify)
+                return
+
+            success, error = update_windows(
+                str(cached_exe),
+                sys.executable,
+                source=source,
+                asset_info=asset_info,
+                old_version=result["current"],
             )
+
+            def finish():
+                if success:
+                    update_state["downloaded_path"] = None
+                    dialog.destroy()
+                    exit_for_update(root)
+                else:
+                    show_update_failure(
+                        "安装未完成",
+                        "新版本已下载，但独立安装窗口未能启动，请稍后重试。",
+                        error,
+                    )
+            root.after(0, finish)
+
+        threading.Thread(target=do_install, daemon=True).start()
 
     def show_download_complete_actions(downloaded_path):
         """切换到可查看明细或立即安装的下载完成状态。"""
         update_state.update(
-            running=False,
             failed=False,
             downloaded_path=str(downloaded_path),
         )
@@ -1840,7 +1842,7 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
 
     def on_update():
         """执行更新"""
-        update_state.update(running=True, failed=False)
+        update_state.update(failed=False)
         progress_bar.configure(value=0)
         progress_label.configure(
             text="正在准备下载…",
@@ -1854,11 +1856,12 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
 
         def do_update():
             if sys.platform == 'win32':
-                cached_exe = _get_cached_windows_update(result)
-                if cached_exe:
+                # 复用检查阶段已完整校验过的缓存结果，不再重复哈希整个安装包
+                cached_update = result.get("cached_update_path")
+                if cached_update:
                     root.after(
                         0,
-                        lambda path=cached_exe: show_download_complete_actions(path),
+                        lambda path=cached_update: show_download_complete_actions(path),
                     )
                     return
 
@@ -2062,23 +2065,13 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
     dialog.bind('<Escape>', lambda e: on_cancel())
     dialog.protocol("WM_DELETE_WINDOW", on_cancel)
 
+    # 检查阶段已完成缓存校验；若命中则直接给出"立即安装"入口
     cached_update_path = result.get("cached_update_path")
     if sys.platform == "win32" and cached_update_path:
-        try:
-            cached_update_path = Path(cached_update_path).resolve()
-            expected_cache_path = _windows_update_cache_path(
-                result["latest"]
-            ).resolve()
-            if (
-                cached_update_path == expected_cache_path
-                and cached_update_path.is_file()
-            ):
-                root.after(
-                    0,
-                    lambda path=cached_update_path: show_download_complete_actions(path),
-                )
-        except (OSError, ValueError):
-            pass
+        root.after(
+            0,
+            lambda path=cached_update_path: show_download_complete_actions(path),
+        )
 
 
 def _read_cooldown(base_dir: Path) -> dict:

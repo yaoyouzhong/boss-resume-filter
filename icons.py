@@ -1014,3 +1014,56 @@ def cache() -> IconCache:
     if _instance is None:
         raise RuntimeError("IconCache not initialized — call icons.init(scale) first")
     return _instance
+
+
+# ---------------------------------------------------------------------------
+# 窗口图标 — 主程序与独立更新助手共用的放大镜窗口图标
+# ---------------------------------------------------------------------------
+
+def draw_search_icon(S: int, fill: str, sw_ratio: float = 0.10) -> Image.Image:
+    """在 S×S 画布上绘制放大镜图标（🔍 风格），返回 RGBA Image。"""
+    img = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    # 镜片
+    rim_color = ui_theme.PRIMARY      # 品牌蓝边框
+    glass_fill = (147, 197, 253, 80)  # 淡蓝玻璃
+    rim_w = max(3, int(S * 0.07))
+    r = int(S * 0.24)
+    cx, cy = int(S * 0.33), int(S * 0.33)
+    # 镜片玻璃底色
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=glass_fill)
+    # 金属边框
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=rim_color, width=rim_w)
+    # 反光斜线（白色）
+    shine_color = (255, 255, 255, 140)
+    shine_w = max(2, int(S * 0.025))
+    shine_y = int(cy - r * 0.4)
+    shine_len = int(r * 1.1)
+    angle = math.radians(-30)
+    sx1 = int(cx - shine_len * math.cos(angle))
+    sy1 = int(shine_y - shine_len * math.sin(angle))
+    sx2 = int(cx + shine_len * math.cos(angle))
+    sy2 = int(shine_y + shine_len * math.sin(angle))
+    d.line([(sx1, sy1), (sx2, sy2)], fill=shine_color, width=shine_w)
+    # 手柄
+    handle_color = ui_theme.PRIMARY_DARK
+    handle_w = max(3, int(S * 0.07))
+    angle45 = math.radians(45)
+    hx0 = int(cx + (r + rim_w // 2) * math.cos(angle45))
+    hy0 = int(cy + (r + rim_w // 2) * math.sin(angle45))
+    handle_len = int(S * 0.42)
+    hx1 = int(hx0 + handle_len * math.cos(angle45))
+    hy1 = int(hy0 + handle_len * math.sin(angle45))
+    d.line([(hx0, hy0), (hx1, hy1)], fill=handle_color, width=handle_w)
+    # 手柄圆头
+    cap_r = handle_w // 2
+    d.ellipse([hx1 - cap_r, hy1 - cap_r, hx1 + cap_r, hy1 + cap_r], fill=handle_color)
+    return img
+
+
+def set_search_window_icon(window) -> None:
+    """为任意 Tk 窗口设置与主程序一致的放大镜图标。"""
+    icon_photo = ImageTk.PhotoImage(draw_search_icon(256, ui_theme.PRIMARY))
+    window.iconphoto(True, icon_photo)
+    # 保留引用防止 Tk 图片被 GC；调用方不得再次持有
+    window._search_icon_photo = icon_photo

@@ -85,6 +85,10 @@ UPDATE_TIMEOUT_RELEASE_NOTES_GITEE = 3.0   # 更新日志弹窗远端说明：Gi
 UPDATE_TIMEOUT_RELEASE_NOTES_GITEE_RETRY = 5.0  # 更新日志弹窗远端说明：Gitee 重试超时
 UPDATE_TIMEOUT_RELEASE_NOTES_GITHUB = 3.5  # 更新日志弹窗远端说明：GitHub 短超时
 UPDATE_TIMEOUT_GIT_PULL = 30       # git pull subprocess 超时
+UPDATE_TIMEOUT_PROCESS_EXIT = 60   # 更新助手等待原程序退出
+UPDATE_TIMEOUT_STARTUP_MARKER = 45       # 更新后首次启动确认标记等待
+UPDATE_TIMEOUT_STARTUP_MARKER_RETRY = 90  # 更新后第二次启动确认标记等待
+UPDATE_TIMEOUT_HELPER_READY = 30   # 独立安装进度窗口就绪等待
 
 # ========== BOSS 推荐页空状态标记 ==========
 # 用于检测推荐牛人页面无候选人的情况（bossmaster + gui_main 共用）
