@@ -29,10 +29,49 @@ _PREFERRED_BONUS_MAX = 10
 QUALIFIED = "qualified"
 REJECTED = "rejected"
 MANUAL_REVIEW = "manual_review"
+GENDER_ANY = "不限"
+GENDER_MALE = "男"
+GENDER_FEMALE = "女"
+GENDER_VALUES = (GENDER_ANY, GENDER_MALE, GENDER_FEMALE)
 _EXPLICIT_NON_REGULAR_EDU = (
     "自考", "成教", "函授", "夜大", "网络教育", "继续教育", "非统招",
     "专升本", "电大", "远程教育", "成人高考", "成人教育", "业余",
 )
+
+
+def normalize_gender(value: Any) -> str | None:
+    """Normalize an explicit textual gender value used by job rules."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    text = re.sub(r'^性别\s*[：:]\s*', '', text).strip()
+    compact = re.sub(r'[\s_\-]+', '', text)
+    if compact in {"男", "男性", "male", "man", "m"}:
+        return GENDER_MALE
+    if compact in {"女", "女性", "female", "woman", "f"}:
+        return GENDER_FEMALE
+    return None
+
+
+def normalize_candidate_gender(value: Any) -> str | None:
+    """Normalize a BOSS candidate gender value, including ``geekGender`` codes.
+
+    The current BOSS recruiter web client renders ``geekGender == 1`` with the
+    male icon and ``geekGender == 0`` with the female icon.  Numeric mapping is
+    intentionally isolated from :func:`normalize_gender`, because ``0`` means
+    "不限" in some job-search request parameters and must not be accepted as a
+    job-rule value.
+    """
+    normalized = normalize_gender(value)
+    if normalized:
+        return normalized
+    text = str(value if value is not None else "").strip()
+    text = re.sub(r'^性别\s*[：:]\s*', '', text).strip()
+    if text == "1":
+        return GENDER_MALE
+    if text == "0":
+        return GENDER_FEMALE
+    return None
 
 
 _CERT_ALIASES = {
@@ -501,6 +540,39 @@ def filter_candidate(candidate_text: str, rule: dict[str, Any], structured_field
                 hard_checks.append(f"年龄：通过，要求≤{max_age}岁，实际{age_val}岁")
             else:
                 hard_checks.append(f"年龄：未识别明确年龄，要求≤{max_age}岁")
+
+        required_gender = normalize_gender(rule.get("gender"))
+        if required_gender:
+            candidate_gender = None
+            if structured_fields and structured_fields.get('gender') is not None:
+                candidate_gender = normalize_candidate_gender(structured_fields['gender'])
+            if candidate_gender is None:
+                for line in candidate_text.split('\n'):
+                    stripped = line.strip()
+                    if stripped.startswith("性别：") or stripped.startswith("性别:"):
+                        candidate_gender = normalize_candidate_gender(stripped)
+                        break
+            if candidate_gender is None:
+                flag = (
+                    f"性别待确认：岗位要求{required_gender}，候选人性别未识别"
+                )
+                _add_risk_flag(details, flag, "性别待确认")
+                hard_checks.append(
+                    f"性别：未识别，转人工确认，要求{required_gender}"
+                )
+            elif candidate_gender != required_gender:
+                return False, 0, {
+                    "reason": (
+                        f"性别不符：要求{required_gender}，实际{candidate_gender}"
+                    ),
+                    "qualification_status": REJECTED,
+                }
+            else:
+                hard_checks.append(
+                    f"性别：通过，要求{required_gender}，实际{candidate_gender}"
+                )
+        else:
+            hard_checks.append("性别：未设置硬性要求")
 
         work_location = rule.get("work_location")
         if work_location and work_location.strip():

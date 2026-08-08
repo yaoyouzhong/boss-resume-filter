@@ -4,6 +4,7 @@ from __future__ import annotations
 
 RESULT_BASE_COLUMNS = (
     "name",
+    "gender",
     "exp",
     "salary",
     "skills",
@@ -12,8 +13,9 @@ RESULT_BASE_COLUMNS = (
     "level",
     "status",
 )
-RESULT_EXTRA_COLUMNS = ("education", "age", "job_status")
+RESULT_EXTRA_COLUMNS = ("age", "education", "job_status")
 RESULT_WIDE_COLUMNS = ("school", "company")
+RESULT_ALL_COLUMNS = RESULT_BASE_COLUMNS + RESULT_EXTRA_COLUMNS + RESULT_WIDE_COLUMNS
 
 
 def result_display_columns(
@@ -21,11 +23,6 @@ def result_display_columns(
     *,
     maximized: bool,
 ) -> tuple[str, ...]:
-    """Return the readable result-table column set for one real table width."""
-    width = max(0, int(tree_width or 0))
-    columns = RESULT_BASE_COLUMNS
-    if width >= 1100:
-        columns += RESULT_EXTRA_COLUMNS
-    if maximized and width >= 1250:
-        columns += RESULT_WIDE_COLUMNS
-    return columns
+    """Return all ordered result columns; narrow windows use horizontal scroll."""
+    _ = max(0, int(tree_width or 0)), bool(maximized)
+    return RESULT_ALL_COLUMNS

@@ -91,6 +91,7 @@ from ai_adapter import (
     normalize_api_base_url,
 )
 from greeting_failure import diagnose_greeting_failure, format_greeting_failure_message
+from filtering import GENDER_VALUES, normalize_candidate_gender
 from contact_queue import (
     ACTIVE_STATUSES,
     build_contact_queue_item,
@@ -443,6 +444,11 @@ def _load_ui_config() -> dict:
 
 
 UI_CONFIG = _load_ui_config()
+RUN_SCROLL_WARNING_THRESHOLD = 100
+RUN_API_PAGE_WARNING_THRESHOLD = max(
+    1, (API_CANDIDATE_LIMIT_DEFAULT + 19) // 20
+)
+RUN_CONTACT_WARNING_THRESHOLD = GREET_CONTEXT_CAPTURE_LIMIT
 
 
 def _load_run_preferences() -> dict:
@@ -2317,7 +2323,7 @@ class BossFilterGUI:
             return False
 
     def _update_result_tree_columns(self):
-        """Show 8, 11, or 13 columns according to available table width."""
+        """Keep every result field available and size it for horizontal scrolling."""
         if not hasattr(self, 'result_tree'):
             return
 
@@ -2384,51 +2390,47 @@ class BossFilterGUI:
             widths[flexible_columns[-1]] += extra - allocated
 
     def _apply_result_tree_column_widths(self, display_columns):
-        """Balance visible columns while keeping education and age readable."""
+        """Keep readable widths; use horizontal overflow before compressing fields."""
         base_widths = {
-            "name": 80, "exp": 85, "salary": 85, "skills": 85,
+            "name": 80, "gender": 55, "exp": 85, "salary": 85, "skills": 85,
             "score": 70, "ai_eval": 70, "level": 80, "status": 180,
-            "education": 140, "age": 110, "job_status": 130,
+            "age": 70, "education": 90, "job_status": 130,
             "school": 150, "company": 160,
         }
         min_widths = {
-            "name": 60, "exp": 70, "salary": 70, "skills": 70,
+            "name": 60, "gender": 48, "exp": 70, "salary": 70, "skills": 70,
             "score": 60, "ai_eval": 60, "level": 70, "status": 150,
-            "education": 115, "age": 90, "job_status": 90,
+            "age": 60, "education": 80, "job_status": 90,
             "school": 120, "company": 125,
         }
 
-        wide_mode = "company" in display_columns
         try:
             available_width = max(0, int(self.result_tree.winfo_width()) - 2)
         except (tk.TclError, ValueError):
             available_width = 0
 
-        # education/age 在 13 列模式下保持紧凑固定宽，其余列参与富余分配
-        fixed_columns = {"education", "age"} if wide_mode else set()
+        # 短画像列保持紧凑；窗口不足时保留可读列宽并交给水平滚动条，
+        # 仅当全部字段已经容纳后，才把富余宽度分配给长文本列。
+        fixed_columns = {"gender", "age", "education"}
         flexible_columns = [c for c in display_columns if c not in fixed_columns]
-        floors = self._tree_header_floors(self.result_tree, flexible_columns, min_widths)
-        fixed_width = sum(base_widths[c] for c in fixed_columns)
-        flexible_available = max(0, available_width - fixed_width)
-
-        widths = {c: base_widths[c] for c in display_columns}
-        stretch = not wide_mode
-        floor_total = sum(floors.values())
-        base_flex_total = sum(base_widths[c] for c in flexible_columns)
+        floors = self._tree_header_floors(self.result_tree, display_columns, min_widths)
+        widths = {
+            column: max(base_widths[column], floors[column])
+            for column in display_columns
+        }
+        stretch = False
         growth_caps = {
-            "name": 130, "exp": 115, "salary": 120, "skills": 130,
+            "name": 130, "gender": 65, "exp": 115, "salary": 120, "skills": 130,
             "score": 95, "ai_eval": 95, "level": 120, "status": 260,
-            "education": 160, "age": 120, "job_status": 170,
+            "age": 80, "education": 110, "job_status": 170,
             "school": 280, "company": 320,
         }
-        can_fit_wide_columns = wide_mode and flexible_available >= floor_total
-        has_surplus = flexible_available > max(base_flex_total, floor_total)
-        if can_fit_wide_columns or has_surplus:
-            widths.update(floors)
+        content_width = sum(widths.values())
+        if available_width > content_width and flexible_columns:
             self._distribute_tree_surplus(
                 widths, flexible_columns, floors, base_widths, growth_caps,
-                flexible_available - floor_total)
-            stretch = False
+                available_width - content_width,
+            )
 
         for column in display_columns:
             self.result_tree.column(
@@ -3005,15 +3007,17 @@ class BossFilterGUI:
         basic_filter_input_width = 6
         secondary_filter_gap = int(30 * self.dpi_scale * self.zoom_factor)
 
-        # 学历与薪资同一行，按筛选条件的阅读顺序从左到右排列。
+        # 左列为枚举条件，右列为数字门槛；薪资和地点各自保留完整一行。
         self.salary_min_var = tk.StringVar()
         self.salary_max_var = tk.StringVar()
         self.salary_min_var.trace_add('write', self._validate_salary_input)
         self.salary_max_var.trace_add('write', self._validate_salary_input)
-        row_education_salary = ttk.Frame(basic_frame, style='TFrame')
-        row_education_salary.pack(fill="x", pady=int(10 * self.dpi_scale * self.zoom_factor))
+        row_education_experience = ttk.Frame(basic_frame, style='TFrame')
+        row_education_experience.pack(
+            fill="x", pady=int(10 * self.dpi_scale * self.zoom_factor)
+        )
         ttk.Label(
-            row_education_salary,
+            row_education_experience,
             text="最低学历:",
             font=self.font_label,
             width=UI_CONFIG['entry_width_job'],
@@ -3021,7 +3025,7 @@ class BossFilterGUI:
         ).pack(side="left")
         self.edu_var = tk.StringVar(value="不限")
         edu_combo = ttk.Combobox(
-            row_education_salary,
+            row_education_experience,
             textvariable=self.edu_var,
             values=["不限", "高中", "中专", "大专", "本科", "硕士", "博士"],
             width=basic_filter_input_width,
@@ -3034,70 +3038,22 @@ class BossFilterGUI:
         edu_combo.bind('<Leave>', lambda e: edu_combo.unbind('<MouseWheel>'))
         # 使用与下一行完全相同的“年”标签作透明占位，避免主题内边距造成偏差。
         ttk.Label(
-            row_education_salary,
+            row_education_experience,
             text="年",
             font=self.font_label,
             foreground=self.colors['bg_card'],
             background=self.colors['bg_card'],
         ).pack(side="left")
         ttk.Label(
-            row_education_salary,
-            text="薪资范围:",
+            row_education_experience,
+            text="最低经验:",
             font=self.font_label,
             width=UI_CONFIG['entry_width_label'],
             background=self.colors['bg_card'],
         ).pack(side="left", padx=(secondary_filter_gap, 0))
-        salary_min_entry = ttk.Entry(
-            row_education_salary,
-            textvariable=self.salary_min_var,
-            width=8,
-            font=self.font_label,
-        )
-        salary_min_entry.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
-        self.bind_entry_context_menu(salary_min_entry)
-        self.salary_min_entry = salary_min_entry
-        ttk.Label(
-            row_education_salary,
-            text="K  ~",
-            font=self.font_label,
-            background=self.colors['bg_card'],
-        ).pack(side="left")
-        salary_max_entry = ttk.Entry(
-            row_education_salary,
-            textvariable=self.salary_max_var,
-            width=8,
-            font=self.font_label,
-        )
-        salary_max_entry.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
-        self.bind_entry_context_menu(salary_max_entry)
-        self.salary_max_entry = salary_max_entry
-        ttk.Label(
-            row_education_salary,
-            text="K",
-            font=self.font_label,
-            background=self.colors['bg_card'],
-        ).pack(side="left")
-        ttk.Label(
-            row_education_salary,
-            text="留空表示不限制薪资",
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_card'],
-        ).pack(side="left", padx=(self.inline_note_gap, 0))
-
-        # 经验和年龄保持同一行、同一输入宽度。
-        row_experience_age = ttk.Frame(basic_frame, style='TFrame')
-        row_experience_age.pack(fill="x", pady=int(10 * self.dpi_scale * self.zoom_factor))
-        ttk.Label(
-            row_experience_age,
-            text="最低经验:",
-            font=self.font_label,
-            width=UI_CONFIG['entry_width_job'],
-            background=self.colors['bg_card'],
-        ).pack(side="left")
         self.min_exp_var = tk.StringVar(value="0")
         min_exp_spin = ttk.Spinbox(
-            row_experience_age,
+            row_education_experience,
             from_=UI_CONFIG['spinbox_exp_min'],
             to=UI_CONFIG['spinbox_exp_max'],
             textvariable=self.min_exp_var,
@@ -3105,23 +3061,68 @@ class BossFilterGUI:
             font=self.font_label,
             style='CompactFilter.TSpinbox',
         )
-        min_exp_spin.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
-        # 禁用滚轮切换，防止误操作
-        min_exp_spin.bind('<Enter>', lambda e: min_exp_spin.bind('<MouseWheel>', lambda ev: 'break'))
+        min_exp_spin.pack(
+            side="left", padx=int(15 * self.dpi_scale * self.zoom_factor)
+        )
+        min_exp_spin.bind(
+            '<Enter>',
+            lambda e: min_exp_spin.bind('<MouseWheel>', lambda ev: 'break'),
+        )
         min_exp_spin.bind('<Leave>', lambda e: min_exp_spin.unbind('<MouseWheel>'))
-        ttk.Label(row_experience_age, text="年", font=self.font_label,
-                  background=self.colors['bg_card']).pack(side="left")
-
-        self.max_age_var = tk.StringVar(value="")
         ttk.Label(
-            row_experience_age,
+            row_education_experience,
+            text="年",
+            font=self.font_label,
+            background=self.colors['bg_card'],
+        ).pack(side="left")
+
+        row_gender_age = ttk.Frame(basic_frame, style='TFrame')
+        row_gender_age.pack(
+            fill="x", pady=int(10 * self.dpi_scale * self.zoom_factor)
+        )
+        ttk.Label(
+            row_gender_age,
+            text="性别要求:",
+            font=self.font_label,
+            width=UI_CONFIG['entry_width_job'],
+            background=self.colors['bg_card'],
+        ).pack(side="left")
+        self.gender_var = tk.StringVar(value="不限")
+        gender_combo = ttk.Combobox(
+            row_gender_age,
+            textvariable=self.gender_var,
+            values=GENDER_VALUES,
+            width=basic_filter_input_width,
+            font=self.font_label,
+            style='CompactFilter.TCombobox',
+            state="readonly",
+        )
+        gender_combo.pack(
+            side="left", padx=int(15 * self.dpi_scale * self.zoom_factor)
+        )
+        gender_combo.bind(
+            '<Enter>',
+            lambda e: gender_combo.bind('<MouseWheel>', lambda ev: 'break'),
+        )
+        gender_combo.bind('<Leave>', lambda e: gender_combo.unbind('<MouseWheel>'))
+        # 与上一行的“年”保持同宽，让右侧数字门槛垂直对齐。
+        ttk.Label(
+            row_gender_age,
+            text="年",
+            font=self.font_label,
+            foreground=self.colors['bg_card'],
+            background=self.colors['bg_card'],
+        ).pack(side="left")
+        ttk.Label(
+            row_gender_age,
             text="最大年龄:",
             font=self.font_label,
             width=UI_CONFIG['entry_width_label'],
             background=self.colors['bg_card'],
         ).pack(side="left", padx=(secondary_filter_gap, 0))
+        self.max_age_var = tk.StringVar(value="")
         max_age_spin = ttk.Spinbox(
-            row_experience_age,
+            row_gender_age,
             from_=0,
             to=99,
             textvariable=self.max_age_var,
@@ -3129,28 +3130,93 @@ class BossFilterGUI:
             font=self.font_label,
             style='CompactFilter.TSpinbox',
         )
-        max_age_spin.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
-        max_age_spin.bind('<Enter>', lambda e: max_age_spin.bind('<MouseWheel>', lambda ev: 'break'))
+        max_age_spin.pack(
+            side="left", padx=int(15 * self.dpi_scale * self.zoom_factor)
+        )
+        max_age_spin.bind(
+            '<Enter>',
+            lambda e: max_age_spin.bind('<MouseWheel>', lambda ev: 'break'),
+        )
         max_age_spin.bind('<Leave>', lambda e: max_age_spin.unbind('<MouseWheel>'))
-        ttk.Label(row_experience_age, text="岁", font=self.font_label,
-                  background=self.colors['bg_card']).pack(side="left")
-        ttk.Label(row_experience_age, text="留空表示不限制",
-                 font=(FONT_FAMILY, int(10 * self.font_scale)),
-                 foreground=self.colors['text_secondary'],
-                 background=self.colors['bg_card']).pack(side="left", padx=(self.inline_note_gap, 0))
+        ttk.Label(
+            row_gender_age,
+            text="岁",
+            font=self.font_label,
+            background=self.colors['bg_card'],
+        ).pack(side="left")
+
+        row_salary = ttk.Frame(basic_frame, style='TFrame')
+        row_salary.pack(
+            fill="x", pady=int(10 * self.dpi_scale * self.zoom_factor)
+        )
+        salary_unit_gap = int(6 * self.dpi_scale * self.zoom_factor)
+        salary_range_gap = int(10 * self.dpi_scale * self.zoom_factor)
+        ttk.Label(
+            row_salary,
+            text="薪资范围:",
+            font=self.font_label,
+            width=UI_CONFIG['entry_width_job'],
+            background=self.colors['bg_card'],
+        ).pack(side="left")
+        salary_min_entry = ttk.Entry(
+            row_salary,
+            textvariable=self.salary_min_var,
+            width=8,
+            font=self.font_label,
+        )
+        salary_min_entry.pack(
+            side="left",
+            padx=(int(15 * self.dpi_scale * self.zoom_factor), 0),
+        )
+        self.bind_entry_context_menu(salary_min_entry)
+        self.salary_min_entry = salary_min_entry
+        ttk.Label(
+            row_salary,
+            text="K",
+            font=self.font_label,
+            background=self.colors['bg_card'],
+        ).pack(side="left", padx=(salary_unit_gap, 0))
+        ttk.Label(
+            row_salary,
+            text="~",
+            font=self.font_label,
+            background=self.colors['bg_card'],
+        ).pack(side="left", padx=(salary_range_gap, salary_range_gap))
+        salary_max_entry = ttk.Entry(
+            row_salary,
+            textvariable=self.salary_max_var,
+            width=8,
+            font=self.font_label,
+        )
+        salary_max_entry.pack(side="left")
+        self.bind_entry_context_menu(salary_max_entry)
+        self.salary_max_entry = salary_max_entry
+        ttk.Label(
+            row_salary,
+            text="K",
+            font=self.font_label,
+            background=self.colors['bg_card'],
+        ).pack(side="left", padx=(salary_unit_gap, 0))
+        ttk.Label(
+            row_salary,
+            text="留空表示不限制薪资",
+            font=(FONT_FAMILY, int(10 * self.font_scale)),
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+        ).pack(side="left", padx=(self.inline_note_gap, 0))
 
         # 工作地点
-        row3 = ttk.Frame(basic_frame, style='TFrame')
-        row3.pack(fill="x", pady=int(10 * self.dpi_scale * self.zoom_factor))
-        ttk.Label(row3, text="工作地点:", font=self.font_label, width=UI_CONFIG['entry_width_job'],
+        row_location = ttk.Frame(basic_frame, style='TFrame')
+        row_location.pack(fill="x", pady=int(10 * self.dpi_scale * self.zoom_factor))
+        ttk.Label(row_location, text="工作地点:", font=self.font_label, width=UI_CONFIG['entry_width_job'],
                  background=self.colors['bg_card']).pack(side="left")
         self.work_location_var = tk.StringVar()
-        work_location_entry = ttk.Entry(row3, textvariable=self.work_location_var, width=22, font=self.font_label)
+        work_location_entry = ttk.Entry(row_location, textvariable=self.work_location_var, width=22, font=self.font_label)
         work_location_entry.pack(
             side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0)
         )
         self.bind_entry_context_menu(work_location_entry)
-        ttk.Label(row3, text="留空表示不限   多地点用 / 分隔，如：南京/上海",
+        ttk.Label(row_location, text="留空表示不限   多地点用 / 分隔，如：南京/上海",
                   font=(FONT_FAMILY, int(10 * self.font_scale)),
                   foreground=self.colors['text_secondary'], background=self.colors['bg_card']).pack(side="left", padx=(self.inline_note_gap, 0))
 
@@ -3978,6 +4044,78 @@ class BossFilterGUI:
             number = default
         return max(minimum, min(maximum, number))
 
+    def _advanced_run_risk_metrics(self) -> tuple[tuple[str, str], ...]:
+        """Return enabled run settings that exceed their recommended values."""
+        rounds_var = getattr(self, "rounds_var", None)
+        rounds = self._coerce_int_setting(
+            rounds_var.get() if rounds_var is not None else MAX_ROUNDS_DEFAULT,
+            MAX_ROUNDS_DEFAULT,
+            UI_CONFIG['spinbox_rounds_min'],
+            UI_CONFIG['spinbox_rounds_max'],
+        )
+        metrics = []
+        if rounds > RUN_SCROLL_WARNING_THRESHOLD:
+            metrics.append((
+                "滚动轮次",
+                f"{rounds} 轮（建议不超过 {RUN_SCROLL_WARNING_THRESHOLD}）",
+            ))
+
+        api_enabled_var = getattr(self, "api_direct_enabled_var", None)
+        if api_enabled_var is not None and bool(api_enabled_var.get()):
+            api_pages_var = getattr(self, "api_direct_pages_var", None)
+            api_pages = self._coerce_int_setting(
+                api_pages_var.get() if api_pages_var is not None else RUN_API_PAGE_WARNING_THRESHOLD,
+                RUN_API_PAGE_WARNING_THRESHOLD,
+                1,
+                20,
+            )
+            if api_pages > RUN_API_PAGE_WARNING_THRESHOLD:
+                metrics.append((
+                    "扫描增强",
+                    f"最多读取 {api_pages} 页（建议不超过 {RUN_API_PAGE_WARNING_THRESHOLD}）",
+                ))
+
+        contact_enabled_var = getattr(
+            self, "greet_context_capture_enabled_var", None
+        )
+        if contact_enabled_var is not None and bool(contact_enabled_var.get()):
+            contact_limit_var = getattr(
+                self, "greet_context_capture_limit_var", None
+            )
+            contact_limit = self._coerce_int_setting(
+                (
+                    contact_limit_var.get()
+                    if contact_limit_var is not None
+                    else RUN_CONTACT_WARNING_THRESHOLD
+                ),
+                RUN_CONTACT_WARNING_THRESHOLD,
+                1,
+                100,
+            )
+            if contact_limit > RUN_CONTACT_WARNING_THRESHOLD:
+                metrics.append((
+                    "后续联系",
+                    f"最多准备 {contact_limit} 人（建议不超过 {RUN_CONTACT_WARNING_THRESHOLD}）",
+                ))
+
+        return tuple(metrics)
+
+    def _confirm_advanced_run_settings(self) -> bool:
+        """Confirm settings that materially increase BOSS page access."""
+        metrics = self._advanced_run_risk_metrics()
+        if not metrics:
+            return True
+        return messagebox.ask_confirmation(
+            "确认高访问量设置",
+            headline="部分运行参数高于建议值",
+            message="继续运行会增加扫描耗时或页面访问量。",
+            metrics=metrics,
+            notice="建议返回调整；确认后仍可按当前设置运行。",
+            parent=getattr(self, "root", None),
+            yes_label="仍按当前设置运行",
+            no_label="返回调整",
+        )
+
     def _remember_run_job_selection(self, job_name: str) -> None:
         """Remember the latest concrete run-page job selection."""
         normalized = str(job_name or "").strip()
@@ -4573,7 +4711,12 @@ class BossFilterGUI:
             # 刷新提示文案
             timeout_hint_label = getattr(self, '_timeout_hint_label', None)
             if timeout_hint_label is not None and timeout_hint_label.winfo_exists():
-                _hint = _api_timeout_hint_text(self.api_config)
+                ai_eval_var = getattr(self, 'ai_eval_var', None)
+                _hint = (
+                    _api_timeout_hint_text(self.api_config)
+                    if ai_eval_var is not None and ai_eval_var.get()
+                    else "开启 AI 辅助评估后可设置"
+                )
                 timeout_hint_label.config(text=_hint)
 
         # 更新当前使用模型显示
@@ -5763,25 +5906,6 @@ class BossFilterGUI:
             pady=int(20 * self.dpi_scale * self.zoom_factor),
         )
 
-        # 滚动轮次
-        row1 = ttk.Frame(param_frame, style='TFrame')
-        row1.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
-        _create_run_control_lead(row1, "滚动轮次:")
-        self.rounds_var = tk.StringVar(value=str(MAX_ROUNDS_DEFAULT))
-        self.rounds_spin = ttk.Spinbox(row1, from_=UI_CONFIG['spinbox_rounds_min'],
-                                       to=UI_CONFIG['spinbox_rounds_max'],
-                                       increment=10, textvariable=self.rounds_var,
-                                       width=8, font=self.font_label)
-        self.rounds_spin.pack(side="left")
-        # 鼠标滚轮绑定
-        self.rounds_spin.bind('<Enter>',
-            lambda e: self.rounds_spin.bind('<MouseWheel>', self._on_rounds_mousewheel))
-        self.rounds_spin.bind('<Leave>',
-            lambda e: self.rounds_spin.unbind('<MouseWheel>'))
-        self.rounds_hint_label = ttk.Label(row1, text="推荐 20-100 轮次", font=(FONT_FAMILY, int(11 * self.font_scale)),
-                 foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED), background=self.colors['bg_card'])
-        self.rounds_hint_label.pack(side="left", padx=(self.inline_note_gap, 0))
-
         # 选择岗位（多岗位运行时指定处理哪个岗位）
         row_job = ttk.Frame(param_frame, style='TFrame')
         row_job.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
@@ -5835,171 +5959,6 @@ class BossFilterGUI:
 
         _update_contact_after_scan_note()
         contact_combo.bind("<<ComboboxSelected>>", _update_contact_after_scan_note)
-
-        yield
-
-        # 高级扫描设置：默认折叠，避免干扰普通扫描路径。
-        row_advanced_header = ttk.Frame(param_frame, style='TFrame')
-        row_advanced_header.pack(fill="x", pady=(int(6 * self.dpi_scale * self.zoom_factor), 0))
-        _create_run_control_lead(row_advanced_header)
-        self.scan_advanced_visible_var = tk.BooleanVar(value=False)
-        self.scan_advanced_toggle_label = ttk.Label(
-            row_advanced_header,
-            text="高级扫描设置 ▸",
-            font=(FONT_FAMILY, int(11 * self.font_scale)),
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_card'],
-            cursor="hand2",
-        )
-        self.scan_advanced_toggle_label.pack(side="left")
-        tk.Label(
-            row_advanced_header,
-            text="⚠ 调高会增加访问频率，请谨慎设置",
-            font=(FONT_FAMILY, max(8, int(10 * self.font_scale))),
-            foreground=self.colors.get('warning_text', ui_theme.WARNING_TEXT),
-            background=self.colors.get(
-                'banner_warning_bg', ui_theme.BANNER_WARNING_BG
-            ),
-            padx=max(6, int(8 * self.dpi_scale * self.zoom_factor)),
-            pady=max(2, int(3 * self.dpi_scale * self.zoom_factor)),
-        ).pack(side="left", padx=(self.inline_note_gap, 0))
-
-        self.scan_advanced_details_frame = ttk.Frame(param_frame, style='TFrame')
-        advanced_inner = ttk.Frame(self.scan_advanced_details_frame, style='TFrame')
-        advanced_inner.pack(fill="x")
-
-        default_api_pages = max(1, (API_CANDIDATE_LIMIT_DEFAULT + 19) // 20)
-        self.api_direct_enabled_var = tk.BooleanVar(value=True)
-        self.api_direct_pages_var = tk.StringVar(value=str(default_api_pages))
-        self.greet_context_capture_enabled_var = tk.BooleanVar(value=True)
-        self.greet_context_capture_limit_var = tk.StringVar(value=str(GREET_CONTEXT_CAPTURE_LIMIT))
-
-        _sub_font = (FONT_FAMILY, int(11 * self.font_scale))
-        _spin_font = (FONT_FAMILY, int(12 * self.font_scale))
-        _spin_pad = int(5 * self.dpi_scale * self.zoom_factor)
-
-        row_api_enhance = ttk.Frame(advanced_inner, style='TFrame')
-        row_api_enhance.pack(fill="x", pady=(int(8 * self.dpi_scale * self.zoom_factor), 0))
-        ttk.Label(row_api_enhance, text="", width=12, background=self.colors['bg_card']).pack(side="left")
-        ttk.Label(row_api_enhance, text="扫描增强:", font=_sub_font,
-                  width=10, foreground=self.colors['text_secondary'],
-                  background=self.colors['bg_card']).pack(side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0))
-        api_switch = self._create_switch(row_api_enhance, self.api_direct_enabled_var)
-        api_switch.pack(side="left")
-        api_label = ttk.Label(
-            row_api_enhance, text="自动补全候选人详情", font=_sub_font,
-            background=self.colors['bg_card'], cursor='arrow',
-        )
-        api_label.pack(side="left", padx=(_spin_pad, 0))
-        ttk.Label(row_api_enhance, text="最多读取:", font=_sub_font,
-                  foreground=self.colors['text_secondary'],
-                  background=self.colors['bg_card']).pack(side="left", padx=(self.inline_note_gap, 0))
-        self.api_direct_pages_spin = ttk.Spinbox(
-            row_api_enhance, from_=1, to=20, increment=1, width=4,
-            textvariable=self.api_direct_pages_var, font=_spin_font,
-        )
-        self.api_direct_pages_spin.pack(side="left", padx=(_spin_pad, 0))
-        ttk.Label(row_api_enhance, text="页", font=_sub_font,
-                  foreground=self.colors['text_secondary'],
-                  background=self.colors['bg_card']).pack(side="left", padx=(_spin_pad, 0))
-
-        row_api_note = ttk.Frame(advanced_inner, style='TFrame')
-        row_api_note.pack(fill="x", pady=(int(3 * self.dpi_scale * self.zoom_factor), 0))
-        ttk.Label(row_api_note, text="", width=12, background=self.colors['bg_card']).pack(side="left")
-        ttk.Label(row_api_note, text="", width=10, background=self.colors['bg_card']).pack(side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0))
-        ttk.Label(
-            row_api_note,
-            text="可提升经验、薪资、城市等信息准确性",
-            font=_sub_font,
-            foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
-            background=self.colors['bg_card'],
-        ).pack(side="left")
-
-        row_contact_prepare = ttk.Frame(advanced_inner, style='TFrame')
-        row_contact_prepare.pack(fill="x", pady=(int(8 * self.dpi_scale * self.zoom_factor), 0))
-        ttk.Label(row_contact_prepare, text="", width=12, background=self.colors['bg_card']).pack(side="left")
-        ttk.Label(row_contact_prepare, text="后续联系:", font=_sub_font,
-                  width=10, foreground=self.colors['text_secondary'],
-                  background=self.colors['bg_card']).pack(side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0))
-        contact_prepare_switch = self._create_switch(
-            row_contact_prepare, self.greet_context_capture_enabled_var
-        )
-        contact_prepare_switch.pack(side="left")
-        contact_prepare_label = ttk.Label(
-            row_contact_prepare, text="扫描后准备联系信息", font=_sub_font,
-            background=self.colors['bg_card'], cursor='arrow',
-        )
-        contact_prepare_label.pack(side="left", padx=(_spin_pad, 0))
-        ttk.Label(row_contact_prepare, text="最多准备:", font=_sub_font,
-                  foreground=self.colors['text_secondary'],
-                  background=self.colors['bg_card']).pack(side="left", padx=(self.inline_note_gap, 0))
-        self.greet_context_capture_limit_spin = ttk.Spinbox(
-            row_contact_prepare, from_=1, to=100, increment=1, width=4,
-            textvariable=self.greet_context_capture_limit_var, font=_spin_font,
-        )
-        self.greet_context_capture_limit_spin.pack(side="left", padx=(_spin_pad, 0))
-        ttk.Label(row_contact_prepare, text="人", font=_sub_font,
-                  foreground=self.colors['text_secondary'],
-                  background=self.colors['bg_card']).pack(side="left", padx=(_spin_pad, 0))
-
-        row_contact_note = ttk.Frame(advanced_inner, style='TFrame')
-        row_contact_note.pack(fill="x", pady=(int(3 * self.dpi_scale * self.zoom_factor), 0))
-        ttk.Label(row_contact_note, text="", width=12, background=self.colors['bg_card']).pack(side="left")
-        ttk.Label(row_contact_note, text="", width=10, background=self.colors['bg_card']).pack(side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0))
-        ttk.Label(
-            row_contact_note,
-            text="可提升打招呼成功率",
-            font=_sub_font,
-            foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
-            background=self.colors['bg_card'],
-        ).pack(side="left")
-
-        def _sync_advanced_scan_controls(*_):
-            self.api_direct_pages_spin.configure(
-                state="normal" if self.api_direct_enabled_var.get() else "disabled"
-            )
-            self.greet_context_capture_limit_spin.configure(
-                state="normal" if self.greet_context_capture_enabled_var.get() else "disabled"
-            )
-
-        def _toggle_api_direct_from_label(_event=None):
-            self.api_direct_enabled_var.set(not self.api_direct_enabled_var.get())
-            return 'break'
-
-        def _toggle_contact_prepare_from_label(_event=None):
-            self.greet_context_capture_enabled_var.set(
-                not self.greet_context_capture_enabled_var.get()
-            )
-            return 'break'
-
-        def _toggle_advanced_scan_settings(_event=None):
-            visible = not self.scan_advanced_visible_var.get()
-            self.scan_advanced_visible_var.set(visible)
-            self.scan_advanced_toggle_label.config(
-                text="高级扫描设置 ▾" if visible else "高级扫描设置 ▸"
-            )
-            if visible:
-                before_widget = getattr(self, 'ai_eval_row', None)
-                pack_kwargs = {
-                    "fill": "x",
-                    "pady": (0, int(8 * self.dpi_scale * self.zoom_factor)),
-                }
-                if before_widget is not None:
-                    self.scan_advanced_details_frame.pack(
-                        before=before_widget, **pack_kwargs
-                    )
-                else:
-                    self.scan_advanced_details_frame.pack(**pack_kwargs)
-            else:
-                self.scan_advanced_details_frame.pack_forget()
-            return 'break'
-
-        self.api_direct_enabled_var.trace_add('write', _sync_advanced_scan_controls)
-        self.greet_context_capture_enabled_var.trace_add('write', _sync_advanced_scan_controls)
-        api_label.bind('<Button-1>', _toggle_api_direct_from_label)
-        contact_prepare_label.bind('<Button-1>', _toggle_contact_prepare_from_label)
-        self.scan_advanced_toggle_label.bind('<Button-1>', _toggle_advanced_scan_settings)
-        _sync_advanced_scan_controls()
 
         yield
 
@@ -6091,40 +6050,509 @@ class BossFilterGUI:
 
         yield
 
-        # AI 评估超时设置（紧跟 AI 评估行下方，缩进对齐）
-        row_ai_timeout = ttk.Frame(param_frame, style='TFrame')
-        row_ai_timeout.pack(fill="x", pady=(0, int(5 * self.dpi_scale * self.zoom_factor)))
-        _spin_font = (FONT_FAMILY, int(12 * self.font_scale))
-        _spin_w = 5
-        _spin_pad = int(3 * self.dpi_scale * self.zoom_factor)
-        _sub_font = (FONT_FAMILY, int(11 * self.font_scale))
+        # 高级运行设置：位于 AI 评估行下方，默认折叠。
+        row_advanced_header = ttk.Frame(param_frame, style='TFrame')
+        row_advanced_header.pack(
+            fill="x", pady=(int(2 * self.dpi_scale * self.zoom_factor), 0)
+        )
+        row_advanced_header.configure(cursor="hand2")
+        self.scan_advanced_header = row_advanced_header
+        self.scan_advanced_visible_var = tk.BooleanVar(value=False)
+        self.scan_advanced_toggle_label = ttk.Label(
+            row_advanced_header,
+            text="高级运行设置 ▸",
+            font=(FONT_FAMILY, int(11 * self.font_scale)),
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+            cursor="hand2",
+            takefocus=1,
+        )
+        self.scan_advanced_toggle_label.pack(side="left")
+        self.scan_advanced_summary_label = ttk.Label(
+            row_advanced_header,
+            text="",
+            font=(FONT_FAMILY, max(8, int(10 * self.font_scale))),
+            foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
+            background=self.colors['bg_card'],
+            cursor="hand2",
+        )
+        self.scan_advanced_summary_label.pack(
+            side="left", padx=(self.inline_note_gap, 0)
+        )
+        self.scan_advanced_warning_label = tk.Label(
+            row_advanced_header,
+            text="⚠ 部分设置会增加扫描耗时或页面访问量，请谨慎调高",
+            font=(FONT_FAMILY, max(8, int(10 * self.font_scale))),
+            foreground=self.colors.get('warning_text', ui_theme.WARNING_TEXT),
+            background=self.colors.get(
+                'banner_warning_bg', ui_theme.BANNER_WARNING_BG
+            ),
+            padx=max(6, int(8 * self.dpi_scale * self.zoom_factor)),
+            pady=max(2, int(3 * self.dpi_scale * self.zoom_factor)),
+            cursor="hand2",
+        )
 
-        # 根据是否中转服务决定默认读取超时
+        self.scan_advanced_details_frame = ttk.Frame(param_frame, style='TFrame')
+        advanced_inner = ttk.Frame(self.scan_advanced_details_frame, style='TFrame')
+        advanced_inner.pack(fill="x")
+
+        default_api_pages = max(1, (API_CANDIDATE_LIMIT_DEFAULT + 19) // 20)
+        self.rounds_var = tk.StringVar(value=str(MAX_ROUNDS_DEFAULT))
+        self.api_direct_enabled_var = tk.BooleanVar(value=True)
+        self.api_direct_pages_var = tk.StringVar(value=str(default_api_pages))
+        self.greet_context_capture_enabled_var = tk.BooleanVar(value=True)
+        self.greet_context_capture_limit_var = tk.StringVar(value=str(GREET_CONTEXT_CAPTURE_LIMIT))
         _is_relay = self._is_relay_endpoint_for_timeout()
         _default_read = 120 if _is_relay else 60
         _init_read = self.api_config.get("llm_read_timeout") or _default_read
         self.llm_read_timeout_var = tk.IntVar(value=_init_read)
 
-        timeout_label = _create_run_control_lead(
-            row_ai_timeout, "AI 响应超时:", label_font=_sub_font
+        _sub_font = (FONT_FAMILY, int(11 * self.font_scale))
+        _spin_font = (FONT_FAMILY, int(12 * self.font_scale))
+        _spin_pad = int(5 * self.dpi_scale * self.zoom_factor)
+        _advanced_row_pady = int(7 * self.dpi_scale * self.zoom_factor)
+        advanced_inner.columnconfigure(0, minsize=_run_control_lead_width)
+
+        def _create_advanced_setting_label(row_index, label_text):
+            setting_label = ttk.Label(
+                advanced_inner,
+                text=label_text,
+                font=_sub_font,
+                foreground=self.colors['text_secondary'],
+                background=self.colors['bg_card'],
+            )
+            setting_label.grid(
+                row=row_index,
+                column=0,
+                sticky="w",
+                pady=(_advanced_row_pady, 0),
+            )
+            return setting_label
+
+        # 1. 扫描范围
+        _create_advanced_setting_label(0, "滚动轮次:")
+        row_rounds_controls = ttk.Frame(advanced_inner, style='TFrame')
+        row_rounds_controls.grid(
+            row=0,
+            column=1,
+            columnspan=5,
+            sticky="w",
+            pady=(_advanced_row_pady, 0),
         )
-        timeout_label.configure(foreground=self.colors['text_secondary'])
-        ttk.Spinbox(row_ai_timeout, from_=10, to=300, increment=10, width=_spin_w,
-                    textvariable=self.llm_read_timeout_var,
-                    font=_spin_font).pack(side="left")
-        ttk.Label(row_ai_timeout, text="秒", font=_sub_font,
-                 background=self.colors['bg_card'],
-                 foreground=self.colors['text_secondary']).pack(side="left", padx=(_spin_pad, 0))
+        self.rounds_spin = ttk.Spinbox(
+            row_rounds_controls,
+            from_=UI_CONFIG['spinbox_rounds_min'],
+            to=UI_CONFIG['spinbox_rounds_max'],
+            increment=10,
+            textvariable=self.rounds_var,
+            width=8,
+            font=_spin_font,
+        )
+        self.rounds_spin.pack(side="left")
+        self.rounds_spin.bind(
+            '<Enter>',
+            lambda e: self.rounds_spin.bind('<MouseWheel>', self._on_rounds_mousewheel),
+        )
+        self.rounds_spin.bind(
+            '<Leave>', lambda e: self.rounds_spin.unbind('<MouseWheel>')
+        )
+        ttk.Label(
+            row_rounds_controls,
+            text="轮",
+            font=_sub_font,
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+        ).pack(side="left", padx=(_spin_pad, 0))
+        self.rounds_hint_label = ttk.Label(
+            row_rounds_controls,
+            text="默认 50，推荐 20-100",
+            font=_sub_font,
+            foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
+            background=self.colors['bg_card'],
+        )
+        self.rounds_hint_label.pack(
+            side="left", padx=(self.inline_note_gap, 0)
+        )
+
+        # 2. AI 评估响应等待时间
+        self.ai_timeout_setting_label = _create_advanced_setting_label(
+            1, "AI 响应超时:"
+        )
+        row_ai_timeout_controls = ttk.Frame(advanced_inner, style='TFrame')
+        row_ai_timeout_controls.grid(
+            row=1,
+            column=1,
+            columnspan=5,
+            sticky="w",
+            pady=(_advanced_row_pady, 0),
+        )
+        self.llm_read_timeout_spin = ttk.Spinbox(
+            row_ai_timeout_controls,
+            from_=10,
+            to=300,
+            increment=10,
+            width=8,
+            textvariable=self.llm_read_timeout_var,
+            font=_spin_font,
+        )
+        self.llm_read_timeout_spin.pack(side="left")
+        ttk.Label(
+            row_ai_timeout_controls,
+            text="秒",
+            font=_sub_font,
+            background=self.colors['bg_card'],
+            foreground=self.colors['text_secondary'],
+        ).pack(side="left", padx=(_spin_pad, 0))
         _hint = _api_timeout_hint_text(self.api_config)
-        self._timeout_hint_label = ttk.Label(row_ai_timeout, text=_hint, font=_sub_font,
-                 background=self.colors['bg_card'],
-                 foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
-        self._timeout_hint_label.pack(side="left", padx=(self.inline_note_gap, 0))
+        self._timeout_hint_label = ttk.Label(
+            row_ai_timeout_controls,
+            text=_hint,
+            font=_sub_font,
+            background=self.colors['bg_card'],
+            foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
+        )
+        self._timeout_hint_label.pack(
+            side="left", padx=(self.inline_note_gap, 0)
+        )
+
+        # 3. 扫描信息补全
+        _create_advanced_setting_label(2, "扫描增强:")
+        row_api_controls = ttk.Frame(advanced_inner, style='TFrame')
+        row_api_controls.grid(
+            row=2,
+            column=1,
+            sticky="w",
+            pady=(_advanced_row_pady, 0),
+        )
+        api_switch = self._create_switch(
+            row_api_controls, self.api_direct_enabled_var
+        )
+        api_switch.pack(side="left")
+        api_label = ttk.Label(
+            row_api_controls,
+            text="自动补全候选人详情",
+            font=_sub_font,
+            background=self.colors['bg_card'],
+            cursor='arrow',
+        )
+        api_label.pack(side="left", padx=(_spin_pad, 0))
+        ttk.Label(
+            row_api_controls,
+            text="最多读取:",
+            font=_sub_font,
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+        ).pack(side="left", padx=(self.inline_note_gap, 0))
+        self.api_direct_pages_spin = ttk.Spinbox(
+            row_api_controls,
+            from_=1,
+            to=20,
+            increment=1,
+            width=4,
+            textvariable=self.api_direct_pages_var,
+            font=_spin_font,
+        )
+        self.api_direct_pages_spin.pack(side="left", padx=(_spin_pad, 0))
+        ttk.Label(
+            row_api_controls,
+            text="页",
+            font=_sub_font,
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+        ).pack(side="left", padx=(_spin_pad, 0))
+        self.api_direct_risk_label = ttk.Label(
+            row_api_controls,
+            text="",
+            font=_sub_font,
+            foreground=self.colors.get('warning_text', ui_theme.WARNING_TEXT),
+            background=self.colors['bg_card'],
+        )
+        self.api_direct_risk_label.pack(
+            side="left", padx=(self.inline_note_gap, 0)
+        )
+
+        # 4. 联系信息准备
+        _create_advanced_setting_label(3, "后续联系:")
+        row_contact_controls = ttk.Frame(advanced_inner, style='TFrame')
+        row_contact_controls.grid(
+            row=3,
+            column=1,
+            sticky="w",
+            pady=(_advanced_row_pady, 0),
+        )
+        contact_prepare_switch = self._create_switch(
+            row_contact_controls, self.greet_context_capture_enabled_var
+        )
+        contact_prepare_switch.pack(side="left")
+        contact_prepare_label = ttk.Label(
+            row_contact_controls,
+            text="扫描后准备联系信息",
+            font=_sub_font,
+            background=self.colors['bg_card'],
+            cursor='arrow',
+        )
+        contact_prepare_label.pack(side="left", padx=(_spin_pad, 0))
+        ttk.Label(
+            row_contact_controls,
+            text="最多准备:",
+            font=_sub_font,
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+        ).pack(side="left", padx=(self.inline_note_gap, 0))
+        self.greet_context_capture_limit_spin = ttk.Spinbox(
+            row_contact_controls,
+            from_=1,
+            to=100,
+            increment=1,
+            width=4,
+            textvariable=self.greet_context_capture_limit_var,
+            font=_spin_font,
+        )
+        self.greet_context_capture_limit_spin.pack(
+            side="left", padx=(_spin_pad, 0)
+        )
+        ttk.Label(
+            row_contact_controls,
+            text="人",
+            font=_sub_font,
+            foreground=self.colors['text_secondary'],
+            background=self.colors['bg_card'],
+        ).pack(side="left", padx=(_spin_pad, 0))
+        self.greet_context_risk_label = ttk.Label(
+            row_contact_controls,
+            text="",
+            font=_sub_font,
+            foreground=self.colors.get('warning_text', ui_theme.WARNING_TEXT),
+            background=self.colors['bg_card'],
+        )
+        self.greet_context_risk_label.pack(
+            side="left", padx=(self.inline_note_gap, 0)
+        )
+
+        _muted_text = self.colors.get('text_muted', ui_theme.TEXT_MUTED)
+        _warning_text = self.colors.get('warning_text', ui_theme.WARNING_TEXT)
+
+        def _advanced_setting_value(variable, default, minimum, maximum):
+            return self._coerce_int_setting(
+                variable.get(), default, minimum, maximum
+            )
+
+        def _sync_advanced_scan_controls(*_):
+            try:
+                if not self.scan_advanced_details_frame.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+
+            api_enabled = bool(self.api_direct_enabled_var.get())
+            ai_enabled = bool(self.ai_eval_var.get())
+            contact_enabled = bool(self.greet_context_capture_enabled_var.get())
+            rounds = _advanced_setting_value(
+                self.rounds_var,
+                MAX_ROUNDS_DEFAULT,
+                UI_CONFIG['spinbox_rounds_min'],
+                UI_CONFIG['spinbox_rounds_max'],
+            )
+            api_pages = _advanced_setting_value(
+                self.api_direct_pages_var,
+                RUN_API_PAGE_WARNING_THRESHOLD,
+                1,
+                20,
+            )
+            contact_limit = _advanced_setting_value(
+                self.greet_context_capture_limit_var,
+                RUN_CONTACT_WARNING_THRESHOLD,
+                1,
+                100,
+            )
+            read_timeout = _advanced_setting_value(
+                self.llm_read_timeout_var,
+                _default_read,
+                10,
+                300,
+            )
+
+            self.api_direct_pages_spin.configure(
+                state="normal" if api_enabled else "disabled"
+            )
+            self.llm_read_timeout_spin.configure(
+                state="normal" if ai_enabled else "disabled"
+            )
+            self.greet_context_capture_limit_spin.configure(
+                state="normal" if contact_enabled else "disabled"
+            )
+            self.ai_timeout_setting_label.configure(
+                foreground=(self.colors['text_secondary'] if ai_enabled else _muted_text)
+            )
+            self._timeout_hint_label.configure(
+                text=(
+                    _api_timeout_hint_text(self.api_config)
+                    if ai_enabled
+                    else "开启 AI 辅助评估后可设置"
+                )
+            )
+
+            rounds_high = rounds > RUN_SCROLL_WARNING_THRESHOLD
+            self.rounds_hint_label.configure(
+                text=(
+                    "访问量和耗时会明显增加"
+                    if rounds_high
+                    else f"默认 {MAX_ROUNDS_DEFAULT}，推荐 20-{RUN_SCROLL_WARNING_THRESHOLD}"
+                ),
+                foreground=_warning_text if rounds_high else _muted_text,
+            )
+            self.api_direct_risk_label.configure(
+                text=(
+                    "继续调高会增加触发风控的风险"
+                    if api_enabled and api_pages > RUN_API_PAGE_WARNING_THRESHOLD
+                    else ""
+                )
+            )
+            self.greet_context_risk_label.configure(
+                text=(
+                    "继续调高会增加触发风控的风险"
+                    if contact_enabled
+                    and contact_limit > RUN_CONTACT_WARNING_THRESHOLD
+                    else ""
+                )
+            )
+
+            ai_summary = f"AI {read_timeout} 秒" if ai_enabled else "AI 关闭"
+            api_summary = f"增强 {api_pages} 页" if api_enabled else "增强关闭"
+            contact_summary = (
+                f"联系 {contact_limit} 人" if contact_enabled else "联系关闭"
+            )
+            self.scan_advanced_summary_label.configure(
+                text=(
+                    f"{rounds} 轮 · {ai_summary} · "
+                    f"{api_summary} · {contact_summary}"
+                )
+            )
+
+        def _toggle_api_direct_from_label(_event=None):
+            self.api_direct_enabled_var.set(not self.api_direct_enabled_var.get())
+            return 'break'
+
+        def _toggle_contact_prepare_from_label(_event=None):
+            self.greet_context_capture_enabled_var.set(
+                not self.greet_context_capture_enabled_var.get()
+            )
+            return 'break'
+
+        def _restore_advanced_run_defaults(_event=None):
+            self.rounds_var.set(str(MAX_ROUNDS_DEFAULT))
+            self.llm_read_timeout_var.set(120 if self._is_relay_endpoint_for_timeout() else 60)
+            self.api_direct_enabled_var.set(True)
+            self.api_direct_pages_var.set(str(RUN_API_PAGE_WARNING_THRESHOLD))
+            self.greet_context_capture_enabled_var.set(True)
+            self.greet_context_capture_limit_var.set(
+                str(RUN_CONTACT_WARNING_THRESHOLD)
+            )
+            return 'break'
+
+        self.scan_advanced_reset_label = ttk.Label(
+            row_advanced_header,
+            text="恢复默认",
+            font=(
+                FONT_FAMILY,
+                max(8, int(10 * self.font_scale)),
+                "underline",
+            ),
+            foreground=self.colors['primary'],
+            background=self.colors['bg_card'],
+            cursor="hand2",
+            takefocus=1,
+        )
+        self.scan_advanced_reset_label.bind(
+            '<Button-1>', _restore_advanced_run_defaults
+        )
+        self.scan_advanced_reset_label.bind(
+            '<Return>', _restore_advanced_run_defaults
+        )
+        self.scan_advanced_reset_label.bind(
+            '<space>', _restore_advanced_run_defaults
+        )
+
+        def _toggle_advanced_scan_settings(_event=None):
+            visible = not self.scan_advanced_visible_var.get()
+            self.scan_advanced_visible_var.set(visible)
+            self.scan_advanced_toggle_label.config(
+                text="高级运行设置 ▾" if visible else "高级运行设置 ▸"
+            )
+            if visible:
+                self.scan_advanced_summary_label.pack_forget()
+                self.scan_advanced_warning_label.pack(
+                    side="left", padx=(self.inline_note_gap, 0)
+                )
+                self.scan_advanced_reset_label.pack(
+                    side="left", padx=(self.inline_note_gap, 0)
+                )
+                pack_kwargs = {
+                    "fill": "x",
+                    "pady": (0, int(8 * self.dpi_scale * self.zoom_factor)),
+                }
+                before_widget = getattr(self, 'run_progress_frame', None)
+                if before_widget is not None:
+                    self.scan_advanced_details_frame.pack(
+                        before=before_widget, **pack_kwargs
+                    )
+                else:
+                    self.scan_advanced_details_frame.pack(**pack_kwargs)
+            else:
+                self.scan_advanced_details_frame.pack_forget()
+                self.scan_advanced_warning_label.pack_forget()
+                self.scan_advanced_reset_label.pack_forget()
+                self.scan_advanced_summary_label.pack(
+                    side="left", padx=(self.inline_note_gap, 0)
+                )
+            return 'break'
+
+        for variable in (
+            self.rounds_var,
+            self.llm_read_timeout_var,
+            self.api_direct_pages_var,
+            self.greet_context_capture_limit_var,
+        ):
+            variable.trace_add('write', _sync_advanced_scan_controls)
+        self.api_direct_enabled_var.trace_add('write', _sync_advanced_scan_controls)
+        self.ai_eval_var.trace_add('write', _sync_advanced_scan_controls)
+        self.greet_context_capture_enabled_var.trace_add(
+            'write', _sync_advanced_scan_controls
+        )
+        api_label.bind('<Button-1>', _toggle_api_direct_from_label)
+        contact_prepare_label.bind('<Button-1>', _toggle_contact_prepare_from_label)
+        for widget in (
+            row_advanced_header,
+            self.scan_advanced_toggle_label,
+            self.scan_advanced_summary_label,
+            self.scan_advanced_warning_label,
+        ):
+            widget.bind('<Button-1>', _toggle_advanced_scan_settings)
+        self.scan_advanced_toggle_label.bind(
+            '<Return>', _toggle_advanced_scan_settings
+        )
+        self.scan_advanced_toggle_label.bind(
+            '<space>', _toggle_advanced_scan_settings
+        )
+        self.scan_advanced_toggle_label.bind(
+            '<FocusIn>',
+            lambda _event: self.scan_advanced_toggle_label.configure(
+                foreground=self.colors['primary']
+            ),
+        )
+        self.scan_advanced_toggle_label.bind(
+            '<FocusOut>',
+            lambda _event: self.scan_advanced_toggle_label.configure(
+                foreground=self.colors['text_secondary']
+            ),
+        )
+        _sync_advanced_scan_controls()
 
         yield
 
         # === 进度条 ===
         progress_frame = ttk.Frame(param_frame, style='TFrame')
+        self.run_progress_frame = progress_frame
         progress_frame.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
 
         # 第一行：标签 + 进度条
@@ -6417,7 +6845,7 @@ class BossFilterGUI:
         search_frame.pack(fill="x", pady=(int(12 * self.dpi_scale * self.zoom_factor), int(6 * self.dpi_scale * self.zoom_factor)))
         ttk.Label(search_frame, text="搜索:", font=self.font_label,
                  background=self.colors['bg_main']).pack(side="left")
-        self._result_search_placeholder = "姓名/匹配分/推荐指数/状态"
+        self._result_search_placeholder = "姓名/性别/匹配分/推荐指数/状态"
         self._result_search_placeholder_active = True
         self.result_search_var = tk.StringVar(value=self._result_search_placeholder)
         self.result_search_entry = ttk.Entry(
@@ -6574,9 +7002,11 @@ class BossFilterGUI:
         table_container.pack(fill="both", expand=True, pady=int(8 * self.dpi_scale * self.zoom_factor))
 
         # 表格
-        columns = ("name", "exp", "salary", "skills", "score", "ai_eval", "level", "status",
-                   "education", "age", "job_status", "school", "company")
-        base_display_columns = ("name", "exp", "salary", "skills", "score", "ai_eval", "level", "status")
+        columns = (
+            "name", "gender", "exp", "salary", "skills", "score", "ai_eval",
+            "level", "status", "age", "education", "job_status", "school", "company",
+        )
+        base_display_columns = result_display_columns(0, maximized=False)
         self.result_tree = ttk.Treeview(
             table_container,
             columns=columns,
@@ -6587,6 +7017,7 @@ class BossFilterGUI:
         )
 
         self.result_tree.heading("name", text="姓名")
+        self.result_tree.heading("gender", text="性别")
         self.result_tree.heading("exp", text="工作年限")
         self.result_tree.heading("salary", text="薪资")
         self.result_tree.heading("skills", text="技能匹配")
@@ -6594,15 +7025,15 @@ class BossFilterGUI:
         self.result_tree.heading("ai_eval", text="AI评估")
         self.result_tree.heading("level", text="推荐指数")
         self.result_tree.heading("status", text="状态 / 复核")
-        self.result_tree.heading("education", text="学历")
         self.result_tree.heading("age", text="年龄")
+        self.result_tree.heading("education", text="学历")
         self.result_tree.heading("job_status", text="求职状态")
         self.result_tree.heading("school", text="毕业学校")
         self.result_tree.heading("company", text="最近公司")
 
-        # 表格宽度 <1100px 显示 8 列；≥1100px 显示 11 列；
-        # 仅在窗口最大化且表格宽度 ≥1250px 时再显示学校和公司。
+        # 核心字段在前、扩展画像在后；窄窗口通过底部滚动条查看后续字段。
         self.result_tree.column("name", width=80, minwidth=60, anchor='center')
+        self.result_tree.column("gender", width=55, minwidth=48, anchor='center')
         self.result_tree.column("exp", width=85, minwidth=70, anchor='center')
         self.result_tree.column("salary", width=85, minwidth=70, anchor='center')
         self.result_tree.column("skills", width=85, minwidth=70, anchor='center')
@@ -6610,8 +7041,8 @@ class BossFilterGUI:
         self.result_tree.column("ai_eval", width=70, minwidth=60, anchor='center')
         self.result_tree.column("level", width=80, minwidth=70, anchor='center')
         self.result_tree.column("status", width=180, minwidth=150, anchor='center')
-        self.result_tree.column("education", width=140, minwidth=115, anchor='center')
-        self.result_tree.column("age", width=110, minwidth=90, anchor='center')
+        self.result_tree.column("age", width=70, minwidth=60, anchor='center')
+        self.result_tree.column("education", width=90, minwidth=80, anchor='center')
         self.result_tree.column("job_status", width=130, minwidth=90, anchor='center')
         self.result_tree.column("school", width=150, minwidth=120, anchor='center')
         self.result_tree.column("company", width=160, minwidth=125, anchor='center')
@@ -6626,13 +7057,28 @@ class BossFilterGUI:
         self._update_result_tree_columns()
 
         tree_scroll = ttk.Scrollbar(table_container, orient="vertical", command=self.result_tree.yview)
-        self.result_tree.configure(yscrollcommand=tree_scroll.set)
+        tree_scroll_x = ttk.Scrollbar(
+            table_container,
+            orient="horizontal",
+            command=self.result_tree.xview,
+        )
+        self.result_tree.configure(
+            yscrollcommand=tree_scroll.set,
+            xscrollcommand=tree_scroll_x.set,
+        )
 
         pad_x = int(20 * self.dpi_scale * self.zoom_factor)
         pad_y = int(12 * self.dpi_scale * self.zoom_factor)
+        tree_scroll_x.pack(
+            side="bottom",
+            fill="x",
+            padx=pad_x,
+            pady=(0, int(6 * self.dpi_scale * self.zoom_factor)),
+        )
+        tree_scroll.pack(side="right", fill="y", pady=pad_y)
         self.result_tree.pack(
             side="left", fill="both", expand=True,
-            padx=pad_x, pady=pad_y,
+            padx=(pad_x, 0), pady=pad_y,
         )
         self.result_tree.bind(
             "<Configure>",
@@ -6644,7 +7090,6 @@ class BossFilterGUI:
             self._update_result_review_button_state,
             add="+",
         )
-        tree_scroll.pack(side="right", fill="y", pady=int(10 * self.dpi_scale * self.zoom_factor))
 
         # 空态引导层（无可见候选人时覆盖表格区域）
         self.result_empty_state = self._build_empty_state(
@@ -9788,11 +10233,15 @@ class BossFilterGUI:
             table_frame.pack(fill="both", expand=True, padx=int(20 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
 
             # 创建表格 - 与筛选结果页主Treeview列完全一致（含推荐指数）
-            columns = ("name", "exp", "salary", "skills", "score", "ai_eval", "level", "status")
+            columns = (
+                "name", "gender", "exp", "salary", "skills", "score",
+                "ai_eval", "level", "status",
+            )
             tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=18)
             tree._candidate_map = {}
 
             tree.heading("name", text="姓名")
+            tree.heading("gender", text="性别")
             tree.heading("exp", text="工作年限")
             tree.heading("salary", text="薪资")
             tree.heading("skills", text="技能匹配")
@@ -9803,6 +10252,7 @@ class BossFilterGUI:
 
             # 设置列宽 - 与筛选结果页Treeview一致
             tree.column("name", width=80, minwidth=60, anchor='center')
+            tree.column("gender", width=60, minwidth=50, anchor='center')
             tree.column("exp", width=110, minwidth=100, anchor='center')
             tree.column("salary", width=100, minwidth=80, anchor='center')
             tree.column("skills", width=140, minwidth=100, anchor='center')
@@ -10059,6 +10509,7 @@ class BossFilterGUI:
 
                 item_id = tree.insert("", "end", values=(
                     c.get('name', ''),
+                    self._candidate_gender_display(c),
                     exp,
                     salary,
                     c.get('skill_match_ratio', ''),
@@ -10191,11 +10642,15 @@ class BossFilterGUI:
             table_frame.pack(fill="both", expand=True, padx=int(20 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
 
             # 创建表格
-            columns = ("name", "exp", "salary", "skills", "score", "ai_eval", "level", "status")
+            columns = (
+                "name", "gender", "exp", "salary", "skills", "score",
+                "ai_eval", "level", "status",
+            )
             tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=18)
             tree._candidate_map = {}
 
             tree.heading("name", text="姓名")
+            tree.heading("gender", text="性别")
             tree.heading("exp", text="工作年限")
             tree.heading("salary", text="薪资")
             tree.heading("skills", text="技能匹配")
@@ -10206,6 +10661,7 @@ class BossFilterGUI:
 
             # 设置列宽
             tree.column("name", width=80, anchor='center')
+            tree.column("gender", width=60, minwidth=50, anchor='center')
             tree.column("exp", width=110, minwidth=100, anchor='center')
             tree.column("salary", width=100, anchor='center')
             tree.column("skills", width=140, anchor='center')
@@ -10250,6 +10706,7 @@ class BossFilterGUI:
 
                 item_id = tree.insert("", "end", values=(
                     c.get('name', ''),
+                    self._candidate_gender_display(c),
                     exp,
                     salary,
                     c.get('skill_match_ratio', ''),
@@ -12641,6 +13098,8 @@ class BossFilterGUI:
         self.min_exp_var.set(str(rule.get("min_exp", 0)))
         self.max_age_var.set(_optional_int_to_entry(rule.get("max_age")))
         self.edu_var.set(rule.get("edu", "不限"))
+        gender = rule.get("gender", "不限")
+        self.gender_var.set(gender if gender in GENDER_VALUES else "不限")
         self.work_location_var.set(rule.get("work_location") or "")
         salary_min = rule.get("salary_min")
         salary_max = rule.get("salary_max")
@@ -12859,6 +13318,7 @@ class BossFilterGUI:
         """Capture the editable parse result state before AI enhancement returns."""
         return {
             "edu": self.edu_var.get(),
+            "gender": self.gender_var.get(),
             "min_exp": self.min_exp_var.get(),
             "max_age": self.max_age_var.get(),
             "work_location": self.work_location_var.get(),
@@ -12893,6 +13353,7 @@ class BossFilterGUI:
         return (
             self.job_name_var.get(),
             self.edu_var.get(),
+            self.gender_var.get(),
             self.min_exp_var.get(),
             self.max_age_var.get(),
             self.work_location_var.get(),
@@ -12908,6 +13369,7 @@ class BossFilterGUI:
         variables = (
             self.job_name_var,
             self.edu_var,
+            self.gender_var,
             self.min_exp_var,
             self.max_age_var,
             self.work_location_var,
@@ -13738,6 +14200,7 @@ class BossFilterGUI:
             ("required_conditions", "必要条件"),
             ("basic_info", "基本信息"),
             ("job_title", "岗位名称"),
+            ("gender", "性别要求"),
             ("work_location", "工作地点"),
             ("salary_min", "最低薪资"),
             ("salary_max", "最高薪资"),
@@ -13806,6 +14269,8 @@ class BossFilterGUI:
             self.min_exp_var.set(str(job_config.get("min_exp", 0)))
             self.max_age_var.set(_optional_int_to_entry(job_config.get("max_age")))
             self.edu_var.set(job_config.get("edu", "不限"))
+            gender = job_config.get("gender", "不限")
+            self.gender_var.set(gender if gender in GENDER_VALUES else "不限")
             self.work_location_var.set(job_config.get("work_location") or "")
 
             salary_min = job_config.get("salary_min")
@@ -13822,7 +14287,11 @@ class BossFilterGUI:
             required_count = len(self.required_conditions_data)
             parsed_min_exp = job_config.get("min_exp", 0)
             parsed_edu = job_config.get("edu", "不限")
+            parsed_gender = job_config.get("gender", "不限")
             parsed_location = job_config.get("work_location", "")
+            gender_part = (
+                f"，性别={parsed_gender}" if parsed_gender != "不限" else ""
+            )
             loc_part = f"，地点={parsed_location}" if parsed_location else ""
             if salary_min is not None and salary_max is not None:
                 salary_part = f"，薪资={salary_min}-{salary_max}K"
@@ -13835,7 +14304,8 @@ class BossFilterGUI:
             preferred_part = f"，优先项={preferred_count}个" if preferred_count else ""
             summary_base = (
                 f"岗位={job_title}\n"
-                f"经验={parsed_min_exp}年，学历={parsed_edu}{loc_part}{salary_part}，"
+                f"经验={parsed_min_exp}年，学历={parsed_edu}{gender_part}"
+                f"{loc_part}{salary_part}，"
                 f"技能={skills_count}个{preferred_part}，必要条件={required_count}条，方式={ai_parse_status}"
             )
 
@@ -13916,6 +14386,11 @@ class BossFilterGUI:
             # 只更新非 dirty 字段
             if 'edu' not in dirty:
                 self.edu_var.set(job_config.get("edu", "不限"))
+            if 'gender' not in dirty:
+                gender = job_config.get("gender", "不限")
+                self.gender_var.set(
+                    gender if gender in GENDER_VALUES else "不限"
+                )
             if 'min_exp' not in dirty:
                 self.min_exp_var.set(str(job_config.get("min_exp", 0)))
             if 'max_age' not in dirty:
@@ -14228,6 +14703,7 @@ class BossFilterGUI:
         return normalized_job_name, {
             "min_exp": min_exp,
             "edu": self.edu_var.get(),
+            "gender": self.gender_var.get(),
             "max_age": max_age,
             "work_location": self.work_location_var.get().strip() or None,
             "salary_min": salary_min,
@@ -14494,6 +14970,7 @@ class BossFilterGUI:
         self.min_exp_var.set("0")
         self.max_age_var.set("")
         self.edu_var.set("不限")
+        self.gender_var.set("不限")
         self.work_location_var.set("")
         self.salary_min_var.set("")
         self.salary_max_var.set("")
@@ -15693,6 +16170,10 @@ class BossFilterGUI:
             messagebox.showwarning("运行前检查", reason)
             return
 
+        if not self._confirm_advanced_run_settings():
+            self.start_btn.config(state="normal")
+            return
+
         self.is_running = True
         self.stop_event.clear()
         self._apply_lamp_status(self.status_label, "● 运行中...", self.colors['warning'])
@@ -16337,6 +16818,7 @@ class BossFilterGUI:
                     c['_extra_fields'] = (edu, age, job_status, school, company)
                     item_id = self.result_tree.insert("", "end", values=(
                         c.get('name', ''),
+                        self._candidate_gender_display(c),
                         exp,
                         salary,
                         c.get('skill_match_ratio', ''),
@@ -16344,8 +16826,8 @@ class BossFilterGUI:
                         ai_text,
                         level,
                         status,
-                        edu,
                         age,
+                        edu,
                         job_status,
                         school,
                         company,
@@ -17864,6 +18346,7 @@ class BossFilterGUI:
         # 设置中文表头显示
         column_headers = {
             "name": "姓名",
+            "gender": "性别",
             "exp": "工作年限",
             "salary": "薪资",
             "score": "匹配分",
@@ -17952,7 +18435,7 @@ class BossFilterGUI:
     def _filter_result_tree(self):
         """根据搜索框内容实时过滤 Treeview 行（不匹配的行隐藏）。
 
-        搜索范围：姓名、匹配分、推荐指数、状态（与列表可见列一致）。
+        搜索范围：姓名、性别、匹配分、推荐指数、状态。
         数字语义：``60`` 表示匹配分 ≥ 60；支持 ``>=60``、``>60``、``=60`` 显式比较。
         匹配项高亮并按优先级排序（完全匹配姓名 > 部分匹配 > 分数 > 等级 > 状态），
         清空搜索时恢复全部行和原始排序。
@@ -18005,6 +18488,7 @@ class BossFilterGUI:
             if not cand:
                 return None
             name = str(cand.get('name', '')).lower()
+            gender = self._candidate_gender_display(cand).lower()
             score_str = str(cand.get('match_score', '')).lower()
             level = str(cand.get('recommend_level', '')).lower()
             status = " ".join(filter(None, (
@@ -18015,6 +18499,8 @@ class BossFilterGUI:
                 return 'exact_name'
             if query in name:
                 return 'partial_name'
+            if query in gender:
+                return 'gender'
             if query in level:
                 return 'level'
             if query in status:
@@ -18034,7 +18520,10 @@ class BossFilterGUI:
                 return None
             return None
 
-        _priority = {'exact_name': 0, 'partial_name': 1, 'score': 2, 'level': 3, 'status': 4}
+        _priority = {
+            'exact_name': 0, 'partial_name': 1, 'gender': 2,
+            'score': 3, 'level': 4, 'status': 5,
+        }
         matched_with_type: list[tuple[str, str]] = []
         for item_id in all_items:
             mt = _match_type(item_map.get(item_id, {}))
@@ -18128,9 +18617,10 @@ class BossFilterGUI:
                     )
                 except (tk.TclError, TypeError, ValueError):
                     show_tooltip = False
-        elif cand and column_name == 'job_status':
+        elif cand and column_name in ('job_status', 'school', 'company'):
             extra = cand.get('_extra_fields') or ('', '', '', '', '')
-            full = str(extra[2] or '')
+            extra_index = {'job_status': 2, 'school': 3, 'company': 4}[column_name]
+            full = str(extra[extra_index] or '')
             try:
                 cell_bbox = self.result_tree.bbox(item, column_id)
                 show_tooltip = bool(
@@ -18140,11 +18630,6 @@ class BossFilterGUI:
                 )
             except (tk.TclError, TypeError, ValueError):
                 show_tooltip = False
-        elif cand and column_name in ('school', 'company'):
-            extra = cand.get('_extra_fields') or ('', '', '', '', '')
-            school, company = extra[3], extra[4]
-            full = school if column_name == 'school' else company
-            show_tooltip = len(full) > (8 if column_name == 'school' else 10)
         else:
             show_tooltip = False
 
@@ -18446,10 +18931,17 @@ class BossFilterGUI:
         values = tree.item(item, 'values')
         if not values:
             return None
+        try:
+            columns = tuple(tree["columns"])
+            score_index = columns.index("score")
+        except (AttributeError, KeyError, TypeError, ValueError):
+            score_index = 5
+        if len(values) <= score_index:
+            return None
         matches = [
             candidate for candidate in filtered_ref[0]
             if candidate.get('name') == values[0]
-            and str(candidate.get('match_score', '')) == str(values[4])
+            and str(candidate.get('match_score', '')) == str(values[score_index])
         ]
         return matches[0] if len(matches) == 1 else None
 
@@ -18741,7 +19233,13 @@ class BossFilterGUI:
         if not values:
             return None
         name = values[0]
-        score = values[4]
+        try:
+            score_index = tuple(self.result_tree['columns']).index('score')
+        except (AttributeError, KeyError, TypeError, ValueError):
+            score_index = 5
+        if len(values) <= score_index:
+            return None
+        score = values[score_index]
         for c in getattr(self, 'result_tree_data', []):
             if c.get('name') == name and str(c.get('match_score', '')) == str(score):
                 return c
@@ -18782,6 +19280,23 @@ class BossFilterGUI:
         if age:
             age = f"{age}岁"
         return edu, age, job_status, school, company
+
+    @staticmethod
+    def _candidate_gender_display(candidate):
+        """Return normalized candidate gender from current or legacy records."""
+        structured = candidate.get('structured') or {}
+        for value in (candidate.get('gender'), structured.get('gender')):
+            gender = normalize_candidate_gender(value)
+            if gender:
+                return gender
+        for line in str(candidate.get('summary') or '').splitlines():
+            stripped = line.strip()
+            if stripped.startswith("性别：") or stripped.startswith("性别:"):
+                gender = normalize_candidate_gender(stripped)
+                if gender:
+                    return gender
+                break
+        return "—"
 
     @staticmethod
     def _extract_summary_display_fields(summary):
@@ -19782,6 +20297,8 @@ class BossFilterGUI:
             hard_parts.append(f"- 学历：要求{rule['edu']}")
         if rule.get('max_age'):
             hard_parts.append(f"- 年龄：上限{rule['max_age']}岁")
+        if rule.get('gender') in {"男", "女"}:
+            hard_parts.append(f"- 性别：要求{rule['gender']}")
         if rule.get('work_location'):
             hard_parts.append(f"- 地点：要求{rule['work_location']}，候选人期望城市需匹配")
         if rule.get('salary_max'):
@@ -21248,6 +21765,9 @@ class BossFilterGUI:
 
         # 核心信息速览
         core_parts = []
+        gender = self._candidate_gender_display(c)
+        if gender != "—":
+            core_parts.append(gender)
         age = info.get('age')
         if age:
             core_parts.append(f"{age} 岁")

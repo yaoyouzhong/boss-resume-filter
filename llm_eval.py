@@ -34,6 +34,7 @@ from ai_adapter import (
     normalize_response,
     save_capability,
 )
+from filtering import normalize_candidate_gender
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +235,19 @@ def _format_ai_log_summary(candidate: dict[str, Any], reason: str, score: int) -
     return f"{conclusion}：{compact_reason}"
 
 
+def _candidate_gender_for_prompt(candidate: dict[str, Any]) -> str:
+    """Return canonical gender for AI prompts, including legacy BOSS codes."""
+    structured = candidate.get('structured') or {}
+    for value in (candidate.get('gender'), structured.get('gender')):
+        gender = normalize_candidate_gender(value)
+        if gender:
+            return gender
+    for line in str(candidate.get('summary') or '').splitlines():
+        if line.strip().startswith(("性别：", "性别:")):
+            return normalize_candidate_gender(line) or ""
+    return ""
+
+
 def _build_llm_summary_from_api_profile(candidate: dict, profile: dict, max_chars: int) -> str:
     """Build LLM candidate summary directly from structured API profile.
 
@@ -246,6 +260,9 @@ def _build_llm_summary_from_api_profile(candidate: dict, profile: dict, max_char
     name = candidate.get('name')
     if name:
         lines.append(f"姓名：{name}")
+    gender = _candidate_gender_for_prompt(candidate)
+    if gender:
+        lines.append(f"性别：{gender}")
     lines.append(f"规则评分：{candidate.get('match_score', 0)}")
     if candidate.get('recommend_level'):
         lines.append(f"规则推荐：{candidate.get('recommend_level')}")
@@ -355,6 +372,8 @@ def build_llm_candidate_summary(candidate: dict, max_chars: int = 4000) -> str:
         line = _clean_summary_line(raw_line)
         if not line:
             continue
+        if line.startswith(("性别：", "性别:")):
+            continue
         matched = False
         for label in sections:
             prefix = f"{label}："
@@ -371,6 +390,9 @@ def build_llm_candidate_summary(candidate: dict, max_chars: int = 4000) -> str:
     name = candidate.get('name')
     if name:
         lines.append(f"姓名：{name}")
+    gender = _candidate_gender_for_prompt(candidate)
+    if gender:
+        lines.append(f"性别：{gender}")
     lines.append(f"规则评分：{candidate.get('match_score', 0)}")
     if candidate.get('recommend_level'):
         lines.append(f"规则推荐：{candidate.get('recommend_level')}")

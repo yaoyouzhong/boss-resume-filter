@@ -1,7 +1,8 @@
 """Tests for doc_parser.parse_job_requirements() — the requirement parsing engine."""
 from doc_parser import (
     parse_job_requirements, _resolve_city, _extract_work_location,
-    _extract_salary_range, generate_config_from_text, _preprocess_text
+    _extract_gender_requirement, _extract_salary_range,
+    generate_config_from_text, _preprocess_text
 )
 
 
@@ -44,6 +45,27 @@ def test_extract_work_location_remote_or_nationwide_disables_filter():
 def test_extract_work_location_fallback_scans_full_text():
     assert _extract_work_location("我们在杭州招聘优秀人才") == "杭州"
     assert _extract_work_location("无地点信息") == ""
+
+
+# ========== 性别要求提取 ==========
+
+def test_extract_gender_requirement_only_accepts_explicit_limits():
+    assert _extract_gender_requirement("性别要求：女") == "女"
+    assert _extract_gender_requirement("仅限男性候选人") == "男"
+    assert _extract_gender_requirement("男女不限") == "不限"
+
+
+def test_extract_gender_requirement_does_not_promote_preference_or_infer_from_role():
+    assert _extract_gender_requirement("男性优先，有金融行业经验者优先") == "不限"
+    assert _extract_gender_requirement("岗位：行政前台") == "不限"
+
+
+def test_generated_config_contains_explicit_gender_and_defaults_to_unlimited():
+    explicit = generate_config_from_text("岗位：客户经理\n性别要求：女", merge_existing=False)
+    defaulted = generate_config_from_text("岗位：客户经理", merge_existing=False)
+
+    assert next(iter(explicit["job_requirements"].values()))["gender"] == "女"
+    assert next(iter(defaulted["job_requirements"].values()))["gender"] == "不限"
 
 
 # ========== 职位名称提取 ==========

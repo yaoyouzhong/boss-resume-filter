@@ -486,26 +486,39 @@ def test_job_config_basic_filters_use_compact_grouped_rows_and_keep_alignment():
     assert "basic_filter_input_width = 6" in block
     assert "secondary_filter_gap = int(30 * self.dpi_scale * self.zoom_factor)" in block
     assert block.count("padx=(secondary_filter_gap, 0)") == 2
-    assert block.count("width=basic_filter_input_width") == 3
+    assert block.count("width=basic_filter_input_width") == 4
     assert block.count("style='CompactFilter.TSpinbox'") == 2
-    assert block.count("style='CompactFilter.TCombobox'") == 1
-    assert "row_education_salary = ttk.Frame" in block
+    assert block.count("style='CompactFilter.TCombobox'") == 2
+    assert "row_education_experience = ttk.Frame" in block
+    assert "row_gender_age = ttk.Frame" in block
+    assert "row_salary = ttk.Frame" in block
+    assert "row_location = ttk.Frame" in block
     education_pos = block.index('text="最低学历:"')
+    experience_pos = block.index('text="最低经验:"')
+    gender_pos = block.index('text="性别要求:"')
+    age_pos = block.index('text="最大年龄:"')
     salary_pos = block.index('text="薪资范围:"')
-    assert education_pos < salary_pos
-    assert block.count('text="年"') == 2
+    location_pos = block.index('text="工作地点:"')
+    assert education_pos < experience_pos < gender_pos < age_pos < salary_pos < location_pos
+    assert block.count('text="年"') == 3
     assert "foreground=self.colors['bg_card']" in block
     assert 'filter_unit_width = font.Font(font=self.font_label).measure("年")' not in block
-    assert "row_experience_age = ttk.Frame" in block
-    assert 'text="最低经验:"' in block
-    assert 'text="最大年龄:"' in block
-    assert 'ttk.Label(row_experience_age, text="岁"' in block
-    assert "row_salary =" not in block
+    assert "values=GENDER_VALUES" in block
+    assert 'state="readonly"' in block
+    assert 'text="性别无法识别时转人工复核"' not in block
     assert "row_age" not in block
     assert "salary_max_entry = ttk.Entry(" in block
-    assert "row_education_salary," in block
+    assert "row_salary," in block
     assert "width=8," in block
-    assert "work_location_entry = ttk.Entry(row3, textvariable=self.work_location_var, width=22" in block
+    assert "salary_unit_gap = int(6 * self.dpi_scale * self.zoom_factor)" in block
+    assert "salary_range_gap = int(10 * self.dpi_scale * self.zoom_factor)" in block
+    assert block.count("padx=(salary_unit_gap, 0)") == 2
+    assert "padx=(salary_range_gap, salary_range_gap)" in block
+    assert 'text="K  ~"' not in block
+    assert block.count('text="K"') == 2
+    assert block.count('text="~"') == 1
+    assert "work_location_entry = ttk.Entry(" in block
+    assert "row_location," in block
 
 
 def test_compact_filter_spinbox_matches_combobox_pixel_width_contract():
@@ -564,6 +577,7 @@ def test_job_config_status_distinguishes_saved_and_unsaved_business_state():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.job_name_var = _FakeVar("Java 工程师")
     gui.edu_var = _FakeVar("本科")
+    gui.gender_var = _FakeVar("不限")
     gui.min_exp_var = _FakeVar("3")
     gui.max_age_var = _FakeVar("35")
     gui.work_location_var = _FakeVar("南京")
@@ -617,6 +631,7 @@ def test_new_job_quality_waits_for_configuration_before_scoring():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.job_name_var = _FakeVar("")
     gui.edu_var = _FakeVar("不限")
+    gui.gender_var = _FakeVar("不限")
     gui.min_exp_var = _FakeVar("0")
     gui.max_age_var = _FakeVar("")
     gui.work_location_var = _FakeVar("")
@@ -751,6 +766,46 @@ def test_import_config_protects_unsaved_form_before_opening_file_dialog():
     gui.load_config_dialog.assert_called_once_with()
 
 
+def test_job_config_import_and_export_preserve_gender_requirement():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        source_path = Path(tmp_dir) / "import.json"
+        export_path = Path(tmp_dir) / "export.json"
+        source_path.write_text(
+            json.dumps({
+                "jobs": {
+                    "客户经理": {
+                        "min_exp": 3,
+                        "edu": "本科",
+                        "gender": "女",
+                    }
+                }
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+        gui.root = Mock()
+        gui.job_rules = {}
+        gui.save_config = Mock()
+        gui.config_job_combo = _FakeCombo()
+        gui.load_job_to_form = Mock()
+        gui._set_requirement_section_expanded = Mock()
+        gui.requirement_template_btn = Mock()
+        gui._status_flash = Mock()
+
+        with patch("gui_main.filedialog.askopenfilename", return_value=str(source_path)):
+            assert gui.load_config_dialog() is True
+
+        assert gui.job_rules["客户经理"]["gender"] == "女"
+        gui.load_job_to_form.assert_called_once_with(gui.job_rules["客户经理"])
+
+        with patch("gui_main.filedialog.asksaveasfilename", return_value=str(export_path)):
+            gui.save_config_dialog()
+
+        exported = json.loads(export_path.read_text(encoding="utf-8"))
+        assert exported["jobs"]["客户经理"]["gender"] == "女"
+
+
 def test_collapsed_requirement_header_summarizes_saved_and_changed_content():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.requirement_section_expanded = False
@@ -850,6 +905,7 @@ def test_reset_job_form_uses_unrestricted_new_job_values():
         ("min_exp_var", "3"),
         ("max_age_var", "35"),
         ("edu_var", "本科"),
+        ("gender_var", "女"),
         ("work_location_var", "南京"),
         ("salary_min_var", "20"),
         ("salary_max_var", "30"),
@@ -873,6 +929,7 @@ def test_reset_job_form_uses_unrestricted_new_job_values():
     gui._invalidate_requirement_parse.assert_called_once_with()
     assert gui.job_name_var.get() == ""
     assert gui.edu_var.get() == "不限"
+    assert gui.gender_var.get() == "不限"
     assert gui.min_exp_var.get() == "0"
     assert gui.max_age_var.get() == ""
     assert gui.work_location_var.get() == ""
@@ -889,6 +946,7 @@ def test_loading_legacy_job_without_optional_limits_keeps_fields_unrestricted():
         "min_exp_var",
         "max_age_var",
         "edu_var",
+        "gender_var",
         "work_location_var",
         "salary_min_var",
         "salary_max_var",
@@ -904,6 +962,7 @@ def test_loading_legacy_job_without_optional_limits_keeps_fields_unrestricted():
     gui.load_job_to_form({})
 
     assert gui.edu_var.get() == "不限"
+    assert gui.gender_var.get() == "不限"
     assert gui.max_age_var.get() == ""
 
 
@@ -915,10 +974,12 @@ def test_requirement_parse_fallbacks_match_unrestricted_new_job_defaults():
     ai_block = ai_block[:ai_block.index("\n    def _start_ai_progress_animation")]
 
     assert 'job_config.get("edu", "不限")' in local_block
+    assert 'job_config.get("gender", "不限")' in local_block
     assert 'job_config.get("max_age")' in local_block
     assert 'job_config.get("edu", "本科")' not in local_block
     assert 'job_config.get("max_age", 35)' not in local_block
     assert 'job_config.get("edu", "不限")' in ai_block
+    assert 'job_config.get("gender", "不限")' in ai_block
     assert 'job_config.get("max_age")' in ai_block
     assert 'job_config.get("edu", "本科")' not in ai_block
     assert 'job_config.get("max_age", 35)' not in ai_block
@@ -1067,6 +1128,7 @@ def test_save_current_job_keeps_ai_preferred_keywords_as_preferred():
     gui.min_exp_var = _FakeVar("3")
     gui.max_age_var = _FakeVar("")
     gui.edu_var = _FakeVar("本科")
+    gui.gender_var = _FakeVar("不限")
     gui.work_location_var = _FakeVar("")
     gui.salary_min_var = _FakeVar("")
     gui.salary_max_var = _FakeVar("")
@@ -1101,6 +1163,7 @@ def test_save_current_job_rename_preserves_stable_job_id():
     gui.min_exp_var = _FakeVar("3")
     gui.max_age_var = _FakeVar("")
     gui.edu_var = _FakeVar("本科")
+    gui.gender_var = _FakeVar("不限")
     gui.work_location_var = _FakeVar("")
     gui.salary_min_var = _FakeVar("")
     gui.salary_max_var = _FakeVar("")
@@ -1144,6 +1207,7 @@ def test_save_current_job_strips_required_condition_evidence_metadata():
     gui.min_exp_var = _FakeVar("5")
     gui.max_age_var = _FakeVar("35")
     gui.edu_var = _FakeVar("本科")
+    gui.gender_var = _FakeVar("女")
     gui.work_location_var = _FakeVar("南京")
     gui.salary_min_var = _FakeVar("")
     gui.salary_max_var = _FakeVar("")
@@ -1176,6 +1240,7 @@ def test_job_config_diagnostics_preview_uses_current_form_without_saving():
     gui.min_exp_var = _FakeVar("5")
     gui.max_age_var = _FakeVar("")
     gui.edu_var = _FakeVar("本科")
+    gui.gender_var = _FakeVar("女")
     gui.work_location_var = _FakeVar("南京")
     gui.salary_min_var = _FakeVar("20")
     gui.salary_max_var = _FakeVar("30")
@@ -1192,6 +1257,7 @@ def test_job_config_diagnostics_preview_uses_current_form_without_saving():
     name, rule = gui._build_current_job_rule_preview()
 
     assert name == "Java 工程师"
+    assert rule["gender"] == "女"
     assert rule["max_age"] is None
     assert rule["keywords"] == [
         {"name": "Java", "weight": 2},
@@ -1208,6 +1274,7 @@ def test_save_current_job_stops_when_diagnostics_cancel_save():
     gui.min_exp_var = _FakeVar("3")
     gui.max_age_var = _FakeVar("")
     gui.edu_var = _FakeVar("本科")
+    gui.gender_var = _FakeVar("不限")
     gui.work_location_var = _FakeVar("")
     gui.salary_min_var = _FakeVar("")
     gui.salary_max_var = _FakeVar("")
@@ -1231,6 +1298,7 @@ def test_save_current_job_stops_when_diagnostics_cancel_save():
 def test_parse_edit_snapshot_marks_user_changes_dirty_before_ai_result():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.edu_var = _FakeVar("本科")
+    gui.gender_var = _FakeVar("不限")
     gui.min_exp_var = _FakeVar("3")
     gui.max_age_var = _FakeVar("35")
     gui.work_location_var = _FakeVar("南京")
@@ -1240,10 +1308,11 @@ def test_parse_edit_snapshot_marks_user_changes_dirty_before_ai_result():
     gui.required_conditions_data = [{"type": "or", "items": ["债券", "基金"]}]
 
     gui._ai_parse_edit_snapshot = gui._snapshot_parse_edit_state()
+    gui.gender_var.set("女")
     gui.min_exp_var.set("5")
     gui.skills_data.append({"name": "SQL", "weight": 1, "source": "手动"})
 
-    assert gui._dirty_fields_since_parse_snapshot() == {"min_exp", "skills"}
+    assert gui._dirty_fields_since_parse_snapshot() == {"gender", "min_exp", "skills"}
 
 
 def test_candidate_detail_groups_api_resume_sections():
@@ -1257,6 +1326,7 @@ def test_candidate_detail_groups_api_resume_sections():
         "greet_sent": False,
         "summary": "\n".join([
             "期望薪资：15-20K",
+            "性别：0",
             "年龄：29岁",
             "学历：本科",
             "经验：6年",
@@ -1269,6 +1339,7 @@ def test_candidate_detail_groups_api_resume_sections():
 
     detail = gui._format_candidate_detail(candidate)
 
+    assert "女｜29 岁｜6 年｜期望薪资 15-20K" in detail
     assert "【教育经历】" in detail
     assert "南京大学 计算机科学 本科 2014 2018" in detail
     assert "【工作经历】" in detail
@@ -1376,37 +1447,40 @@ class _FakeResultTree:
 
 
 def test_result_tree_columns_expand_only_when_space_is_available():
-    """<1100px 显示 8 列，≥1100px 显示 11 列；
-    只有最大化且 ≥1250px 才显示 13 列，避免 4K 非最大化窗口挤压全列；
-    富余宽度显式分配给各列（ttk stretch 只会收缩不会放大，否则会右侧留白且表头截断）。"""
+    """All fields stay addressable; narrow tables overflow into horizontal scroll."""
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot()
 
-    # 窄窗口（小于 8 列基础宽度合计 735）：保持基础宽度并允许收缩
+    # 窄窗口保留所有字段及可读宽度，列宽总和大于视口以启用水平滚动。
     gui.result_tree = _FakeTree(700)
     gui._update_result_tree_columns()
-    assert len(gui.result_tree.displaycolumns) == 8
+    assert len(gui.result_tree.displaycolumns) == 14
+    assert gui.result_tree.displaycolumns[:2] == ("name", "gender")
     assert gui.result_tree.column_options["skills"]["width"] == 85
-    assert gui.result_tree.column_options["skills"]["stretch"] is True
-
-    # 富余宽度按比例放大填满表格
-    gui.result_tree = _FakeTree(1099)
-    gui._update_result_tree_columns()
-    assert len(gui.result_tree.displaycolumns) == 8
-    assert gui.result_tree.column_options["skills"]["width"] > 85
     assert gui.result_tree.column_options["skills"]["stretch"] is False
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
-    ) == 1097
+    ) > 698
 
-    gui.result_tree = _FakeTree(1249)
+    # 较窄窗口仍不隐藏后续画像字段。
+    gui.result_tree = _FakeTree(1099)
     gui._update_result_tree_columns()
-    assert len(gui.result_tree.displaycolumns) == 11
+    assert len(gui.result_tree.displaycolumns) == 14
+    assert gui.result_tree.displaycolumns[-2:] == ("school", "company")
+    assert gui.result_tree.column_options["skills"]["stretch"] is False
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
-    ) == 1247
+    ) > 1097
 
-    # 4K 非最大化窗口即使表格很宽，也保持 11 列，避免字体缩放后全列挤压。
+    # 默认 1080P 宽度仍保留可读列宽，由水平滚动查看后续字段。
+    gui.result_tree = _FakeTree(1249)
+    gui._update_result_tree_columns()
+    assert len(gui.result_tree.displaycolumns) == 14
+    assert sum(
+        options["width"] for options in gui.result_tree.column_options.values()
+    ) > 1247
+
+    # 窗口状态不再决定字段是否存在。
     gui.root = _FakeRoot(
         state="normal",
         width=2048,
@@ -1416,19 +1490,23 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     )
     gui.result_tree = _FakeTree(1600)
     gui._update_result_tree_columns()
-    assert len(gui.result_tree.displaycolumns) == 11
+    assert len(gui.result_tree.displaycolumns) == 14
+    assert sum(
+        options["width"] for options in gui.result_tree.column_options.values()
+    ) == 1598
 
-    # 1080P 高 DPI 环境最大化后的结果表约 1250px，压缩到可读下限后可容纳全部列。
+    # 1080P 高 DPI 最大化仍保持全部 14 列。
     gui.root = _FakeRoot(state="zoomed")
     gui.result_tree = _FakeTree(1250)
     gui._update_result_tree_columns()
-    assert len(gui.result_tree.displaycolumns) == 13
+    assert len(gui.result_tree.displaycolumns) == 14
     assert gui.result_tree.displaycolumns[-2:] == ("school", "company")
     assert gui.result_tree.column_options["school"]["width"] >= 120
     assert gui.result_tree.column_options["company"]["width"] >= 125
     assert gui.result_tree.column_options["level"]["width"] < 110
-    assert gui.result_tree.column_options["education"]["width"] == 140
-    assert gui.result_tree.column_options["age"]["width"] == 110
+    assert gui.result_tree.column_options["gender"]["width"] == 55
+    assert gui.result_tree.column_options["education"]["width"] == 90
+    assert gui.result_tree.column_options["age"]["width"] == 70
     assert gui.result_tree.column_options["job_status"]["width"] >= 90
     assert gui.result_tree.column_options["skills"]["width"] < 140
     assert gui.result_tree.column_options["name"]["stretch"] is False
@@ -1438,12 +1516,12 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     assert gui.result_tree.column_options["company"]["stretch"] is False
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
-    ) == 1248
+    ) > 1248
 
     gui.result_tree = _FakeTree(0)
     gui._apply_result_tree_column_widths((
-        "name", "exp", "salary", "skills", "score", "ai_eval", "level", "status",
-        "education", "age", "job_status", "school", "company",
+        "name", "gender", "exp", "salary", "skills", "score", "ai_eval",
+        "level", "status", "age", "education", "job_status", "school", "company",
     ))
     assert gui.result_tree.column_options["job_status"]["width"] == 130
     assert gui.result_tree.column_options["company"]["width"] == 160
@@ -1700,6 +1778,19 @@ def test_result_page_defaults_to_all_records_and_offers_today():
     assert 'values=("全部时间", "今天", "近7天", "近30天", "自定义")' in result_block
     assert 'self.result_view_var = tk.StringVar(value="全部记录")' in result_block
     assert '"推荐候选人", "复核通过", "待复核", "淘汰记录", "全部记录"' in result_block
+
+
+def test_result_page_keeps_gender_visible_and_all_fields_horizontally_scrollable():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    result_block = source[source.index("def create_result_page"):]
+    result_block = result_block[:result_block.index("\n    def create_education_page")]
+
+    assert '"name", "gender", "exp", "salary", "skills", "score", "ai_eval"' in result_block
+    assert 'self.result_tree.heading("gender", text="性别")' in result_block
+    assert 'orient="horizontal"' in result_block
+    assert 'command=self.result_tree.xview' in result_block
+    assert 'xscrollcommand=tree_scroll_x.set' in result_block
+    assert 'tree_scroll_x.pack(' in result_block
 
 
 def test_result_blacklist_check_blends_with_page_background_in_every_state():
@@ -2665,8 +2756,8 @@ def test_result_search_replaces_query_against_full_original_rows():
     gui.result_count_var = _FakeVar()
     gui.result_tree_data = [{}, {}]
     gui._item_to_candidate = {
-        "row-a": {"name": "张三", "match_score": 80},
-        "row-b": {"name": "李四", "match_score": 70},
+        "row-a": {"name": "张三", "match_score": 80, "structured": {"gender": 0}},
+        "row-b": {"name": "李四", "match_score": 70, "gender": "男"},
     }
     gui.colors = {"primary_dark": "#005E8A"}
     gui.font_table = ("Arial", 12)
@@ -2679,13 +2770,17 @@ def test_result_search_replaces_query_against_full_original_rows():
     assert gui.result_tree.get_children() == ("row-b",)
     assert gui.result_count_var.get() == "搜索命中 1 / 2 人"
 
+    gui.result_search_var.set("女")
+    gui._filter_result_tree()
+    assert gui.result_tree.get_children() == ("row-a",)
+
     gui.result_search_var.set("")
     gui._filter_result_tree()
     assert gui.result_tree.get_children() == ("row-a", "row-b")
     assert gui.result_count_var.get() == "2 / 共 2 人"
 
     gui._result_search_placeholder_active = True
-    gui.result_search_var.set("姓名/匹配分/推荐指数/状态")
+    gui.result_search_var.set("姓名/性别/匹配分/推荐指数/状态")
     gui._filter_result_tree()
     assert gui.result_tree.get_children() == ("row-a", "row-b")
     assert gui.result_count_var.get() == "2 / 共 2 人"
@@ -3607,6 +3702,62 @@ def test_result_job_status_tooltip_only_shows_when_text_is_clipped():
     gui._show_tooltip.assert_not_called()
 
 
+def test_result_school_and_company_tooltips_work_in_non_maximized_table():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    candidate = {
+        "_extra_fields": (
+            "本科",
+            "30岁",
+            "在职",
+            "南京航空航天大学",
+            "某某金融科技有限公司",
+        ),
+    }
+    gui.result_tree = Mock()
+    gui.result_tree.identify_row.return_value = "row-1"
+    gui.result_tree.cget.return_value = (
+        "name", "gender", "exp", "salary", "skills", "score", "ai_eval",
+        "level", "status", "age", "education", "job_status", "school", "company",
+    )
+    gui.result_tree.bbox.return_value = (0, 0, 100, 24)
+    gui._item_to_candidate = {"row-1": candidate}
+    gui._result_tree_font = Mock()
+    gui._tooltip = None
+    gui._tooltip_item = None
+    gui._tooltip_after_id = None
+    gui.root = Mock()
+    gui.root.state.return_value = "normal"
+    gui.root.winfo_pointerx.return_value = 100
+    gui.root.winfo_pointery.return_value = 200
+    gui._hide_tooltip = Mock()
+    gui._show_tooltip = Mock()
+
+    for column_id, column_name, full_text in (
+        ("#13", "school", "南京航空航天大学"),
+        ("#14", "company", "某某金融科技有限公司"),
+    ):
+        gui.result_tree.identify_column.return_value = column_id
+        gui._result_tree_font.measure.return_value = 120
+        gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
+        callback = gui.root.after.call_args.args[1]
+        callback()
+        gui._show_tooltip.assert_called_once_with(
+            full_text, 115, 210, ("row-1", column_name)
+        )
+
+        gui.root.after.reset_mock()
+        gui._show_tooltip.reset_mock()
+        gui._tooltip = None
+        gui._tooltip_item = None
+        gui._tooltip_after_id = None
+
+    gui.result_tree.identify_column.return_value = "#14"
+    gui._result_tree_font.measure.return_value = 80
+    gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
+    gui.root.after.assert_not_called()
+    gui._show_tooltip.assert_not_called()
+
+
 def test_refresh_results_force_rebuilds_for_transient_ai_status():
     with tempfile.TemporaryDirectory() as tmp_dir:
         candidates_path = Path(tmp_dir) / "candidates.json"
@@ -3651,7 +3802,8 @@ def test_refresh_results_force_rebuilds_for_transient_ai_status():
 
             gui.refresh_results(force=True)
 
-        assert gui.result_tree.items[0]["values"][7] == "AI评估中..."
+        assert gui.result_tree.items[0]["values"][1] == "—"
+        assert gui.result_tree.items[0]["values"][8] == "AI评估中..."
 
 
 def test_refresh_results_keeps_below_pass_ai_records_in_rejected_scope():
@@ -3718,19 +3870,19 @@ def test_refresh_results_keeps_below_pass_ai_records_in_rejected_scope():
 
         assert len(gui.result_tree.items) == 3
         by_score = {
-            item["values"][4]: item["values"]
+            item["values"][5]: item["values"]
             for item in gui.result_tree.items
         }
         values = by_score[52]
-        assert values[4] == 52
-        assert values[5] == "-3"
-        assert values[6] == "未通过"
-        assert values[7] == "未沟通｜评分低于通过线（52 分）"
+        assert values[5] == 52
+        assert values[6] == "-3"
+        assert values[7] == "未通过"
+        assert values[8] == "未沟通｜评分低于通过线（52 分）"
         failed_values = by_score[51]
-        assert failed_values[4] == 51
-        assert failed_values[5] == "失败"
-        assert failed_values[6] == "未通过"
-        assert failed_values[7] == "未沟通｜评分低于通过线（51 分）"
+        assert failed_values[5] == 51
+        assert failed_values[6] == "失败"
+        assert failed_values[7] == "未通过"
+        assert failed_values[8] == "未沟通｜评分低于通过线（51 分）"
 
 
 def test_refresh_results_keeps_full_dataset_and_uses_stable_metric_scope():
@@ -6667,38 +6819,114 @@ def test_run_page_exposes_user_friendly_advanced_scan_settings():
     worker_block = source[source.index("def run_worker"):]
     worker_block = worker_block[:worker_block.index("\n    def on_closing")]
 
-    assert "高级扫描设置" in run_page_block
-    assert "⚠ 调高会增加访问频率，请谨慎设置" in run_page_block
+    assert "高级运行设置" in run_page_block
+    assert "高级扫描设置" not in run_page_block
+    assert "⚠ 部分设置会增加扫描耗时或页面访问量，请谨慎调高" in run_page_block
     assert "font=(FONT_FAMILY, max(8, int(10 * self.font_scale)))" in run_page_block
     assert "'warning_text', ui_theme.WARNING_TEXT" in run_page_block
     assert "'banner_warning_bg', ui_theme.BANNER_WARNING_BG" in run_page_block
     assert "padx=max(6, int(8 * self.dpi_scale * self.zoom_factor))" in run_page_block
     assert "pady=max(2, int(3 * self.dpi_scale * self.zoom_factor))" in run_page_block
     assert 'advanced_inner.pack(fill="x")' in run_page_block
-    assert 'ttk.Label(row_api_enhance, text="", width=12' in run_page_block
+    assert '_create_advanced_setting_label(0, "滚动轮次:")' in run_page_block
     assert "扫描增强:" in run_page_block
     assert "自动补全候选人详情" in run_page_block
     assert "最多读取:" in run_page_block
-    assert "可提升经验、薪资、城市等信息准确性" in run_page_block
-    assert 'ttk.Label(row_contact_prepare, text="", width=12' in run_page_block
+    assert '1, "AI 响应超时:"' in run_page_block
     assert "后续联系:" in run_page_block
     assert "扫描后准备联系信息" in run_page_block
     assert "最多准备:" in run_page_block
-    assert "可提升打招呼成功率" in run_page_block
     assert 'font=(FONT_FAMILY, int(11 * self.font_scale))' in run_page_block
     assert "_sub_font = (FONT_FAMILY, int(11 * self.font_scale))" in run_page_block
     assert "_spin_font = (FONT_FAMILY, int(12 * self.font_scale))" in run_page_block
-    assert "textvariable=self.api_direct_pages_var, font=_spin_font" in run_page_block
-    assert "textvariable=self.greet_context_capture_limit_var, font=_spin_font" in run_page_block
+    assert "textvariable=self.api_direct_pages_var" in run_page_block
+    assert "textvariable=self.greet_context_capture_limit_var" in run_page_block
     assert "读取越多越慢" not in run_page_block
     assert "准备人数越多耗时越长" not in run_page_block
     assert "api_direct_pages * 20" in worker_block
+
+    ai_row_index = run_page_block.index("# AI 辅助评估开关")
+    advanced_index = run_page_block.index("# 高级运行设置：位于 AI 评估行下方")
+    progress_index = run_page_block.index("# === 进度条 ===")
+    assert ai_row_index < advanced_index < progress_index
+
+    advanced_block = run_page_block[advanced_index:progress_index]
+    setting_labels = [
+        '_create_advanced_setting_label(0, "滚动轮次:")',
+        '1, "AI 响应超时:"',
+        '_create_advanced_setting_label(2, "扫描增强:")',
+        '_create_advanced_setting_label(3, "后续联系:")',
+    ]
+    assert [advanced_block.index(label) for label in setting_labels] == sorted(
+        advanced_block.index(label) for label in setting_labels
+    )
+    assert "before_widget = getattr(self, 'run_progress_frame', None)" in advanced_block
+    assert "before=before_widget, **pack_kwargs" in advanced_block
+    assert "self.run_progress_frame = progress_frame" in run_page_block
+    assert "advanced_inner.columnconfigure(0, minsize=_run_control_lead_width)" in advanced_block
+    assert "def _create_advanced_setting_label(row_index, label_text):" in advanced_block
+    assert "row_rounds_controls.grid(" in advanced_block
+    assert "row_ai_timeout_controls.grid(" in advanced_block
+    assert "row_api_controls.grid(" in advanced_block
+    assert "row_contact_controls.grid(" in advanced_block
+    assert 'api_switch.pack(side="left")' in advanced_block
+    assert 'contact_prepare_switch.pack(side="left")' in advanced_block
+    assert "_create_run_control_lead(row_advanced_header)" not in advanced_block
+    assert "self.scan_advanced_summary_label" in advanced_block
+    assert 'text="恢复默认"' in advanced_block
+    assert "self.scan_advanced_warning_label.pack(" in advanced_block
+    assert "self.scan_advanced_warning_label.pack_forget()" in advanced_block
+    assert "self.scan_advanced_summary_label.pack_forget()" in advanced_block
+    assert "def _restore_advanced_run_defaults(_event=None):" in advanced_block
+    assert "'<Return>', _toggle_advanced_scan_settings" in advanced_block
+    assert "'<space>', _toggle_advanced_scan_settings" in advanced_block
+    assert "self.api_direct_risk_label" in advanced_block
+    assert "self.greet_context_risk_label" in advanced_block
+    assert '"访问量和耗时会明显增加"' in advanced_block
+    assert advanced_block.count('"继续调高会增加触发风控的风险"') == 2
     assert "listener_first=not api_direct_enabled" in worker_block
     assert "greet_context_capture=greet_context_capture_enabled" in worker_block
     assert "greet_context_limit=greet_context_capture_limit" in worker_block
     assert '"提取链路"' in worker_block
     assert 'self.append_run_log(f"扫描增强：' not in worker_block
     assert 'self.append_run_log(f"后续联系：' not in worker_block
+
+
+def test_ai_timeout_setting_follows_ai_evaluation_switch():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    run_page_block = source[source.index("def create_run_page"):]
+    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+
+    assert "self.llm_read_timeout_spin = ttk.Spinbox(" in run_page_block
+    assert (
+        'state="normal" if ai_enabled else "disabled"'
+        in run_page_block
+    )
+    assert "self.ai_eval_var.trace_add('write', _sync_advanced_scan_controls)" in run_page_block
+    assert 'else "开启 AI 辅助评估后可设置"' in run_page_block
+
+
+def test_dynamic_ai_timeout_hint_isolated_from_following_advanced_rows():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    run_page_block = source[source.index("def create_run_page"):]
+    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+    api_block = run_page_block[run_page_block.index("# 3. 扫描信息补全"):]
+    api_block = api_block[:api_block.index("# 4. 联系信息准备")]
+    contact_block = run_page_block[run_page_block.index("# 4. 联系信息准备"):]
+    contact_block = contact_block[:contact_block.index("_muted_text =")]
+
+    assert "row_api_controls = ttk.Frame(advanced_inner" in api_block
+    assert "row_contact_controls = ttk.Frame(advanced_inner" in contact_block
+    assert "row_api_controls, self.api_direct_enabled_var" in api_block
+    assert "row_contact_controls, self.greet_context_capture_enabled_var" in contact_block
+    assert "ttk.Label(\n            row_api_controls," in api_block
+    assert "ttk.Label(\n            row_contact_controls," in contact_block
+    assert "ttk.Spinbox(\n            row_api_controls," in api_block
+    assert "ttk.Spinbox(\n            row_contact_controls," in contact_block
+    assert "column=2" not in api_block
+    assert "column=3" not in api_block
+    assert "column=2" not in contact_block
+    assert "column=3" not in contact_block
 
 
 def test_run_page_job_selector_defaults_to_recent_or_saved_job():
@@ -6752,6 +6980,47 @@ def test_boss_recommend_url_accepts_chat_and_frame_routes():
     assert not BossFilterGUI._is_boss_recommend_url("https://example.com/web/chat/recommend")
 
 
+def test_advanced_run_risk_metrics_only_include_enabled_high_values():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.rounds_var = _FakeVar("120")
+    gui.api_direct_enabled_var = _FakeVar(True)
+    gui.api_direct_pages_var = _FakeVar("9")
+    gui.greet_context_capture_enabled_var = _FakeVar(True)
+    gui.greet_context_capture_limit_var = _FakeVar("16")
+
+    assert gui._advanced_run_risk_metrics() == (
+        ("滚动轮次", "120 轮（建议不超过 100）"),
+        ("扫描增强", "最多读取 9 页（建议不超过 8）"),
+        ("后续联系", "最多准备 16 人（建议不超过 15）"),
+    )
+
+    gui.api_direct_enabled_var.set(False)
+    gui.greet_context_capture_enabled_var.set(False)
+    assert gui._advanced_run_risk_metrics() == (
+        ("滚动轮次", "120 轮（建议不超过 100）"),
+    )
+
+
+def test_advanced_run_risk_confirmation_uses_structured_metrics():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = object()
+    gui.rounds_var = _FakeVar("110")
+
+    with patch(
+        "gui_main.messagebox.ask_confirmation", return_value=False
+    ) as ask_confirmation:
+        confirmed = gui._confirm_advanced_run_settings()
+
+    assert confirmed is False
+    ask_confirmation.assert_called_once()
+    assert ask_confirmation.call_args.args == ("确认高访问量设置",)
+    assert ask_confirmation.call_args.kwargs["metrics"] == (
+        ("滚动轮次", "110 轮（建议不超过 100）"),
+    )
+    assert ask_confirmation.call_args.kwargs["yes_label"] == "仍按当前设置运行"
+    assert ask_confirmation.call_args.kwargs["no_label"] == "返回调整"
+
+
 def test_start_run_accepts_frame_recommend_page():
     class FakePage:
         url = "https://www.zhipin.com/web/frame/recommend/?jobid=job-123&status=0"
@@ -6795,11 +7064,14 @@ def test_start_run_accepts_frame_recommend_page():
         BossFilterGUI,
         "_boss_access_cooldown_state",
         return_value={"blocked": False},
-    ), patch("gui_main.threading.Thread", FakeThread), \
+    ), patch.object(
+        gui, "_confirm_advanced_run_settings", return_value=True
+    ) as confirm_settings, patch("gui_main.threading.Thread", FakeThread), \
             patch("gui_main.messagebox.showwarning") as showwarning:
         gui.start_run()
 
     showwarning.assert_not_called()
+    confirm_settings.assert_called_once_with()
     assert gui.is_running is True
     assert gui.stop_event.cleared is True
     assert started == [gui.run_worker]
@@ -7090,7 +7362,7 @@ def test_run_control_uses_compact_rounds_input_and_matching_button_fonts():
     create_block = source[source.index("def create_run_page"):]
     create_block = create_block[:create_block.index("\n    def create_result_page")]
 
-    assert "increment=10, textvariable=self.rounds_var,\n                                       width=8" in create_block
+    assert "increment=10,\n            textvariable=self.rounds_var,\n            width=8" in create_block
     assert "'RunControl.Danger.TButton'" in styles_block
     assert "font=(FONT_FAMILY_SEMIBOLD, int(13 * page_fs))" in styles_block
     assert "style='Accent.TButton'" in create_block
@@ -7106,25 +7378,19 @@ def test_run_control_inputs_share_browser_action_start_column():
     assert "def _create_run_control_lead(parent, text=None, label_font=None):" in create_block
     assert "browser_status_lead = _create_run_control_lead(browser_status_row)" in create_block
     assert "btn_browser.pack(side=\"left\")" in create_block
-    assert '_create_run_control_lead(row1, "滚动轮次:")' in create_block
+    assert '_create_advanced_setting_label(0, "滚动轮次:")' in create_block
+    assert "row_rounds_controls.grid(" in create_block
     assert "self.rounds_spin.pack(side=\"left\")" in create_block
     assert '_create_run_control_lead(row_job, "选择岗位:")' in create_block
     assert "self.job_combo.pack(side=\"left\")" in create_block
     assert '_create_run_control_lead(row2, "筛选完成:")' in create_block
     assert "contact_combo.pack(side=\"left\")" in create_block
-    assert "_create_run_control_lead(row_advanced_header)" in create_block
     assert "self.scan_advanced_toggle_label.pack(side=\"left\")" in create_block
     assert '_create_run_control_lead(row_ai, "AI 评估:")' in create_block
     assert "ai_switch.pack(side=\"left\")" in create_block
-    assert (
-        'row_ai_timeout, "AI 响应超时:", label_font=_sub_font'
-        in create_block
-    )
-    assert (
-        "textvariable=self.llm_read_timeout_var,\n"
-        "                    font=_spin_font).pack(side=\"left\")"
-        in create_block
-    )
+    assert '1, "AI 响应超时:"' in create_block
+    assert "row_ai_timeout_controls.grid(" in create_block
+    assert "self.llm_read_timeout_spin.pack(side=\"left\")" in create_block
 
 
 def test_inline_form_notes_use_flat_copy_without_outer_parentheses():
@@ -7134,12 +7400,13 @@ def test_inline_form_notes_use_flat_copy_without_outer_parentheses():
     result_block = source[source.index("def create_result_page"):]
     result_block = result_block[:result_block.index("\n    def create_education_page")]
 
-    assert 'text="推荐 20-100 轮次"' in run_block
+    assert 'text="默认 50，推荐 20-100"' in run_block
     assert '_note_prefix = "对通过筛选的候选人进行 LLM 二次评估，"' in run_block
     assert '_note_suffix = "15 分调整"' in run_block
     assert '(推荐 50-200 轮次)' not in run_block
     assert 'StringVar(value=str(MAX_ROUNDS_DEFAULT))' in run_block
-    assert 'self._result_search_placeholder = "姓名/匹配分/推荐指数/状态"' in result_block
+    assert gui_main.MAX_ROUNDS_DEFAULT == 50
+    assert 'self._result_search_placeholder = "姓名/性别/匹配分/推荐指数/状态"' in result_block
     assert "textvariable=self.result_search_var, width=26" in result_block
     assert "'text_placeholder', ui_theme.TEXT_PLACEHOLDER" in result_block
     assert "max(8, int(8 * self.dpi_scale * self.zoom_factor))" in result_block
@@ -7149,7 +7416,7 @@ def test_inline_form_notes_use_flat_copy_without_outer_parentheses():
     assert "def _sync_result_search_clear_hint():" in result_block
     assert "hint.pack_forget()" in result_block
     assert "pack_options['before'] = result_view_label" in result_block
-    assert 'text="姓名/匹配分/推荐指数/状态，Esc 清空"' not in result_block
+    assert 'text="姓名/性别/匹配分/推荐指数/状态，Esc 清空"' not in result_block
     assert 'bind_all("<Button-1>", self._on_global_left_click, add="+")' in source
     assert 'lambda _event: self._refresh_results_and_reset_sort()' in result_block
     assert '"刷新结果并恢复默认排序"' in result_block

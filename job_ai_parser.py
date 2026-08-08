@@ -18,7 +18,7 @@ import requests
 
 from ai_adapter import build_request
 from constants import CHINESE_NUMERALS, MAJOR_CITIES
-from doc_parser import skill_identity_key
+from doc_parser import _extract_gender_requirement, skill_identity_key
 
 
 AI_PARSE_TIMEOUT = (6, 80)
@@ -28,6 +28,7 @@ AI_PARSE_TEMPERATURE = 0.1
 AI_PARSE_RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 
 _EDU_VALUES = {"不限", "高中", "中专", "大专", "本科", "硕士", "博士"}
+_GENDER_VALUES = {"不限", "男", "女"}
 _NOISY_KEYWORD_RE = re.compile(
     r"^(?:AI|人工智能|API|Wind|Bloomberg|万得(?:API)?|彭博|数据库(?:技术)?|数据开发工具|"
     r"数据清洗|数据加工|因子|因子计算|因子结果|报表|报表开发|证券|证券行业)$",
@@ -140,10 +141,11 @@ def _build_messages(requirements_text: str, regex_config: dict[str, Any]) -> lis
         "正则初稿已有明确薪资时不要改写，只补充初稿缺失的薪资字段。\n"
         "9. warnings 中每个待确认事项必须单独作为一个数组元素，不要用分号合并多件事；"
         "直接说明用户需要确认什么，避免'属于 OR/AND 关系'等技术表述和同义重复。\n\n"
+        "10. gender 只能依据原文明确的性别要求返回不限、男或女；不能根据岗位名称、行业或职责推测。\n\n"
         "返回 JSON schema：\n"
         "{\n"
         "  \"job_title\": \"可选，岗位名修正\",\n"
-        "  \"basic_info\": {\"min_exp\": 可选整数, \"edu\": 可选枚举, \"max_age\": 可选整数或null,"
+        "  \"basic_info\": {\"min_exp\": 可选整数, \"edu\": 可选枚举, \"gender\": 可选枚举, \"max_age\": 可选整数或null,"
         " \"work_location\": 可选字符串, \"salary_min\": 可选K/月整数或null, \"salary_max\": 可选K/月整数或null},\n"
         "  \"keywords_add\": [{\"name\":\"技能\", \"weight\":1-3}],\n"
         "  \"keywords_update\": [{\"name\":\"已有技能\", \"weight\":1-3}],\n"
@@ -339,6 +341,11 @@ def _merge_patch(regex_config: dict[str, Any], patch: dict[str, Any], requiremen
             edu = _clean_text(basic.get("edu"))
             if edu in _EDU_VALUES:
                 job["edu"] = edu
+        if "gender" in basic:
+            gender = _clean_text(basic.get("gender"))
+            explicit_gender = _extract_gender_requirement(requirements_text)
+            if gender in _GENDER_VALUES and gender == explicit_gender:
+                job["gender"] = gender
         if "work_location" in basic:
             loc = _normalize_work_location(basic.get("work_location"))
             if loc:

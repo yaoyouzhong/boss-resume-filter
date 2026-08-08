@@ -9,6 +9,8 @@ from filtering import (
     check_required_condition,
     evaluate_candidate,
     filter_candidate,
+    normalize_candidate_gender,
+    normalize_gender,
     parse_experience_months,
     parse_experience_years,
 )
@@ -364,6 +366,87 @@ def test_filter_candidate_unknown_experience_requires_manual_review():
     assert details["qualification_status"] == "manual_review"
     assert details["manual_review_required"] is True
     assert details["auto_greet_blocked_reason"] == "工作经验待确认"
+
+
+def test_rule_gender_normalization_only_accepts_explicit_text_values():
+    assert normalize_gender("男") == "男"
+    assert normalize_gender("性别：女性") == "女"
+    assert normalize_gender("male") == "男"
+    assert normalize_gender("F") == "女"
+    assert normalize_gender("0") is None
+    assert normalize_gender("1") is None
+    assert normalize_gender("不限") is None
+
+
+def test_candidate_gender_normalization_supports_boss_numeric_codes():
+    assert normalize_candidate_gender(1) == "男"
+    assert normalize_candidate_gender("性别：1") == "男"
+    assert normalize_candidate_gender(0) == "女"
+    assert normalize_candidate_gender("性别：0") == "女"
+    assert normalize_candidate_gender(2) is None
+    assert normalize_candidate_gender("不限") is None
+
+
+def test_filter_candidate_gender_match_passes():
+    rule = {"min_exp": 0, "edu": "不限", "gender": "女", "keywords": ["Java"]}
+    passed, _, details = filter_candidate(
+        "Java 开发",
+        rule,
+        structured_fields={"gender": "女"},
+    )
+    assert passed is True
+    assert details["qualification_status"] == "qualified"
+    assert "性别：通过，要求女，实际女" in details["score_explanation"]
+
+
+def test_filter_candidate_gender_mismatch_rejected():
+    rule = {"min_exp": 0, "edu": "不限", "gender": "女", "keywords": ["Java"]}
+    passed, _, details = filter_candidate("性别：男\nJava 开发", rule)
+    assert passed is False
+    assert details["qualification_status"] == "rejected"
+    assert details["reason"] == "性别不符：要求女，实际男"
+
+
+def test_filter_candidate_unknown_gender_requires_manual_review():
+    rule = {"min_exp": 0, "edu": "不限", "gender": "女", "keywords": ["Java"]}
+    passed, _, details = filter_candidate(
+        "性别：2\nJava 开发",
+        rule,
+        structured_fields={"gender": "2"},
+    )
+    assert passed is True
+    assert details["qualification_status"] == "manual_review"
+    assert details["manual_review_required"] is True
+    assert details["auto_greet_blocked_reason"] == "性别待确认"
+    assert details["risk_flags"] == [
+        "性别待确认：岗位要求女，候选人性别未识别"
+    ]
+
+
+def test_filter_candidate_boss_numeric_gender_is_enforced():
+    rule = {"min_exp": 0, "edu": "不限", "gender": "女", "keywords": ["Java"]}
+    passed, _, details = filter_candidate(
+        "性别：0\nJava 开发",
+        rule,
+        structured_fields={"gender": 0},
+    )
+    assert passed is True
+    assert details["qualification_status"] == "qualified"
+
+    passed, _, details = filter_candidate(
+        "性别：1\nJava 开发",
+        rule,
+        structured_fields={"gender": 1},
+    )
+    assert passed is False
+    assert details["reason"] == "性别不符：要求女，实际男"
+
+
+def test_filter_candidate_missing_gender_rule_remains_backward_compatible():
+    rule = {"min_exp": 0, "edu": "不限", "keywords": ["Java"]}
+    passed, _, details = filter_candidate("性别：男\nJava 开发", rule)
+    assert passed is True
+    assert details["qualification_status"] == "qualified"
 
 
 def test_filter_candidate_entry_level_experience_is_rejected():

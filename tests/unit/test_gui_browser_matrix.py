@@ -36,7 +36,9 @@ def _assert_display_case(case_id):
 
 
 def test_result_policy_windows_1080p_windowed_compact():
-    assert len(_assert_display_case("windows-1080p-windowed-compact")) == 8
+    columns = _assert_display_case("windows-1080p-windowed-compact")
+    assert columns[:2] == ("name", "gender")
+    assert len(columns) == 14
 
 
 def test_result_policy_windows_1080p_maximized_includes_school_company():
@@ -44,24 +46,28 @@ def test_result_policy_windows_1080p_maximized_includes_school_company():
         "windows-1080p-maximized-all-fields"
     )
     assert columns[-2:] == ("school", "company")
+    assert len(columns) == 14
 
 
-def test_result_policy_windows_4k_windowed_does_not_force_wide_columns():
+def test_result_policy_windows_4k_windowed_keeps_all_fields_scrollable():
     columns = _assert_display_case("windows-4k-windowed-readable")
-    assert len(columns) == 11
-    assert "school" not in columns
-    assert "company" not in columns
+    assert len(columns) == 14
+    assert columns[-2:] == ("school", "company")
 
 
 def test_result_policy_windows_4k_maximized_includes_all_fields():
     columns = _assert_display_case("windows-4k-maximized-all-fields")
-    assert len(columns) == 13
+    assert len(columns) == 14
     assert columns[-2:] == ("school", "company")
 
 
 def test_result_policy_macos_retina_windowed_keeps_core_columns_readable():
     columns = _assert_display_case("macos-retina-windowed-core")
-    assert len(columns) == 8
+    assert columns[:9] == (
+        "name", "gender", "exp", "salary", "skills", "score",
+        "ai_eval", "level", "status",
+    )
+    assert len(columns) == 14
 
 
 class _TopPage:

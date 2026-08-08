@@ -151,6 +151,15 @@ def score_job_config_quality(issues: list[JobConfigIssue]) -> JobConfigQuality:
 def _diagnose_basic_fields(rule: dict[str, Any]) -> list[JobConfigIssue]:
     issues: list[JobConfigIssue] = []
 
+    gender = _clean_text(rule.get("gender", "不限")) or "不限"
+    if gender not in {"不限", "男", "女"}:
+        issues.append(_issue(
+            "error",
+            "性别要求无效",
+            f"当前值为“{gender}”，性别筛选无法稳定执行。",
+            "请选择不限、男或女。",
+        ))
+
     min_exp = rule.get("min_exp")
     if min_exp is None:
         issues.append(_issue(

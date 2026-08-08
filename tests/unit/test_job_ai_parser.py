@@ -20,6 +20,7 @@ def _base_config():
             "Java 工程师": {
                 "min_exp": 3,
                 "edu": "本科",
+                "gender": "不限",
                 "work_location": "南京",
                 "salary_min": 12,
                 "salary_max": 18,
@@ -260,6 +261,29 @@ def test_ai_parse_prompt_requires_evidence_for_hard_condition_suggestions():
     assert "只有原文明确写在必要条件/硬性约束段" in user_prompt
     assert "required_conditions_add" in user_prompt
     assert "required_conditions_remove" not in user_prompt
+
+
+def test_ai_parse_prompt_forbids_gender_inference():
+    user_prompt = _build_messages("岗位：客户经理", _base_config())[1]["content"]
+
+    assert "gender 只能依据原文明确的性别要求" in user_prompt
+    assert "不能根据岗位名称、行业或职责推测" in user_prompt
+
+
+def test_merge_patch_accepts_only_evidence_backed_gender():
+    explicit = _merge_patch(
+        _base_config(),
+        {"basic_info": {"gender": "女"}},
+        "岗位：客户经理\n性别要求：女",
+    )
+    inferred = _merge_patch(
+        _base_config(),
+        {"basic_info": {"gender": "女"}},
+        "岗位：行政前台",
+    )
+
+    assert next(iter(explicit["job_requirements"].values()))["gender"] == "女"
+    assert next(iter(inferred["job_requirements"].values()))["gender"] == "不限"
 
 
 def test_merge_patch_rejects_ordinary_skill_requirements_as_hard_conditions():
