@@ -1,29 +1,29 @@
 {
-  "version": "2.26",
-  "release_date": "2026-08-04",
+  "version": "2.27",
+  "release_date": "2026-08-08",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.26/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.26/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.26/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.27/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.27/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.27/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "macos_dmg": {
-      "size": 33667950,
-      "sha256": "730e817874f158fd970ffd3e24b7a04beee7078b7e2c1f8ac82295ae2d0d6e81"
+      "size": 33732097,
+      "sha256": "096ca2038fafffea7345dd366997f584ecc023bc4a49b5a4e773174ef14eec7e"
     },
     "windows": {
-      "size": 36051080,
-      "sha256": "ef8ecc9f357512c3a32d6cd5d3a431499c82fd6362edd88ea5e19bf3ea9da98d"
+      "size": 36066875,
+      "sha256": "22d7f4a5fe567859525d85f2904ac9d19ae9ea5539f334922aca0524236e129f"
     },
     "macos": {
-      "size": 34512971,
-      "sha256": "1544a7d4a79d3ce26253d26bb85949826bec5133af288b8924b2ed02ca5f1917"
+      "size": 34567389,
+      "sha256": "1fc5e4f8f26431798cc4f217a5c4eedce455d97fc38a7517c9d12ae16b3eae4c"
     }
   },
-  "release_notes": "### 新增功能\n\n- **简历存储体检**：在系统设置中检查简历引用、异常路径和未被候选人使用的文件，并在用户确认后完成修复。\n\n### 体验优化\n\n- **简历文件管理**：导入替换、撤回评估、删除候选人、清空数据和恢复备份时，自动清理不再使用的简历文件；多个候选人共用的文件会继续保留。\n- **扫描日志聚焦**：运行日志只显示候选人扫描过程，浏览器检测和配置诊断改记到应用日志。\n- **更新安装响应**：更新包校验和安装窗口准备改在后台执行，减少安装前主界面无响应。\n\n### 问题修复\n\n- **联系冷却保护**：修复 BOSS 访问冷却期间仍可能启动或导航浏览器的问题，冷却结束前不再准备联系发送。\n- **更新失败恢复**：修复更新安装异常时已有备份可能恢复不完整的问题，并限制安装助手只处理本次更新文件。",
+  "release_notes": "### 新增功能\n\n- **岗位性别筛选**：岗位配置新增性别要求，并覆盖岗位需求解析、候选人筛选、AI 辅助评估、结果查看和 Excel 导出；旧配置未设置性别时继续按不限处理。\n\n### 体验优化\n\n- **高级运行设置**：将滚动轮次、AI 响应超时、扫描增强和后续联系集中到折叠区域；滚动轮次默认 50，AI 响应超时随 AI 辅助评估开关联动，参数超过建议值时会在开始前再次确认。\n- **结果列表浏览**：重新排列关键字段，普通窗口显示性别，并可通过底部横向滚动条查看全部字段；求职状态、毕业学校和最近公司显示不全时，可悬停查看完整内容。\n- **岗位配置布局**：调整性别要求、最大年龄和薪资输入区域的排列与间距，使常用条件更容易填写和核对。",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.26/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.26/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.26/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.27/BOSS_ResumeFilter.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.27/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.27/BOSS_ResumeFilter.dmg"
   }
 }
