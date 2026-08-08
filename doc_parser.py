@@ -477,6 +477,39 @@ def _extract_work_location(text: str) -> str:
     return ""
 
 
+def _extract_gender_requirement(text: str) -> str:
+    """Extract only an explicit gender requirement; never infer from the role."""
+    if not text:
+        return "不限"
+    normalized = _preprocess_text(text)
+    for line in normalized.split('\n'):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if re.search(r'男女不限|性别不限|不限性别|男(?:性)?女(?:性)?均可', stripped):
+            return "不限"
+        labeled = re.search(
+            r'(?:性别要求|候选人性别|性别)\s*[：:]\s*([^，,。；;\s]+)',
+            stripped,
+        )
+        if labeled:
+            value = labeled.group(1)
+            if value in {"男", "男性"}:
+                return "男"
+            if value in {"女", "女性"}:
+                return "女"
+            if "不限" in value or "均可" in value:
+                return "不限"
+        restricted = re.search(
+            r'(?:仅限|只限|限招|只招|要求)\s*(男性|女性|男|女)'
+            r'(?:候选人)?(?:\s|$|[，,。；;])',
+            stripped,
+        )
+        if restricted:
+            return "男" if restricted.group(1) in {"男", "男性"} else "女"
+    return "不限"
+
+
 def _extract_salary_range(text: str):
     """从招聘需求中提取薪资范围。返回 (min_k, max_k)，未匹配或面议返回 (None, None)
 
@@ -1064,6 +1097,7 @@ def parse_job_requirements(text: str) -> Dict:
     # 返回解析结果
     salary_min, salary_max = _extract_salary_range(text)
     work_location = _extract_work_location(text)
+    gender = _extract_gender_requirement(text)
 
     # 构建溯源数据：每个解析结果对应的原文片段
     _source_map: Dict = {}
@@ -1093,6 +1127,10 @@ def parse_job_requirements(text: str) -> Dict:
     if max_age:
         _age_pat = re.compile(rf'{max_age}\s*(?:岁|周岁)')
         _source_map["max_age"] = _find_pattern_source_line(text, _age_pat)
+
+    if gender != "不限":
+        _gender_pat = re.compile(r'性别|仅限|只限|限招|只招')
+        _source_map["gender"] = _find_pattern_source_line(text, _gender_pat)
 
     # 技能溯源：为每个技能找到原文出处
     _skills_source = []
@@ -1139,6 +1177,7 @@ def parse_job_requirements(text: str) -> Dict:
         "job_title": job_title,
         "min_exp": exp_value,
         "edu": edu_value,
+        "gender": gender,
         "work_location": work_location,
         "salary_min": salary_min,
         "salary_max": salary_max,
@@ -1285,6 +1324,7 @@ def generate_config_from_text(requirements_text: str, merge_existing: bool = Tru
     new_job_config = {
         "min_exp": parsed["min_exp"],
         "edu": parsed["edu"],
+        "gender": parsed.get("gender", "不限"),
         "work_location": parsed.get("work_location", ""),
         "salary_min": parsed.get("salary_min"),
         "salary_max": parsed.get("salary_max"),

@@ -8,7 +8,7 @@
       "scale_percent": 100,
       "window_mode": "windowed",
       "result_tree_width": 1000,
-      "expected_column_count": 8,
+      "expected_column_count": 14,
       "automated_test": "test_result_policy_windows_1080p_windowed_compact"
     },
     {
@@ -18,7 +18,7 @@
       "scale_percent": 125,
       "window_mode": "maximized",
       "result_tree_width": 1250,
-      "expected_column_count": 13,
+      "expected_column_count": 14,
       "automated_test": "test_result_policy_windows_1080p_maximized_includes_school_company"
     },
     {
@@ -28,8 +28,8 @@
       "scale_percent": 150,
       "window_mode": "windowed",
       "result_tree_width": 1600,
-      "expected_column_count": 11,
-      "automated_test": "test_result_policy_windows_4k_windowed_does_not_force_wide_columns"
+      "expected_column_count": 14,
+      "automated_test": "test_result_policy_windows_4k_windowed_keeps_all_fields_scrollable"
     },
     {
       "id": "windows-4k-maximized-all-fields",
@@ -38,7 +38,7 @@
       "scale_percent": 150,
       "window_mode": "maximized",
       "result_tree_width": 1700,
-      "expected_column_count": 13,
+      "expected_column_count": 14,
       "automated_test": "test_result_policy_windows_4k_maximized_includes_all_fields"
     },
     {
@@ -48,7 +48,7 @@
       "scale_percent": 200,
       "window_mode": "windowed",
       "result_tree_width": 1050,
-      "expected_column_count": 8,
+      "expected_column_count": 14,
       "automated_test": "test_result_policy_macos_retina_windowed_keeps_core_columns_readable"
     }
   ],

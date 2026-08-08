@@ -156,6 +156,7 @@ def test_filter_audit_detail_reports_top_rejection_reasons_and_skips():
             "评分不足(40-49分)": 5,
             "经验不足（要求3年以上）": 7,
             "学历不符/不足（要求本科）": 4,
+            "性别不符（要求女）": 3,
             "薪资不匹配（岗位最高25K）": 2,
         },
         ai_hard_rejected=1,
@@ -166,9 +167,9 @@ def test_filter_audit_detail_reports_top_rejection_reasons_and_skips():
         "已屏蔽跳过：2 人\n"
         "已沟通跳过：3 人\n"
         "主要淘汰原因\n"
-        "- 经验不足（要求3年以上）：7 人\n"
         "- 学历不符/不足（要求本科）：4 人\n"
-        "- 薪资不匹配（岗位最高25K）：2 人\n"
+        "- 经验不足（要求3年以上）：7 人\n"
+        "- 性别不符（要求女）：3 人\n"
         "AI 淘汰：硬条件 1 人、降分 2 人"
     )
 
@@ -993,6 +994,7 @@ def test_geek_card_api_payload_builds_complete_candidate_summary():
                         "geekId": 123456,
                         "encGeekId": "encrypted-g-api-1",
                         "geekName": "张三",
+                        "genderDesc": "女",
                         "ageDesc": "32岁",
                         "geekDegree": "本科",
                         "geekWorkYear": "8年",
@@ -1041,6 +1043,7 @@ def test_geek_card_api_payload_builds_complete_candidate_summary():
     api_profile = candidates[0]["_api_profile"]
     assert structured.get('exp_years') == 8
     assert structured.get('age') == 32
+    assert structured.get('gender') == "女"
     assert structured.get('degree') == "本科"
     assert structured.get('city') == "南京"
     # _api_profile 结构化画像
@@ -1053,6 +1056,27 @@ def test_geek_card_api_payload_builds_complete_candidate_summary():
     assert "工作职责：负责 ETL 调度、Python 数据分析和 Oracle 数据库开发" in summary
     assert "技能标签：Python、ETL、Oracle" in summary
     assert "教育经历：南京大学 计算机科学 本科 2008 2012" in summary
+    assert "性别：女" in summary
+
+
+def test_geek_card_numeric_gender_uses_boss_candidate_codes():
+    payload = {
+        "zpData": {
+            "geekList": [{
+                "encryptGeekId": "encrypted-g-api-unknown-gender",
+                "geekCard": {
+                    "geekName": "李四",
+                    "geekGender": 1,
+                    "ageDesc": "30岁",
+                },
+            }]
+        }
+    }
+
+    candidate = bossmaster._extract_candidates_from_api_payload(payload)[0]
+
+    assert candidate["structured"]["gender"] == "男"
+    assert "性别：男" in candidate["summary"]
 
 
 def test_api_candidate_summary_participates_in_existing_filtering():
@@ -2414,7 +2438,7 @@ def test_find_card_by_scroll_returns_to_top_after_current_position_miss():
 
 def test_export_to_excel_keeps_full_candidate_summary_in_detail_column():
     long_summary = (
-        "15-18K\n南京，统招本科，6 年 Python 经验\n"
+        "15-18K\n性别：0\n南京，统招本科，6 年 Python 经验\n"
         + "工作职责：负责数据仓库建设、ETL 调度、SQL 优化和业务指标分析。"
         + "技能标签：Python、SQL、ETL、Oracle。"
         + "项目说明：" + "A" * 260
@@ -2448,11 +2472,13 @@ def test_export_to_excel_keeps_full_candidate_summary_in_detail_column():
         sheet = workbook["全部候选人"]
         headers = [cell.value for cell in sheet[1]]
         detail_col = headers.index("详细信息") + 1
+        gender_col = headers.index("性别") + 1
         manual_review_col = headers.index("是否需人工确认") + 1
         risk_col = headers.index("风险提示") + 1
         next_followup_col = headers.index("下次跟进") + 1
 
         assert sheet.cell(row=2, column=detail_col).value == long_summary
+        assert sheet.cell(row=2, column=gender_col).value == "女"
         assert sheet.cell(row=2, column=manual_review_col).value == "是"
         assert sheet.cell(row=2, column=risk_col).value == "学历形式待确认：疑似非统招本科"
         assert sheet.cell(row=2, column=next_followup_col).value == "20260720_090000"
@@ -2670,6 +2696,42 @@ def test_smart_scan_records_filter_audit_stats():
     }
 
 
+def test_smart_scan_persists_structured_gender_for_audit():
+    class FakePage:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+    job_info = {
+        "job_id": "job-gender",
+        "job_name": "客户经理",
+        "rule_key": "customer-manager",
+        "rule": {"min_exp": 0, "edu": "不限", "gender": "女", "keywords": []},
+    }
+    raw_candidates = [{
+        "geek_id": "g-gender",
+        "name": "张三",
+        "summary": "本科，5年经验",
+        "structured": {"gender": "女"},
+    }]
+
+    with patch.object(bossmaster, "load_candidates_all", return_value=[]), \
+         patch.object(
+             bossmaster,
+             "extract_candidates_by_comprehensive_analysis",
+             return_value=raw_candidates,
+         ), \
+         patch.object(
+             bossmaster,
+             "filter_candidate",
+             return_value=(True, 80, {"skill_matches": []}),
+         ), \
+         patch.object(bossmaster, "merge_candidates_all"):
+        result = bossmaster.smart_scan_candidates(
+            FakePage(), job_info, auto_greet=False, max_rounds=1
+        )
+
+    assert result[0]["gender"] == "女"
+
+
 def test_smart_scan_submits_current_results_for_existing_and_cross_job_candidates():
     class FakePage:
         url = "https://www.zhipin.com/web/chat/recommend"
@@ -2757,6 +2819,7 @@ def test_smart_scan_replaces_previous_pass_when_current_rules_reject_candidate()
         "geek_id": "g-rejected",
         "name": "本轮未通过",
         "summary": "本科，1年 Java",
+        "structured": {"gender": 0},
     }]
     job_info = {
         "job_id": "job-java",
@@ -2785,6 +2848,8 @@ def test_smart_scan_replaces_previous_pass_when_current_rules_reject_candidate()
     assert len(mock_merge.call_args.args[0]) == 1
     assert mock_merge.call_args.args[0][0]["qualification_status"] == "rejected"
     assert mock_merge.call_args.args[0][0]["rejection_source"] == "previously_recommended"
+    assert mock_merge.call_args.args[0][0]["gender"] == "女"
+    assert mock_merge.call_args.args[0][0]["structured"]["gender"] == "女"
     assert "经验不足" in mock_merge.call_args.args[0][0]["qualification_reasons"][0]
     assert mock_merge.call_args.kwargs["replace_keys"] == {
         ("g-rejected", "Java工程师")
@@ -3715,6 +3780,14 @@ def test_extract_summary_info_full_text():
     assert '某某科技' in info['company']
     assert 'Java' in info['skills']
     assert 'MySQL' in info['skills']
+
+
+def test_extract_summary_info_reads_text_and_legacy_boss_gender_codes():
+    from bossmaster import extract_summary_info
+
+    assert extract_summary_info("性别：女\n本科\n3年经验")["gender"] == "女"
+    assert extract_summary_info("性别：1\n本科\n3年经验")["gender"] == "男"
+    assert extract_summary_info("性别：0\n本科\n3年经验")["gender"] == "女"
 
 
 def test_extract_summary_info_negotiable_salary():

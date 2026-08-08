@@ -180,6 +180,7 @@ def test_build_llm_candidate_summary_compacts_api_resume_sections():
         "skill_match_ratio": "3/5",
         "skill_matches": ["Python", "ETL", "Oracle"],
         "risk_flags": ["学历形式待确认：疑似非统招本科"],
+        "structured": {"gender": 0},
         "summary": "\n".join([
             "张三，8年经验，期望北京",
             "教育经历：南京大学 计算机科学 本科 2008 2012",
@@ -195,11 +196,24 @@ def test_build_llm_candidate_summary_compacts_api_resume_sections():
 
     assert len(compact) <= 1353
     assert "规则评分：68" in compact
+    assert "性别：女" in compact
+    assert "性别：0" not in compact
     assert "风险提示：学历形式待确认：疑似非统招本科" in compact
     assert "教育经历：南京大学 计算机科学 本科 2008 2012" in compact
     assert "工作职责：负责 Python 数据分析" in compact
     assert "技能标签：Python、ETL、Oracle" in compact
     assert "A" * 1000 not in compact
+
+
+def test_build_llm_candidate_summary_normalizes_legacy_numeric_gender():
+    compact = build_llm_candidate_summary({
+        "name": "候选人",
+        "match_score": 70,
+        "summary": "性别：1\n年龄：30岁\n5年 Java 开发",
+    })
+
+    assert "性别：男" in compact
+    assert "性别：1" not in compact
 
 
 # === _recalc_recommend_level ===

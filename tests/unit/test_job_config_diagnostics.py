@@ -25,6 +25,23 @@ def test_diagnose_salary_range_reversed_is_error():
     assert any(issue.severity == "error" and issue.title == "薪资范围倒挂" for issue in issues)
 
 
+def test_diagnose_invalid_gender_is_blocking_error():
+    issues = diagnose_job_config("Java 工程师", {
+        "gender": "男性优先",
+        "min_exp": 3,
+        "keywords": [
+            {"name": "Java", "weight": 2},
+            {"name": "Spring", "weight": 2},
+            {"name": "MySQL", "weight": 1},
+        ],
+    })
+
+    assert any(
+        issue.severity == "error" and issue.title == "性别要求无效"
+        for issue in issues
+    )
+
+
 def test_diagnose_keyword_overlap_and_soft_quality():
     issues = diagnose_job_config("客户成功经理", {
         "min_exp": 3,

@@ -66,6 +66,7 @@ from filtering import (
     check_required_condition,
     evaluate_candidate,
     filter_candidate,
+    normalize_candidate_gender,
     parse_experience_years,
 )
 from candidate_workflow import candidate_greet_skip_reason
@@ -721,6 +722,7 @@ def extract_summary_info(text: str) -> dict[str, Any]:
     """
     info: dict[str, Any] = {
         'salary': '',
+        'gender': '',
         'age': '',
         'exp_years': '',
         'education': '',
@@ -782,6 +784,13 @@ def extract_summary_info(text: str) -> dict[str, Any]:
                 salary_match = re.search(r'(\d+(?:\.\d+)?)[Kk千]', first_line)
                 if salary_match:
                     info['salary'] = salary_match.group(1) + 'K'
+
+    # ---- 性别 ----
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("性别：") or stripped.startswith("性别:"):
+            info['gender'] = normalize_candidate_gender(stripped) or ''
+            break
 
     # ---- 年龄 ----
     for line in lines:
@@ -1022,6 +1031,12 @@ def export_to_excel(
                 summary_info['exp_years'] = str(structured['exp_years'])
             if structured.get('age'):
                 summary_info['age'] = str(structured['age'])
+            stored_gender = normalize_candidate_gender(c.get('gender'))
+            if stored_gender:
+                summary_info['gender'] = stored_gender
+            structured_gender = normalize_candidate_gender(structured.get('gender'))
+            if structured_gender:
+                summary_info['gender'] = structured_gender
             if structured.get('city'):
                 summary_info['city'] = structured['city']
             if structured.get('job_status'):
@@ -1033,6 +1048,7 @@ def export_to_excel(
                 '序号': i + 1,
                 '岗位': c.get('job_name', ''),
                 '姓名': c.get('name', '未知'),
+                '性别': summary_info['gender'],
                 'geek_id': c.get('geek_id', ''),
                 # ② 画像
                 '年龄': summary_info['age'],
@@ -1086,7 +1102,7 @@ def export_to_excel(
 
         # 列顺序：身份 → 画像 → 评估 → 简历二次评估 → 跟进 → 原始
         columns = [
-            '序号', '岗位', '姓名', 'geek_id',
+            '序号', '岗位', '姓名', '性别', 'geek_id',
             '年龄', '工作年限', '学历', '学历明细', '薪资', '求职状态', '城市', '最近公司', '技能',
             '匹配分', '推荐指数', '技能匹配', '评分拆解', '评分解释', '命中证据',
             '简历评估', '简历评估理由', '技能深度', '经验质量', '行业匹配', '发展潜力',
@@ -1187,49 +1203,30 @@ def export_to_excel(
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
 
-            # 设置列宽（按新列序：身份→画像→评估→跟进→原始）
+            # 按表头设置列宽，新增或重排字段不会导致后续列宽整体错位。
             column_widths = {
-                'A': 6,   # 序号
-                'B': 20,  # 岗位
-                'C': 10,  # 姓名
-                'D': 16,  # geek_id
-                'E': 8,   # 年龄
-                'F': 10,  # 工作年限
-                'G': 8,   # 学历
-                'H': 30,  # 学历明细
-                'I': 12,  # 薪资
-                'J': 10,  # 求职状态
-                'K': 10,  # 城市
-                'L': 20,  # 最近公司
-                'M': 30,  # 技能
-                'N': 10,  # 匹配分
-                'O': 12,  # 推荐指数
-                'P': 12,  # 技能匹配
-                'Q': 28,  # 评分拆解
-                'R': 55,  # 评分解释
-                'S': 55,  # 命中证据
-                'T': 10,  # 简历评估
-                'U': 55,  # 简历评估理由
-                'V': 10,  # 技能深度
-                'W': 10,  # 经验质量
-                'X': 10,  # 行业匹配
-                'Y': 10,  # 发展潜力
-                'Z': 12,  # 是否打招呼
-                'AA': 12, # 跟进状态
-                'AB': 30, # 跟进备注
-                'AC': 16, # 跟进时间
-                'AD': 10, # 人工反馈
-                'AE': 30, # 反馈备注
-                'AF': 16, # 反馈时间
-                'AG': 16, # 是否需人工确认
-                'AH': 30, # 风险提示
-                'AI': 28, # 自动打招呼阻断原因
-                'AJ': 16, # 批次
-                'AK': 80, # 详细信息
+                '序号': 6, '岗位': 20, '姓名': 10, '性别': 8, 'geek_id': 16,
+                '年龄': 8, '工作年限': 10, '学历': 8, '学历明细': 30,
+                '薪资': 12, '求职状态': 10, '城市': 10, '最近公司': 20,
+                '技能': 30, '匹配分': 10, '推荐指数': 12, '技能匹配': 12,
+                '评分拆解': 28, '评分解释': 55, '命中证据': 55,
+                '简历评估': 10, '简历评估理由': 55, '技能深度': 10,
+                '经验质量': 10, '行业匹配': 10, '发展潜力': 10,
+                '是否屏蔽': 12, '是否打招呼': 12, '跟进状态': 12,
+                '跟进备注': 30, '跟进时间': 16, '下次跟进': 16,
+                '人工反馈': 10, '反馈原因': 30, '反馈备注': 30,
+                '反馈时间': 16, '是否需人工确认': 16, '风险提示': 30,
+                '自动打招呼阻断原因': 28, '首次发现': 16, '最近评估': 16,
+                '详细信息': 80,
+                '总人数': 10, '强烈推荐': 10, '推荐': 10, '待定': 10,
+                '已打招呼': 12, '已回复': 10, '待约面': 10, '已约面': 10,
+                '不合适': 10, '反馈合适': 10, '反馈误推': 10,
+                '反馈放弃': 10, '平均分': 10,
             }
-            for col, width in column_widths.items():
-                if col in ws.column_dimensions:
-                    ws.column_dimensions[col].width = width
+            for cell in ws[1]:
+                width = column_widths.get(str(cell.value or ''))
+                if width is not None:
+                    ws.column_dimensions[cell.column_letter].width = width
 
             # 冻结首行（标题行）
             ws.freeze_panes = 'A2'
@@ -1481,7 +1478,12 @@ def _build_candidate_summary_from_geek_card(geek_card: dict[str, Any]) -> str:
         salary_text = "面议"  # API 未返回薪资时默认面议（BOSS 直聘常见）
     add("期望薪资", salary_text)
     add("姓名", _pick_api_text(geek_card, "geekName", "name", "encryptGeekName"))
-    add("性别", _pick_api_text(geek_card, "geekGender", "gender", "genderDesc"))
+    gender_text = _pick_api_text(
+        geek_card, "genderDesc", "geekGender", "gender"
+    )
+    normalized_gender = normalize_candidate_gender(gender_text)
+    if normalized_gender:
+        add("性别", normalized_gender)
     add("年龄", _pick_api_text(geek_card, "ageDesc", "age"))
     add("学历", _pick_api_text(geek_card, "geekDegree", "degreeName", "degree"))
     add("经验", _pick_api_text(geek_card, "geekWorkYear", "workYear", "workYearDesc"))
@@ -1668,6 +1670,12 @@ def _extract_candidates_from_api_payload(payload: Any) -> list[dict[str, str]]:
             m = re.search(r'(\d+)', age_text)
             if m:
                 structured['age'] = int(m.group(1))
+        gender_text = _pick_api_text(
+            geek_card, "genderDesc", "geekGender", "gender"
+        )
+        gender = normalize_candidate_gender(gender_text)
+        if gender:
+            structured['gender'] = gender
         degree_text = _pick_api_text(geek_card, "geekDegree", "degreeName", "degree")
         if degree_text:
             structured['degree'] = degree_text
@@ -4850,23 +4858,25 @@ def _build_auto_greet_confirm_text(
 def _filter_reason_sort_key(item: tuple[str, int]) -> tuple[int, int]:
     """Stable business ordering for filter rejection reasons."""
     reason, count = item
-    if '经验不足' in reason:
-        return (0, -count)
     if '学历' in reason:
+        return (0, -count)
+    if '经验不足' in reason:
         return (1, -count)
     if '年龄' in reason:
         return (2, -count)
-    if '地点' in reason:
+    if '性别' in reason:
         return (3, -count)
-    if '薪资' in reason:
+    if '地点' in reason:
         return (4, -count)
-    if '技术条件' in reason:
+    if '薪资' in reason:
         return (5, -count)
-    if '评分不足' in reason:
+    if '技术条件' in reason:
         return (6, -count)
-    if '筛选异常' in reason:
+    if '评分不足' in reason:
         return (7, -count)
-    return (8, -count)
+    if '筛选异常' in reason:
+        return (8, -count)
+    return (9, -count)
 
 
 def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUNDS_DEFAULT, verbose=False, greet_level='normal', greet_names_list=None, list_candidates=False, progress_callback=None, stop_event=None, ai_eval=False, api_config=None, api_key=None, captcha_callback=None, notice_callback=None, blocking_notice_callback=None, stats=None, max_candidates=API_CANDIDATE_LIMIT_DEFAULT, use_api_extraction=True, extraction_mode=None, greet_confirm_callback=None, greet_context_capture=True, greet_context_limit=GREET_CONTEXT_CAPTURE_LIMIT):
@@ -5015,6 +5025,12 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
     # 年龄、地点、薪资、技术条件要求
     max_age = rule.get('max_age')
     age_requirement = f"年龄不符（要求≤{max_age}岁）" if max_age else "年龄不符"
+    required_gender = rule.get('gender', '不限')
+    gender_requirement = (
+        f"性别不符（要求{required_gender}）"
+        if required_gender in {"男", "女"}
+        else "性别不符"
+    )
     work_location = rule.get('work_location', '')
     city_requirement = f"地点不符（要求{work_location}）" if work_location else "地点不符"
     salary_max = rule.get('salary_max')
@@ -5029,7 +5045,15 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                 replace_keys=processed_candidate_keys,
             )
             raise StopRequested()
-        passed, score, details = filter_candidate(candidate['summary'], job_info['rule'], candidate.get('structured'))
+        structured = dict(candidate.get('structured') or {})
+        structured_gender = normalize_candidate_gender(structured.get('gender'))
+        if structured_gender:
+            structured['gender'] = structured_gender
+        passed, score, details = filter_candidate(
+            candidate['summary'],
+            job_info['rule'],
+            structured or None,
+        )
         if passed and score >= SCORE_THRESHOLD_PASS:
             # 计算推荐等级
             if score >= SCORE_THRESHOLD_STRONG:
@@ -5042,11 +5066,12 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
             # 提取结构化字段（薪资、经验、年龄等）
             summary_info = extract_summary_info(candidate['summary'])
             # API 结构化数据优先覆盖 DOM 解析结果
-            structured = candidate.get('structured') or {}
             if structured.get('exp_years'):
                 summary_info['exp_years'] = str(structured['exp_years'])
             if structured.get('age'):
                 summary_info['age'] = str(structured['age'])
+            if structured.get('gender'):
+                summary_info['gender'] = structured['gender']
             if structured.get('salary_min') and structured.get('salary_max'):
                 summary_info['salary'] = f"{structured['salary_min']}-{structured['salary_max']}K"
             elif structured.get('salary_min'):
@@ -5079,6 +5104,7 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                 "job_uuid": job_uuid,
                 "job_name": normalized_job_name,
                 "salary": summary_info.get('salary', ''),
+                "gender": summary_info.get('gender', ''),
                 "age": summary_info.get('age', ''),
                 "exp_years": summary_info.get('exp_years', ''),
                 "education": summary_info.get('education', ''),
@@ -5146,6 +5172,8 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                     reason = edu_requirement
                 elif '年龄不符' in reason or '年龄超限' in reason:
                     reason = age_requirement
+                elif '性别不符' in reason:
+                    reason = gender_requirement
                 elif '地点不符' in reason or '城市不符' in reason:
                     reason = city_requirement
                 elif '薪资不匹配' in reason or '薪资期望过高' in reason:
@@ -5180,6 +5208,10 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                 "geek_id": candidate['geek_id'],
                 "name": candidate['name'],
                 "summary": candidate['summary'],
+                "gender": (
+                    normalize_candidate_gender(structured.get('gender'))
+                    or extract_summary_info(candidate['summary']).get('gender', '')
+                ),
                 "job_id": job_info['job_id'],
                 "job_uuid": job_uuid,
                 "job_name": normalized_job_name,
@@ -5197,6 +5229,10 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                 "followup_status": "未沟通",
                 "greet_sent": False,
             }
+            if structured:
+                rejected_record['structured'] = structured
+            if candidate.get('_api_profile'):
+                rejected_record['_api_profile'] = candidate['_api_profile']
             if rejection_source:
                 rejected_candidates.append(rejected_record)
 
@@ -5271,6 +5307,8 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
             hard_parts.append(f"- 学历：要求{rule['edu']}")
         if rule.get('max_age'):
             hard_parts.append(f"- 年龄：上限{rule['max_age']}岁")
+        if rule.get('gender') in {"男", "女"}:
+            hard_parts.append(f"- 性别：要求{rule['gender']}")
         if rule.get('work_location'):
             hard_parts.append(f"- 地点：要求{rule['work_location']}，候选人期望城市需匹配")
         if rule.get('salary_max'):
@@ -6332,7 +6370,13 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                 "rule_key": job_name
             }
 
-            print(f"过滤规则：经验≥{rule.get('min_exp', 0)}年，学历≥{rule.get('edu', '不限')}")
+            rule_summary = (
+                f"过滤规则：经验≥{rule.get('min_exp', 0)}年，"
+                f"学历≥{rule.get('edu', '不限')}"
+            )
+            if rule.get('gender') in {'男', '女'}:
+                rule_summary += f"，性别={rule['gender']}"
+            print(rule_summary)
             print(f"Keywords: {[k.get('name', k) if isinstance(k, dict) else k for k in rule.get('keywords', [])][:5]}...")
 
             if not _confirm_page_job_match(

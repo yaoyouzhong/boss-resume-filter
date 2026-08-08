@@ -118,3 +118,15 @@ def test_job_config_save_persists_schema_and_stable_job_id():
             first["job_requirements"]["Java"]["job_uuid"]
             == second["job_requirements"]["Java"]["job_uuid"]
         )
+
+
+def test_job_config_roundtrip_preserves_gender_requirement():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "job_config.json"
+        payload = _config("客户经理")
+        payload["job_requirements"]["客户经理"]["gender"] = "女"
+
+        save_job_config_snapshot(payload, path)
+        loaded = load_job_config_snapshot(path)
+
+        assert loaded["job_requirements"]["客户经理"]["gender"] == "女"

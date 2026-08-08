@@ -1340,6 +1340,45 @@ def _check_code_to_changelog_coverage(strict=False):
         """Return True for implementation churn that should not force user-facing notes."""
         lowered = f"{fpath} {line}".lower()
         stripped = line.strip()
+        if fpath.endswith(".py") and "ttk.Label(" in stripped:
+            visible_literals = re.findall(
+                r"['\"]([^'\"]*[一-鿿][^'\"]*)['\"]", stripped
+            )
+            additions = file_additions.get(fpath, ())
+            removals = file_removals.get(fpath, ())
+            if visible_literals and all(
+                any(literal in candidate for candidate in additions)
+                and any(literal in candidate for candidate in removals)
+                for literal in visible_literals
+            ):
+                # A label may move to a different frame while its visible text
+                # stays unchanged. The surrounding layout diff remains available
+                # to the coverage checker; the repeated label is not a new signal.
+                return True
+        if fpath.endswith("bossmaster.py") and re.match(
+            r"^(?:['\"][^'\"]+['\"]\s*:\s*\d+\s*,?\s*)+(?:#.*)?$",
+            stripped,
+        ):
+            for hunk in file_hunks.get(fpath, ()):
+                if line not in hunk["additions"] and line not in hunk["removals"]:
+                    continue
+                hunk_text = "\n".join(
+                    hunk["context"] + hunk["additions"] + hunk["removals"]
+                )
+                if "column_widths" in hunk_text and (
+                    "column_dimensions" in hunk_text or "ws[1]" in hunk_text
+                ):
+                    # Excel column widths are presentation metadata. A header-keyed
+                    # width map may contain business labels, but changing the map
+                    # does not add or remove exported fields.
+                    return True
+        if not re.search(r"[一-鿿]", stripped) and re.match(
+            r"^self\s*,\s*['\"][A-Za-z_]\w*['\"]\s*(?:,\s*[^,]+)?\s*,?$",
+            stripped,
+        ):
+            # Continuation lines used by getattr/self wiring can contain words
+            # such as "limit" without representing a user-facing limit change.
+            return True
         if re.match(r"^(?:if|elif|for|while|and|or)\b", stripped):
             return True
         if not re.search(r"[一-鿿]", stripped):
