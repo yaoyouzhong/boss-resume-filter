@@ -6,6 +6,7 @@ depend on local real candidate records.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from datetime import datetime, timedelta
@@ -13,6 +14,12 @@ from pathlib import Path
 
 import tkinter as tk
 from PIL import Image, ImageGrab
+
+
+# Keep screenshot generation isolated from the user's runtime data and updater.
+os.environ["BOSS_RESUME_FILTER_DISABLE_DATA_MIGRATION"] = "1"
+os.environ["BOSS_RESUME_FILTER_DISABLE_GUARD_PERSISTENCE"] = "1"
+os.environ["BOSS_RESUME_FILTER_DISABLE_STARTUP_UPDATE"] = "1"
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -55,6 +62,7 @@ DEMO_API_CONFIG = {
 DEMO_JOB_RULE = {
     "min_exp": 4,
     "edu": "本科",
+    "gender": "不限",
     "max_age": 38,
     "work_location": "南京/上海",
     "salary_min": 18,
@@ -78,7 +86,7 @@ DEMO_JOB_RULE = {
     "original_requirement": (
         "岗位：证券IT开发工程师（演示岗位）\n"
         "职位描述：负责证券业务系统设计、开发与优化。\n"
-        "必要条件：统招本科，4年以上 Java 开发经验，熟悉 Spring Cloud、"
+        "必要条件：统招本科，性别不限，4年以上 Java 开发经验，熟悉 Spring Cloud、"
         "MySQL、Redis 和微服务架构；具备债券、基金、期货、期权任一金融投资行业经验。\n"
         "优先条件：证券行业经验、高并发系统经验优先。"
     ),
@@ -107,6 +115,7 @@ def _candidate(index: int, score: int, *, job: str = DEMO_JOB, greeted: bool = F
             "exp_years": 4 + index % 5,
             "salary": "20-25K",
             "education": "本科",
+            "gender": "男" if index % 2 else "女",
             "city": "南京",
             "job_status": "在职-考虑机会",
         },
@@ -314,10 +323,14 @@ def main() -> None:
 
     app.show_page_api()
     capture_widget(root, "03-api-config-full.png")
+    app.api_canvas.yview_moveto(1.0)
+    capture_widget(root, "03-data-maintenance.png")
+    app.api_canvas.yview_moveto(0.0)
 
     app.show_page_run()
     app.job_combo["values"] = ["全部岗位", DEMO_JOB]
     app.job_combo.set(DEMO_JOB)
+    app.scan_advanced_toggle_label.event_generate("<Button-1>")
     app.run_canvas.yview_moveto(0.0)
     capture_widget(root, "04-run-full.png")
 
@@ -380,11 +393,11 @@ def main() -> None:
         root,
         {
             "current": gui_main.__version__,
-            "latest": "2.25",
+            "latest": "2.28",
             "update_type": "version",
             "changelog_body": (
                 "### 新增功能\n\n"
-                "- 演示新版功能说明。\n\n"
+                "- 新增候选人处理能力。\n\n"
                 "### 体验优化\n\n"
                 "- 优化候选人处理流程和界面提示。"
             ),
