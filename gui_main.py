@@ -29,6 +29,17 @@ from tkinter import filedialog, font, ttk
 from urllib.parse import urlparse
 
 import icons
+import candidate_presenter
+import candidate_diagnostics_presenter
+import contact_presenter
+import gui_candidate_actions
+import gui_candidate_diagnostics
+import gui_candidate_review
+import gui_candidate_workbench
+import gui_contact_queue
+import gui_stats_page
+import run_presenter
+import stats_presenter
 import ui_theme
 from ui_layout import result_display_columns
 from ui_windowing import (
@@ -68,14 +79,11 @@ class _EscCloseToplevel(tk.Toplevel):
 tk.Toplevel = _EscCloseToplevel
 from collections import Counter
 from candidate_workflow import (
-    ACTION_TIMING_ORDER,
     CONTACTED_FOLLOWUP_STATUSES,
-    REVIEW_CATEGORY_ORDER,
     apply_followup_state,
     build_daily_candidate_actions,
     candidate_can_manual_approve_contact,
     candidate_greet_skip_reason,
-    candidate_review_category,
     default_next_followup_at,
     derive_candidate_decision,
     filter_candidates_by_result_view,
@@ -95,7 +103,7 @@ from ai_adapter import (
     normalize_api_base_url,
 )
 from greeting_failure import diagnose_greeting_failure, format_greeting_failure_message
-from filtering import GENDER_VALUES, normalize_candidate_gender
+from filtering import GENDER_VALUES
 from contact_queue import (
     ACTIVE_STATUSES,
     build_contact_queue_item,
@@ -208,6 +216,49 @@ FEEDBACK_REASON_OPTIONS = [
     "其他",
 ]
 FOLLOWUP_STATUS_OPTIONS = ["未沟通", "已打招呼", "已回复", "待约面", "已约面", "不合适", "已归档"]
+
+
+def _export_candidate_state_diagnostics_report(summary_text, parent):
+    """Write a user-selected candidate-state diagnostics report."""
+    default_name = (
+        f"candidate_state_diagnostics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    )
+    path = filedialog.asksaveasfilename(
+        title="导出状态体检报告",
+        defaultextension=".txt",
+        initialfile=default_name,
+        filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+        parent=parent,
+    )
+    if not path:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as report_file:
+            report_file.write(summary_text)
+        messagebox.showinfo("状态体检", "报告已导出。", parent=parent)
+    except Exception as exc:
+        messagebox.showerror("状态体检", f"导出失败：{exc}", parent=parent)
+
+
+def _export_daily_candidate_actions_report(items, parent):
+    """Write a user-selected daily candidate action report."""
+    path = filedialog.asksaveasfilename(
+        title="导出今日待办",
+        defaultextension=".txt",
+        initialfile=(
+            f"candidate_daily_actions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        ),
+        filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+        parent=parent,
+    )
+    if not path:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as report_file:
+            report_file.write(summarize_daily_candidate_actions(items))
+        messagebox.showinfo("今日待办", "报告已导出。", parent=parent)
+    except Exception as exc:
+        messagebox.showerror("今日待办", f"导出失败：{exc}", parent=parent)
 
 
 class PageIndex(IntEnum):
@@ -8514,142 +8565,14 @@ class BossFilterGUI:
 
     def create_stats_page(self):
         """创建数据统计页面 - 按岗位维度展示筛选和打招呼统计"""
-        self.stats_page = ttk.Frame(self.pages_frame, style='Page.TFrame')
-
-        # 页面标题
-        self._create_page_header(self.stats_page, "数据统计")
-
-        # 过滤条件行
-        filter_frame = ttk.Frame(self.stats_page, style='Page.TFrame')
-        filter_frame.pack(fill="x", pady=(0, int(15 * self.dpi_scale * self.zoom_factor)))
-
-        ttk.Label(filter_frame, text="岗位过滤:", font=self.font_label,
-                 background=self.colors['bg_main']).pack(side="left")
-        self.stats_job_var = tk.StringVar(value="全部岗位")
-        self.stats_job_combo = ttk.Combobox(filter_frame, textvariable=self.stats_job_var,
-                                             values=["全部岗位"], width=28, state="readonly",
-                                             font=self.font_label)
-        self.stats_job_combo.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
-        self.stats_job_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_stats())
-
-        # 时间维度过滤
-        ttk.Label(filter_frame, text="时间范围:", font=self.font_label,
-                 background=self.colors['bg_main']).pack(side="left", padx=int(30 * self.dpi_scale * self.zoom_factor))
-        self.stats_time_var = tk.StringVar(value="全部")
-        time_combo = ttk.Combobox(filter_frame, textvariable=self.stats_time_var,
-                                   values=["今天", "本周", "本月", "全部"], width=12, state="readonly",
-                                   font=self.font_label)
-        time_combo.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
-        time_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_stats())
-
-        # 汇总统计卡片
-        summary_container = ttk.Frame(self.stats_page, style='Page.TFrame')
-        summary_container.pack(fill="x", pady=int(10 * self.dpi_scale * self.zoom_factor))
-
-        self.stats_summary_vars = {}
-        summary_items = [
-            ("passed_filter", "通过筛选", "total", self.colors['primary']),
-            ("strong_recommend", "强烈推荐", "strong", self.colors['purple']),
-            ("thumbs_up", "推荐", "recommended", self.colors['success']),
-            ("chat", "已打招呼", "greeted", self.colors['warning']),
-        ]
-
-        card_gap = int(10 * self.dpi_scale * self.zoom_factor)
-        for idx, (icon_name, label_text, var_name, color) in enumerate(summary_items):
-            card = ttk.Frame(summary_container, style='Card.TFrame')
-            card_padx = (0, card_gap) if idx < len(summary_items) - 1 else 0
-            card.pack(side="left", fill="x", expand=True, padx=card_padx,
-                     pady=int(10 * self.dpi_scale * self.zoom_factor))
-
-            # 图标容器
-            icon_size = int(UI_CONFIG['stat_icon_size'] * self.dpi_scale * self.zoom_factor)
-            icon_canvas = tk.Canvas(card, width=icon_size, height=icon_size,
-                                   bg=self.colors['bg_card'], highlightthickness=0)
-            icon_canvas.pack(pady=(int(12 * self.dpi_scale * self.zoom_factor), int(5 * self.dpi_scale * self.zoom_factor)))
-
-            margin = int(UI_CONFIG['icon_margin'] * self.dpi_scale * self.zoom_factor)
-            icon_canvas.create_oval(margin, margin, icon_size - margin, icon_size - margin,
-                                   fill=color, outline='')
-
-            stat_icon = self.icons.stat(icon_name, 'white')
-            icon_canvas.create_image(icon_size // 2, icon_size // 2, image=stat_icon)
-            icon_canvas._icon_ref = stat_icon
-
-            # 数值
-            var = tk.StringVar(value="0")
-            self.stats_summary_vars[var_name] = var
-            value_label = ttk.Label(card, textvariable=var, font=self.font_stat,
-                                   foreground=color, background=self.colors['bg_card'])
-            value_label.pack(pady=(0, int(4 * self.dpi_scale * self.zoom_factor)))
-
-            # 标签
-            text_label = ttk.Label(card, text=label_text, font=self.font_stat_label,
-                                  foreground=self.colors['text_secondary'],
-                                  background=self.colors['bg_card'])
-            text_label.pack(pady=(0, int(12 * self.dpi_scale * self.zoom_factor)))
-
-        # 岗位明细表格
-        table_label = ttk.Label(self.stats_page, text="岗位明细",
-                               font=self.font_section, foreground=self.colors['text_primary'],
-                               background=self.colors['bg_main'])
-        table_label.pack(anchor="w", padx=int(5 * self.dpi_scale * self.zoom_factor),
-                        pady=(int(20 * self.dpi_scale * self.zoom_factor), int(10 * self.dpi_scale * self.zoom_factor)))
-
-        table_container = ttk.Frame(self.stats_page, style='Card.TFrame')
-        table_container.pack(fill="both", expand=True, pady=int(10 * self.dpi_scale * self.zoom_factor))
-
-        columns = (
-            "job", "filter_dist", "greeted", "feedback",
-            "suitable_rate", "false_positive_rate",
-            "replied", "interviewed", "avg_score"
-        )
-        self.stats_tree = ttk.Treeview(table_container, columns=columns, show="headings", height=8)
-
-        self.stats_tree.heading("job", text="岗位名称")
-        self.stats_tree.heading("filter_dist", text="筛选分布")
-        self.stats_tree.heading("greeted", text="已打招呼")
-        self.stats_tree.heading("feedback", text="已反馈")
-        self.stats_tree.heading("suitable_rate", text="合适率")
-        self.stats_tree.heading("false_positive_rate", text="误推率")
-        self.stats_tree.heading("replied", text="已回复")
-        self.stats_tree.heading("interviewed", text="已约面")
-        self.stats_tree.heading("avg_score", text="平均分")
-
-        self.stats_tree.column("job", width=200, minwidth=150, anchor='w')
-        self.stats_tree.column("filter_dist", width=175, minwidth=140, anchor='center')
-        self.stats_tree.column("greeted", width=100, minwidth=80, anchor='center')
-        self.stats_tree.column("feedback", width=80, minwidth=65, anchor='center')
-        self.stats_tree.column("suitable_rate", width=75, minwidth=60, anchor='center')
-        self.stats_tree.column("false_positive_rate", width=75, minwidth=60, anchor='center')
-        self.stats_tree.column("replied", width=100, minwidth=80, anchor='center')
-        self.stats_tree.column("interviewed", width=100, minwidth=80, anchor='center')
-        self.stats_tree.column("avg_score", width=65, minwidth=55, anchor='center')
-
-        style = ttk.Style()
-        style.configure("Stats.Treeview", font=self.font_table,
-                       rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor))
-        style.configure("Stats.Treeview.Heading", font=(FONT_FAMILY, int(12 * self.font_scale), 'bold'))
-        self.stats_tree.configure(style="Stats.Treeview")
-
-        # 垂直和水平滚动条
-        tree_scroll_y = ttk.Scrollbar(table_container, orient="vertical", command=self.stats_tree.yview)
-        tree_scroll_x = ttk.Scrollbar(table_container, orient="horizontal", command=self.stats_tree.xview)
-        self.stats_tree.configure(yscrollcommand=tree_scroll_y.set, xscrollcommand=tree_scroll_x.set)
-
-        self.stats_tree.grid(row=0, column=0, sticky="nsew",
-                            padx=int(15 * self.dpi_scale * self.zoom_factor),
-                            pady=int(15 * self.dpi_scale * self.zoom_factor))
-        tree_scroll_y.grid(row=0, column=1, sticky="ns", pady=int(10 * self.dpi_scale * self.zoom_factor))
-        tree_scroll_x.grid(row=1, column=0, sticky="ew", padx=int(15 * self.dpi_scale * self.zoom_factor))
-        table_container.grid_rowconfigure(0, weight=1)
-        table_container.grid_columnconfigure(0, weight=1)
-        self.stats_tree.bind("<Double-Button-1>", lambda e: self._show_selected_job_review())
-        self.stats_tree.bind("<Button-3>", self._show_stats_context_menu)
-        self.stats_tree.bind(
-            "<Configure>",
-            lambda _event: self._schedule_page_width_policy(),
-            add="+",
-        )
+        widgets = gui_stats_page.build_stats_page(self, UI_CONFIG)
+        self._stats_page_widgets = widgets
+        self.stats_page = widgets.page
+        self.stats_job_var = widgets.job_var
+        self.stats_job_combo = widgets.job_combo
+        self.stats_time_var = widgets.time_var
+        self.stats_summary_vars = widgets.summary_vars
+        self.stats_tree = widgets.tree
 
     def _load_stats_candidates(self, job_name=None):
         """Load candidates with the current stats filters applied.
@@ -8683,15 +8606,7 @@ class BossFilterGUI:
 
     @staticmethod
     def _stats_time_cutoff(time_range):
-        now = datetime.now()
-        if time_range == "今天":
-            return now.replace(hour=0, minute=0, second=0, microsecond=0)
-        if time_range == "本周":
-            days_since_monday = now.weekday()
-            return (now - timedelta(days=days_since_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
-        if time_range == "本月":
-            return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        return None
+        return stats_presenter.stats_time_cutoff(time_range)
 
     def _show_stats_context_menu(self, event):
         item = self.stats_tree.identify_row(event.y)
@@ -9169,158 +9084,30 @@ class BossFilterGUI:
 
     @staticmethod
     def _feedback_reasons(candidate):
-        reasons = candidate.get('feedback_reasons') or []
-        if isinstance(reasons, str):
-            reasons = [r.strip() for r in re.split(r'[,，、/;；]', reasons) if r.strip()]
-        if not isinstance(reasons, list):
-            return []
-        return [str(r).strip() for r in reasons if str(r).strip()]
+        return stats_presenter.feedback_reasons(candidate)
 
     @staticmethod
     def _format_job_review_suggestion(suggestion):
         """Split one suggestion into a short heading and supporting detail."""
-        text = str(suggestion or '').lstrip('- ').strip()
-        for delimiter in ('：', ':', '；', ';'):
-            if delimiter not in text:
-                continue
-            title, detail = text.split(delimiter, 1)
-            if title.strip() and detail.strip():
-                return title.strip().rstrip('。'), detail.strip()
-        return text.rstrip('。'), ''
+        return stats_presenter.format_job_review_suggestion(suggestion)
 
     def _build_job_review_model(self, job_name, candidates):
         """Build the shared job-review model without changing candidate data."""
-        qualified = [c for c in candidates if c.get('match_score', 0) >= SCORE_THRESHOLD_PASS]
-        feedback_candidates = [
-            c for c in candidates
-            if c.get('feedback_status') in FEEDBACK_STATUS_OPTIONS
-        ]
-        status_counts = Counter(c.get('feedback_status') for c in feedback_candidates)
-        reason_counts = Counter()
-        false_positive_reasons = Counter()
-        false_negative_reasons = Counter()
-        ai_bias_counts = Counter()
-
-        for c in feedback_candidates:
-            reasons = self._feedback_reasons(c)
-            reason_counts.update(reasons)
-            if c.get('feedback_status') == "误推":
-                false_positive_reasons.update(reasons)
-            elif c.get('feedback_status') == "误杀":
-                false_negative_reasons.update(reasons)
-            for reason in reasons:
-                if reason in {"AI 高估", "AI 低估"}:
-                    ai_bias_counts[reason] += 1
-
-        greeted = sum(1 for c in candidates if c.get('greet_sent'))
-        replied_statuses = {"已回复", "待约面", "已约面"}
-        replied = sum(1 for c in candidates if c.get('followup_status') in replied_statuses)
-        interviewed = sum(1 for c in candidates if c.get('followup_status') == "已约面")
-        avg_score = sum(c.get('match_score', 0) for c in qualified) / len(qualified) if qualified else 0
-
-        suggestions = self._build_job_review_suggestions(
-            status_counts,
-            reason_counts,
-            len(feedback_candidates),
-        )
-        return {
-            "job_name": job_name,
-            "candidate_count": len(candidates),
-            "qualified_count": len(qualified),
-            "greeted_count": greeted,
-            "replied_count": replied,
-            "interviewed_count": interviewed,
-            "avg_score": avg_score if qualified else None,
-            "feedback_count": len(feedback_candidates),
-            "status_counts": status_counts,
-            "reason_counts": reason_counts,
-            "false_positive_reasons": false_positive_reasons,
-            "false_negative_reasons": false_negative_reasons,
-            "ai_bias_counts": ai_bias_counts,
-            "suggestions": suggestions,
-        }
+        return stats_presenter.build_job_review_model(job_name, candidates)
 
     def _build_job_review_text(self, job_name, candidates):
         """Build the compatibility text report from the shared review model."""
-        review = self._build_job_review_model(job_name, candidates)
+        return stats_presenter.build_job_review_text(job_name, candidates)
 
-        def fmt_counter(counter, empty="暂无"):
-            if not counter:
-                return [f"- {empty}"]
-            return [f"- {name}: {count}" for name, count in counter.most_common(8)]
-
-        lines = [
-            f"{job_name} 岗位复盘",
-            "",
-            "【样本概览】",
-            f"- 通过筛选：{review['qualified_count']} 人",
-            f"- 已打招呼：{review['greeted_count']} 人",
-            f"- 已回复：{review['replied_count']} 人",
-            f"- 已约面：{review['interviewed_count']} 人",
-            f"- 平均分：{review['avg_score']:.1f}" if review['avg_score'] is not None else "- 平均分：暂无",
-            f"- 已反馈：{review['feedback_count']} 人",
-            f"- 反馈覆盖：{review['feedback_count']}/{review['candidate_count']} 人",
-            "",
-            "【反馈分布】",
-            *fmt_counter(review['status_counts'], "暂无反馈状态"),
-            "",
-            "【结构化原因 Top】",
-            *fmt_counter(review['reason_counts'], "暂无结构化原因"),
-            "",
-            "【误推原因】",
-            *fmt_counter(review['false_positive_reasons'], "暂无误推原因"),
-            "",
-            "【误杀原因】",
-            *fmt_counter(review['false_negative_reasons'], "暂无误杀原因"),
-            "",
-            "【AI 偏差】",
-            *fmt_counter(review['ai_bias_counts'], "暂无 AI 偏差反馈"),
-            "",
-            "【建议调整方向】",
-            *review['suggestions'],
-        ]
-        return "\n".join(lines)
-
-    _REASON_SUGGESTIONS = {
-        "规则过宽": "补充硬性约束或提高核心技能关键词质量。",
-        "规则过窄": "放宽必要条件，长句条件拆成短关键词。",
-        "技能不匹配": "复核关键词是否过泛、权重是否偏高。",
-        "行业经验不符": "把行业经验放入优先项或必要条件，取决于是否硬性要求。",
-        "AI 高估": "复核 AI 评估提示词和硬条件复核证据。",
-        "AI 低估": "检查简历摘要是否信息不足，必要时使用完整简历二次评估。",
-    }
+    _REASON_SUGGESTIONS = stats_presenter.REASON_SUGGESTIONS
 
     @staticmethod
     def _build_job_review_suggestions(status_counts, reason_counts, feedback_count):
-        if feedback_count == 0:
-            return ["- 先积累反馈样本；没有结构化反馈时不建议调整岗位规则。"]
-
-        if feedback_count < 5:
-            observed = "、".join(
-                f"{reason} {count} 条"
-                for reason, count in reason_counts.most_common(5)
-            ) or "暂无结构化原因"
-            return [
-                f"- 当前只有 {feedback_count} 条反馈，样本不足 5 条，不建议据此修改岗位规则。",
-                f"- 已记录原因：{observed}。",
-            ]
-
-        suggestions = []
-        false_positive = status_counts.get("误推", 0)
-        false_negative = status_counts.get("误杀", 0)
-        if false_positive * 2 >= feedback_count and false_positive > 0:
-            suggestions.append("- 误推占比较高：优先检查核心技能是否过泛、必要条件是否缺失。")
-        if false_negative * 2 >= feedback_count and false_negative > 0:
-            suggestions.append("- 误杀占比较高：优先检查必要条件是否过严、简单关键词是否写成长句。")
-
-        for reason, suggestion in BossFilterGUI._REASON_SUGGESTIONS.items():
-            count = reason_counts.get(reason, 0)
-            if count > 0:
-                suggestions.append(
-                    f"- {reason}：{count}/{feedback_count} 条；{suggestion}"
-                )
-
-        return suggestions or ["- 暂无明确规则调整方向；继续积累结构化反馈后再复盘。"]
+        return stats_presenter.build_job_review_suggestions(
+            status_counts,
+            reason_counts,
+            feedback_count,
+        )
 
     def _show_text_dialog(
         self,
@@ -9420,99 +9207,24 @@ class BossFilterGUI:
 
         try:
             candidates = self._load_stats_candidates()
-
-            # 汇总统计（只计通过分的候选人）
-            qualified = [c for c in candidates if c.get('match_score', 0) >= SCORE_THRESHOLD_PASS]
-            total = len(qualified)
-            strong = sum(1 for c in qualified if c.get('match_score', 0) >= SCORE_THRESHOLD_STRONG)
-            recommended = sum(1 for c in qualified if SCORE_THRESHOLD_RECOMMEND <= c.get('match_score', 0) < SCORE_THRESHOLD_STRONG)
-            greeted = sum(1 for c in qualified if c.get('greet_sent', False))
-
-            self.stats_summary_vars['total'].set(str(total))
-            self.stats_summary_vars['strong'].set(str(strong))
-            self.stats_summary_vars['recommended'].set(str(recommended))
-            self.stats_summary_vars['greeted'].set(str(greeted))
+            dashboard = stats_presenter.build_stats_dashboard(candidates)
+            for key, value in dashboard["summary"].items():
+                self.stats_summary_vars[key].set(str(value))
 
             # 清空表格
             for item in self.stats_tree.get_children():
                 self.stats_tree.delete(item)
-
-            # 按岗位聚合
-            from collections import defaultdict
-            job_stats = defaultdict(lambda: {
-                'total': 0, 'strong': 0, 'recommended': 0, 'pending': 0,
-                'greeted': 0, 'feedback_count': 0, 'suitable': 0,
-                'false_positive': 0, 'contacted': 0, 'replied': 0,
-                'interviewed': 0, 'scores': []
-            })
-            valid_feedback_statuses = {"合适", "误推", "误杀", "放弃"}
-            contacted_statuses = {"已打招呼", "已回复", "待约面", "已约面", "不合适", "已归档"}
-            replied_statuses = {"已回复", "待约面", "已约面"}
-
-            for c in candidates:
-                job = c.get('job_name', '未知')
-                score = c.get('match_score', 0)
-                if score < SCORE_THRESHOLD_PASS:
-                    continue  # 低于通过分不计入统计
-
-                job_stats[job]['total'] += 1
-                if score >= SCORE_THRESHOLD_STRONG:
-                    job_stats[job]['strong'] += 1
-                elif score >= SCORE_THRESHOLD_RECOMMEND:
-                    job_stats[job]['recommended'] += 1
-                else:
-                    job_stats[job]['pending'] += 1
-
-                if c.get('greet_sent', False):
-                    job_stats[job]['greeted'] += 1
-
-                feedback_status = c.get('feedback_status')
-                if feedback_status in valid_feedback_statuses:
-                    job_stats[job]['feedback_count'] += 1
-                    if feedback_status == "合适":
-                        job_stats[job]['suitable'] += 1
-                    elif feedback_status == "误推":
-                        job_stats[job]['false_positive'] += 1
-
-                followup_status = c.get('followup_status') or ("已打招呼" if c.get('greet_sent', False) else "未沟通")
-                if c.get('greet_sent', False) or followup_status in contacted_statuses:
-                    job_stats[job]['contacted'] += 1
-                if followup_status in replied_statuses:
-                    job_stats[job]['replied'] += 1
-                if followup_status == "已约面":
-                    job_stats[job]['interviewed'] += 1
-
-                job_stats[job]['scores'].append(score)
-
             # 插入表格行（斑马纹便于宽表横向扫读）
             self.stats_tree.tag_configure(
                 'zebra_odd', background=self.colors.get('bg_zebra', ui_theme.BG_ZEBRA)
             )
-            for row_index, (job, stats) in enumerate(sorted(job_stats.items(), key=lambda x: x[1]['total'], reverse=True)):
-                t = stats['total']
-                s = stats['strong']
-                r = stats['recommended']
-                p = stats['pending']
-                g = stats['greeted']
-                fb = stats['feedback_count']
-                suitable = stats['suitable']
-                false_positive = stats['false_positive']
-                contacted = stats['contacted']
-                replied = stats['replied']
-                interviewed = stats['interviewed']
-
-                filter_dist = f"{t} (强{s}/推{r}/待{p})"
-                greeted_str = f"{g} ({g*100//t}%)" if t > 0 else str(g)
-                suitable_rate = f"{suitable*100//fb}%" if fb > 0 else "—"
-                false_positive_rate = f"{false_positive*100//fb}%" if fb > 0 else "—"
-                replied_str = f"{replied} ({replied*100//contacted}%)" if contacted > 0 else str(replied)
-                interviewed_str = f"{interviewed} ({interviewed*100//replied}%)" if replied > 0 else str(interviewed)
-                avg_score = f"{sum(stats['scores'])/len(stats['scores']):.1f}" if stats['scores'] else "—"
-
-                self.stats_tree.insert("", "end", values=(
-                    job, filter_dist, greeted_str, fb, suitable_rate,
-                    false_positive_rate, replied_str, interviewed_str, avg_score
-                ), tags=('zebra_odd',) if row_index % 2 else ())
+            for row_index, values in enumerate(dashboard["rows"]):
+                self.stats_tree.insert(
+                    "",
+                    "end",
+                    values=values,
+                    tags=('zebra_odd',) if row_index % 2 else (),
+                )
 
         except Exception as e:
             self.append_log(f"刷新统计失败：{e}")
@@ -15678,8 +15390,7 @@ class BossFilterGUI:
     @staticmethod
     def _estimate_run_summary_rows(text, chars_per_row=60):
         """Estimate wrapped summary rows without depending on a mapped window."""
-        lines = str(text or "").splitlines() or [""]
-        return sum(max(1, math.ceil(len(line) / chars_per_row)) for line in lines)
+        return run_presenter.estimate_run_summary_rows(text, chars_per_row)
 
     def _update_run_summary_text(self, text, foreground):
         """Update the read-only summary and cap its viewport at ten rows."""
@@ -15708,35 +15419,12 @@ class BossFilterGUI:
     @staticmethod
     def _format_terminal_progress_text(final_desc):
         """Keep the progress line short; full terminal details belong in the summary."""
-        desc = str(final_desc or "")
-        if desc.startswith("[完成]"):
-            return "筛选完成，详细结果见下方摘要"
-        if desc.startswith(("[达到轮次上限]", "[可能未扫完]")):
-            return "本轮处理完成；尚未确认扫描到底，详见下方摘要"
-        if desc.startswith("[扫描中断]"):
-            return "扫描中断，已保存当前结果；详见下方摘要"
-        if desc.startswith("[已停止]"):
-            return "运行已停止，已保存当前结果"
-        if desc.startswith("[出错]"):
-            return "运行出错，详情见运行日志"
-        return ""
+        return run_presenter.format_terminal_progress_text(final_desc)
 
     @staticmethod
     def _format_terminal_log_text(final_desc):
         """Return one terminal log line without repeating the business summary."""
-        desc = str(final_desc or "")
-        if desc.startswith("[完成]"):
-            return "本轮处理完成"
-        if desc.startswith(("[达到轮次上限]", "[可能未扫完]")):
-            return "本轮处理完成，扫描达到轮次上限"
-        if desc.startswith("[扫描中断]"):
-            return "扫描中断，已保存当前结果"
-        if desc.startswith("[已停止]"):
-            return "运行已停止，已保存当前结果"
-        if desc.startswith("[出错]"):
-            detail = desc.split("]", 1)[-1].strip().splitlines()[0]
-            return f"运行出错：{detail}" if detail else "运行出错"
-        return "运行结束"
+        return run_presenter.format_terminal_log_text(final_desc)
 
     def _set_run_summary(self, final_desc):
         """Show the final run summary in the fixed run-page summary area."""
@@ -15780,27 +15468,10 @@ class BossFilterGUI:
     @staticmethod
     def _replace_run_summary_contact_queue_count(final_desc, added_count):
         """Use the GUI contact-queue wording and count in the run summary."""
-        try:
-            count = max(0, int(added_count))
-        except (TypeError, ValueError):
-            count = 0
-        text = str(final_desc or "")
-        replacement = f"本轮已加联系清单：{count} 人"
-        updated = re.sub(
-            r"本轮(?:打招呼|已联系)：\d+ 人",
-            replacement,
-            text,
-            count=1,
+        return run_presenter.replace_run_summary_contact_queue_count(
+            final_desc,
+            added_count,
         )
-        if updated != text:
-            return updated
-
-        lines = text.splitlines()
-        for index, line in enumerate(lines):
-            if line.startswith("最终保留："):
-                lines.insert(index + 1, replacement)
-                return "\n".join(lines)
-        return f"{text.rstrip()}\n{replacement}".strip()
 
     def update_progress(self):
         """更新进度条显示"""
@@ -16770,1052 +16441,67 @@ class BossFilterGUI:
 
     def _create_candidate_workbench_header(self, parent, title, subtitle, scope):
         """Create the shared title and scope block used by candidate workbenches."""
-        scale = self.dpi_scale * self.zoom_factor
-        header = ttk.Frame(parent, style='Page.TFrame')
-        header.pack(fill="x", pady=(0, int(10 * scale)))
-        ttk.Label(
-            header,
-            text=title,
-            font=(FONT_FAMILY, int(18 * self.font_scale), 'bold'),
-            foreground=self.colors['text_primary'],
-            background=self.colors['bg_main'],
-        ).pack(anchor="w")
-        ttk.Label(
-            header,
-            text=subtitle,
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_main'],
-        ).pack(anchor="w", pady=(int(2 * scale), 0))
-        ttk.Label(
-            header,
-            text=f"范围：{scope}",
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_muted'],
-            background=self.colors['bg_main'],
-        ).pack(anchor="w", pady=(int(4 * scale), 0))
-        return header
+        return gui_candidate_workbench.create_header(
+            self,
+            parent,
+            title,
+            subtitle,
+            scope,
+        )
 
     def _create_candidate_workbench_metrics(self, parent, metrics):
         """Create a compact segmented metric strip and return its value variables."""
-        scale = self.dpi_scale * self.zoom_factor
-        strip = ttk.Frame(parent, style='Page.TFrame')
-        strip.pack(fill="x", pady=(0, int(12 * scale)))
-        value_vars = {}
-        for index, (key, label, value, color) in enumerate(metrics):
-            segment = tk.Frame(
-                strip,
-                bg=self.colors['bg_card'],
-                highlightbackground=self.colors['border'],
-                highlightthickness=1,
-            )
-            segment.pack(
-                side="left",
-                fill="x",
-                expand=True,
-                padx=(0 if index == 0 else int(4 * scale), 0),
-            )
-            tk.Frame(segment, bg=color, width=max(3, int(3 * scale))).pack(side="left", fill="y")
-            content = tk.Frame(segment, bg=self.colors['bg_card'])
-            content.pack(side="left", fill="x", expand=True, padx=int(10 * scale), pady=int(7 * scale))
-            value_var = tk.StringVar(value=str(value))
-            value_vars[key] = value_var
-            tk.Label(
-                content,
-                textvariable=value_var,
-                font=(FONT_FAMILY, int(15 * self.font_scale), 'bold'),
-                foreground=self.colors['text_primary'],
-                background=self.colors['bg_card'],
-            ).pack(side="left")
-            tk.Label(
-                content,
-                text=label,
-                font=(FONT_FAMILY, int(10 * self.font_scale)),
-                foreground=self.colors['text_secondary'],
-                background=self.colors['bg_card'],
-            ).pack(side="left", padx=(int(6 * scale), 0), pady=(int(2 * scale), 0))
-        return value_vars
+        return gui_candidate_workbench.create_metrics(self, parent, metrics)
 
     def _candidate_workbench_navigation_style(self, scale):
         """Configure the shared hierarchy style used by candidate workbenches."""
-        style_name = "CandidateWorkbench.Navigation.Treeview"
-        style = ttk.Style()
-        style.configure(
-            style_name,
-            font=(FONT_FAMILY, int(11 * self.font_scale)),
-            rowheight=int(UI_CONFIG['treeview_rowheight'] * scale),
-            background=self.colors['bg_card'],
-            fieldbackground=self.colors['bg_card'],
-            foreground=self.colors['text_primary'],
-        )
-        return style_name
+        return gui_candidate_workbench.navigation_style(self, scale, UI_CONFIG)
 
     def _apply_candidate_workbench_navigation_tags(self, tree):
         """Apply identical root and child typography to a workbench hierarchy."""
-        tree.tag_configure(
-            "workbench_root",
-            font=(FONT_FAMILY, int(11 * self.font_scale), "bold"),
-            foreground=self.colors['primary'],
-        )
-        tree.tag_configure(
-            "workbench_child",
-            font=(FONT_FAMILY, int(11 * self.font_scale)),
-            foreground=self.colors['text_primary'],
-        )
+        gui_candidate_workbench.apply_navigation_tags(self, tree)
 
     def _show_daily_candidate_actions_dialog(self, scope, items):
-        win = tk.Toplevel(self.root)
-        win.title("今日待办")
-        win.transient(self.root)
-        win.withdraw()
-        scale = self.dpi_scale * self.zoom_factor
+        """Show the daily candidate action queue through its dedicated Tk module."""
+        def load_actions():
+            refreshed_candidates, _scope = self._load_candidates_for_daily_actions()
+            return build_daily_candidate_actions(refreshed_candidates)
 
-        body = ttk.Frame(win, style='Page.TFrame', padding=int(16 * scale))
-        body.pack(fill="both", expand=True)
+        def export_report(parent):
+            _export_daily_candidate_actions_report(items, parent)
 
-        business_group_order = [
-            "发送结果待核实",
-            "已回复待推进",
-            "待复核",
-            "待完成简历评估",
-            "待打招呼",
-            "已打招呼待跟进",
-            "待约面待推进",
-            "面试后待反馈",
-        ]
-        all_items = list(items)
-
-        def daily_counts(current_items):
-            return {
-                "due": sum(
-                    item.timing_group in ("立即处理", "已逾期", "今天")
-                    for item in current_items
-                ),
-                "overdue": sum(item.timing_group == "已逾期" for item in current_items),
-                "unscheduled": sum(item.timing_group == "待安排" for item in current_items),
-                "future": sum(item.timing_group == "以后" for item in current_items),
-            }
-
-        counts = daily_counts(all_items)
-        self._create_candidate_workbench_header(
-            body,
-            "今日待办",
-            "按时间优先级整理候选人，逐项推进下一步",
+        return gui_candidate_actions.show_daily_candidate_actions_dialog(
+            self,
             scope,
+            items,
+            load_actions=load_actions,
+            export_report=export_report,
+            ui_config=UI_CONFIG,
         )
-        metric_vars = self._create_candidate_workbench_metrics(body, (
-            ("due", "需处理", counts["due"], self.colors['primary']),
-            ("overdue", "已逾期", counts["overdue"], self.colors['danger']),
-            ("unscheduled", "待安排", counts["unscheduled"], self.colors['warning']),
-            ("future", "以后", counts["future"], self.colors['text_muted']),
-        ))
-
-        content = ttk.Frame(body, style='Page.TFrame')
-        content.pack(fill="both", expand=True)
-
-        style = ttk.Style()
-        style.configure(
-            "ActionQueue.Treeview",
-            font=(FONT_FAMILY, int(11 * self.font_scale)),
-            rowheight=int(UI_CONFIG['treeview_rowheight'] * scale),
-        )
-        style.configure(
-            "ActionQueue.Treeview.Heading",
-            font=(FONT_FAMILY, int(11 * self.font_scale), 'bold'),
-        )
-
-        nav_frame = ttk.Frame(content, style='Card.TFrame', padding=int(10 * scale))
-        nav_frame.pack(side="left", fill="y", padx=(0, int(10 * scale)))
-        ttk.Label(
-            nav_frame,
-            text="按优先级筛选",
-            font=self.font_label,
-            foreground=self.colors['text_primary'],
-            background=self.colors['bg_card'],
-        ).pack(anchor="w", pady=(0, int(8 * scale)))
-        navigation_style = self._candidate_workbench_navigation_style(scale)
-        group_tree = ttk.Treeview(
-            nav_frame,
-            columns=("count",),
-            show="tree",
-            height=9,
-            style=navigation_style,
-            selectmode="browse",
-        )
-        group_tree.column("#0", width=int(210 * scale), minwidth=int(170 * scale), anchor="w")
-        group_tree.column("count", width=0, minwidth=0, stretch=False)
-        self._apply_candidate_workbench_navigation_tags(group_tree)
-        group_tree.pack(fill="y", expand=True)
-        action_group_by_iid = {}
-        action_items_by_key = {}
-        action_label_by_key = {}
-        action_iid_by_key = {}
-
-        def rebuild_action_group_tree():
-            group_tree.delete(*group_tree.get_children())
-            action_group_by_iid.clear()
-            action_items_by_key.clear()
-            action_label_by_key.clear()
-            action_iid_by_key.clear()
-            for timing_index, timing_group in enumerate(ACTION_TIMING_ORDER):
-                timing_items = [
-                    item for item in all_items
-                    if item.timing_group == timing_group
-                ]
-                if not timing_items:
-                    continue
-                parent_iid = f"timing_{timing_index}"
-                action_group_by_iid[parent_iid] = timing_group
-                action_items_by_key[timing_group] = timing_items
-                action_label_by_key[timing_group] = timing_group
-                action_iid_by_key[timing_group] = parent_iid
-                group_tree.insert(
-                    "", "end", iid=parent_iid, text=f"{timing_group}  {len(timing_items)}",
-                    values=(len(timing_items),), open=(timing_group != "以后"),
-                    tags=("workbench_root",),
-                )
-                for group_index, group in enumerate(business_group_order):
-                    group_items = [
-                        item for item in timing_items if item.group == group
-                    ]
-                    if not group_items:
-                        continue
-                    child_iid = f"{parent_iid}_group_{group_index}"
-                    selection_key = f"{timing_group}::{group}"
-                    action_group_by_iid[child_iid] = selection_key
-                    action_items_by_key[selection_key] = group_items
-                    action_label_by_key[selection_key] = group
-                    action_iid_by_key[selection_key] = child_iid
-                    group_tree.insert(
-                        parent_iid, "end", iid=child_iid, text=f"{group}  {len(group_items)}",
-                        values=(len(group_items),), open=(group == "待复核"),
-                        tags=("workbench_child",),
-                    )
-                    if group != "待复核":
-                        continue
-                    review_subgroups = {category: [] for category in REVIEW_CATEGORY_ORDER}
-                    for item in group_items:
-                        review_subgroups[candidate_review_category(item.candidate)].append(item)
-                    for sub_index, category in enumerate(REVIEW_CATEGORY_ORDER):
-                        category_items = review_subgroups[category]
-                        if not category_items:
-                            continue
-                        review_iid = f"{child_iid}_review_{sub_index}"
-                        review_key = f"{selection_key}::{category}"
-                        action_group_by_iid[review_iid] = review_key
-                        action_items_by_key[review_key] = category_items
-                        action_label_by_key[review_key] = category
-                        action_iid_by_key[review_key] = review_iid
-                        group_tree.insert(
-                            child_iid, "end", iid=review_iid, text=f"{category}  {len(category_items)}",
-                            values=(len(category_items),), tags=("workbench_child",),
-                        )
-
-        rebuild_action_group_tree()
-        default_group = next(iter(action_items_by_key), "")
-
-        detail_frame = ttk.Frame(content, style='Card.TFrame')
-        detail_frame.pack(side="left", fill="both", expand=True)
-        selected_group_var = tk.StringVar()
-        selected_group_summary_var = tk.StringVar()
-        selected_group_label = ttk.Label(
-            detail_frame,
-            textvariable=selected_group_var,
-            font=self.font_label,
-            foreground=self.colors['text_primary'],
-            background=self.colors['bg_card'],
-        )
-        selected_group_label.grid(row=0, column=0, columnspan=3, sticky="w", padx=int(10 * scale), pady=(int(10 * scale), 0))
-        ttk.Label(
-            detail_frame,
-            textvariable=selected_group_summary_var,
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_card'],
-            justify="left",
-            wraplength=int(760 * scale),
-        ).grid(
-            row=1, column=0, columnspan=3, sticky="w",
-            padx=int(10 * scale), pady=(int(4 * scale), int(2 * scale)),
-        )
-
-        columns = ("name", "job", "score", "task", "key_info", "due")
-        tree = ttk.Treeview(detail_frame, columns=columns, show="headings", height=8, style="ActionQueue.Treeview")
-        for col, text, width, anchor in (
-            ("name", "候选人", 95, "center"),
-            ("job", "岗位", 135, "w"),
-            ("score", "分数", 55, "center"),
-            ("task", "任务类型", 165, "center"),
-            ("key_info", "关键信息", 245, "w"),
-            ("due", "到期", 80, "center"),
-        ):
-            tree.heading(col, text=text)
-            tree.column(col, width=int(width * scale), minwidth=int(max(60, width * 0.65) * scale), anchor=anchor)
-
-        current_items = []
-        current_group_name = {"value": default_group}
-        show_selected_action = {"value": False}
-        scroll_y = ttk.Scrollbar(detail_frame, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scroll_y.set)
-        tree.grid(row=2, column=0, sticky="nsew", padx=int(10 * scale), pady=int(10 * scale))
-        scroll_y.grid(row=2, column=1, sticky="ns", pady=int(10 * scale))
-        detail_frame.grid_rowconfigure(2, weight=1)
-        detail_frame.grid_columnconfigure(0, weight=1)
-
-        selection_frame = ttk.Frame(detail_frame, style='Card.TFrame', padding=int(10 * scale))
-        selection_frame.grid(row=3, column=0, columnspan=2, sticky="ew")
-        selection_frame.grid_columnconfigure(0, weight=1)
-        selection_reason_var = tk.StringVar(value="选择一位候选人，查看处理依据和下一步")
-        selection_action_var = tk.StringVar(value="")
-        ttk.Label(
-            selection_frame,
-            textvariable=selection_reason_var,
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_card'],
-        ).grid(row=0, column=0, sticky="w")
-        selection_action_label = ttk.Label(
-            selection_frame,
-            textvariable=selection_action_var,
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_primary'],
-            background=self.colors['bg_card'],
-        )
-        selection_action_label.grid(row=1, column=0, sticky="w", pady=(int(3 * scale), 0))
-        selection_action_label.grid_remove()
-
-        def open_selected_workbench():
-            selection = tree.selection()
-            if not selection:
-                return
-            try:
-                item = current_items[int(selection[0])]
-            except (ValueError, IndexError):
-                return
-            self._open_candidate_review_workbench(item.candidate)
-
-        process_btn = ttk.Button(
-            selection_frame,
-            text="查看与处理",
-            style='Workbench.Primary.TButton',
-            command=open_selected_workbench,
-            state="disabled",
-        )
-        process_btn.grid(row=0, column=1, rowspan=2, sticky="e", padx=(int(12 * scale), 0))
-
-        def update_selection_context(_event=None):
-            selection = tree.selection()
-            if not selection:
-                selection_reason_var.set("选择一位候选人，查看处理依据和下一步")
-                selection_action_var.set("")
-                selection_action_label.grid_remove()
-                process_btn.configure(state="disabled")
-                return
-            try:
-                item = current_items[int(selection[0])]
-            except (ValueError, IndexError):
-                return
-            key_info = self._format_daily_action_key_info(item)
-            selection_reason_var.set(
-                f"已选择：{item.name or '未命名'} · {item.job_name or '未知岗位'} · "
-                f"{self._clip_table_text(key_info, 42)}"
-            )
-            if show_selected_action["value"]:
-                selection_action_var.set(f"下一步：{self._clip_table_text(item.action, 72)}")
-                selection_action_label.grid()
-            else:
-                selection_action_var.set("")
-                selection_action_label.grid_remove()
-            process_btn.configure(state="normal")
-
-        def populate_group(selection_key):
-            nonlocal current_items
-            current_items = action_items_by_key.get(selection_key, [])
-            current_group_name["value"] = selection_key
-            label = action_label_by_key.get(selection_key, selection_key)
-            selected_group_var.set(f"{label}：{len(current_items)} 人")
-            unique_actions = {
-                " ".join(str(item.action or "").split())
-                for item in current_items
-                if str(item.action or "").strip()
-            }
-            if "::" not in selection_key:
-                task_type_count = len({item.group for item in current_items})
-                selected_group_summary_var.set(
-                    f"包含 {task_type_count} 类任务；选择左侧具体任务可查看统一处理建议。"
-                )
-                show_selected_action["value"] = True
-            elif len(unique_actions) == 1:
-                selected_group_summary_var.set(f"处理建议：{next(iter(unique_actions))}")
-                show_selected_action["value"] = False
-            else:
-                selected_group_summary_var.set(
-                    f"本组包含 {len(unique_actions)} 种处理方式；选中候选人后查看对应下一步。"
-                )
-                show_selected_action["value"] = True
-            tree.delete(*tree.get_children())
-            for idx, item in enumerate(current_items):
-                tree.insert("", "end", iid=str(idx), values=(
-                    item.name or "未命名",
-                    item.job_name or "未知岗位",
-                    item.score,
-                    item.group,
-                    self._format_daily_action_key_info(item),
-                    self._format_daily_action_due(item),
-                ))
-            if current_items:
-                tree.selection_set("0")
-                tree.focus("0")
-            update_selection_context()
-
-        def on_group_selected(_event=None):
-            selection = group_tree.selection()
-            if selection:
-                populate_group(action_group_by_iid.get(selection[0], ""))
-
-        def refresh_current_daily_actions():
-            nonlocal all_items
-            try:
-                refreshed_candidates, _scope = self._load_candidates_for_daily_actions()
-                refreshed_items = build_daily_candidate_actions(refreshed_candidates)
-            except Exception:
-                refreshed_items = []
-            all_items = list(refreshed_items)
-            refreshed_counts = daily_counts(all_items)
-            for key, value in refreshed_counts.items():
-                metric_vars[key].set(str(value))
-            rebuild_action_group_tree()
-            preferred = current_group_name["value"] if current_group_name["value"] in action_items_by_key else next(iter(action_items_by_key), "")
-            if preferred:
-                preferred_iid = action_iid_by_key[preferred]
-                group_tree.selection_set(preferred_iid)
-                group_tree.focus(preferred_iid)
-                populate_group(preferred)
-            else:
-                current_items.clear()
-                selected_group_var.set("暂无需要优先处理的候选人")
-                selected_group_summary_var.set("当前范围内没有需要优先处理的候选人。")
-                tree.delete(*tree.get_children())
-                update_selection_context()
-
-        def show_detail(_event=None):
-            selection = tree.selection()
-            if not selection:
-                return
-            item = current_items[int(selection[0])]
-            detail = "\n".join([
-                f"分组：{item.group}",
-                f"候选人：{item.name or '未命名'}",
-                f"岗位：{item.job_name or '未知岗位'}",
-                f"分数：{item.score}",
-                f"时间分组：{item.timing_group}",
-                f"到期日期：{format_followup_due_at(item.due_at) if item.due_at else '未安排'}",
-                "",
-                f"为什么处理：{item.reason}",
-                f"下一步：{item.action}",
-            ])
-            self._show_text_dialog("今日待办详情", detail, width=620, height=360)
-
-        tree.bind("<Double-Button-1>", show_detail)
-        tree.bind("<<TreeviewSelect>>", update_selection_context)
-
-        def show_action_context_menu(event):
-            item_id = tree.identify_row(event.y)
-            if not item_id:
-                return
-            tree.selection_set(item_id)
-            try:
-                item = current_items[int(item_id)]
-            except (ValueError, IndexError):
-                return
-            primary = "queue" if item.group == "待打招呼" else (
-                "confirm" if item.group == "待复核" else (
-                    "resume" if item.group == "待完成简历评估" else (
-                        "followup" if item.group in (
-                            "已打招呼待跟进", "已回复待推进",
-                            "待约面待推进", "面试后待反馈",
-                        ) else None
-                    )
-                )
-            )
-            self._show_candidate_workflow_context_menu(
-                win,
-                item.candidate,
-                event.x_root,
-                event.y_root,
-                refresh_fn=refresh_current_daily_actions,
-                primary_action=primary,
-            )
-
-        def on_action_motion(event):
-            item_id = tree.identify_row(event.y)
-            column_id = tree.identify_column(event.x)
-            if not item_id or column_id != "#5":
-                self._hide_tooltip()
-                return
-            try:
-                item = current_items[int(item_id)]
-            except (ValueError, IndexError):
-                self._hide_tooltip()
-                return
-            full = item.reason
-            tooltip_key = ("daily_actions", item_id, column_id)
-            if (
-                tooltip_key == getattr(self, "_tooltip_item", None)
-                and getattr(self, "_tooltip", None)
-                and self._tooltip.winfo_exists()
-            ):
-                return
-            after_id = getattr(self, "_tooltip_after_id", None)
-            if after_id:
-                self.root.after_cancel(after_id)
-            x = event.x_root + int(12 * scale)
-            y = event.y_root + int(12 * scale)
-            self._tooltip_item = tooltip_key
-            self._tooltip_after_id = self.root.after(
-                250, lambda: self._show_tooltip(full, x, y, tooltip_key, parent=win)
-            )
-
-        tree.bind("<Motion>", on_action_motion)
-        tree.bind("<Leave>", self._hide_tooltip)
-        tree.bind("<Button-3>", show_action_context_menu)
-        group_tree.bind("<<TreeviewSelect>>", on_group_selected)
-        if default_group:
-            default_iid = action_iid_by_key[default_group]
-            group_tree.selection_set(default_iid)
-            group_tree.focus(default_iid)
-            populate_group(default_group)
-
-        btn_row = ttk.Frame(win, style='Page.TFrame', padding=(int(16 * scale), 0, int(16 * scale), int(14 * scale)))
-        btn_row.pack(fill="x")
-
-        def export_report():
-            path = filedialog.asksaveasfilename(
-                title="导出今日待办",
-                defaultextension=".txt",
-                initialfile=f"candidate_daily_actions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
-                parent=win,
-            )
-            if not path:
-                return
-            try:
-                with open(path, 'w', encoding='utf-8') as f:
-                    f.write(summarize_daily_candidate_actions(items))
-                messagebox.showinfo("今日待办", "报告已导出。", parent=win)
-            except Exception as exc:
-                messagebox.showerror("今日待办", f"导出失败：{exc}", parent=win)
-
-        def close():
-            win.destroy()
-
-        ttk.Button(btn_row, text="导出报告", command=export_report).pack(side="left")
-        ttk.Button(btn_row, text="关闭", command=close).pack(side="right")
-        win.protocol("WM_DELETE_WINDOW", close)
-        _place_window_centered(win, int(1120 * scale), int(680 * scale), parent=self.root)
-        win.deiconify()
 
     def _show_candidate_state_diagnostics_dialog(self, scope, candidates, issues, summary_text):
-        win = tk.Toplevel(self.root)
-        win.title("候选人状态体检")
-        win.transient(self.root)
-        win.withdraw()
-        scale = self.dpi_scale * self.zoom_factor
+        """Show the candidate-state workbench through the dedicated Tk dialog module."""
+        def load_diagnostics():
+            refreshed_candidates, _scope = self._load_candidates_for_state_diagnostics()
+            refreshed_issues = diagnose_candidate_states(refreshed_candidates)
+            return refreshed_candidates, refreshed_issues
 
-        body = ttk.Frame(win, style='Page.TFrame', padding=int(16 * scale))
-        body.pack(fill="both", expand=True)
+        def export_report(parent):
+            _export_candidate_state_diagnostics_report(summary_text, parent)
 
-        counts = {
-            "error": sum(1 for item in issues if item.severity == "error"),
-            "warning": sum(1 for item in issues if item.severity == "warning"),
-            "info": sum(1 for item in issues if item.severity == "info"),
-        }
-        self._create_candidate_workbench_header(
-            body,
-            "候选人状态体检",
-            "定位状态冲突和待补信息，并给出可执行的处理建议",
+        return gui_candidate_diagnostics.show_candidate_state_diagnostics_dialog(
+            self,
             scope,
+            candidates,
+            issues,
+            load_diagnostics=load_diagnostics,
+            export_report=export_report,
+            ui_config=UI_CONFIG,
         )
-        metric_vars = self._create_candidate_workbench_metrics(body, (
-            ("candidates", "检查人数", len(candidates), self.colors['primary']),
-            ("error", "严重", counts["error"], self.colors['danger']),
-            ("warning", "提醒", counts["warning"], self.colors['warning']),
-            ("info", "建议", counts["info"], self.colors['primary']),
-        ))
-
-        content = ttk.Frame(body, style='Page.TFrame')
-        content.pack(fill="both", expand=True)
-        state_style = ttk.Style()
-        state_style.configure(
-            "StateCheck.Treeview",
-            font=(FONT_FAMILY, int(11 * self.font_scale)),
-            rowheight=int(UI_CONFIG['treeview_rowheight'] * scale),
-        )
-        state_style.configure(
-            "StateCheck.Treeview.Heading",
-            font=(FONT_FAMILY, int(11 * self.font_scale), 'bold'),
-        )
-
-        severity_label = {"error": "严重", "warning": "提醒", "info": "建议"}
-        severity_rank = {"error": 0, "warning": 1, "info": 2}
-        grouped_issues = {}
-        if issues:
-            for issue in sorted(issues, key=lambda item: (severity_rank.get(item.severity, 9), item.title, item.name)):
-                grouped_issues.setdefault(issue.title, []).append(issue)
-        else:
-            grouped_issues["未发现问题"] = []
-
-        def candidate_key_for(candidate):
-            geek_id = str(candidate.get('geek_id') or "").strip()
-            job_name = " ".join(str(candidate.get('job_name') or "").strip().split())
-            name = " ".join(str(candidate.get('name') or "").strip().split())
-            if geek_id and job_name:
-                return f"{geek_id}:{job_name}"
-            return geek_id or name or "unknown"
-
-        candidate_by_key = {candidate_key_for(candidate): candidate for candidate in candidates}
-
-        def candidate_for_issue(issue):
-            candidate = candidate_by_key.get(issue.candidate_key)
-            if candidate:
-                return candidate
-            for item in candidate_by_key.values():
-                if (
-                    (not issue.name or item.get('name') == issue.name)
-                    and (
-                        not issue.job_name
-                        or normalize_job_name(item.get('job_name'))
-                        == normalize_job_name(issue.job_name)
-                    )
-                ):
-                    return item
-            return None
-
-        nav_frame = ttk.Frame(content, style='Card.TFrame', padding=int(10 * scale))
-        nav_frame.pack(side="left", fill="y", padx=(0, int(10 * scale)))
-        ttk.Label(
-            nav_frame,
-            text="按问题筛选",
-            font=self.font_label,
-            foreground=self.colors['text_primary'],
-            background=self.colors['bg_card'],
-        ).pack(anchor="w", pady=(0, int(8 * scale)))
-        navigation_style = self._candidate_workbench_navigation_style(scale)
-        group_tree = ttk.Treeview(
-            nav_frame,
-            columns=("count", "level"),
-            show="tree",
-            height=10,
-            style=navigation_style,
-            selectmode="browse",
-        )
-        group_tree.column("#0", width=int(230 * scale), minwidth=int(180 * scale), anchor="w")
-        group_tree.column("count", width=0, minwidth=0, stretch=False)
-        group_tree.column("level", width=0, minwidth=0, stretch=False)
-        self._apply_candidate_workbench_navigation_tags(group_tree)
-        group_tree.pack(fill="y", expand=True)
-
-        issue_group_by_iid = {}
-        issue_items_by_key = {}
-        issue_label_by_key = {}
-        issue_iid_by_key = {}
-
-        def rebuild_issue_navigation():
-            group_tree.delete(*group_tree.get_children())
-            issue_group_by_iid.clear()
-            issue_items_by_key.clear()
-            issue_label_by_key.clear()
-            issue_iid_by_key.clear()
-            has_issues = any(grouped_issues.values())
-            if not has_issues:
-                key = "severity::clear"
-                iid = "severity_clear"
-                issue_group_by_iid[iid] = key
-                issue_items_by_key[key] = []
-                issue_label_by_key[key] = "未发现问题"
-                issue_iid_by_key[key] = iid
-                group_tree.insert(
-                    "", "end", iid=iid, text="通过 · 未发现问题",
-                    values=(0, "通过"), tags=("workbench_root",),
-                )
-                return
-
-            for level_index, level in enumerate(("error", "warning", "info")):
-                level_items = [
-                    issue
-                    for values in grouped_issues.values()
-                    for issue in values
-                    if issue.severity == level
-                ]
-                if not level_items:
-                    continue
-                level_key = f"severity::{level}"
-                level_iid = f"severity_{level_index}"
-                level_text = severity_label[level]
-                issue_group_by_iid[level_iid] = level_key
-                issue_items_by_key[level_key] = level_items
-                issue_label_by_key[level_key] = level_text
-                issue_iid_by_key[level_key] = level_iid
-                group_tree.insert(
-                    "", "end", iid=level_iid,
-                    text=f"{level_text}  {len(level_items)}",
-                    values=(len(level_items), level_text),
-                    tags=("workbench_root",),
-                    open=True,
-                )
-                child_index = 0
-                for title, values in grouped_issues.items():
-                    title_items = [issue for issue in values if issue.severity == level]
-                    if not title_items:
-                        continue
-                    child_key = f"issue::{level}::{child_index}"
-                    child_iid = f"{level_iid}_issue_{child_index}"
-                    issue_group_by_iid[child_iid] = child_key
-                    issue_items_by_key[child_key] = title_items
-                    issue_label_by_key[child_key] = title
-                    issue_iid_by_key[child_key] = child_iid
-                    group_tree.insert(
-                        level_iid, "end", iid=child_iid,
-                        text=f"{title}  {len(title_items)}",
-                        values=(len(title_items), level_text),
-                        tags=("workbench_child",),
-                    )
-                    child_index += 1
-
-        rebuild_issue_navigation()
-
-        detail_frame = ttk.Frame(content, style='Card.TFrame')
-        detail_frame.pack(side="left", fill="both", expand=True)
-        selected_issue_group_var = tk.StringVar()
-        selected_issue_summary_var = tk.StringVar()
-        selected_issue_group_label = ttk.Label(
-            detail_frame,
-            textvariable=selected_issue_group_var,
-            font=self.font_label,
-            foreground=self.colors['text_primary'],
-            background=self.colors['bg_card'],
-        )
-        selected_issue_group_label.grid(
-            row=0, column=0, columnspan=3, sticky="w",
-            padx=int(10 * scale), pady=(int(10 * scale), 0),
-        )
-        ttk.Label(
-            detail_frame,
-            textvariable=selected_issue_summary_var,
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_card'],
-            justify="left",
-            wraplength=int(760 * scale),
-        ).grid(
-            row=1, column=0, columnspan=3, sticky="w",
-            padx=int(10 * scale), pady=(int(4 * scale), int(2 * scale)),
-        )
-
-        columns = ("name", "job", "issue", "key_info")
-        tree = ttk.Treeview(
-            detail_frame,
-            columns=columns,
-            show="headings",
-            height=8,
-            style="StateCheck.Treeview",
-        )
-        tree.heading("name", text="候选人")
-        tree.heading("job", text="岗位")
-        tree.heading("issue", text="问题类型")
-        tree.heading("key_info", text="关键信息")
-        tree.column("name", width=int(105 * scale), minwidth=85, anchor="center")
-        tree.column("job", width=int(145 * scale), minwidth=110, anchor="w")
-        tree.column("issue", width=int(205 * scale), minwidth=160, anchor="w")
-        tree.column("key_info", width=int(325 * scale), minwidth=220, anchor="w")
-        current_issues = []
-        current_issue_group_name = {"value": next(iter(issue_items_by_key), "")}
-        scroll_y = ttk.Scrollbar(detail_frame, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scroll_y.set)
-        tree.grid(row=2, column=0, sticky="nsew", padx=int(10 * scale), pady=int(10 * scale))
-        scroll_y.grid(row=2, column=1, sticky="ns", pady=int(10 * scale))
-        detail_frame.grid_rowconfigure(2, weight=1)
-        detail_frame.grid_columnconfigure(0, weight=1)
-
-        issue_context = ttk.Frame(detail_frame, style='Card.TFrame', padding=int(10 * scale))
-        issue_context.grid(row=3, column=0, columnspan=2, sticky="ew")
-        issue_context.grid_columnconfigure(0, weight=1)
-        issue_detail_var = tk.StringVar(value="选择一位候选人，查看并处理")
-        ttk.Label(
-            issue_context,
-            textvariable=issue_detail_var,
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_card'],
-        ).grid(row=0, column=0, sticky="w")
-
-        def open_selected_candidate():
-            selection = tree.selection()
-            if not selection or not current_issues:
-                return
-            try:
-                candidate = candidate_for_issue(current_issues[int(selection[0])])
-            except (ValueError, IndexError):
-                return
-            if candidate:
-                self._open_candidate_review_workbench(candidate)
-
-        inspect_btn = ttk.Button(
-            issue_context,
-            text="查看与处理",
-            style='Workbench.Primary.TButton',
-            command=open_selected_candidate,
-            state="disabled",
-        )
-        inspect_btn.grid(row=0, column=1, sticky="e", padx=(int(12 * scale), 0))
-
-        def update_issue_context(_event=None):
-            selection = tree.selection()
-            if not selection or not current_issues:
-                issue_detail_var.set("状态正常，无需处理" if not current_issues else "选择一位候选人，查看并处理")
-                inspect_btn.configure(state="disabled")
-                return
-            try:
-                issue = current_issues[int(selection[0])]
-            except (ValueError, IndexError):
-                return
-            candidate = candidate_for_issue(issue)
-            name = issue.name or issue.candidate_key
-            job_name = issue.job_name or "未知岗位"
-            key_info = self._format_state_issue_key_info(issue, candidate)
-            issue_detail_var.set(
-                f"已选择：{name} · {job_name} · {self._clip_table_text(key_info, 46)}"
-            )
-            inspect_btn.configure(state="normal" if candidate else "disabled")
-
-        def populate_issue_group(selection_key):
-            nonlocal current_issues
-            current_issues = issue_items_by_key.get(selection_key, [])
-            current_issue_group_name["value"] = selection_key
-            tree.delete(*tree.get_children())
-            if not current_issues:
-                selected_issue_group_var.set("未发现明显状态冲突。")
-                selected_issue_summary_var.set("当前范围内没有需要处理的候选人状态问题。")
-                update_issue_context()
-                return
-            label = issue_label_by_key.get(selection_key, selection_key)
-            selected_issue_group_var.set(f"{label}：{len(current_issues)} 项")
-            if selection_key.startswith("severity::"):
-                issue_type_count = len({issue.title for issue in current_issues})
-                selected_issue_summary_var.set(
-                    f"包含 {issue_type_count} 类问题；选择左侧具体问题可查看统一处理建议。"
-                )
-            else:
-                selected_issue_summary_var.set(f"处理建议：{current_issues[0].suggestion}")
-            for idx, issue in enumerate(current_issues):
-                candidate = candidate_for_issue(issue)
-                tree.insert(
-                    "",
-                    "end",
-                    iid=str(idx),
-                    values=(
-                        issue.name or issue.candidate_key,
-                        issue.job_name or "未知岗位",
-                        issue.title,
-                        self._format_state_issue_key_info(issue, candidate),
-                    ),
-                    tags=(issue.severity,),
-                )
-            tree.selection_set("0")
-            tree.focus("0")
-            update_issue_context()
-
-        def on_issue_group_selected(_event=None):
-            selection = group_tree.selection()
-            if selection:
-                populate_issue_group(issue_group_by_iid.get(selection[0], ""))
-
-        def on_issue_group_motion(event):
-            item_id = group_tree.identify_row(event.y)
-            column_id = group_tree.identify_column(event.x)
-            selection_key = issue_group_by_iid.get(item_id, "")
-            label = issue_label_by_key.get(selection_key, "")
-            if not item_id or column_id != "#0" or not label:
-                self._hide_tooltip()
-                return
-            tooltip_key = ("state_check_group", item_id, column_id)
-            if (
-                tooltip_key == getattr(self, "_tooltip_item", None)
-                and getattr(self, "_tooltip", None)
-                and self._tooltip.winfo_exists()
-            ):
-                return
-            after_id = getattr(self, "_tooltip_after_id", None)
-            if after_id:
-                self.root.after_cancel(after_id)
-            x = event.x_root + int(12 * scale)
-            y = event.y_root + int(12 * scale)
-            self._tooltip_item = tooltip_key
-            self._tooltip_after_id = self.root.after(
-                250,
-                lambda: self._show_tooltip(label, x, y, tooltip_key, parent=win),
-            )
-
-        def rebuild_issue_groups(refreshed_issues):
-            grouped = {}
-            if refreshed_issues:
-                for issue in sorted(refreshed_issues, key=lambda item: (severity_rank.get(item.severity, 9), item.title, item.name)):
-                    grouped.setdefault(issue.title, []).append(issue)
-            else:
-                grouped["未发现问题"] = []
-            return grouped
-
-        def refresh_current_state_diagnostics():
-            nonlocal grouped_issues, current_issues
-            try:
-                refreshed_candidates, _scope = self._load_candidates_for_state_diagnostics()
-                refreshed_issues = diagnose_candidate_states(refreshed_candidates)
-            except Exception:
-                refreshed_candidates = []
-                refreshed_issues = []
-            candidate_by_key.clear()
-            candidate_by_key.update({candidate_key_for(candidate): candidate for candidate in refreshed_candidates})
-            grouped_issues = rebuild_issue_groups(refreshed_issues)
-            refreshed_counts = {
-                "candidates": len(refreshed_candidates),
-                "error": sum(1 for item in refreshed_issues if item.severity == "error"),
-                "warning": sum(1 for item in refreshed_issues if item.severity == "warning"),
-                "info": sum(1 for item in refreshed_issues if item.severity == "info"),
-            }
-            for key, value in refreshed_counts.items():
-                metric_vars[key].set(str(value))
-            rebuild_issue_navigation()
-            preferred = (
-                current_issue_group_name["value"]
-                if current_issue_group_name["value"] in issue_items_by_key
-                else next(iter(issue_items_by_key), "")
-            )
-            if preferred:
-                preferred_iid = issue_iid_by_key[preferred]
-                group_tree.selection_set(preferred_iid)
-                group_tree.focus(preferred_iid)
-                populate_issue_group(preferred)
-
-        def show_detail(_event=None):
-            selection = tree.selection()
-            if not selection or not current_issues:
-                return
-            issue = current_issues[int(selection[0])]
-            detail = "\n".join([
-                f"级别：{severity_label.get(issue.severity, '提醒')}",
-                f"候选人：{issue.name or issue.candidate_key}",
-                f"岗位：{issue.job_name or '未知岗位'}",
-                f"问题：{issue.title}",
-                "",
-                f"说明：{issue.detail}",
-                f"建议：{issue.suggestion}",
-            ])
-            self._show_text_dialog("状态体检详情", detail, width=620, height=360)
-
-        tree.bind("<Double-Button-1>", show_detail)
-        tree.bind("<<TreeviewSelect>>", update_issue_context)
-
-        def show_state_context_menu(event):
-            item_id = tree.identify_row(event.y)
-            if not item_id or not current_issues:
-                return
-            tree.selection_set(item_id)
-            try:
-                issue = current_issues[int(item_id)]
-            except (ValueError, IndexError):
-                return
-            candidate = candidate_for_issue(issue)
-            primary = "confirm" if issue.title == "需要人工确认" else None
-            self._show_candidate_workflow_context_menu(
-                win,
-                candidate,
-                event.x_root,
-                event.y_root,
-                refresh_fn=refresh_current_state_diagnostics,
-                primary_action=primary,
-            )
-
-        def on_state_motion(event):
-            item = tree.identify_row(event.y)
-            column_id = tree.identify_column(event.x)
-            if not item or column_id not in ("#3", "#4") or not current_issues:
-                self._hide_tooltip()
-                return
-            try:
-                issue = current_issues[int(item)]
-            except (ValueError, IndexError):
-                self._hide_tooltip()
-                return
-            if column_id == "#3":
-                full = f"{issue.title}\n\n{issue.detail}"
-            else:
-                full = issue.detail
-            tooltip_key = ("state_check", item, column_id)
-            if (
-                tooltip_key == getattr(self, "_tooltip_item", None)
-                and getattr(self, "_tooltip", None)
-                and self._tooltip.winfo_exists()
-            ):
-                return
-            after_id = getattr(self, "_tooltip_after_id", None)
-            if after_id:
-                self.root.after_cancel(after_id)
-            x = event.x_root + int(12 * scale)
-            y = event.y_root + int(12 * scale)
-            self._tooltip_item = tooltip_key
-            self._tooltip_after_id = self.root.after(
-                250, lambda: self._show_tooltip(full, x, y, tooltip_key, parent=win)
-            )
-
-        tree.bind("<Motion>", on_state_motion)
-        tree.bind("<Leave>", self._hide_tooltip)
-        tree.bind("<Button-3>", show_state_context_menu)
-        group_tree.bind("<<TreeviewSelect>>", on_issue_group_selected)
-        group_tree.bind("<Motion>", on_issue_group_motion)
-        group_tree.bind("<Leave>", self._hide_tooltip)
-        default_group = next(iter(issue_items_by_key), "")
-        if default_group:
-            default_iid = issue_iid_by_key[default_group]
-            group_tree.selection_set(default_iid)
-            group_tree.focus(default_iid)
-            populate_issue_group(default_group)
-
-        btn_row = ttk.Frame(win, style='Page.TFrame', padding=(int(16 * scale), 0, int(16 * scale), int(14 * scale)))
-        btn_row.pack(fill="x")
-
-        def export_report():
-            default_name = f"candidate_state_diagnostics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            path = filedialog.asksaveasfilename(
-                title="导出状态体检报告",
-                defaultextension=".txt",
-                initialfile=default_name,
-                filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
-                parent=win,
-            )
-            if not path:
-                return
-            try:
-                with open(path, 'w', encoding='utf-8') as f:
-                    f.write(summary_text)
-                messagebox.showinfo("状态体检", "报告已导出。", parent=win)
-            except Exception as exc:
-                messagebox.showerror("状态体检", f"导出失败：{exc}", parent=win)
-
-        def close():
-            win.destroy()
-
-        ttk.Button(btn_row, text="导出报告", command=export_report).pack(side="left")
-        ttk.Button(btn_row, text="关闭", command=close).pack(side="right")
-        win.protocol("WM_DELETE_WINDOW", close)
-        _place_window_centered(win, int(1120 * scale), int(680 * scale), parent=self.root)
-        win.deiconify()
 
     @staticmethod
     def _clip_table_text(text, limit):
-        clean = " ".join(str(text or "").split())
-        if len(clean) <= limit:
-            return clean
-        return clean[: max(0, limit - 1)] + "…"
+        return candidate_diagnostics_presenter.clip_table_text(text, limit)
 
     def _format_daily_action_key_info(self, item):
         """Return the candidate-specific fact for one daily-action row."""
@@ -17852,52 +16538,10 @@ class BossFilterGUI:
 
     def _format_state_issue_key_info(self, issue, candidate):
         """Return only the candidate-specific fact that distinguishes one issue row."""
-        candidate = candidate or {}
-        title = str(issue.title or "").strip()
-        followup_status = str(candidate.get("followup_status") or "未设置")
-        qualification_labels = {
-            "qualified": "通过",
-            "rejected": "淘汰",
-            "manual_review": "待人工确认",
-        }
-
-        if title == "打招呼记录不完整":
-            missing = []
-            if not candidate.get("greet_sent_at"):
-                missing.append("发送时间")
-            if not candidate.get("greet_method"):
-                missing.append("发送方式")
-            return f"缺少：{'、'.join(missing)}" if missing else "发送记录待核对"
-        if title == "低分候选人缺少保留理由":
-            return f"匹配分：{candidate.get('match_score', 0)}"
-        if title in {"待约面未安排时间", "跟进时间待安排"}:
-            return "未设置下次跟进日期"
-        if title == "下次跟进日期无效":
-            return f"当前值：{candidate.get('next_followup_at') or '空'}"
-        if title in {"结束状态仍有跟进提醒", "已打招呼但跟进状态未更新", "已屏蔽候选人仍是活跃跟进"}:
-            return f"跟进状态：{followup_status}"
-        if title == "需要人工确认":
-            reason = str(candidate.get("auto_greet_blocked_reason") or "").strip()
-            if not reason:
-                for field in ("qualification_reasons", "risk_flags"):
-                    values = candidate.get(field) or []
-                    if isinstance(values, str):
-                        values = [values]
-                    reason = next((str(value).strip() for value in values if str(value).strip()), "")
-                    if reason:
-                        break
-            return self._clip_table_text(
-                f"待确认：{reason or '尚未形成明确资格结论'}",
-                38,
-            )
-        if title in {"未知资格审查状态", "淘汰候选人仍处于沟通状态"}:
-            qualification = str(candidate.get("qualification_status") or "未设置")
-            return f"资格结论：{qualification_labels.get(qualification, qualification)}"
-        if title == "未知人工反馈":
-            return f"人工反馈：{candidate.get('feedback_status') or '未设置'}"
-        if title == "未知跟进状态":
-            return f"跟进状态：{followup_status}"
-        return self._clip_table_text(issue.detail, 38)
+        return candidate_diagnostics_presenter.format_state_issue_key_info(
+            issue,
+            candidate,
+        )
 
     def _show_candidate_workflow_context_menu(
         self,
@@ -19086,63 +17730,22 @@ class BossFilterGUI:
     @staticmethod
     def _candidate_gender_display(candidate):
         """Return normalized candidate gender from current or legacy records."""
-        structured = candidate.get('structured') or {}
-        for value in (candidate.get('gender'), structured.get('gender')):
-            gender = normalize_candidate_gender(value)
-            if gender:
-                return gender
-        for line in str(candidate.get('summary') or '').splitlines():
-            stripped = line.strip()
-            if stripped.startswith("性别：") or stripped.startswith("性别:"):
-                gender = normalize_candidate_gender(stripped)
-                if gender:
-                    return gender
-                break
-        return "—"
+        return candidate_presenter.candidate_gender_display(candidate)
 
     @staticmethod
     def _extract_summary_display_fields(summary):
         """从摘要提取结果表需要的学历、年龄和求职状态。"""
-        text = str(summary or '')
-        education = next(
-            (value for value in ('博士', '硕士', '本科', '大专', '高中', '中专') if value in text),
-            '',
-        )
-        age_match = re.search(r'年龄[：:]\s*(\d+)|(\d+)\s*岁', text)
-        status_match = re.search(r'(?:求职状态[：:]\s*)?(离职|在职|在校|应届)', text)
-        return {
-            'education': education,
-            'age': next((group for group in age_match.groups() if group), '') if age_match else '',
-            'job_status': status_match.group(1) if status_match else '',
-        }
+        return candidate_presenter.extract_summary_display_fields(summary)
 
     @staticmethod
     def _latest_history_value(entries, field, summary, summary_prefix):
         """按结束时间取最近一段经历的字段，缺失时从摘要对应行降级提取。"""
-        valid_entries = [
-            entry for entry in (entries or [])
-            if isinstance(entry, dict) and str(entry.get(field, '')).strip()
-        ]
-        if valid_entries:
-            def _date_key(entry):
-                end = str(entry.get('end', '')).strip()
-                if any(marker in end for marker in ('至今', '现在', '今')):
-                    return (2, 99999999)
-                digits = re.sub(r'\D', '', end)
-                if digits:
-                    return (1, int(digits[:8]))
-                return (0, 0)
-
-            dated_entries = [entry for entry in valid_entries if _date_key(entry)[0] > 0]
-            latest = max(dated_entries, key=_date_key) if dated_entries else valid_entries[0]
-            return str(latest.get(field, '')).strip()
-
-        for line in str(summary or '').splitlines():
-            stripped = line.strip()
-            if stripped.startswith(summary_prefix):
-                value = stripped[len(summary_prefix):].strip()
-                return value.split()[0] if value else ''
-        return ''
+        return candidate_presenter.latest_history_value(
+            entries,
+            field,
+            summary,
+            summary_prefix,
+        )
 
     def _format_candidate_status(self, candidate):
         """生成简短状态文本，并将完整状态和复核原因保存供 tooltip 使用。"""
@@ -20092,31 +18695,7 @@ class BossFilterGUI:
     @staticmethod
     def _format_ai_hard_conditions(rule: dict) -> str:
         """Format the saved job rule once for both first and resume AI reviews."""
-        hard_parts = []
-        if rule.get('min_exp'):
-            hard_parts.append(f"- 经验：要求≥{rule['min_exp']}年，候选人需满足")
-        if rule.get('edu') and rule.get('edu') != '不限':
-            hard_parts.append(f"- 学历：要求{rule['edu']}")
-        if rule.get('max_age'):
-            hard_parts.append(f"- 年龄：上限{rule['max_age']}岁")
-        if rule.get('gender') in {"男", "女"}:
-            hard_parts.append(f"- 性别：要求{rule['gender']}")
-        if rule.get('work_location'):
-            hard_parts.append(f"- 地点：要求{rule['work_location']}，候选人期望城市需匹配")
-        if rule.get('salary_max'):
-            hard_parts.append(f"- 薪资：岗位最高{rule['salary_max']}K，候选人期望不应超过")
-        required_conditions = rule.get('required_conditions', [])
-        if required_conditions:
-            condition_names = [
-                condition
-                if isinstance(condition, str)
-                else condition.get('name', str(condition))
-                for condition in required_conditions
-            ]
-            hard_parts.append(f"- 必要条件：{'、'.join(condition_names)}")
-        if not hard_parts:
-            return ""
-        return "## 筛选硬条件\n" + "\n".join(hard_parts) + "\n\n"
+        return candidate_presenter.format_ai_hard_conditions(rule)
 
     def _do_ai_eval_batch(self, evaluation_groups, api_config, api_key):
         """按岗位分组后台执行 AI 评估，并合并本轮结果。"""
@@ -20240,45 +18819,7 @@ class BossFilterGUI:
     @staticmethod
     def _format_ai_eval_batch_summary(summary):
         """生成批量 AI 评估完成后的汇总弹窗文案。"""
-        def compact_text(value, max_chars):
-            text = str(value or "").strip()
-            if len(text) <= max_chars:
-                return text
-            return text[:max_chars - 1] + "…"
-
-        success = summary.get('success') or []
-        failed = summary.get('failed') or []
-        skipped = summary.get('skipped') or []
-        selected_count = summary.get('selected_count') or (len(success) + len(failed) + len(skipped))
-
-        lines = [
-            f"本次共选择 {selected_count} 人",
-            f"成功 {len(success)} 人",
-            f"失败 {len(failed)} 人",
-            f"跳过 {len(skipped)} 人",
-        ]
-
-        if failed:
-            lines.append("")
-            lines.append("失败候选人：")
-            for item in failed[:6]:
-                name = compact_text(item.get('name') or '?', 12)
-                reason = compact_text(item.get('reason') or '评估失败', 36)
-                lines.append(f"- {name}：{reason}")
-            if len(failed) > 6:
-                lines.append(f"- 另有 {len(failed) - 6} 人失败，请在状态列查看")
-
-        if skipped:
-            lines.append("")
-            lines.append("已跳过：")
-            for item in skipped[:3]:
-                name = compact_text(item.get('name') or '?', 12)
-                reason = compact_text(item.get('reason') or '已跳过', 24)
-                lines.append(f"- {name}：{reason}")
-            if len(skipped) > 3:
-                lines.append(f"- 另有 {len(skipped) - 3} 人已跳过")
-
-        return "AI 评估完成", "\n".join(lines), bool(failed)
+        return candidate_presenter.format_ai_eval_batch_summary(summary)
 
     def _show_ai_eval_batch_summary(self):
         """批量 AI 评估结束后弹出一次汇总；单个候选人只用状态列反馈。"""
@@ -22049,28 +20590,20 @@ class BossFilterGUI:
 
     @staticmethod
     def _has_direct_send_context(candidate):
-        return bool((candidate.get('greet_context') or {}).get('chat_start'))
+        return contact_presenter.has_direct_send_context(candidate)
 
     @staticmethod
     def _greet_queue_readiness_label(candidate):
-        if BossFilterGUI._has_direct_send_context(candidate):
-            return "已就绪"
-        return "发送时检查"
+        return contact_presenter.greet_queue_readiness_label(candidate)
 
     @staticmethod
     def _greet_queue_readiness_tooltip(candidate):
-        if BossFilterGUI._has_direct_send_context(candidate):
-            return "发送前仍会检查 Chrome、BOSS 登录状态和推荐牛人页面。"
-        job_name = str(candidate.get('job_name') or '对应岗位')
-        return (
-            "发送时会检查当前推荐牛人页面。"
-            f"如岗位不一致，将保留在清单并提示切换到“{job_name}”后重试。"
-        )
+        return contact_presenter.greet_queue_readiness_tooltip(candidate)
 
     @staticmethod
     def _greet_queue_method_label(candidate):
         """Compatibility alias for existing callers and older queue tests."""
-        return BossFilterGUI._greet_queue_readiness_label(candidate)
+        return contact_presenter.greet_queue_method_label(candidate)
 
     def _build_greet_queue_item(self, candidate, source="manual"):
         return build_contact_queue_item(candidate, source=source)
@@ -22154,9 +20687,7 @@ class BossFilterGUI:
 
     @staticmethod
     def _format_greet_queue_skip_summary(skipped_reasons):
-        if not skipped_reasons:
-            return ""
-        return "\n".join(f"- {reason}：{count} 人" for reason, count in skipped_reasons.items())
+        return contact_presenter.format_greet_queue_skip_summary(skipped_reasons)
 
     def _collect_selected_candidates_for_queue(self, selection, filtered_ref, tree):
         candidates = []
@@ -22182,251 +20713,56 @@ class BossFilterGUI:
             self._refresh_greet_queue_dialog()
             return
 
-        scale = self.dpi_scale * self.zoom_factor
-        win = tk.Toplevel(_parent)
-        win.title("联系候选人")
-        win.transient(_parent)
-        win.withdraw()
-        win.configure(bg=self.colors['bg_main'])
-        self.greet_queue_window = win
-
-        body = ttk.Frame(win, style='Page.TFrame', padding=int(16 * scale))
-        body.pack(fill="both", expand=True)
-
-        self._create_candidate_workbench_header(
-            body,
-            "联系候选人",
-            "确认发送范围，跟踪待核实与失败任务",
-            "当前联系清单",
-        )
         initial_counts = Counter(
             (item.get('status') or "待发送") for item in self.greet_queue_items
         )
-        self.greet_queue_metric_vars = self._create_candidate_workbench_metrics(body, (
-            ("pending", "待发送", initial_counts.get("待发送", 0), self.colors['primary']),
-            (
-                "attention",
-                "需处理",
-                initial_counts.get("待核实", 0) + initial_counts.get("发送失败", 0),
-                self.colors['warning'],
-            ),
-            ("sending", "发送中", initial_counts.get("发送中", 0), self.colors['purple']),
-            ("sent", "已发送", initial_counts.get("已发送", 0), self.colors['success']),
-        ))
-
-        header = ttk.Frame(body, style='Card.TFrame', padding=(int(10 * scale), int(8 * scale)))
-        header.pack(fill="x", pady=(0, int(10 * scale)))
-        self.greet_queue_summary_var = tk.StringVar(value="")
-        ttk.Label(
-            header,
-            textvariable=self.greet_queue_summary_var,
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_card'],
-        ).pack(side="left", anchor="w")
-
-        queue_actions = ttk.Frame(header, style='Card.TFrame')
-        queue_actions.pack(side="right")
-        self.greet_queue_action_scope_var = tk.StringVar(value="")
-        ttk.Label(
-            queue_actions,
-            textvariable=self.greet_queue_action_scope_var,
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_muted'],
-            background=self.colors['bg_card'],
-        ).pack(side="left", padx=(0, int(10 * scale)))
-        self.greet_queue_start_btn = ttk.Button(
-            queue_actions,
-            text="开始联系",
-            command=self._start_greet_queue,
-            style="Workbench.Primary.TButton",
+        callbacks = gui_contact_queue.ContactQueueCallbacks(
+            start=self._start_greet_queue,
+            pause=self._pause_greet_queue,
+            resume=self._resume_greet_queue,
+            group_selected=self._on_greet_queue_group_selected,
+            confirm_sent=lambda: self._resolve_selected_greet_queue_pending(sent=True),
+            confirm_not_sent=lambda: self._resolve_selected_greet_queue_pending(sent=False),
+            retry_failed=self._retry_failed_greet_queue_items,
+            remove_selected=self._remove_selected_greet_queue_items,
+            show_selected_detail=self._show_selected_greet_queue_detail,
+            update_action_states=self._update_greet_queue_action_states,
+            row_motion=self._on_greet_queue_motion,
+            hide_tooltip=self._hide_tooltip,
+            context_menu=self._show_greet_queue_context_menu,
+            select_all=self._select_all_greet_queue_rows,
+            close=self._close_greet_queue_window,
         )
-        self.greet_queue_start_btn.pack(side="right")
-        self.greet_queue_transport_frame = ttk.Frame(queue_actions, style='Card.TFrame')
-        self.greet_queue_transport_frame.pack(side="right", padx=(0, int(6 * scale)))
-        self.greet_queue_pause_btn = ttk.Button(
-            self.greet_queue_transport_frame,
-            text="暂停",
-            command=self._pause_greet_queue,
-            style="GreetQueue.Small.TButton",
-            width=8,
+        widgets = gui_contact_queue.build_contact_queue_workbench(
+            self,
+            _parent,
+            selected_group=self.greet_queue_selected_group,
+            initial_counts=initial_counts,
+            callbacks=callbacks,
+            ui_config=UI_CONFIG,
         )
-        self.greet_queue_resume_btn = ttk.Button(
-            self.greet_queue_transport_frame,
-            text="继续",
-            command=self._resume_greet_queue,
-            style="GreetQueue.Small.TButton",
-            width=8,
-        )
-
-        self.greet_queue_status_filter_var = tk.StringVar(value=self.greet_queue_selected_group)
-
-        style = ttk.Style()
-        style.configure(
-            "GreetQueue.Treeview",
-            font=(FONT_FAMILY, int(11 * self.font_scale)),
-            rowheight=int(UI_CONFIG['treeview_rowheight'] * scale),
-        )
-        style.configure(
-            "GreetQueue.Treeview.Heading",
-            font=(FONT_FAMILY, int(11 * self.font_scale), 'bold'),
-        )
-        style.configure(
-            "GreetQueue.Small.TButton",
-            font=(FONT_FAMILY, int(11 * self.font_scale)),
-            padding=(int(12 * scale), int(5 * scale)),
-        )
-        content = ttk.Frame(body, style='Page.TFrame')
-        content.pack(fill="both", expand=True)
-
-        nav_frame = ttk.Frame(content, style='Card.TFrame', padding=(int(6 * scale), int(10 * scale)))
-        nav_frame.pack(side="left", fill="y", padx=(0, int(8 * scale)))
-        ttk.Label(
-            nav_frame,
-            text="按状态筛选",
-            font=self.font_label,
-            foreground=self.colors['text_primary'],
-            background=self.colors['bg_card'],
-        ).pack(anchor="w", pady=(0, int(8 * scale)))
-        navigation_style = self._candidate_workbench_navigation_style(scale)
-        group_tree = ttk.Treeview(
-            nav_frame,
-            columns=("count",),
-            show="tree",
-            height=8,
-            style=navigation_style,
-            selectmode="browse",
-        )
-        self.greet_queue_group_tree = group_tree
-        group_tree.column("#0", width=int(190 * scale), minwidth=int(150 * scale), anchor="w")
-        group_tree.column("count", width=0, minwidth=0, stretch=False)
-        self._apply_candidate_workbench_navigation_tags(group_tree)
-        group_tree.pack(fill="y", expand=True)
-        group_tree.bind("<<TreeviewSelect>>", lambda _event: self._on_greet_queue_group_selected())
-
-        tree_frame = ttk.Frame(content, style='Card.TFrame')
-        tree_frame.pack(side="left", fill="both", expand=True)
-        self.greet_queue_detail_title_var = tk.StringVar(value="")
-        detail_header = ttk.Frame(tree_frame, style='Card.TFrame')
-        detail_header.grid(row=0, column=0, columnspan=3, sticky="ew", padx=(int(10 * scale), int(8 * scale)), pady=(int(10 * scale), 0))
-        detail_header.grid_columnconfigure(0, weight=1)
-        ttk.Label(
-            detail_header,
-            textvariable=self.greet_queue_detail_title_var,
-            font=self.font_label,
-            foreground=self.colors['text_primary'],
-            background=self.colors['bg_card'],
-        ).grid(row=0, column=0, sticky="w", padx=(0, int(10 * scale)))
-        self.greet_queue_detail_summary_var = tk.StringVar(value="")
-        ttk.Label(
-            detail_header,
-            textvariable=self.greet_queue_detail_summary_var,
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_card'],
-            justify="left",
-            wraplength=int(820 * scale),
-        ).grid(row=1, column=0, sticky="w", pady=(int(4 * scale), 0))
-
-        selected_actions = ttk.Frame(tree_frame, style='Card.TFrame', padding=int(10 * scale))
-        selected_actions.grid(row=2, column=0, columnspan=2, sticky="ew")
-        selected_actions.grid_columnconfigure(0, weight=1)
-        self.greet_queue_selection_var = tk.StringVar(value="选择候选人后，可在这里处理当前状态")
-        ttk.Label(
-            selected_actions,
-            textvariable=self.greet_queue_selection_var,
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_card'],
-        ).grid(row=0, column=0, sticky="w")
-        selected_action_buttons = ttk.Frame(selected_actions, style='Card.TFrame')
-        selected_action_buttons.grid(row=0, column=1, sticky="e", padx=(int(10 * scale), 0))
-        self.greet_queue_selected_action_buttons = selected_action_buttons
-        self.greet_queue_confirm_sent_btn = ttk.Button(
-            selected_action_buttons,
-            text="确认已发送",
-            command=lambda: self._resolve_selected_greet_queue_pending(sent=True),
-            style="GreetQueue.Small.TButton",
-        )
-        self.greet_queue_confirm_not_sent_btn = ttk.Button(
-            selected_action_buttons,
-            text="确认未发送",
-            command=lambda: self._resolve_selected_greet_queue_pending(sent=False),
-            style="GreetQueue.Small.TButton",
-        )
-        self.greet_queue_retry_btn = ttk.Button(
-            selected_action_buttons,
-            text="重试失败",
-            command=self._retry_failed_greet_queue_items,
-            style="GreetQueue.Small.TButton",
-            width=8,
-        )
-        self.greet_queue_remove_btn = ttk.Button(
-            selected_action_buttons,
-            text="移除选中",
-            command=self._remove_selected_greet_queue_items,
-            style="GreetQueue.Small.TButton",
-            width=8,
-        )
-
-        columns = ("name", "job", "score", "level", "readiness", "status", "message")
-        tree = ttk.Treeview(
-            tree_frame,
-            columns=columns,
-            show="headings",
-            height=8,
-            selectmode="extended",
-            style="GreetQueue.Treeview",
-        )
-        self.greet_queue_tree = tree
-        headings = {
-            "name": "候选人",
-            "job": "岗位",
-            "score": "分数",
-            "level": "推荐",
-            "readiness": "发送准备",
-            "status": "状态",
-            "message": "最近结果",
-        }
-        widths = {
-            "name": 90,
-            "job": 150,
-            "score": 55,
-            "level": 70,
-            "readiness": 145,
-            "status": 80,
-            "message": 260,
-        }
-        anchors = {
-            "name": "center",
-            "job": "w",
-            "score": "center",
-            "level": "center",
-            "readiness": "center",
-            "status": "center",
-            "message": "w",
-        }
-        for col in columns:
-            tree.heading(col, text=headings[col])
-            tree.column(col, width=int(widths[col] * scale), minwidth=50, anchor=anchors[col])
-        scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scroll.set)
-        tree.grid(row=1, column=0, sticky="nsew", padx=int(10 * scale), pady=int(10 * scale))
-        scroll.grid(row=1, column=1, sticky="ns", pady=int(10 * scale))
-        tree_frame.grid_rowconfigure(1, weight=1)
-        tree_frame.grid_columnconfigure(0, weight=1)
-        tree.bind("<Double-Button-1>", lambda _event: self._show_selected_greet_queue_detail())
-        tree.bind("<<TreeviewSelect>>", lambda _event: self._update_greet_queue_action_states())
-        tree.bind("<Motion>", self._on_greet_queue_motion)
-        tree.bind("<Leave>", self._hide_tooltip)
-        tree.bind("<Button-3>", self._show_greet_queue_context_menu)
-        tree.bind("<Control-a>", self._select_all_greet_queue_rows, add="+")
-        tree.bind("<Control-A>", self._select_all_greet_queue_rows, add="+")
-
-        win.protocol("WM_DELETE_WINDOW", self._close_greet_queue_window)
+        self._greet_queue_widgets = widgets
+        self.greet_queue_window = widgets.window
+        self.greet_queue_metric_vars = widgets.metric_vars
+        self.greet_queue_summary_var = widgets.summary_var
+        self.greet_queue_action_scope_var = widgets.action_scope_var
+        self.greet_queue_start_btn = widgets.start_button
+        self.greet_queue_transport_frame = widgets.transport_frame
+        self.greet_queue_pause_btn = widgets.pause_button
+        self.greet_queue_resume_btn = widgets.resume_button
+        self.greet_queue_status_filter_var = widgets.status_filter_var
+        self.greet_queue_group_tree = widgets.group_tree
+        self.greet_queue_detail_title_var = widgets.detail_title_var
+        self.greet_queue_detail_summary_var = widgets.detail_summary_var
+        self.greet_queue_selection_var = widgets.selection_var
+        self.greet_queue_selected_action_buttons = widgets.selected_action_buttons
+        self.greet_queue_confirm_sent_btn = widgets.confirm_sent_button
+        self.greet_queue_confirm_not_sent_btn = widgets.confirm_not_sent_button
+        self.greet_queue_retry_btn = widgets.retry_button
+        self.greet_queue_remove_btn = widgets.remove_button
+        self.greet_queue_tree = widgets.tree
         self._refresh_greet_queue_dialog()
-        _place_window_centered(win, int(1220 * scale), int(680 * scale), parent=_parent)
-        win.deiconify()
+        widgets.window.deiconify()
 
     def _open_greet_queue_from_result(self):
         """从结果页进入联系工作台；有待核实时直接定位对应分组。"""
@@ -22588,32 +20924,12 @@ class BossFilterGUI:
     @staticmethod
     def _greet_queue_group_hint(status):
         """Return one short instruction for the selected contact-queue group."""
-        hints = {
-            "全部": "按状态筛选候选人；待核实和发送失败应优先处理。",
-            "待核实": "请先在 BOSS 沟通列表逐一核实，再确认发送结果。",
-            "发送失败": "选择候选人后重试；不再需要的任务可以移除。",
-            "待发送": "未选择时联系全部待发送候选人；选中后只联系选中范围。",
-            "发送中": "当前联系任务正在执行，可暂停后继续。",
-            "已发送": "已完成的发送记录仅供查看。",
-            "已跳过": "发送前复核未通过，不会自动联系。",
-        }
-        return hints.get(status, "选择候选人后，可在下方处理当前状态。")
+        return contact_presenter.greet_queue_group_hint(status)
 
     @staticmethod
     def _greet_queue_selection_text(selected):
         """Summarize the selected scope with candidate names and status."""
-        statuses = {item.get('status') or "待发送" for item in selected}
-        status_text = next(iter(statuses)) if len(statuses) == 1 else "包含多种状态"
-        names = [
-            str((item.get('candidate') or {}).get('name') or "未命名").strip()
-            for item in selected
-        ]
-        if len(selected) == 1:
-            return f"已选：{names[0]} · {status_text}"
-        visible_names = "、".join(names[:3])
-        if len(names) > 3:
-            visible_names += "等"
-        return f"已选 {len(selected)} 人：{visible_names} · {status_text}"
+        return contact_presenter.greet_queue_selection_text(selected)
 
     def _set_greet_queue_item_state(self, item, status, message=""):
         item['status'] = status
@@ -23029,46 +21345,7 @@ class BossFilterGUI:
 
     @staticmethod
     def _build_greet_queue_confirmation_content(pending):
-        direct_count = 0
-        page_jobs = Counter()
-        for item in pending:
-            candidate = item.get('candidate') or {}
-            if BossFilterGUI._has_direct_send_context(candidate):
-                direct_count += 1
-                continue
-            job_name = str(candidate.get('job_name') or '未指定岗位').strip()
-            page_jobs[job_name] += 1
-
-        page_count = len(pending) - direct_count
-        headline = f"联系 {len(pending)} 名候选人？"
-        common = (
-            "Chrome：已连接，推荐牛人页面已就绪\n"
-            "登录：BOSS 账号已登录"
-        )
-        if not page_count:
-            message = (
-                f"{common}\n"
-                "岗位：无需切换岗位页面"
-            )
-            return headline, message
-
-        jobs_text = "、".join(
-            f"{job_name}（{count} 人）"
-            for job_name, count in page_jobs.items()
-        )
-        if not direct_count:
-            message = (
-                f"{common}\n"
-                f"岗位：需要切换到 {jobs_text}"
-            )
-        else:
-            message = (
-                f"{common}\n"
-                f"岗位：{direct_count} 人无需切换；{page_count} 人需要 {jobs_text}"
-            )
-        if len(page_jobs) > 1:
-            message += "\n提醒：当前岗位不一致的候选人会保留，切换后可再次发送"
-        return headline, message
+        return contact_presenter.build_greet_queue_confirmation_content(pending)
 
     def _confirm_start_greet_queue(self, pending):
         headline, message = self._build_greet_queue_confirmation_content(pending)
@@ -23114,20 +21391,11 @@ class BossFilterGUI:
 
     @staticmethod
     def _is_boss_recommend_url(url):
-        url_lower = str(url or "").lower()
-        return (
-            "zhipin.com/web/chat/recommend" in url_lower
-            or "zhipin.com/web/frame/recommend" in url_lower
-        )
+        return contact_presenter.is_boss_recommend_url(url)
 
     @staticmethod
     def _is_boss_login_page(url, page_text=""):
-        url_lower = str(url or "").lower()
-        text = str(page_text or "")
-        if "login" in url_lower or "/web/user" in url_lower:
-            return True
-        login_marks = ("扫码登录", "密码登录", "短信登录", "登录 BOSS", "登录Boss", "微信扫码")
-        return any(mark in text for mark in login_marks)
+        return contact_presenter.is_boss_login_page(url, page_text)
 
     def _get_run_page_readiness(self):
         """检查当前浏览器页面是否已具备候选人扫描条件。"""
@@ -23334,17 +21602,7 @@ class BossFilterGUI:
     @staticmethod
     def _revalidate_greet_queue_candidate(candidate):
         """Map the latest candidate truth to a safe queue action."""
-        skip_reason = candidate_greet_skip_reason(candidate)
-        if not skip_reason:
-            return "待发送", ""
-        if skip_reason == "已打招呼":
-            return "已发送", "本地已标记为已沟通"
-        if skip_reason == "发送结果待核实":
-            return (
-                "待核实",
-                candidate.get('greet_confirmation_reason') or "发送结果待核实",
-            )
-        return "已跳过", skip_reason
+        return contact_presenter.revalidate_greet_queue_candidate(candidate)
 
     def _greet_queue_candidate_page_ready(self, candidate):
         """Inspect whether a list-page send is on the candidate's job page."""
@@ -23771,44 +22029,7 @@ class BossFilterGUI:
 
     @staticmethod
     def _build_greet_queue_run_feedback(result):
-        success = int(result.get("success") or 0)
-        failed = int(result.get("failed") or 0)
-        pending = int(result.get("pending") or 0)
-        page_waiting = int(result.get("page_waiting") or 0)
-        page_waiting_jobs = result.get("page_waiting_jobs") or {}
-        skipped = int(result.get("skipped") or 0)
-        error = str(result.get("error") or "").strip()
-        if error:
-            headline = f"已发送 {success} 人，流程中断" if success else "本轮未发送"
-            return "发送未完成", headline, error, "error"
-
-        if success and not any((failed, pending, page_waiting, skipped, result.get("stopped"))):
-            return "发送完成", "发送完成", f"成功：{success} 人\n状态：联系结果已保存", "info"
-
-        headline = "发送部分完成" if success else "本轮未发送"
-        lines = []
-        if success:
-            lines.append(f"成功：{success} 人")
-        if failed:
-            lines.append(f"失败：{failed} 人（可在“发送失败”中重试）")
-        if pending:
-            lines.append(f"待核实：{pending} 人（请到 BOSS 沟通列表确认）")
-        if page_waiting:
-            jobs_text = "、".join(
-                f"{job_name}（{count} 人）"
-                for job_name, count in page_waiting_jobs.items()
-            )
-            lines.append(f"待切换岗位：{page_waiting} 人")
-            if jobs_text:
-                lines.append(f"涉及岗位：{jobs_text}")
-            lines.append("下一步：切换对应岗位后再次发送")
-        if skipped:
-            lines.append(f"已跳过：{skipped} 人（候选人状态已变化）")
-        if result.get("stopped"):
-            lines.append("状态：发送已停止，未处理候选人仍保留")
-        if not lines:
-            lines.append("结果：没有符合发送条件的候选人")
-        return "发送结果", headline, "\n".join(lines), "warning"
+        return contact_presenter.build_greet_queue_run_feedback(result)
 
     def _show_greet_queue_run_result(self, result):
         title, headline, message, level = self._build_greet_queue_run_feedback(result)
@@ -23838,143 +22059,11 @@ class BossFilterGUI:
     @staticmethod
     def _format_display_datetime(value, missing="未知"):
         """Format persisted timestamps for compact user-facing display."""
-        text = str(value or '').strip()
-        if not text:
-            return missing
-
-        for date_format, output_format in (
-            ('%Y%m%d_%H%M%S', '%Y-%m-%d %H:%M'),
-            ('%Y%m%dT%H%M%S', '%Y-%m-%d %H:%M'),
-            ('%Y%m%d', '%Y-%m-%d'),
-        ):
-            try:
-                return datetime.strptime(text, date_format).strftime(output_format)
-            except ValueError:
-                pass
-
-        try:
-            parsed = datetime.fromisoformat(text.replace('Z', '+00:00'))
-            return parsed.strftime('%Y-%m-%d %H:%M')
-        except ValueError:
-            return text
+        return candidate_presenter.format_display_datetime(value, missing)
 
     def _format_candidate_decision_summary(self, candidate):
         """Format the first-screen information needed to make a candidate decision."""
-        decision = derive_candidate_decision(candidate)
-        score = candidate.get('match_score', 0)
-        lines = [
-            "下一步",
-            f"  {decision.next_action}",
-            "",
-            "判断依据",
-            f"  筛选结论：{decision.screening_result}（{score} 分）",
-        ]
-
-        if decision.review_status == "pending":
-            lines.append("  复核原因：")
-            lines.extend(f"  - {reason}" for reason in decision.review_reasons)
-        elif decision.review_status == "passed":
-            lines.append("  复核状态：已通过")
-            passed_reasons = [
-                str(reason).strip()
-                for reason in (candidate.get('review_passed_reasons') or [])
-                if str(reason).strip()
-            ]
-            if passed_reasons:
-                lines.append("  通过前复核事项：")
-                lines.extend(f"  - {reason}" for reason in passed_reasons)
-        elif decision.review_status == "cancelled":
-            lines.append("  复核状态：已结束")
-            if decision.review_reasons:
-                lines.append("  结束前待复核事项：")
-                lines.extend(f"  - {reason}" for reason in decision.review_reasons)
-        elif candidate.get('review_rejected_at'):
-            lines.append("  复核状态：未通过")
-            rejected_reasons = candidate.get('review_rejected_reasons') or []
-            if rejected_reasons:
-                lines.append("  未通过事项：")
-                lines.extend(f"  - {reason}" for reason in rejected_reasons)
-        elif decision.result_view == "淘汰记录":
-            lines.append("  复核状态：无需复核（筛选未通过）")
-        else:
-            lines.append("  复核状态：无需复核")
-
-        breakdown = candidate.get('score_breakdown') or {}
-        if breakdown:
-            score_parts = [
-                f"基础 {breakdown.get('base', 0)}",
-                f"技能 {breakdown.get('skill', 0)}",
-                f"经验 {breakdown.get('experience', 0)}",
-                f"学历 {breakdown.get('education', 0)}",
-                f"优先项 {breakdown.get('preferred', 0)}",
-            ]
-            adjustment = (
-                breakdown.get('resume_adjustment')
-                if breakdown.get('resume_adjustment') is not None
-                else breakdown.get('ai_adjustment')
-            )
-            if adjustment:
-                try:
-                    score_parts.append(f"AI 调整 {int(adjustment):+d}")
-                except (TypeError, ValueError):
-                    score_parts.append(f"AI 调整 {adjustment}")
-            lines.append(f"  评分拆解：{'｜'.join(score_parts)}")
-
-        evidence_items = [
-            item for item in (candidate.get('keyword_evidence') or [])
-            if isinstance(item, dict) and item.get('name')
-        ]
-        skill_matches = candidate.get('skill_matches') or []
-        if evidence_items or skill_matches:
-            lines.extend(["", "关键匹配"])
-            if evidence_items:
-                for item in evidence_items[:5]:
-                    evidence = str(item.get('evidence') or '').strip()
-                    suffix = f"：{evidence}" if evidence else ""
-                    lines.append(f"  - {item.get('name')}{suffix}")
-            else:
-                for item in skill_matches[:5]:
-                    name = item.get('name') if isinstance(item, dict) else str(item)
-                    if name:
-                        lines.append(f"  - {name}")
-
-        risks = []
-        risk_sources = []
-        for value in (
-            candidate.get('risk_flags'),
-            candidate.get('qualification_reasons'),
-        ):
-            risk_sources.extend(value if isinstance(value, (list, tuple)) else [value])
-        for risk in risk_sources:
-            text = str(risk or '').strip()
-            if text and text not in risks and text not in decision.review_reasons:
-                risks.append(text)
-        if risks:
-            lines.extend(["", "风险与不足"])
-            lines.extend(f"  - {risk}" for risk in risks[:6])
-
-        if candidate.get('llm_evaluated') or candidate.get('llm_error'):
-            lines.extend(["", "AI 评估"])
-            if candidate.get('llm_error'):
-                error = str(candidate.get('llm_error')).replace('\n', ' ').strip()
-                lines.append(f"  评估失败：{error}")
-            else:
-                adjustment = candidate.get('llm_adjustment', 0) or 0
-                reason = str(candidate.get('llm_reason') or '未提供评估理由').replace('\n', ' ').strip()
-                try:
-                    lines.append(f"  调整分：{int(adjustment):+d}")
-                except (TypeError, ValueError):
-                    lines.append(f"  调整分：{adjustment}")
-                lines.append(f"  {reason}")
-
-        lines.extend([
-            "",
-            "当前状态",
-            f"  沟通：{decision.communication_status}",
-            f"  下次跟进：{format_followup_due_at(candidate.get('next_followup_at'))}",
-            f"  人工反馈：{candidate.get('feedback_status') or '未标记'}",
-        ])
-        return '\n'.join(lines)
+        return candidate_presenter.format_candidate_decision_summary(candidate)
 
     def _open_candidate_review_workbench(self, candidate, candidates=None):
         """Open or reuse the continuous candidate review workbench."""
@@ -24013,251 +22102,42 @@ class BossFilterGUI:
             except tk.TclError:
                 pass
 
-        scale = self.dpi_scale * self.zoom_factor
-        win = tk.Toplevel(self.root)
-        win.title("候选人查看与复核")
-        win.transient(self.root)
-        win.withdraw()
-        win.configure(bg=self.colors['bg_main'])
-        self.candidate_review_window = win
-
-        body = ttk.Frame(win, style='Page.TFrame', padding=int(18 * scale))
-        body.pack(fill='both', expand=True)
-
-        header = ttk.Frame(body, style='Page.TFrame')
-        header.pack(fill='x', pady=(0, int(10 * scale)))
-        header.grid_columnconfigure(0, weight=1)
-        title_area = ttk.Frame(header, style='Page.TFrame')
-        title_area.grid(row=0, column=0, sticky='ew')
-        self.candidate_review_title_var = tk.StringVar()
-        self.candidate_review_meta_var = tk.StringVar()
-        ttk.Label(
-            title_area,
-            textvariable=self.candidate_review_title_var,
-            font=(FONT_FAMILY, int(16 * self.font_scale), 'bold'),
-            foreground=self.colors['text_primary'],
-            background=self.colors['bg_main'],
-        ).pack(anchor='w')
-        ttk.Label(
-            title_area,
-            textvariable=self.candidate_review_meta_var,
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_main'],
-        ).pack(anchor='w', pady=(int(2 * scale), 0))
-
-        nav = ttk.Frame(header, style='Page.TFrame')
-        nav.grid(row=0, column=1, sticky='e')
-        self.candidate_review_position_var = tk.StringVar()
-        self.candidate_review_prev_button = ttk.Button(
-            nav, text="上一位", width=8,
-            command=lambda: self._navigate_candidate_review(-1),
-        )
-        self.candidate_review_prev_button.pack(side='left')
-        ttk.Label(
-            nav,
-            textvariable=self.candidate_review_position_var,
-            font=self.font_label,
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_main'],
-            width=9,
-            anchor='center',
-        ).pack(side='left', padx=int(6 * scale))
-        self.candidate_review_next_button = ttk.Button(
-            nav, text="下一位", width=8,
-            command=lambda: self._navigate_candidate_review(1),
-        )
-        self.candidate_review_next_button.pack(side='left')
-
-        state_band = tk.Frame(
-            body,
-            bg=self.colors['bg_card'],
-            highlightbackground=self.colors['border'],
-            highlightthickness=1,
-        )
-        state_band.pack(fill='x', pady=(0, int(12 * scale)))
-        self.candidate_review_result_var = tk.StringVar()
-        self.candidate_review_reason_var = tk.StringVar()
-        self.candidate_review_communication_var = tk.StringVar()
-        state_items = (
-            ("筛选结论", self.candidate_review_result_var),
-            ("复核状态", self.candidate_review_reason_var),
-            ("沟通状态", self.candidate_review_communication_var),
-        )
-        self.candidate_review_state_labels = []
-        for column, (label, variable) in enumerate(state_items):
-            state_band.grid_columnconfigure(column, weight=1)
-            cell = tk.Frame(state_band, bg=self.colors['bg_card'])
-            cell.grid(row=0, column=column, sticky='ew', padx=int(16 * scale), pady=int(10 * scale))
-            tk.Label(
-                cell,
-                text=label,
-                font=(FONT_FAMILY, int(10 * self.font_scale)),
-                fg=self.colors['text_secondary'],
-                bg=self.colors['bg_card'],
-            ).pack(anchor='w')
-            value_label = tk.Label(
-                cell,
-                textvariable=variable,
-                font=(FONT_FAMILY, int(12 * self.font_scale), 'bold'),
-                fg=self.colors['text_primary'],
-                bg=self.colors['bg_card'],
-                anchor='w',
-                justify='left',
-                wraplength=max(180, int(260 * min(scale, 1.2))),
-            )
-            value_label.pack(anchor='w', fill='x')
-            self.candidate_review_state_labels.append(value_label)
-
-        actions = ttk.Frame(body, style='Page.TFrame')
-        actions.pack(side='bottom', fill='x', pady=(int(12 * scale), 0))
-        actions.grid_columnconfigure(0, weight=1)
-        self.candidate_review_primary_section = ttk.Frame(actions, style='Page.TFrame')
-        self.candidate_review_primary_label = ttk.Label(
-            self.candidate_review_primary_section,
-            text="建议下一步",
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_main'],
-        )
-        self.candidate_review_primary_label.pack(
-            anchor='w', pady=(0, int(4 * scale))
-        )
-        self.candidate_review_primary_actions = ttk.Frame(
-            self.candidate_review_primary_section, style='Page.TFrame'
-        )
-        self.candidate_review_primary_actions.pack(anchor='w')
-
-        self.candidate_review_primary_section.grid(row=0, column=0, sticky='w')
-        ttk.Separator(actions, orient='horizontal').grid(
-            row=1, column=0, sticky='ew', pady=int(8 * scale)
-        )
-        self.candidate_review_secondary_section = ttk.Frame(actions, style='Page.TFrame')
-        ttk.Label(
-            self.candidate_review_secondary_section,
-            text="其他操作",
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_main'],
-        ).pack(anchor='w', pady=(0, int(4 * scale)))
-        self.candidate_review_secondary_actions = ttk.Frame(
-            self.candidate_review_secondary_section, style='Page.TFrame'
-        )
-        self.candidate_review_secondary_actions.pack(anchor='w')
-        self.candidate_review_secondary_section.grid(row=2, column=0, sticky='w')
-
-        switch_bar = tk.Frame(
-            body,
-            bg=self.colors['bg_card'],
-            highlightbackground=self.colors['border'],
-            highlightthickness=1,
-        )
-        switch_bar.pack(fill='x')
-        switch_inner = tk.Frame(switch_bar, bg=self.colors['bg_card'])
-        switch_inner.pack(anchor='w')
-        self.candidate_review_view_buttons = {}
-        self.candidate_review_view_indicators = {}
-        switch_items = (("summary", "决策摘要"), ("detail", "完整资料"))
-        for view_name, label in switch_items:
-            cell = tk.Frame(switch_inner, bg=self.colors['bg_card'])
-            cell.pack(side='left')
-            button = tk.Button(
-                cell,
-                text=label,
-                command=lambda name=view_name: self._show_candidate_review_view(name),
-                font=(FONT_FAMILY, max(10, int(12 * self.font_scale)), 'bold'),
-                relief='flat',
-                bd=0,
-                padx=int(18 * scale),
-                pady=int(7 * scale),
-                cursor='hand2',
-                takefocus=1,
-                highlightthickness=1,
-                highlightbackground=self.colors['bg_card'],
-                highlightcolor=self.colors['primary'],
-            )
-            button.pack(fill='x')
-            indicator = tk.Frame(
-                cell,
-                height=max(2, int(3 * scale)),
-                bg=self.colors['bg_card'],
-            )
-            indicator.pack(fill='x')
-            self.candidate_review_view_buttons[view_name] = button
-            self.candidate_review_view_indicators[view_name] = indicator
-            button.bind(
-                '<Enter>',
-                lambda _event, name=view_name, widget=button: (
-                    widget.configure(bg=self.colors['bg_hover'])
-                    if getattr(self, '_candidate_review_view_name', 'summary') != name
-                    else None
-                ),
-            )
-            button.bind(
-                '<Leave>',
-                lambda _event: self._show_candidate_review_view(
-                    getattr(self, '_candidate_review_view_name', 'summary')
-                ),
-            )
-            button.bind(
-                '<Return>',
-                lambda _event, name=view_name: self._show_candidate_review_view(name),
-            )
-
-        review_content = tk.Frame(
-            body,
-            bg=self.colors['bg_card'],
-            highlightbackground=self.colors['border'],
-            highlightthickness=1,
-        )
-        review_content.pack(fill='both', expand=True)
-        review_content.grid_rowconfigure(0, weight=1)
-        review_content.grid_columnconfigure(0, weight=1)
-        summary_panel = tk.Frame(review_content, bg=self.colors['bg_card'])
-        detail_panel = tk.Frame(review_content, bg=self.colors['bg_card'])
-        summary_panel.grid(row=0, column=0, sticky='nsew')
-        detail_panel.grid(row=0, column=0, sticky='nsew')
-        self.candidate_review_view_frames = {
-            'summary': summary_panel,
-            'detail': detail_panel,
-        }
-        self.candidate_review_summary_text = self._create_review_text_area(summary_panel)
-        self.candidate_review_detail_text = self._create_review_text_area(detail_panel)
-        self._show_candidate_review_view('summary')
-
-        def close_workbench():
+        def close_workbench(window):
             self.candidate_review_window = None
-            win.destroy()
+            self._candidate_review_widgets = None
+            window.destroy()
 
-        win.protocol('WM_DELETE_WINDOW', close_workbench)
-        win.bind('<Left>', lambda _event: self._navigate_candidate_review(-1))
-        win.bind('<Right>', lambda _event: self._navigate_candidate_review(1))
-        win.bind('<Control-Tab>', lambda _event: self._toggle_candidate_review_view())
-        win.bind('<Control-Shift-Tab>', lambda _event: self._toggle_candidate_review_view())
-
-        try:
-            self.root.update_idletasks()
-            root_width = self.root.winfo_width()
-            root_height = self.root.winfo_height()
-            monitor_area = _get_windows_monitor_area(win, self.root)
-            area_width = (
-                monitor_area[2] if monitor_area is not None else win.winfo_screenwidth()
-            )
-            area_height = (
-                monitor_area[3] if monitor_area is not None else win.winfo_screenheight()
-            )
-            preferred_width = max(700, int(root_width * 0.62))
-            width = min(
-                preferred_width,
-                int(1040 * max(1.0, scale)),
-                int(area_width * 0.9),
-            )
-            height = min(root_height, int(area_height * 0.9))
-        except tk.TclError:
-            width, height = 980, 900
-        _place_window_centered(win, width, height, parent=self.root)
+        widgets = gui_candidate_review.build_candidate_review_workbench(
+            self,
+            navigate=self._navigate_candidate_review,
+            show_view=self._show_candidate_review_view,
+            toggle_view=self._toggle_candidate_review_view,
+            close_window=close_workbench,
+        )
+        self._candidate_review_widgets = widgets
+        self.candidate_review_window = widgets.window
+        self.candidate_review_title_var = widgets.title_var
+        self.candidate_review_meta_var = widgets.meta_var
+        self.candidate_review_position_var = widgets.position_var
+        self.candidate_review_prev_button = widgets.previous_button
+        self.candidate_review_next_button = widgets.next_button
+        self.candidate_review_result_var = widgets.result_var
+        self.candidate_review_reason_var = widgets.reason_var
+        self.candidate_review_communication_var = widgets.communication_var
+        self.candidate_review_state_labels = widgets.state_labels
+        self.candidate_review_primary_section = widgets.primary_section
+        self.candidate_review_primary_label = widgets.primary_label
+        self.candidate_review_primary_actions = widgets.primary_actions
+        self.candidate_review_secondary_section = widgets.secondary_section
+        self.candidate_review_secondary_actions = widgets.secondary_actions
+        self.candidate_review_view_buttons = widgets.view_buttons
+        self.candidate_review_view_indicators = widgets.view_indicators
+        self.candidate_review_view_frames = widgets.view_frames
+        self.candidate_review_summary_text = widgets.summary_text
+        self.candidate_review_detail_text = widgets.detail_text
+        self._show_candidate_review_view('summary')
         self._render_candidate_review_workbench()
-        win.deiconify()
+        widgets.window.deiconify()
 
     def _on_greet_queue_motion(self, event):
         """Show full readiness or result text for compact contact-queue columns."""
@@ -24381,26 +22261,7 @@ class BossFilterGUI:
         self.greet_queue_window.destroy()
 
     def _create_review_text_area(self, parent):
-        container = ttk.Frame(parent, style='Page.TFrame')
-        container.pack(fill='both', expand=True, padx=int(4 * self.dpi_scale), pady=int(8 * self.dpi_scale))
-        text_widget = tk.Text(
-            container,
-            wrap='word',
-            font=(FONT_FAMILY, int(11 * self.font_scale)),
-            bg=self.colors['bg_card'],
-            fg=self.colors['text_primary'],
-            relief='flat',
-            padx=int(16 * self.dpi_scale),
-            pady=int(12 * self.dpi_scale),
-            spacing1=int(2 * self.dpi_scale),
-            spacing3=int(4 * self.dpi_scale),
-        )
-        scrollbar = ttk.Scrollbar(container, orient='vertical', command=text_widget.yview)
-        text_widget.configure(yscrollcommand=scrollbar.set)
-        text_widget.pack(side='left', fill='both', expand=True)
-        scrollbar.pack(side='right', fill='y')
-        self.bind_text_context_menu(text_widget, editable=False)
-        return text_widget
+        return gui_candidate_review.create_review_text_area(self, parent)
 
     def _show_candidate_review_view(self, view_name):
         """Switch the review content immediately and refresh the flat selected state."""
@@ -24408,38 +22269,25 @@ class BossFilterGUI:
         if view_name not in frames:
             return 'break'
         self._candidate_review_view_name = view_name
-        frames[view_name].tkraise()
-        for name, button in self.candidate_review_view_buttons.items():
-            selected = name == view_name
-            button.configure(
-                bg=(self.colors['banner_info_bg'] if selected else self.colors['bg_card']),
-                fg=(self.colors['primary'] if selected else self.colors['text_secondary']),
-                activebackground=(
-                    self.colors['banner_info_bg'] if selected else self.colors['bg_hover']
-                ),
-                activeforeground=(
-                    self.colors['primary'] if selected else self.colors['text_primary']
-                ),
-            )
-            self.candidate_review_view_indicators[name].configure(
-                bg=self.colors['primary'] if selected else self.colors['bg_card']
-            )
-        return 'break'
+        return gui_candidate_review.show_candidate_review_view(
+            view_name,
+            frames=frames,
+            buttons=self.candidate_review_view_buttons,
+            indicators=self.candidate_review_view_indicators,
+            colors=self.colors,
+        )
 
     def _toggle_candidate_review_view(self):
         """Toggle summary/detail without forcing a distracting focus repaint."""
         current = getattr(self, '_candidate_review_view_name', 'summary')
-        target = 'detail' if current == 'summary' else 'summary'
-        self._show_candidate_review_view(target)
-        return 'break'
+        return gui_candidate_review.toggle_candidate_review_view(
+            current,
+            self._show_candidate_review_view,
+        )
 
     @staticmethod
     def _replace_readonly_text(text_widget, text):
-        text_widget.configure(state='normal')
-        text_widget.delete('1.0', 'end')
-        text_widget.insert('1.0', text)
-        text_widget.configure(state='disabled')
-        text_widget.yview_moveto(0)
+        gui_candidate_review.replace_readonly_text(text_widget, text)
 
     def _render_candidate_review_workbench(self):
         candidates = getattr(self, '_candidate_review_candidates', [])

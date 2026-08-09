@@ -14,6 +14,17 @@ boss-resume-filter/
 ├── release_user_audit.py # 用户视角发布审计模块
 ├── storage.py            # 候选人数据持久化模块（去重、原子写入、备份恢复）
 ├── contact_queue.py      # GUI 候选人联系清单持久化与恢复模块
+├── candidate_presenter.py # 候选人状态、AI 评估与复核文本的纯格式化模块
+├── candidate_diagnostics_presenter.py # 候选人状态体检列表的纯展示转换模块
+├── contact_presenter.py # 联系清单就绪状态、确认内容与结果文本模块
+├── run_presenter.py     # 运行进度、终态日志与摘要文本模块
+├── stats_presenter.py   # 统计看板聚合、岗位复盘模型与文本模块
+├── gui_stats_page.py    # 数据统计页 Tk 控件构建与页面局部引用模块
+├── gui_candidate_diagnostics.py # 候选人状态体检弹窗的 Tk 构建与交互状态模块
+├── gui_candidate_review.py # 候选人查看与复核工作台的 Tk 构建与视图切换模块
+├── gui_candidate_actions.py # 今日待办弹窗的 Tk 构建、分组导航与局部选择状态模块
+├── gui_candidate_workbench.py # 候选人工作台共用标题、指标条与导航树 UI 原语
+├── gui_contact_queue.py # 联系候选人工作台的 Tk 构建与控件引用模块
 ├── gui_main.py           # 图形界面主程序（v2.27）
 ├── gui_dialogs.py / ui_messagebox.py # 独立对话框与统一居中提示
 ├── changelog_parser.py   # CHANGELOG 解析模块（版本段落提取、标题解析）
@@ -119,6 +130,15 @@ boss-resume-filter/
 - `_preflight_checks()` 验证依赖、敏感文件、源码编译、文档同步和回归测试；依赖变更须同步 `build.py:REQUIRED_IMPORTS`
 - 本地 `build.py --release` 已停用，`--ci --release` 仅供 Actions 构建任务使用；同名 tag 只能在指向同一发布提交时断点续跑，不得移动或 `--force`
 - CHANGELOG 硬门禁包括当前版本、分类顺序、README 入口、历史完整性、源码编译和回归测试；正反向覆盖等启发式检查默认提示、严格模式阻断
+## GUI 模块边界
+- `gui_main.py` 保留版本号、Tk 窗口生命周期、导航、页面按需创建和兼容门面；新的纯格式化或业务转换不得继续加入 `BossFilterGUI`。
+- `*_presenter.py` 只接收普通 Python 数据并返回文本或结构化展示结果；不得导入 `tkinter`、`gui_main`、候选人存储或网络模块，不得读写文件。
+- `gui_main.py` 可以向新模块单向委托；新模块禁止反向导入 `gui_main.py`。迁移期保留原 `BossFilterGUI` 方法作为薄兼容层，待调用方和测试迁移后再删除。
+- `gui_*_page.py` 只负责指定页面的 Tk 控件构建和页面局部引用；不得读写业务数据、访问网络或导入 `gui_main`。迁移期通过显式 Host 协议注入回调，并由 `gui_main.py` 保留原页面属性别名。
+- `gui_candidate_*.py` 只负责候选人工作台弹窗的 Tk 控件、局部选择状态和事件绑定；候选人加载、状态诊断、业务动作和报告写盘必须通过显式回调留在 `gui_main.py`，不得导入存储、网络或 `gui_main`。
+- `gui_contact_queue.py` 只构建联系清单窗口并绑定显式回调；清单持久化、浏览器预检、发送、暂停恢复、失败重试和状态复核必须留在 `gui_main.py`，不得导入存储、浏览器、网络或 `gui_main`。
+- 后续如新建 `gui_pages/`、`gui_workbenches/` 或 `gui_runtime/` 目录，必须先在本文档定义目录职责和依赖方向，再创建文件。
+
 ## 代码规范
 
 - 使用 type hints
