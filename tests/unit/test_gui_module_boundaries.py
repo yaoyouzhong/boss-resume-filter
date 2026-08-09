@@ -13,10 +13,12 @@ import gui_candidate_review
 import gui_contact_queue
 import gui_config_page
 import gui_main
+import gui_model_catalog_dialog
 import gui_result_page
 import gui_run_page
 import gui_settings_page
 import gui_stats_page
+import model_catalog
 import run_presenter
 import stats_presenter
 import ui_windowing
@@ -250,6 +252,33 @@ def test_settings_page_keeps_secrets_network_and_data_actions_in_main_controller
     ):
         assert f"def {method_name}" not in builder
         assert f"def {method_name}" in source
+
+
+def test_model_catalog_dialog_does_not_import_controller_storage_or_http_clients():
+    forbidden = {
+        "gui_main",
+        "requests",
+        "security",
+        "storage",
+    }
+    assert not (_top_level_imports("gui_model_catalog_dialog") & forbidden)
+    assert callable(gui_model_catalog_dialog.show_model_catalog_dialog)
+
+
+def test_model_catalog_service_is_ui_free_and_main_uses_both_extracted_parts():
+    forbidden = {"gui_main", "tkinter", "ui_messagebox", "ui_theme"}
+    assert not (_top_level_imports("model_catalog") & forbidden)
+    assert callable(model_catalog.fetch_model_catalog)
+    assert callable(model_catalog.analyze_model_catalog)
+
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def fetch_model_list"):]
+    block = block[:block.index("\n    def _show_api_key_while_pressed")]
+    assert "catalog_response = fetch_model_catalog(" in block
+    assert "analysis = analyze_model_catalog(" in block
+    assert "gui_model_catalog_dialog.show_model_catalog_dialog(" in block
+    assert "requests.get(" not in block
+    assert "tk.Listbox(" not in block
 
 
 def test_run_page_keeps_api_key_resolution_in_main_controller():

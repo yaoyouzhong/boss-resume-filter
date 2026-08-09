@@ -6,6 +6,7 @@ boss-resume-filter/
 ├── filtering.py          # 纯筛选规则模块（评分、硬条件、薪资/经验/城市解析）
 ├── llm_eval.py           # LLM 辅助评估模块（prompt 构建、API 调用、批量评估）
 ├── ai_adapter.py         # 多服务商接口适配与模型能力验证
+├── model_catalog.py      # 模型目录获取、聊天模型过滤与端点隔离差异分析
 ├── job_ai_parser.py      # 岗位需求 AI 增强解析模块（基于正则初稿补充优化）
 ├── job_config_diagnostics.py # 岗位配置保存前体检模块
 ├── candidate_state_diagnostics.py # 候选人状态一致性体检模块
@@ -24,6 +25,7 @@ boss-resume-filter/
 ├── gui_run_page.py      # 运行控制页分步 Tk 构建、控件状态联动与事件绑定模块
 ├── gui_config_page.py   # 岗位配置页分步 Tk 构建、表单控件装配与事件绑定模块
 ├── gui_settings_page.py # 系统设置页分步 Tk 构建、模型控件与数据工具入口装配模块
+├── gui_model_catalog_dialog.py # 模型目录选择、搜索与连通性测试对话框
 ├── gui_candidate_diagnostics.py # 候选人状态体检弹窗的 Tk 构建与交互状态模块
 ├── gui_candidate_review.py # 候选人查看与复核工作台的 Tk 构建与视图切换模块
 ├── gui_candidate_actions.py # 今日待办弹窗的 Tk 构建、分组导航与局部选择状态模块

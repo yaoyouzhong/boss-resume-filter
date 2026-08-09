@@ -3433,6 +3433,7 @@ def test_save_api_config_sets_default_when_current_model_is_not_saved():
 
 def test_model_discovery_keeps_custom_base_url_explicit_and_scopes_catalog_cache():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    catalog_source = Path("model_catalog.py").read_text(encoding="utf-8")
     settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
     fetch_block = source[source.index("def fetch_model_list"):]
     fetch_block = fetch_block[:fetch_block.index("\n    def _show_api_key_while_pressed")]
@@ -3440,9 +3441,87 @@ def test_model_discovery_keeps_custom_base_url_explicit_and_scopes_catalog_cache
     assert 'self.api_base_url_var = tk.StringVar()' in settings_source
     assert 'text=" 自动识别并获取模型"' in settings_source
     assert 'if not base_url and not has_endpoint_discovery(provider):' in fetch_block
-    assert '自定义/中转地址只验证用户明确输入的 URL' in fetch_block
-    assert 'resolution = discover_api_endpoint(' in fetch_block
-    assert 'catalog_key = model_catalog_cache_key(provider, base_url)' in fetch_block
+    assert 'catalog_response = fetch_model_catalog(' in fetch_block
+    assert 'analysis = analyze_model_catalog(' in fetch_block
+    assert '自定义/中转地址只请求用户明确输入的 URL' in catalog_source
+    assert 'resolution = discover_endpoint(' in catalog_source
+    assert 'catalog_key = model_catalog_cache_key(provider, base_url)' in catalog_source
+
+
+def test_fetch_model_list_routes_catalog_result_to_extracted_dialog():
+    from ai_adapter import model_catalog_cache_key
+    from model_catalog import ModelCatalogResponse
+
+    class _QueuedRoot:
+        def __init__(self):
+            self.queued = []
+
+        def after(self, delay, callback):
+            if delay == 0:
+                callback()
+            else:
+                self.queued.append(callback)
+
+    class _SyncThread:
+        def __init__(self, target, daemon=None):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    code_url = "https://api.kimi.com/coding/v1"
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._model_dialog = None
+    gui.api_key_var = _FakeVar("sk-kimi-test")
+    gui.api_base_url_var = _FakeVar("https://api.moonshot.cn/v1")
+    gui.api_provider_var = _FakeVar("Kimi")
+    gui.DISPLAY_TO_KEY = {"Kimi": "kimi"}
+    gui.colors = {"warning": "orange", "success": "green", "danger": "red"}
+    gui.root = _QueuedRoot()
+    gui._update_api_status = Mock()
+    gui._sanitize_config_for_save = lambda config: config
+    gui._mark_api_config_ui_current = Mock()
+    gui._status_clickable_labels = []
+    gui.api_config = {
+        "base_url": code_url,
+        "fetched_models": {
+            model_catalog_cache_key("kimi", code_url): ["kimi-for-coding"],
+        },
+    }
+
+    response = ModelCatalogResponse(
+        http_status=200,
+        response_text="",
+        payload={"data": [{"id": "kimi-for-coding"}]},
+        base_url=code_url,
+        service_name="Kimi Code",
+        resolution_status="confirmed",
+        endpoint_confirmed=True,
+    )
+
+    with (
+        tempfile.TemporaryDirectory() as tmp_dir,
+        patch("gui_main.fetch_model_catalog", return_value=response) as fetch,
+        patch("gui_main.threading.Thread", _SyncThread),
+        patch("gui_main.get_api_config_path", return_value=Path(tmp_dir) / "api.json"),
+        patch(
+            "gui_main.gui_model_catalog_dialog.show_model_catalog_dialog"
+        ) as show_dialog,
+    ):
+        gui.fetch_model_list()
+        assert len(gui.root.queued) == 1
+        gui.root.queued.pop()()
+
+    fetch.assert_called_once_with(
+        "kimi",
+        "sk-kimi-test",
+        "https://api.moonshot.cn/v1",
+    )
+    assert gui.api_base_url_var.get() == code_url
+    assert gui._verified_api_endpoint == ("kimi", "sk-kimi-test", code_url)
+    show_dialog.assert_called_once()
+    assert show_dialog.call_args.kwargs["models"] == ["kimi-for-coding"]
+    gui._mark_api_config_ui_current.assert_called_once_with()
 
 
 def test_education_captcha_low_confidence_is_not_auto_submitted():
@@ -9671,7 +9750,7 @@ def test_open_containing_folder_uses_windows_file_manager():
 
 
 def test_model_connectivity_summary_stays_inside_selection_dialog():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
+    source = Path("gui_model_catalog_dialog.py").read_text(encoding="utf-8")
     block = source[
         source.index("def _test_model_in_dialog"):
         source.index('listbox.bind("<Button-3>"')
