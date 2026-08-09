@@ -125,6 +125,31 @@ def test_pending_candidate_can_be_manually_approved_without_changing_score():
     assert candidate_greet_skip_reason(pending) == ""
 
 
+def test_manual_contact_approval_gate_blocks_every_non_resolvable_state():
+    """One click may resolve only an ordinary 55-64 pending score, nothing else."""
+    base = {"geek_id": "pending", "match_score": 60}
+    blockers = (
+        {"geek_id": ""},
+        {"blacklisted": True},
+        {"greet_sent": True},
+        {"greet_confirmation_pending": True},
+        {"feedback_status": "误推"},
+        {"followup_status": "已回复"},
+        {"qualification_status": "manual_review"},
+        {"manual_review_required": True},
+        {"match_score": None},
+        {"match_score": 54},
+        {"contact_approved_at": "20260809_100000"},
+        {"match_score": 65},
+    )
+
+    assert candidate_can_manual_approve_contact(base) is True
+    for blocker in blockers:
+        candidate = dict(base)
+        candidate.update(blocker)
+        assert candidate_can_manual_approve_contact(candidate) is False, blocker
+
+
 def test_prior_hard_condition_review_does_not_approve_a_new_pending_score():
     candidate = {
         "geek_id": "rescored",

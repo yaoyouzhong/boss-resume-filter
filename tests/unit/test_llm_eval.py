@@ -27,6 +27,52 @@ def quiet_evaluate_batch(*args, **kwargs):
         return evaluate_batch(*args, **kwargs)
 
 
+def test_api_profile_summary_preserves_structured_evidence_without_regex_reparse():
+    candidate = {
+        "name": "张三",
+        "gender": "男",
+        "match_score": 78,
+        "recommend_level": "强烈推荐",
+        "skill_match_ratio": "3/4",
+        "skill_matches": [{"name": "Python"}, "SQL", {"name": ""}],
+        "risk_flags": ["地点待确认"],
+        "score_explanation": ["技能命中：Python", "经验满足"],
+        "_api_profile": {
+            "personal_summary": "稳定求职",
+            "educations": [{
+                "school": "A大学", "major": "计算机", "degree": "本科",
+                "start": "2010", "end": "2014",
+            }],
+            "works": [{
+                "company": "甲公司", "position": "工程师", "category": "研发",
+                "start": "2019", "end": "至今", "responsibility": "负责平台建设",
+                "skills": ["Python", "SQL", "Python"],
+            }],
+        },
+    }
+
+    summary = build_llm_candidate_summary(candidate)
+
+    for expected in (
+        "姓名：张三", "性别：男", "规则评分：78", "规则推荐：强烈推荐",
+        "技能匹配：3/4", "命中技能：Python、SQL", "风险提示：地点待确认",
+        "基础摘要：稳定求职", "教育经历：A大学 计算机 本科 2010 2014",
+        "工作经历：甲公司 工程师 研发 2019 至今", "工作职责：负责平台建设",
+        "技能标签：Python、SQL", "规则解释：技能命中：Python；经验满足",
+    ):
+        assert expected in summary
+
+
+def test_api_profile_summary_honors_prompt_size_limit():
+    summary = build_llm_candidate_summary(
+        {"name": "候选人", "_api_profile": {"personal_summary": "A" * 100}},
+        max_chars=24,
+    )
+
+    assert len(summary) == 27
+    assert summary.endswith("...")
+
+
 # === _parse_response ===
 
 def test_parse_response_plain_json():

@@ -77,6 +77,28 @@ def test_queue_persists_intent_without_candidate_profile():
         assert "private resume text" not in path.read_text(encoding="utf-8")
 
 
+def test_queue_serializes_legacy_uuid_identity_from_runtime_key():
+    """A restored runtime item may lack candidate data but must keep its job UUID."""
+    job_uuid = "11111111-1111-4111-8111-111111111111"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "contact_queue.json"
+        save_contact_queue(
+            [{
+                "key": ("g-legacy", f"uuid:{job_uuid}"),
+                "status": "发送失败",
+                "attempts": "2",
+            }],
+            path,
+        )
+
+        saved = json.loads(path.read_text(encoding="utf-8"))["items"][0]
+        assert saved["geek_id"] == "g-legacy"
+        assert saved["job_uuid"] == job_uuid
+        assert saved["job_name"] == ""
+        assert saved["status"] == "发送失败"
+        assert saved["attempts"] == 2
+
+
 def test_queue_restore_binds_latest_candidate_record():
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "contact_queue.json"

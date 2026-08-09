@@ -26,6 +26,7 @@ from storage import (
     persist_candidate_greeted,
     persist_candidate_greeting_pending,
     read_candidates_snapshot,
+    remove_candidates_all,
     remove_candidates_all_with_resume_cleanup,
     repair_candidate_resume_storage,
     resolve_candidate_greeting_confirmation,
@@ -50,6 +51,28 @@ def test_read_candidates_snapshot_never_restores_missing_primary_file():
         assert not os.path.exists(target)
         with open(backup, "r", encoding="utf-8") as handle:
             assert json.load(handle) == [{"geek_id": "g1"}]
+
+
+def test_remove_candidates_all_persists_only_nonmatching_records():
+    """Bulk removal must be atomic and must not retain a deleted candidate in storage."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = Path(tmpdir) / "candidates_all.json"
+        save_candidates_all(
+            [
+                {"geek_id": "keep", "job_name": "Java", "match_score": 60},
+                {"geek_id": "drop-1", "job_name": "Java", "match_score": 60},
+                {"geek_id": "drop-2", "job_name": "Java", "match_score": 60},
+            ],
+            str(target),
+        )
+
+        removed = remove_candidates_all(
+            lambda candidate: str(candidate.get("geek_id")).startswith("drop-"),
+            str(target),
+        )
+
+        assert removed == 2
+        assert [item["geek_id"] for item in load_candidates_all(str(target))] == ["keep"]
 
 
 def test_remove_candidates_cleanup_retains_shared_resume_until_last_reference():
@@ -1283,6 +1306,65 @@ def test_load_backup_corrupted_returns_empty():
                 assert False, "Expected RuntimeError"
             except RuntimeError:
                 pass
+
+
+def test_corrupt_primary_raises_when_valid_backup_cannot_be_restored():
+    """A validated backup must not be reported as restored when the atomic copy fails."""
+    import unittest.mock as mock
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = Path(tmpdir) / "candidates_all.json"
+        backup = Path(str(target) + ".bak")
+        target.write_text("{broken", encoding="utf-8")
+        backup.write_text(
+            json.dumps([{"geek_id": "g1", "job_name": "Java", "match_score": 60}]),
+            encoding="utf-8",
+        )
+
+        with (
+            mock.patch("storage._atomic_copy", side_effect=OSError("disk read-only")),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            try:
+                load_candidates_all(str(target))
+                assert False, "Expected RuntimeError"
+            except RuntimeError as error:
+                assert "备份恢复失败" in str(error)
+
+        assert target.read_text(encoding="utf-8") == "{broken"
+        assert backup.exists()
+
+
+def test_failed_final_replace_keeps_old_snapshot_and_cleans_temp_file():
+    """Atomic save failure must leave the authoritative snapshot readable."""
+    import unittest.mock as mock
+    import storage
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = Path(tmpdir) / "candidates_all.json"
+        save_candidates_all(
+            [{"geek_id": "old", "job_name": "Java", "match_score": 60}],
+            str(target),
+        )
+        original_replace = storage.os.replace
+
+        def fail_final_replace(source, destination):
+            if Path(destination) == target:
+                raise OSError("disk read-only")
+            return original_replace(source, destination)
+
+        with mock.patch("storage.os.replace", side_effect=fail_final_replace):
+            try:
+                save_candidates_all(
+                    [{"geek_id": "new", "job_name": "Java", "match_score": 70}],
+                    str(target),
+                )
+                assert False, "Expected OSError"
+            except OSError as error:
+                assert "disk read-only" in str(error)
+
+        assert load_candidates_all(str(target))[0]["geek_id"] == "old"
+        assert not Path(str(target) + ".tmp").exists()
 
 
 # ========== save_candidates_all 边界场景 ==========

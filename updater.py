@@ -18,8 +18,10 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from changelog_renderer import render_changelog_text
 from ui_messagebox import messagebox
 import ui_theme
+from ui_windowing import place_window_centered
 
 import requests
 import tkinter as tk
@@ -52,92 +54,17 @@ _FONT_FAMILY = ui_theme.FONT_FAMILY
 def _place_dialog_centered(dialog, parent, width, height):
     """将更新弹窗相对父窗口居中，并限制在屏幕可见范围内。"""
     if hasattr(dialog, "winfo_id"):
-        try:
-            from gui_main import _place_window_centered
-
-            _place_window_centered(dialog, width, height, parent=parent)
-            return
-        except ImportError:
-            pass
-
-    parent.update_idletasks()
-    dialog.update_idletasks()
-
-    screen_width = dialog.winfo_screenwidth()
-    screen_height = dialog.winfo_screenheight()
-    if width > screen_width:
-        width = max(1, int(screen_width * 0.9))
-    if height > screen_height:
-        height = max(1, int(screen_height * 0.85))
-
-    parent_x = parent.winfo_rootx()
-    parent_y = parent.winfo_rooty()
-    parent_width = parent.winfo_width()
-    parent_height = parent.winfo_height()
-
-    x = parent_x + (parent_width - width) // 2
-    y = parent_y + (parent_height - height) // 2
-    y -= _get_parent_titlebar_center_offset(parent)
-    x = min(max(0, x), max(0, screen_width - width))
-    y = min(max(0, y), max(0, screen_height - height))
-    dialog.geometry(f"{width}x{height}{x:+d}{y:+d}")
-    _bind_parent_center_correction(dialog, parent, width, height, 0, 0, screen_width, screen_height)
-
-
-def _bind_parent_center_correction(dialog, parent, width, height, screen_left, screen_top, screen_width, screen_height):
-    """更新弹窗显示后用 Tk 实际坐标再校正一次父子中心。"""
-    try:
-        if getattr(dialog, "_parent_center_correction_bound", False):
-            return
-        dialog._parent_center_correction_bound = True
-
-        def correct_once(event=None):
-            try:
-                dialog.unbind("<Map>", getattr(dialog, "_parent_center_correction_bind_id", ""))
-            except tk.TclError:
-                pass
-            try:
-                parent.update_idletasks()
-                dialog.update_idletasks()
-                parent_center_x = parent.winfo_rootx() + parent.winfo_width() // 2
-                parent_center_y = parent.winfo_rooty() + parent.winfo_height() // 2
-                dialog_center_x = dialog.winfo_rootx() + dialog.winfo_width() // 2
-                dialog_center_y = dialog.winfo_rooty() + dialog.winfo_height() // 2
-                dx = parent_center_x - dialog_center_x
-                dy = parent_center_y - dialog_center_y
-                if abs(dx) < 1 and abs(dy) < 1:
-                    return
-                new_x = dialog.winfo_rootx() + dx
-                new_y = dialog.winfo_rooty() + dy
-                max_x = screen_left + max(0, screen_width - width)
-                max_y = screen_top + max(0, screen_height - height)
-                new_x = min(max(screen_left, new_x), max_x)
-                new_y = min(max(screen_top, new_y), max_y)
-                dialog.geometry(f"{width}x{height}+{int(new_x)}+{int(new_y)}")
-            except (tk.TclError, AttributeError):
-                return
-
-        bind_id = dialog.bind("<Map>", correct_once, add="+")
-        dialog._parent_center_correction_bind_id = bind_id
-        dialog.after(50, correct_once)
-    except (tk.TclError, AttributeError):
+        place_window_centered(dialog, width, height, parent=parent)
         return
 
-
-def _get_parent_titlebar_center_offset(parent):
-    """估算父窗口标题栏导致的视觉中心下偏，只修正纵向中心。"""
-    try:
-        titlebar_height = int(parent.winfo_rooty()) - int(parent.winfo_y())
-    except (tk.TclError, AttributeError, TypeError, ValueError):
-        return 0
-    if titlebar_height <= 0 or titlebar_height > 120:
-        return 0
-    return titlebar_height // 2
-
-
-import logging
-
-logger = logging.getLogger(__name__)
+    place_window_centered(
+        dialog,
+        width,
+        height,
+        parent=parent,
+        screen_width=dialog.winfo_screenwidth(),
+        screen_height=dialog.winfo_screenheight(),
+    )
 
 
 def get_current_version() -> str:
@@ -1495,7 +1422,6 @@ def fetch_current_release_notes(version, *, use_cache=True, base_dir=None):
 def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
     """显示更新对话框（使用 GUI 实例的字体缩放和配色方案）"""
     from tkinter import ttk
-    from gui_dialogs import render_changelog_text
 
     # 缩放参数（有 gui 实例时用它，否则退化为 1.0）
     font_scale = getattr(gui, 'font_scale', 1.0)
@@ -1538,7 +1464,6 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
     ).pack(pady=(pad(15), pad(5)))
 
     # 更新内容：后台预取的远端 CHANGELOG 段落优先（### 格式，与主界面版本历史一致），fallback 用 latest.json release_notes
-    target_version = result['latest']
     body = result.get('changelog_body') or result.get('release_info', {}).get('body', '无更新说明')
 
     content_frame = tk.LabelFrame(dialog, text="更新内容",

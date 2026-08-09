@@ -19,6 +19,75 @@ class FakeResponse:
         return self.payload
 
 
+def test_download_file_streams_chunks_and_reports_progress():
+    class DownloadResponse:
+        headers = {"content-length": "5"}
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size):
+            assert chunk_size == 8192
+            return iter((b"ab", b"", b"cde"))
+
+    progress = []
+    with tempfile.TemporaryDirectory() as tmpdir:
+        destination = Path(tmpdir) / "update.exe"
+        with patch.object(updater.requests, "get", return_value=DownloadResponse()):
+            success, error = updater.download_file(
+                "https://example.test/update.exe",
+                destination,
+                progress_callback=lambda downloaded, total: progress.append((downloaded, total)),
+            )
+
+        assert destination.read_bytes() == b"abcde"
+
+    assert success is True
+    assert error is None
+    assert progress == [(2, 5), (5, 5)]
+
+
+def test_download_file_failure_removes_partial_destination():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        destination = Path(tmpdir) / "update.exe"
+        destination.write_bytes(b"partial")
+        with patch.object(
+            updater.requests,
+            "get",
+            side_effect=updater.requests.exceptions.Timeout("network timeout"),
+        ):
+            success, error = updater.download_file("https://example.test/update.exe", destination)
+
+        assert not destination.exists()
+
+    assert success is False
+    assert "network timeout" in error
+
+
+def test_download_and_verify_removes_file_when_integrity_check_fails():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        destination = Path(tmpdir) / "update.exe"
+
+        def fake_download(_url, path, _callback):
+            Path(path).write_bytes(b"MZbroken")
+            return True, None
+
+        with (
+            patch.object(updater, "download_file", side_effect=fake_download),
+            patch.object(updater, "verify_downloaded_file", return_value=(False, "SHA256 mismatch")),
+        ):
+            success, error = updater.download_and_verify_file(
+                "https://example.test/update.exe",
+                destination,
+                asset_info={"sha256": "0" * 64},
+            )
+
+        assert not destination.exists()
+
+    assert success is False
+    assert error == "SHA256 mismatch"
+
+
 def test_get_cached_release_notes_returns_fresh_current_version():
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -126,6 +195,31 @@ def test_check_gitee_latest_retries_once_on_timeout():
     assert len(calls) == 2
     assert calls[0][1]["timeout"] == updater.UPDATE_TIMEOUT_GITEE
     assert calls[1][1]["timeout"] == updater.UPDATE_TIMEOUT_GITEE
+
+
+def test_check_gitee_latest_detects_same_version_binary_replacement():
+    payload = {
+        "version": "2.27",
+        "release_notes": "内容更新",
+        "downloads": {"windows": "https://github.example/app.exe"},
+        "downloads_cn": {"windows": "https://gitee.example/app.exe"},
+        "assets": {"windows": {"sha256": "B" * 64, "size": 123}},
+    }
+
+    with (
+        patch.object(updater, "get_current_version", return_value="2.27"),
+        patch.object(updater, "_get_gitee_latest_response", return_value=FakeResponse(payload)),
+        patch.object(updater, "_get_current_exe_sha256", return_value="A" * 64),
+        patch.object(updater.sys, "platform", "win32"),
+    ):
+        result = updater.check_gitee_latest()
+
+    assert result["has_update"] is True
+    assert result["update_type"] == "content"
+    assert result["content_changed"] is True
+    assert result["download_url"] == "https://gitee.example/app.exe"
+    assert result["download_url_fallback"] == "https://github.example/app.exe"
+    assert result["asset_info"]["sha256"] == "B" * 64
 
 
 def test_check_github_release_uses_release_digest_for_integrity():

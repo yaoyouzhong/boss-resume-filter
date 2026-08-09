@@ -10,6 +10,7 @@ from education_certificate import (
     CHSI_QUERY_URL,
     build_pdf_text_messages,
     build_vision_messages,
+    capture_captcha_image,
     extract_pdf_text,
     fill_chsi_query_page,
     is_pdf_path,
@@ -158,6 +159,40 @@ def test_captcha_image_preprocessing_upscales_and_uses_lossless_png():
         assert data_url.startswith("data:image/png;base64,")
         assert processed.width >= 400
         assert processed.height >= 160
+
+
+def test_captcha_element_screenshot_uses_an_isolated_temporary_directory():
+    captured_paths = []
+
+    class ImageElement:
+        def get_screenshot(self, *, path):
+            captured_path = Path(path)
+            captured_paths.append(captured_path)
+            Image.new("RGB", (100, 40), "white").save(captured_path)
+
+    image_element = ImageElement()
+
+    class Parent:
+        def ele(self, *_args, **_kwargs):
+            return image_element
+
+    class InputElement:
+        def parent(self):
+            return Parent()
+
+    class Page:
+        def run_js(self, _script):
+            return {"src": "", "left": 0, "top": 0, "width": 100, "height": 40}
+
+        def ele(self, *_args, **_kwargs):
+            return InputElement()
+
+    data_url = capture_captcha_image(Page())
+
+    assert data_url.startswith("data:image/png;base64,")
+    assert len(captured_paths) == 1
+    assert not captured_paths[0].exists()
+    assert not captured_paths[0].parent.exists()
 
 
 def test_invoke_model_reports_reasoning_only_length_exhaustion():

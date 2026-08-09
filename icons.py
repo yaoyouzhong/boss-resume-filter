@@ -295,7 +295,6 @@ def _search_color(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     # 镜片中心 & 半径
     cx, cy = _s(9, S), _s(9, S)
     r_outer = _s(8.5, S)
-    r_inner = _s(6, S)
 
     # 手柄：从镜片右下到右下角，圆头
     h_angle = math.radians(45)
@@ -456,7 +455,6 @@ def _people(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     img = Image.new('RGBA', (size_px, size_px), bg)
     d = ImageDraw.Draw(img)
     S = size_px
-    r = _s(3.5, S)
     # 左人：头
     d.ellipse([_s(5, S), _s(3.5, S), _s(12, S), _s(10.5, S)], outline=fill, width=sw)
     # 左人：肩/半身弧线

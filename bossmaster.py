@@ -5035,7 +5035,6 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
     city_requirement = f"地点不符（要求{work_location}）" if work_location else "地点不符"
     salary_max = rule.get('salary_max')
     salary_requirement = f"薪资不匹配（岗位最高{salary_max}K）" if salary_max else "薪资不匹配"
-    tech_keywords = [k.get('name', k) if isinstance(k, dict) else k for k in rule.get('keywords', [])]
     tech_requirement = f"技术条件不符"
 
     for i, candidate in enumerate(raw_candidates):
@@ -6170,7 +6169,6 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                         if stop_event and stop_event.is_set():
                             print(f"\n⏹ 用户停止，已跳过剩余 {len(to_greet) - i} 人")
                             break
-                        geek_id = c.get('geek_id')
                         name = c.get('name', '未知')
                         if i > 0:
                             if i % GREET_BATCH_SIZE == 0:
