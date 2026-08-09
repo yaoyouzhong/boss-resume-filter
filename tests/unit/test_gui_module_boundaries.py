@@ -17,6 +17,7 @@ import gui_model_catalog_dialog
 import gui_result_page
 import gui_run_page
 import gui_settings_page
+import gui_stats_detail
 import gui_stats_page
 import model_catalog
 import run_presenter
@@ -98,6 +99,7 @@ def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():
         "gui_result_page",
         "gui_run_page",
         "gui_settings_page",
+        "gui_stats_detail",
         "gui_stats_page",
     ):
         assert not (_top_level_imports(module_name) & forbidden)
@@ -164,6 +166,114 @@ def test_result_page_builder_exposes_an_explicit_widget_bundle():
         "more_menu_button",
         "more_menu",
     }
+
+
+def test_stats_detail_dialog_exposes_explicit_callbacks_and_widget_bundle():
+    assert gui_stats_detail.StatsDetailCallbacks.__dataclass_fields__.keys() == {
+        "row_values",
+        "export_candidates",
+        "add_to_queue",
+        "batch_ai_eval_label",
+        "evaluate_candidates",
+        "confirm_manual_review",
+        "open_review",
+        "show_candidate_menu",
+        "bind_tooltip",
+        "remove_candidates",
+        "refresh",
+    }
+    assert gui_stats_detail.StatsDetailWidgets.__dataclass_fields__.keys() == {
+        "window",
+        "tree",
+        "candidates_ref",
+        "greeted_label",
+    }
+
+
+def test_stats_detail_compatibility_methods_keep_filters_in_main_controller():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _show_stats_detail_dialog"):]
+    block = block[:block.index("\n    def _get_job_rules_cached")]
+
+    assert "gui_stats_detail.show_stats_detail_dialog(" in block
+    assert "gui_stats_detail.StatsDetailCallbacks(" in block
+    assert "tk.Toplevel" not in block
+    assert "ttk.Treeview" not in block
+    assert "load_candidates_all(CANDIDATES_PATH)" in block
+    assert "derive_candidate_decision(candidate).screening_result" in block
+    assert "self._get_result_date_filter()" in block
+
+
+def test_stats_detail_delegate_keeps_persistence_and_refresh_callbacks_in_main():
+    gui = gui_main.BossFilterGUI.__new__(gui_main.BossFilterGUI)
+    gui._stats_detail_row_values = Mock()
+    gui._run_export = Mock()
+    gui._add_candidates_to_greet_queue = Mock()
+    gui._batch_ai_eval_menu_label = Mock()
+    gui._ai_eval_selected_candidates = Mock()
+    gui._batch_confirm_manual_review = Mock()
+    gui._open_candidate_review_workbench = Mock()
+    gui._build_candidate_context_menu = Mock()
+    gui._bind_detail_tree_tooltip = Mock()
+    gui._remove_stats_detail_candidates = Mock()
+    refresh = Mock()
+    dialog = object()
+
+    with patch.object(
+        gui_stats_detail,
+        "show_stats_detail_dialog",
+        return_value=dialog,
+    ) as show_dialog:
+        result = gui._show_stats_detail_dialog(
+            "推荐",
+            [{"geek_id": "candidate-1"}],
+            refresh=refresh,
+        )
+
+    assert result is dialog
+    callbacks = show_dialog.call_args.kwargs["callbacks"]
+    assert callbacks.remove_candidates == gui._remove_stats_detail_candidates
+    assert callbacks.refresh == refresh
+    assert callbacks.export_candidates == gui._run_export
+    assert callbacks.open_review == gui._open_candidate_review_workbench
+
+
+def test_stats_detail_removal_updates_only_controller_confirmed_candidates():
+    removed = {"geek_id": "candidate-1", "greet_sent": True}
+    retained = {"geek_id": "candidate-2", "greet_sent": False}
+    tree = Mock()
+    tree._candidate_map = {"row-1": removed, "row-2": retained}
+    candidates_ref = [[removed, retained]]
+    greeted_label = Mock()
+
+    gui_stats_detail._update_after_removal(
+        tree,
+        candidates_ref,
+        [removed],
+        greeted_label,
+    )
+
+    assert candidates_ref[0] == [retained]
+    assert tree._candidate_map == {"row-2": retained}
+    tree.delete.assert_called_once_with("row-1")
+    greeted_label.configure.assert_called_once_with(text="，已打招呼 0 人")
+
+
+def test_stats_detail_controller_rejects_identity_less_removals():
+    gui = gui_main.BossFilterGUI.__new__(gui_main.BossFilterGUI)
+    gui._remove_candidate_records = Mock()
+    removable = {"geek_id": "candidate-1", "job_name": "Java"}
+    identity_less = {"name": "缺少身份"}
+    path = Mock()
+    path.exists.return_value = True
+
+    with patch.object(gui_main, "CANDIDATES_PATH", path):
+        removed = gui._remove_stats_detail_candidates([removable, identity_less])
+
+    assert removed == [removable]
+    predicate = gui._remove_candidate_records.call_args.args[0]
+    assert predicate(removable) is True
+    assert predicate({"geek_id": "candidate-2", "job_name": "Java"}) is False
 
 
 def test_result_page_compatibility_method_is_a_thin_builder_delegate():

@@ -5136,9 +5136,9 @@ def test_result_page_greeted_detail_uses_passed_candidates_only():
     detail_block = source[source.index("elif stat_type == 'greeted':"):]
     detail_block = detail_block[:detail_block.index("\n            else:")]
 
-    assert "derive_candidate_decision(c).screening_result" in detail_block
+    assert "derive_candidate_decision(candidate).screening_result" in detail_block
     assert "{'强烈推荐', '推荐', '待定'}" in detail_block
-    assert "c.get('greet_sent', False)" in detail_block
+    assert "candidate.get('greet_sent', False)" in detail_block
 
 
 def test_result_page_has_greet_queue_entry():
@@ -6171,14 +6171,14 @@ def test_candidate_workflow_dialog_subtitles_use_neutral_text_color():
 
 def test_information_and_workbench_windows_do_not_lock_main_window():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    stats_detail_source = Path("gui_stats_detail.py").read_text(encoding="utf-8")
     dialog_source = Path("gui_dialogs.py").read_text(encoding="utf-8")
     daily_actions_source = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
     state_dialog_source = Path("gui_candidate_diagnostics.py").read_text(encoding="utf-8")
     candidate_review_source = Path("gui_candidate_review.py").read_text(encoding="utf-8")
     contact_queue_source = Path("gui_contact_queue.py").read_text(encoding="utf-8")
     blocks = [
-        source[source.index("def show_stat_detail"):source.index("\n    def show_result_stat_detail")],
-        source[source.index("def show_result_stat_detail"):source.index("\n    def _get_job_rules_cached")],
+        stats_detail_source,
         daily_actions_source,
         state_dialog_source,
         contact_queue_source,

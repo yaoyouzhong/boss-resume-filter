@@ -43,6 +43,7 @@ import gui_run_page
 import gui_settings_page
 import gui_model_catalog_dialog
 import gui_stats_page
+import gui_stats_detail
 from model_catalog import analyze_model_catalog, fetch_model_catalog
 import run_presenter
 import stats_presenter
@@ -7011,790 +7012,276 @@ class BossFilterGUI:
         except Exception:
             pass  # 图标设置失败不影响程序运行
 
+    def _stats_detail_row_values(self, candidate):
+        """Format one candidate row for the shared statistics detail dialog."""
+        score = candidate.get('match_score', 0)
+        level = derive_candidate_decision(candidate).screening_result
+        status = self._format_candidate_status(candidate)
+        salary, exp = self._parse_salary_exp(
+            candidate.get('summary', ''),
+            candidate.get('structured'),
+        )
+        ai_adjustment = candidate.get('llm_adjustment')
+        resume_adjustment = candidate.get('resume_eval_adjustment')
+        if resume_adjustment is not None:
+            ai_text = (
+                f"+{resume_adjustment}"
+                if resume_adjustment > 0
+                else str(resume_adjustment)
+            )
+        elif ai_adjustment is not None and candidate.get('llm_evaluated'):
+            ai_text = (
+                f"+{ai_adjustment}" if ai_adjustment > 0 else str(ai_adjustment)
+            )
+        else:
+            ai_text = "—"
+        return (
+            candidate.get('name', ''),
+            self._candidate_gender_display(candidate),
+            exp,
+            salary,
+            candidate.get('skill_match_ratio', ''),
+            score,
+            ai_text,
+            level,
+            status,
+        )
+
+    def _remove_stats_detail_candidates(self, candidates):
+        """Persist removals requested from a statistics detail dialog."""
+        removable = [
+            candidate
+            for candidate in candidates
+            if self._candidate_identity_key(candidate)[0]
+        ]
+        remove_keys = {
+            self._candidate_identity_key(candidate) for candidate in removable
+        }
+        if remove_keys and CANDIDATES_PATH.exists():
+            self._remove_candidate_records(
+                lambda item: self._candidate_identity_key(item) in remove_keys,
+            )
+        return removable
+
+    def _show_stats_detail_dialog(
+        self,
+        title,
+        candidates,
+        *,
+        refresh,
+        lift_after_batch_remove=False,
+    ):
+        """Delegate shared statistics detail-window construction."""
+        callbacks = gui_stats_detail.StatsDetailCallbacks(
+            row_values=self._stats_detail_row_values,
+            export_candidates=self._run_export,
+            add_to_queue=lambda selected, parent: self._add_candidates_to_greet_queue(
+                selected,
+                parent=parent,
+            ),
+            batch_ai_eval_label=self._batch_ai_eval_menu_label,
+            evaluate_candidates=self._ai_eval_selected_candidates,
+            confirm_manual_review=lambda selected, parent: (
+                self._batch_confirm_manual_review(selected, parent=parent)
+            ),
+            open_review=self._open_candidate_review_workbench,
+            show_candidate_menu=self._build_candidate_context_menu,
+            bind_tooltip=self._bind_detail_tree_tooltip,
+            remove_candidates=self._remove_stats_detail_candidates,
+            refresh=refresh,
+        )
+        return gui_stats_detail.show_stats_detail_dialog(
+            self,
+            title=title,
+            candidates=candidates,
+            ui_config=UI_CONFIG,
+            font_family=FONT_FAMILY,
+            callbacks=callbacks,
+            lift_after_batch_remove=lift_after_batch_remove,
+        )
+
+    def _refresh_home_stats_detail(self):
+        """Refresh both summaries affected by a home detail-window removal."""
+        self.refresh_home_stats()
+        self.refresh_results()
+
     def show_stat_detail(self, stat_type):
-        """显示统计详情"""
+        """显示首页统计详情"""
         try:
             if not CANDIDATES_PATH.exists():
-                self._show_inline_banner(self.home_page, 'info', "暂无候选人数据，请先到运行控制页开始筛选。")
+                self._show_inline_banner(
+                    self.home_page,
+                    'info',
+                    "暂无候选人数据，请先到运行控制页开始筛选。",
+                )
                 return
 
-            candidates = load_candidates_all(CANDIDATES_PATH)
-            candidates = [c for c in candidates if not c.get('blacklisted')]
-
-            # 岗位过滤
+            candidates = [
+                candidate
+                for candidate in load_candidates_all(CANDIDATES_PATH)
+                if not candidate.get('blacklisted')
+            ]
             if hasattr(self, 'home_job_var'):
                 selected_job = self.home_job_var.get()
                 if selected_job != "全部岗位":
                     candidates = [
-                        c for c in candidates
-                        if normalize_job_name(c.get('job_name')) == normalize_job_name(selected_job)
+                        candidate
+                        for candidate in candidates
+                        if normalize_job_name(candidate.get('job_name'))
+                        == normalize_job_name(selected_job)
                     ]
 
-            # 根据类型筛选候选人（只统计通过分）
             if stat_type == 'total_home':
                 title = "通过筛选"
                 filtered = [
-                    c for c in candidates
-                    if derive_candidate_decision(c).screening_result
+                    candidate
+                    for candidate in candidates
+                    if derive_candidate_decision(candidate).screening_result
                     in {'强烈推荐', '推荐', '待定'}
                 ]
             elif stat_type == 'strong_home':
                 title = "强烈推荐"
                 filtered = [
-                    c for c in candidates
-                    if derive_candidate_decision(c).screening_result == '强烈推荐'
+                    candidate
+                    for candidate in candidates
+                    if derive_candidate_decision(candidate).screening_result
+                    == '强烈推荐'
                 ]
             elif stat_type == 'recommended_home':
                 title = "推荐"
                 filtered = [
-                    c for c in candidates
-                    if derive_candidate_decision(c).screening_result == '推荐'
+                    candidate
+                    for candidate in candidates
+                    if derive_candidate_decision(candidate).screening_result == '推荐'
                 ]
             elif stat_type == 'greeted_home':
                 title = "已打招呼"
                 filtered = [
-                    c for c in candidates
-                    if derive_candidate_decision(c).screening_result
+                    candidate
+                    for candidate in candidates
+                    if derive_candidate_decision(candidate).screening_result
                     in {'强烈推荐', '推荐', '待定'}
-                    and c.get('greet_sent', False)
+                    and candidate.get('greet_sent', False)
                 ]
             else:
                 return
 
             if not filtered:
-                self._show_inline_banner(self.home_page, 'info', f"{title}：暂无数据。")
+                self._show_inline_banner(
+                    self.home_page,
+                    'info',
+                    f"{title}：暂无数据。",
+                )
                 return
-
-            # 创建详情窗口
-            detail_window = tk.Toplevel(self.root)
-            detail_window.transient(self.root)
-            detail_window.title(title)
-            detail_window.configure(bg=self.colors['bg_main'])
-
-            # 设置固定大小并相对主窗口居中
-            window_width = min(1280, self.root.winfo_width() - 100)
-            window_height = min(900, self.root.winfo_height() - 80)
-            self._center_window(detail_window, window_width, window_height)
-
-            # 标题
-            title_label = ttk.Label(detail_window, text=title,
-                                   font=(FONT_FAMILY, int(13 * self.font_scale)),
-                                   foreground=self.colors['primary'],
-                                   background=self.colors['bg_main'])
-            title_label.pack(fill="x", padx=int(20 * self.dpi_scale * self.zoom_factor), pady=(int(15 * self.dpi_scale * self.zoom_factor), 0))
-
-            # 统计信息
-            greeted_count = len([c for c in filtered if c.get('greet_sent', False)])
-            count_frame = ttk.Frame(detail_window, style='Page.TFrame')
-            count_frame.pack(anchor="w", padx=int(20 * self.dpi_scale * self.zoom_factor), pady=(int(5 * self.dpi_scale * self.zoom_factor), 0))
-            count_font = (FONT_FAMILY, int(11 * self.font_scale))
-            ttk.Label(count_frame, text=f"共 {len(filtered)} 人", font=count_font,
-                      foreground=self.colors['text_secondary'],
-                      background=self.colors['bg_main']).pack(side="left")
-            greeted_label = ttk.Label(count_frame, text=f"，已打招呼 {greeted_count} 人",
-                                      font=count_font, foreground=self.colors['success'],
-                                      background=self.colors['bg_main'])
-            greeted_label.pack(side="left")
-            count_label_ref = [greeted_label]
-
-            # 表格容器
-            table_frame = ttk.Frame(detail_window, style='Card.TFrame')
-            table_frame.pack(fill="both", expand=True, padx=int(20 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
-
-            # 创建表格 - 与筛选结果页主Treeview列完全一致（含推荐指数）
-            columns = (
-                "name", "gender", "exp", "salary", "skills", "score",
-                "ai_eval", "level", "status",
+            self._show_stats_detail_dialog(
+                title,
+                filtered,
+                refresh=self._refresh_home_stats_detail,
             )
-            tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=18)
-            tree._candidate_map = {}
-
-            tree.heading("name", text="姓名")
-            tree.heading("gender", text="性别")
-            tree.heading("exp", text="工作年限")
-            tree.heading("salary", text="薪资")
-            tree.heading("skills", text="技能匹配")
-            tree.heading("score", text="匹配分")
-            tree.heading("ai_eval", text="AI评估")
-            tree.heading("level", text="推荐指数")
-            tree.heading("status", text="状态")
-
-            # 设置列宽 - 与筛选结果页Treeview一致
-            tree.column("name", width=80, minwidth=60, anchor='center')
-            tree.column("gender", width=60, minwidth=50, anchor='center')
-            tree.column("exp", width=110, minwidth=100, anchor='center')
-            tree.column("salary", width=100, minwidth=80, anchor='center')
-            tree.column("skills", width=140, minwidth=100, anchor='center')
-            tree.column("score", width=90, minwidth=80, anchor='center')
-            tree.column("ai_eval", width=90, minwidth=80, anchor='center')
-            tree.column("level", width=120, minwidth=100, anchor='center')
-            tree.column("status", width=220, minwidth=180, anchor='center')
-
-            # 设置表格字体和样式 - 明细窗口使用较小字体
-            detail_font = (FONT_FAMILY, int(11 * self.font_scale))
-            tree_style = ttk.Style()
-            tree_style.configure("Detail.Treeview",
-                                font=detail_font,
-                                rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor))
-            tree_style.configure("Detail.Treeview.Heading",
-                                font=(FONT_FAMILY, int(11 * self.font_scale), 'bold'))
-            tree.configure(style="Detail.Treeview")
-
-            # 添加滚动条
-            scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
-            tree.configure(yscrollcommand=scrollbar.set)
-
-            tree.pack(side="left", fill="both", expand=True)
-            scrollbar.pack(side="right", fill="y")
-
-            # 绑定右键菜单 - 与筛选结果页一致
-            filtered_ref = [filtered]  # 用列表包装以支持闭包内修改
-
-            def on_detail_right_click(event):
-                clicked_item = tree.identify_row(event.y)
-                if not clicked_item:
-                    return
-                # 右键点击的行已在多选集合内时，保持现有选区
-                if clicked_item not in tree.selection():
-                    tree.selection_set(clicked_item)
-
-                selection = tree.selection()
-                # 多选时显示批量操作功能
-                if len(selection) > 1:
-                    def export_selected():
-                        if not selection:
-                            messagebox.showwarning("警告", "请先选择要导出的候选人")
-                            return
-                        selected_data = self._collect_selected_candidates_for_queue(
-                            selection, filtered_ref, tree
-                        )
-                        if not selected_data:
-                            return
-                        if len(selected_data) == 1:
-                            init_name = f"{selected_data[0].get('name', '候选人')}.xlsx"
-                        else:
-                            init_name = f"{selected_data[0].get('name', '候选人')}等{len(selected_data)}人_{datetime.now().strftime('%Y%m%d')}.xlsx"
-                        file_path = filedialog.asksaveasfilename(
-                            title="保存选中的候选人",
-                            defaultextension=".xlsx",
-                            filetypes=[("Excel 文件", "*.xlsx")],
-                            initialfile=init_name
-                        )
-                        if file_path:
-                            self._run_export(selected_data, file_path)
-
-                    def remove_selected():
-                        if not messagebox.ask_confirmation(
-                            "移除候选人",
-                            headline=f"移除选中的 {len(selection)} 名候选人？",
-                            message="这些记录将从当前结果和本地候选人数据中移除。",
-                            notice=(
-                                "无人继续引用的受管简历副本也会删除，共享副本保留；"
-                                "重新扫描时仍可能再次发现这些候选人。"
-                            ),
-                            yes_label="移除候选人",
-                            no_label="取消",
-                            dangerous=True,
-                            parent=detail_window,
-                        ):
-                            return
-                        selected_to_remove = self._collect_selected_candidates_for_queue(
-                            selection, filtered_ref, tree
-                        )
-                        remove_keys = {
-                            self._candidate_identity_key(candidate)
-                            for candidate in selected_to_remove
-                            if self._candidate_identity_key(candidate)[0]
-                        }
-                        filtered_ref[0] = [
-                            candidate for candidate in filtered_ref[0]
-                            if self._candidate_identity_key(candidate) not in remove_keys
-                        ]
-                        if remove_keys and CANDIDATES_PATH.exists():
-                            self._remove_candidate_records(
-                                lambda item: self._candidate_identity_key(item) in remove_keys,
-                            )
-                        # 删除 Treeview 中的项
-                        for sel_item in selection:
-                            candidate = self._find_candidate_in_detail_tree(
-                                tree, sel_item, filtered_ref
-                            )
-                            if (
-                                candidate
-                                and self._candidate_identity_key(candidate) in remove_keys
-                            ):
-                                tree.delete(sel_item)
-                        new_greeted = len([c for c in filtered_ref[0] if c.get('greet_sent', False)])
-                        count_label_ref[0].config(text=f"，已打招呼 {new_greeted} 人")
-                        self.refresh_home_stats()
-                        self.refresh_results()
-
-                    context_menu_font = (FONT_FAMILY, int(11 * self.font_scale))
-                    menu = tk.Menu(detail_window, tearoff=0, font=context_menu_font)
-                    icon_export_menu = self.icons.button('export', self.colors['text_primary'])
-                    icon_trash_menu = self.icons.button('trash', self.colors['text_primary'])
-                    icon_greet = self.icons.button('chat', self.colors['success'])
-                    menu._icon_refs = [icon_export_menu, icon_trash_menu, icon_greet]
-                    menu.add_command(
-                        label=" 加入联系清单",
-                        image=icon_greet,
-                        compound=tk.LEFT,
-                        command=lambda: self._add_candidates_to_greet_queue(
-                            self._collect_selected_candidates_for_queue(selection, filtered_ref, tree),
-                            parent=detail_window,
-                        ),
-                    )
-                    # 批量AI评估选项
-                    selected_candidates = self._collect_selected_candidates_for_queue(
-                        selection, filtered_ref, tree
-                    )
-                    ai_label = self._batch_ai_eval_menu_label(selected_candidates)
-                    if ai_label:
-                        icon_ai_eval = self.icons.button('ai_spark', self.colors['primary'])
-                        menu._icon_refs.append(icon_ai_eval)
-                        menu.add_command(label=ai_label, image=icon_ai_eval, compound=tk.LEFT,
-                                         command=lambda: self._ai_eval_selected_candidates(selected_candidates))
-                    if any(c.get('manual_review_required') for c in selected_candidates):
-                        icon_confirm = self.icons.button('stamp_check', self.colors['success'])
-                        menu._icon_refs.append(icon_confirm)
-                        menu.add_command(label=" 批量确认通过", image=icon_confirm, compound=tk.LEFT,
-                                         command=lambda: self._batch_confirm_manual_review(selected_candidates, parent=detail_window))
-                    menu.add_command(label=" 移除选中", image=icon_trash_menu, compound=tk.LEFT,
-                                     command=remove_selected)
-                    menu.add_separator()
-                    menu.add_command(label=" 导出选中", image=icon_export_menu, compound=tk.LEFT,
-                                     command=export_selected)
-                    menu.tk_popup(event.x_root, event.y_root)
-                    return
-
-                # 从 filtered_ref 中定位候选人
-                candidate = self._find_candidate_in_detail_tree(
-                    tree, clicked_item, filtered_ref
-                )
-                if not candidate:
-                    return
-
-                def show_detail():
-                    self._open_candidate_review_workbench(candidate, filtered_ref[0])
-
-                def remove_candidate():
-                    if not messagebox.ask_confirmation(
-                        "移除候选人",
-                        headline=f"移除 {candidate.get('name') or '该候选人'}？",
-                        message="该记录将从当前结果和本地候选人数据中移除。",
-                        notice=(
-                            "无人继续引用的受管简历副本也会删除，共享副本保留；"
-                            "重新扫描时仍可能再次发现该候选人。"
-                        ),
-                        yes_label="移除候选人",
-                        no_label="取消",
-                        dangerous=True,
-                        parent=detail_window,
-                    ):
-                        return
-                    candidate_key = self._candidate_identity_key(candidate)
-                    if not candidate_key[0]:
-                        return
-                    filtered_ref[0] = [
-                        item for item in filtered_ref[0]
-                        if self._candidate_identity_key(item) != candidate_key
-                    ]
-                    if CANDIDATES_PATH.exists():
-                        self._remove_candidate_records(
-                            lambda item: self._candidate_identity_key(item) == candidate_key,
-                        )
-                    tree.delete(clicked_item)
-                    new_greeted = len([c for c in filtered_ref[0] if c.get('greet_sent', False)])
-                    count_label_ref[0].config(text=f"，已打招呼 {new_greeted} 人")
-                    self.refresh_home_stats()
-                    self.refresh_results()
-                    detail_window.lift()
-
-                def export_selected():
-                    selection = tree.selection()
-                    if not selection:
-                        messagebox.showwarning("警告", "请先选择要导出的候选人")
-                        return
-                    selected_data = self._collect_selected_candidates_for_queue(
-                        selection, filtered_ref, tree
-                    )
-                    if not selected_data:
-                        return
-                    if len(selected_data) == 1:
-                        init_name = f"{selected_data[0].get('name', '候选人')}.xlsx"
-                    else:
-                        init_name = f"{selected_data[0].get('name', '候选人')}等{len(selected_data)}人_{datetime.now().strftime('%Y%m%d')}.xlsx"
-                    file_path = filedialog.asksaveasfilename(
-                        title="保存选中的候选人",
-                        defaultextension=".xlsx",
-                        filetypes=[("Excel 文件", "*.xlsx")],
-                        initialfile=init_name
-                    )
-                    if file_path:
-                        self._run_export(selected_data, file_path)
-
-                self._build_candidate_context_menu(
-                    parent=detail_window,
-                    tree=tree,
-                    tree_item=clicked_item,
-                    candidate=candidate,
-                    show_detail_fn=show_detail,
-                    remove_fn=remove_candidate,
-                    x_root=event.x_root,
-                    y_root=event.y_root,
-                )
-
-            tree.bind('<Button-3>', on_detail_right_click)
-            self._bind_detail_tree_tooltip(tree, filtered_ref)
-
-            def on_detail_double_click(event):
-                clicked_item = tree.identify_row(event.y)
-                if not clicked_item:
-                    return
-                candidate = self._find_candidate_in_detail_tree(
-                    tree, clicked_item, filtered_ref
-                )
-                if candidate:
-                    self._open_candidate_review_workbench(candidate, filtered_ref[0])
-
-            tree.bind('<Double-Button-1>', on_detail_double_click)
-
-            # 填充数据
-            for c in sorted(filtered, key=lambda x: x.get('match_score', 0), reverse=True):
-                score = c.get('match_score', 0)
-                level = derive_candidate_decision(c).screening_result
-                status = self._format_candidate_status(c)
-                salary, exp = self._parse_salary_exp(c.get('summary', ''), c.get('structured'))
-                # AI 评估调整值：有简历时显示简历评估（替代一次评估），否则显示一次评估
-                ai_adj = c.get('llm_adjustment')
-                resume_adj = c.get('resume_eval_adjustment')
-
-                if resume_adj is not None:
-                    ai_text = f"+{resume_adj}" if resume_adj > 0 else str(resume_adj)
-                elif ai_adj is not None and c.get('llm_evaluated'):
-                    ai_text = f"+{ai_adj}" if ai_adj > 0 else str(ai_adj)
-                else:
-                    ai_text = "—"
-
-                item_id = tree.insert("", "end", values=(
-                    c.get('name', ''),
-                    self._candidate_gender_display(c),
-                    exp,
-                    salary,
-                    c.get('skill_match_ratio', ''),
-                    score,
-                    ai_text,
-                    level,
-                    status
-                ))
-                tree._candidate_map[item_id] = c
-
-            # 窗口居中
-            self._center_window(detail_window, window_width, window_height)
-
-        except Exception as e:
-            messagebox.showerror("错误", f"显示详情失败：{e}")
+        except Exception as exc:
+            messagebox.showerror("错误", f"显示详情失败：{exc}")
 
     def show_result_stat_detail(self, stat_type):
-        """显示筛选结果统计详情（新指标）"""
+        """显示筛选结果统计详情"""
         try:
             if not CANDIDATES_PATH.exists():
-                self._show_inline_banner(self.result_page, 'info', "暂无候选人数据，请先到运行控制页开始筛选。")
+                self._show_inline_banner(
+                    self.result_page,
+                    'info',
+                    "暂无候选人数据，请先到运行控制页开始筛选。",
+                )
                 return
 
-            candidates = load_candidates_all(CANDIDATES_PATH)
-            candidates = [c for c in candidates if not c.get('blacklisted')]
-
-            # 岗位过滤
+            candidates = [
+                candidate
+                for candidate in load_candidates_all(CANDIDATES_PATH)
+                if not candidate.get('blacklisted')
+            ]
             if hasattr(self, 'result_job_var'):
                 selected_job = self.result_job_var.get()
                 if selected_job != "全部岗位":
                     candidates = [
-                        c for c in candidates
-                        if normalize_job_name(c.get('job_name')) == normalize_job_name(selected_job)
+                        candidate
+                        for candidate in candidates
+                        if normalize_job_name(candidate.get('job_name'))
+                        == normalize_job_name(selected_job)
                     ]
 
-            # 日期过滤（与 refresh_results 保持一致）
-            date_start, date_end = self._get_result_date_filter() if hasattr(self, 'result_date_start_entry') else (None, None)
+            date_start, date_end = (
+                self._get_result_date_filter()
+                if hasattr(self, 'result_date_start_entry')
+                else (None, None)
+            )
             if date_start or date_end:
-                def _in_date_range(c):
-                    ts = c.get('first_seen_at') or c.get('batch_timestamp', '')
-                    if not ts or len(ts) < 8:
+                def in_date_range(candidate):
+                    timestamp = (
+                        candidate.get('first_seen_at')
+                        or candidate.get('batch_timestamp', '')
+                    )
+                    if not timestamp or len(timestamp) < 8:
                         return False
-                    d = ts[:8]
-                    if date_start and d < date_start:
+                    candidate_date = timestamp[:8]
+                    if date_start and candidate_date < date_start:
                         return False
-                    if date_end and d > date_end:
+                    if date_end and candidate_date > date_end:
                         return False
                     return True
-                candidates = [c for c in candidates if _in_date_range(c)]
 
-            # 根据类型筛选候选人
+                candidates = [
+                    candidate
+                    for candidate in candidates
+                    if in_date_range(candidate)
+                ]
+
             if stat_type == 'strong':
-                # 强烈推荐
                 title = "强烈推荐"
                 filtered = [
-                    c for c in candidates
-                    if derive_candidate_decision(c).screening_result == '强烈推荐'
+                    candidate
+                    for candidate in candidates
+                    if derive_candidate_decision(candidate).screening_result
+                    == '强烈推荐'
                 ]
             elif stat_type == 'recommended':
-                # 推荐
                 title = "推荐"
                 filtered = [
-                    c for c in candidates
-                    if derive_candidate_decision(c).screening_result == '推荐'
+                    candidate
+                    for candidate in candidates
+                    if derive_candidate_decision(candidate).screening_result == '推荐'
                 ]
             elif stat_type == 'pending':
-                # 待定
                 title = "待定"
                 filtered = [
-                    c for c in candidates
-                    if derive_candidate_decision(c).screening_result == '待定'
+                    candidate
+                    for candidate in candidates
+                    if derive_candidate_decision(candidate).screening_result == '待定'
                 ]
             elif stat_type == 'greeted':
                 title = "已打招呼"
                 filtered = [
-                    c for c in candidates
-                    if derive_candidate_decision(c).screening_result
+                    candidate
+                    for candidate in candidates
+                    if derive_candidate_decision(candidate).screening_result
                     in {'强烈推荐', '推荐', '待定'}
-                    and c.get('greet_sent', False)
+                    and candidate.get('greet_sent', False)
                 ]
             else:
                 return
 
-            # 计算总数和已打招呼数
-            total = len(filtered)
-            greeted = [c for c in filtered if c.get('greet_sent', False)]
-            greeted_count = len(greeted)
-
-            if total == 0:
-                self._show_inline_banner(self.result_page, 'info', f"{title}：暂无数据。")
+            if not filtered:
+                self._show_inline_banner(
+                    self.result_page,
+                    'info',
+                    f"{title}：暂无数据。",
+                )
                 return
-
-            # 创建详情窗口
-            detail_window = tk.Toplevel(self.root)
-            detail_window.transient(self.root)
-            detail_window.title(title)
-            detail_window.configure(bg=self.colors['bg_main'])
-
-            # 设置固定大小并相对主窗口居中
-            window_width = min(1280, self.root.winfo_width() - 100)
-            window_height = min(900, self.root.winfo_height() - 80)
-            self._center_window(detail_window, window_width, window_height)
-
-            # 标题
-            title_label = ttk.Label(detail_window, text=title,
-                                   font=(FONT_FAMILY, int(13 * self.font_scale)),
-                                   foreground=self.colors['primary'],
-                                   background=self.colors['bg_main'])
-            title_label.pack(fill="x", padx=int(20 * self.dpi_scale * self.zoom_factor), pady=(int(15 * self.dpi_scale * self.zoom_factor), 0))
-
-            # 统计信息
-            count_frame = ttk.Frame(detail_window, style='Page.TFrame')
-            count_frame.pack(anchor="w", padx=int(20 * self.dpi_scale * self.zoom_factor), pady=(int(5 * self.dpi_scale * self.zoom_factor), 0))
-            count_font = (FONT_FAMILY, int(11 * self.font_scale))
-            ttk.Label(count_frame, text=f"共 {total} 人", font=count_font,
-                      foreground=self.colors['text_secondary'],
-                      background=self.colors['bg_main']).pack(side="left")
-            greeted_label = ttk.Label(count_frame, text=f"，已打招呼 {greeted_count} 人",
-                                      font=count_font, foreground=self.colors['success'],
-                                      background=self.colors['bg_main'])
-            greeted_label.pack(side="left")
-            count_label_ref = [greeted_label]
-
-            # 表格容器
-            table_frame = ttk.Frame(detail_window, style='Card.TFrame')
-            table_frame.pack(fill="both", expand=True, padx=int(20 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
-
-            # 创建表格
-            columns = (
-                "name", "gender", "exp", "salary", "skills", "score",
-                "ai_eval", "level", "status",
+            self._show_stats_detail_dialog(
+                title,
+                filtered,
+                refresh=self.refresh_results,
+                lift_after_batch_remove=True,
             )
-            tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=18)
-            tree._candidate_map = {}
-
-            tree.heading("name", text="姓名")
-            tree.heading("gender", text="性别")
-            tree.heading("exp", text="工作年限")
-            tree.heading("salary", text="薪资")
-            tree.heading("skills", text="技能匹配")
-            tree.heading("score", text="匹配分")
-            tree.heading("ai_eval", text="AI评估")
-            tree.heading("level", text="推荐指数")
-            tree.heading("status", text="状态")
-
-            # 设置列宽
-            tree.column("name", width=80, anchor='center')
-            tree.column("gender", width=60, minwidth=50, anchor='center')
-            tree.column("exp", width=110, minwidth=100, anchor='center')
-            tree.column("salary", width=100, anchor='center')
-            tree.column("skills", width=140, anchor='center')
-            tree.column("score", width=90, minwidth=80, anchor='center')
-            tree.column("ai_eval", width=90, minwidth=80, anchor='center')
-            tree.column("level", width=120, anchor='center')
-            tree.column("status", width=220, minwidth=180, anchor='center')
-
-            # 设置表格字体和样式 - 明细窗口使用较小字体
-            detail_font = (FONT_FAMILY, int(11 * self.font_scale))
-            tree_style = ttk.Style()
-            tree_style.configure("Detail.Treeview",
-                                font=detail_font,
-                                rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor))
-            tree_style.configure("Detail.Treeview.Heading",
-                                font=(FONT_FAMILY, int(11 * self.font_scale), 'bold'))
-            tree.configure(style="Detail.Treeview")
-
-            # 添加滚动条
-            scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
-            tree.configure(yscrollcommand=scrollbar.set)
-
-            tree.pack(side="left", fill="both", expand=True)
-            scrollbar.pack(side="right", fill="y")
-
-            # 填充数据
-            for c in sorted(filtered, key=lambda x: x.get('match_score', 0), reverse=True):
-                score = c.get('match_score', 0)
-                level = derive_candidate_decision(c).screening_result
-                status = self._format_candidate_status(c)
-                salary, exp = self._parse_salary_exp(c.get('summary', ''), c.get('structured'))
-                # AI 评估调整值：有简历时显示简历评估（替代一次评估），否则显示一次评估
-                ai_adj = c.get('llm_adjustment')
-                resume_adj = c.get('resume_eval_adjustment')
-
-                if resume_adj is not None:
-                    ai_text = f"+{resume_adj}" if resume_adj > 0 else str(resume_adj)
-                elif ai_adj is not None and c.get('llm_evaluated'):
-                    ai_text = f"+{ai_adj}" if ai_adj > 0 else str(ai_adj)
-                else:
-                    ai_text = "—"
-
-                item_id = tree.insert("", "end", values=(
-                    c.get('name', ''),
-                    self._candidate_gender_display(c),
-                    exp,
-                    salary,
-                    c.get('skill_match_ratio', ''),
-                    score,
-                    ai_text,
-                    level,
-                    status
-                ))
-                tree._candidate_map[item_id] = c
-
-            # 绑定右键菜单 - 与筛选结果页一致
-            filtered_ref = [filtered]
-
-            def on_result_detail_right_click(event):
-                clicked_item = tree.identify_row(event.y)
-                if not clicked_item:
-                    return
-                # 右键点击的行已在多选集合内时，保持现有选区
-                if clicked_item not in tree.selection():
-                    tree.selection_set(clicked_item)
-
-                selection = tree.selection()
-                # 多选时显示批量操作功能
-                if len(selection) > 1:
-                    def export_selected():
-                        if not selection:
-                            messagebox.showwarning("警告", "请先选择要导出的候选人")
-                            return
-                        selected_data = self._collect_selected_candidates_for_queue(
-                            selection, filtered_ref, tree
-                        )
-                        if not selected_data:
-                            return
-                        if len(selected_data) == 1:
-                            init_name = f"{selected_data[0].get('name', '候选人')}.xlsx"
-                        else:
-                            init_name = f"{selected_data[0].get('name', '候选人')}等{len(selected_data)}人_{datetime.now().strftime('%Y%m%d')}.xlsx"
-                        file_path = filedialog.asksaveasfilename(
-                            title="保存选中的候选人",
-                            defaultextension=".xlsx",
-                            filetypes=[("Excel 文件", "*.xlsx")],
-                            initialfile=init_name
-                        )
-                        if file_path:
-                            self._run_export(selected_data, file_path)
-
-                    def remove_selected():
-                        if not messagebox.ask_confirmation(
-                            "移除候选人",
-                            headline=f"移除选中的 {len(selection)} 名候选人？",
-                            message="这些记录将从当前结果和本地候选人数据中移除。",
-                            notice=(
-                                "无人继续引用的受管简历副本也会删除，共享副本保留；"
-                                "重新扫描时仍可能再次发现这些候选人。"
-                            ),
-                            yes_label="移除候选人",
-                            no_label="取消",
-                            dangerous=True,
-                            parent=detail_window,
-                        ):
-                            return
-                        selected_to_remove = self._collect_selected_candidates_for_queue(
-                            selection, filtered_ref, tree
-                        )
-                        remove_keys = {
-                            self._candidate_identity_key(candidate)
-                            for candidate in selected_to_remove
-                            if self._candidate_identity_key(candidate)[0]
-                        }
-                        filtered_ref[0] = [
-                            candidate for candidate in filtered_ref[0]
-                            if self._candidate_identity_key(candidate) not in remove_keys
-                        ]
-                        if remove_keys and CANDIDATES_PATH.exists():
-                            self._remove_candidate_records(
-                                lambda item: self._candidate_identity_key(item) in remove_keys,
-                            )
-                        # 删除 Treeview 中的项
-                        for sel_item in selection:
-                            candidate = self._find_candidate_in_detail_tree(
-                                tree, sel_item, filtered_ref
-                            )
-                            if (
-                                candidate
-                                and self._candidate_identity_key(candidate) in remove_keys
-                            ):
-                                tree.delete(sel_item)
-                        new_greeted = len([c for c in filtered_ref[0] if c.get('greet_sent', False)])
-                        count_label_ref[0].config(text=f"，已打招呼 {new_greeted} 人")
-                        self.refresh_results()
-                        detail_window.lift()
-
-                    context_menu_font = (FONT_FAMILY, int(11 * self.font_scale))
-                    menu = tk.Menu(detail_window, tearoff=0, font=context_menu_font)
-                    icon_export_menu = self.icons.button('export', self.colors['text_primary'])
-                    icon_trash_menu = self.icons.button('trash', self.colors['text_primary'])
-                    icon_greet = self.icons.button('chat', self.colors['success'])
-                    menu._icon_refs = [icon_export_menu, icon_trash_menu, icon_greet]
-                    menu.add_command(
-                        label=" 加入联系清单",
-                        image=icon_greet,
-                        compound=tk.LEFT,
-                        command=lambda: self._add_candidates_to_greet_queue(
-                            self._collect_selected_candidates_for_queue(selection, filtered_ref, tree),
-                            parent=detail_window,
-                        ),
-                    )
-                    # 批量AI评估选项
-                    selected_candidates = self._collect_selected_candidates_for_queue(
-                        selection, filtered_ref, tree
-                    )
-                    ai_label = self._batch_ai_eval_menu_label(selected_candidates)
-                    if ai_label:
-                        icon_ai_eval = self.icons.button('ai_spark', self.colors['primary'])
-                        menu._icon_refs.append(icon_ai_eval)
-                        menu.add_command(label=ai_label, image=icon_ai_eval, compound=tk.LEFT,
-                                         command=lambda: self._ai_eval_selected_candidates(selected_candidates))
-                    if any(c.get('manual_review_required') for c in selected_candidates):
-                        icon_confirm = self.icons.button('stamp_check', self.colors['success'])
-                        menu._icon_refs.append(icon_confirm)
-                        menu.add_command(label=" 批量确认通过", image=icon_confirm, compound=tk.LEFT,
-                                         command=lambda: self._batch_confirm_manual_review(selected_candidates, parent=detail_window))
-                    menu.add_command(label=" 移除选中", image=icon_trash_menu, compound=tk.LEFT,
-                                     command=remove_selected)
-                    menu.add_separator()
-                    menu.add_command(label=" 导出选中", image=icon_export_menu, compound=tk.LEFT,
-                                     command=export_selected)
-                    menu.tk_popup(event.x_root, event.y_root)
-                    return
-
-                # 从 filtered_ref 中定位候选人
-                candidate = self._find_candidate_in_detail_tree(
-                    tree, clicked_item, filtered_ref
-                )
-                if not candidate:
-                    return
-
-                def show_detail():
-                    self._open_candidate_review_workbench(candidate, filtered_ref[0])
-
-                def remove_candidate():
-                    if not messagebox.ask_confirmation(
-                        "移除候选人",
-                        headline=f"移除 {candidate.get('name') or '该候选人'}？",
-                        message="该记录将从当前结果和本地候选人数据中移除。",
-                        notice=(
-                            "无人继续引用的受管简历副本也会删除，共享副本保留；"
-                            "重新扫描时仍可能再次发现该候选人。"
-                        ),
-                        yes_label="移除候选人",
-                        no_label="取消",
-                        dangerous=True,
-                        parent=detail_window,
-                    ):
-                        return
-                    candidate_key = self._candidate_identity_key(candidate)
-                    if not candidate_key[0]:
-                        return
-                    filtered_ref[0] = [
-                        item for item in filtered_ref[0]
-                        if self._candidate_identity_key(item) != candidate_key
-                    ]
-                    if CANDIDATES_PATH.exists():
-                        self._remove_candidate_records(
-                            lambda item: self._candidate_identity_key(item) == candidate_key,
-                        )
-                    tree.delete(clicked_item)
-                    new_greeted = len([c for c in filtered_ref[0] if c.get('greet_sent', False)])
-                    count_label_ref[0].config(text=f"，已打招呼 {new_greeted} 人")
-                    self.refresh_results()
-                    detail_window.lift()
-
-                def export_selected():
-                    selection = tree.selection()
-                    if not selection:
-                        messagebox.showwarning("警告", "请先选择要导出的候选人")
-                        return
-                    selected_data = self._collect_selected_candidates_for_queue(
-                        selection, filtered_ref, tree
-                    )
-                    if not selected_data:
-                        return
-                    if len(selected_data) == 1:
-                        init_name = f"{selected_data[0].get('name', '候选人')}.xlsx"
-                    else:
-                        init_name = f"{selected_data[0].get('name', '候选人')}等{len(selected_data)}人_{datetime.now().strftime('%Y%m%d')}.xlsx"
-                    file_path = filedialog.asksaveasfilename(
-                        title="保存选中的候选人",
-                        defaultextension=".xlsx",
-                        filetypes=[("Excel 文件", "*.xlsx")],
-                        initialfile=init_name
-                    )
-                    if file_path:
-                        self._run_export(selected_data, file_path)
-
-                self._build_candidate_context_menu(
-                    parent=detail_window,
-                    tree=tree,
-                    tree_item=clicked_item,
-                    candidate=candidate,
-                    show_detail_fn=show_detail,
-                    remove_fn=remove_candidate,
-                    x_root=event.x_root,
-                    y_root=event.y_root,
-                )
-
-            tree.bind('<Button-3>', on_result_detail_right_click)
-            self._bind_detail_tree_tooltip(tree, filtered_ref)
-
-            def on_result_detail_double_click(event):
-                clicked_item = tree.identify_row(event.y)
-                if not clicked_item:
-                    return
-                candidate = self._find_candidate_in_detail_tree(
-                    tree, clicked_item, filtered_ref
-                )
-                if candidate:
-                    self._open_candidate_review_workbench(candidate, filtered_ref[0])
-
-            tree.bind('<Double-Button-1>', on_result_detail_double_click)
-
-        except Exception as e:
-            messagebox.showerror("错误", f"显示详情失败：{e}")
+        except Exception as exc:
+            messagebox.showerror("错误", f"显示详情失败：{exc}")
 
     def _get_job_rules_cached(self):
         """缓存读取 job_config.json，文件 mtime 未变则跳过磁盘 IO。
