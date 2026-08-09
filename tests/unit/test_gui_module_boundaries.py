@@ -11,6 +11,7 @@ import gui_candidate_actions
 import gui_candidate_diagnostics
 import gui_candidate_review
 import gui_contact_queue
+import gui_config_page
 import gui_main
 import gui_result_page
 import gui_run_page
@@ -90,6 +91,7 @@ def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():
         "gui_candidate_review",
         "gui_candidate_workbench",
         "gui_contact_queue",
+        "gui_config_page",
         "gui_result_page",
         "gui_run_page",
         "gui_stats_page",
@@ -181,6 +183,32 @@ def test_run_page_compatibility_method_is_a_thin_incremental_delegate():
     assert "yield from gui_run_page.build_run_page_steps(" in block
     assert "ttk.Frame" not in block
     assert "tk.Text" not in block
+
+
+def test_config_page_compatibility_method_is_a_thin_incremental_delegate():
+    assert callable(gui_config_page.build_config_page_steps)
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _create_config_page_steps"):]
+    block = block[:block.index("\n    def create_api_config_page")]
+
+    assert "yield from gui_config_page.build_config_page_steps(" in block
+    assert "ttk.Frame" not in block
+    assert "tk.Text" not in block
+
+
+def test_config_page_keeps_loading_saving_and_diagnostics_in_main_controller():
+    imports = _top_level_imports("gui_config_page")
+    assert not ({"job_config_store", "job_config_diagnostics"} & imports)
+
+    builder = (ROOT / "gui_config_page.py").read_text(encoding="utf-8")
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    for method_name in (
+        "load_job_to_form",
+        "save_current_job",
+        "parse_requirement",
+    ):
+        assert f"def {method_name}" not in builder
+        assert f"def {method_name}" in source
 
 
 def test_run_page_keeps_api_key_resolution_in_main_controller():

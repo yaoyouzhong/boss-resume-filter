@@ -249,7 +249,7 @@ def test_save_current_job_is_blocked_while_requirement_parse_is_active():
 
 
 def test_job_config_primary_actions_are_lowered_without_moving_quality_row():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
+    source = Path("gui_config_page.py").read_text(encoding="utf-8")
     block = source[source.index("# 按钮行（居中布局"):]
     block = block[:block.index("# 存储技能数据的列表")]
 
@@ -257,7 +257,7 @@ def test_job_config_primary_actions_are_lowered_without_moving_quality_row():
     footer_block = source[
         source.index("# 底部按钮固定在页面底部"):source.index("# 在所有控件创建完毕后绑定滚轮事件")
     ]
-    assert "int(10 * self.dpi_scale * self.zoom_factor),\n                0," in footer_block
+    assert "int(10 * self.dpi_scale * self.zoom_factor),\n            0," in footer_block
 
 
 class _FakeVar:
@@ -447,9 +447,7 @@ class _FakeCalendarTop:
 
 
 def test_job_config_page_uses_business_sections_and_one_low_frequency_menu():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    block = source[source.index("def create_config_page"):]
-    block = block[:block.index("\n    def create_api_config_page")]
+    block = Path("gui_config_page.py").read_text(encoding="utf-8")
 
     assert '"招聘需求"' in block
     assert '"基础筛选条件"' in block
@@ -478,7 +476,7 @@ def test_job_config_page_uses_business_sections_and_one_low_frequency_menu():
 
 
 def test_job_config_basic_filters_use_compact_grouped_rows_and_keep_alignment():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
+    source = Path("gui_config_page.py").read_text(encoding="utf-8")
     block = source[source.index("# 岗位名称"):]
     block = block[:block.index("# 技能关键词区域")]
 
@@ -534,7 +532,7 @@ def test_compact_filter_spinbox_matches_combobox_pixel_width_contract():
 
 
 def test_skill_score_table_uses_shared_font_and_wider_key_columns():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
+    source = Path("gui_config_page.py").read_text(encoding="utf-8")
     block = source[source.index("# 使用 Treeview 显示技能列表"):]
     block = block[:block.index("skills_scroll = ttk.Scrollbar")]
 
@@ -1837,6 +1835,7 @@ def test_system_settings_model_name_matches_provider_control_width():
 
 def test_more_action_menubuttons_share_centered_overlay_arrow_style():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    config_source = Path("gui_config_page.py").read_text(encoding="utf-8")
     result_source = Path("gui_result_page.py").read_text(encoding="utf-8")
     setup_block = source[source.index("def setup_styles"):]
     setup_block = setup_block[:setup_block.index("\n    def _create_status_icons")]
@@ -1849,18 +1848,18 @@ def test_more_action_menubuttons_share_centered_overlay_arrow_style():
     assert "justify='center'" in setup_block
     assert (
         source.count("style='CenteredActions.TMenubutton'")
+        + config_source.count("style='CenteredActions.TMenubutton'")
         + result_source.count('style="CenteredActions.TMenubutton"')
         == 2
     )
-    assert "ConfigActions.TMenubutton" not in source
+    assert "ConfigActions.TMenubutton" not in config_source
     assert "ResultActions.TMenubutton" not in source
 
-    config_block = source[source.index("def create_config_page"):]
-    config_block = config_block[:config_block.index("\n    def create_api_config_page")]
+    config_block = config_source
     result_block = result_source
     assert "tk.Menu(select_frame, tearoff=0, font=self.font_label)" in config_block
     assert "font=host.font_label" in result_block[result_block.index("more_menu = tk.Menu("):]
-    assert "menu=more_menu,\n            width=9," in config_block
+    assert "menu=more_menu,\n        width=9," in config_block
     assert "menu=more_menu,\n        width=9," in result_block
     assert "self.icons.button('trash', self.colors['danger'])" in config_block
 
@@ -2910,10 +2909,25 @@ def test_job_config_page_releases_bottom_padding_but_preserves_header_position()
     assert gui.pages_frame.pack_configure.call_args.kwargs["pady"] == (
         gui_main.UI_CONFIG["page_padding_y"] - 15
     )
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    config_block = source[source.index("def create_config_page"):]
-    config_block = config_block[:config_block.index("\n    def create_api_config_page")]
+    config_block = Path("gui_config_page.py").read_text(encoding="utf-8")
     assert 'self._create_page_header(self.config_page, "岗位配置", top_padding=15)' in config_block
+
+
+def test_job_config_page_builder_is_ui_only_and_main_keeps_business_actions():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    builder = Path("gui_config_page.py").read_text(encoding="utf-8")
+    delegate = source[source.index("def _create_config_page_steps"):]
+    delegate = delegate[:delegate.index("\n    def create_api_config_page")]
+
+    assert "yield from gui_config_page.build_config_page_steps(" in delegate
+    assert "from job_config_store" not in builder
+    assert "from job_config_diagnostics" not in builder
+    assert "def save_current_job" not in builder
+    assert "def load_job_to_form" not in builder
+    assert "def parse_requirement" not in builder
+    assert "def save_current_job" in source
+    assert "def load_job_to_form" in source
+    assert "def parse_requirement" in source
 
 
 def test_api_key_is_visible_only_while_eye_button_is_pressed():
