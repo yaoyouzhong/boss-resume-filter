@@ -1587,7 +1587,8 @@ def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
 
 def test_saved_model_list_keeps_library_fields_and_removes_derived_purpose_column():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    list_block = source[source.index("# 模型列表 Treeview"):]
+    settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
+    list_block = settings_source[settings_source.index("# 模型列表 Treeview"):]
     list_block = list_block[:list_block.index("# 滚动条（垂直 + 水平）")]
     load_block = source[source.index("def load_saved_models_to_tree"):]
     load_block = load_block[:load_block.index("\n    def _get_model_list_max_rows")]
@@ -1820,7 +1821,8 @@ def test_result_page_keeps_workflow_actions_visible_and_groups_utilities():
 
 def test_system_settings_model_name_matches_provider_control_width():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    settings_block = source[source.index("# 模型接入配置"):]
+    settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
+    settings_block = settings_source[settings_source.index("# 模型接入配置"):]
     settings_block = settings_block[:settings_block.index("# 第三行：API Key")]
     styles_block = source[source.index("def setup_styles"):]
     styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
@@ -2062,26 +2064,24 @@ def test_background_export_reports_worker_failure_on_ui_thread():
 
 
 def test_model_settings_use_explicit_role_selectors_not_hidden_actions():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    settings_block = source[source.index("def _create_api_config_content"):]
-    settings_block = settings_block[:settings_block.index("\n    def load_api_config_to_ui")]
+    settings_block = Path("gui_settings_page.py").read_text(encoding="utf-8")
 
     assert '"使用中的模型"' in settings_block
     assert 'text="默认 AI 模型:"' in settings_block
     assert 'text="学历核验模型:"' in settings_block
     assert "label_width_assignment = 14" in settings_block
     assert "model_choice_width = 34" in settings_block
-    assert "TRAFFIC_LIGHT_BASE_SIZE * self.dpi_scale * self.zoom_factor" in settings_block
+    assert "traffic_light_base_size * self.dpi_scale * self.zoom_factor" in settings_block
     assert "traffic_light_pending" in settings_block
     assert "traffic_light_success" in settings_block
     assert "traffic_light_error" in settings_block
     assert "pulse_check" not in settings_block
     assert 'width=model_choice_width' in settings_block
-    assert "width=UI_CONFIG['entry_width_url']" in settings_block
+    assert "width=ui_config['entry_width_url']" in settings_block
     assert "self.api_key_entry = ttk.Entry(" in settings_block
     api_key_block = settings_block[settings_block.index("self.api_key_entry = ttk.Entry("):]
     api_key_block = api_key_block[:api_key_block.index("self.api_key_entry.pack")]
-    assert "width=UI_CONFIG['entry_width_url']" in api_key_block
+    assert "width=ui_config['entry_width_url']" in api_key_block
     assert 'sticky="w"' in settings_block
     assert "btn_test_default_model" in settings_block
     assert "btn_test_education_model" in settings_block
@@ -2952,9 +2952,7 @@ def test_api_key_is_visible_only_while_eye_button_is_pressed():
 
 
 def test_api_key_eye_uses_press_and_release_bindings_not_click_toggle():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    settings_block = source[source.index("def _create_api_config_content"):]
-    settings_block = settings_block[:settings_block.index("\n    def load_api_config_to_ui")]
+    settings_block = Path("gui_settings_page.py").read_text(encoding="utf-8")
 
     assert '"<ButtonPress-1>", self._show_api_key_while_pressed' in settings_block
     assert '"<ButtonRelease-1>", self._hide_api_key_after_release' in settings_block
@@ -2964,9 +2962,7 @@ def test_api_key_eye_uses_press_and_release_bindings_not_click_toggle():
 
 
 def test_api_key_eye_blends_with_settings_card_background():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    settings_block = source[source.index("def _create_api_config_content"):]
-    settings_block = settings_block[:settings_block.index("\n    def load_api_config_to_ui")]
+    settings_block = Path("gui_settings_page.py").read_text(encoding="utf-8")
     button_block = settings_block[settings_block.index("self.api_key_toggle_btn = tk.Button("):]
     button_block = button_block[:button_block.index("self.api_key_toggle_btn._icon_eye")]
 
@@ -3225,13 +3221,12 @@ def test_traffic_light_icons_are_registered_without_pulse_check():
 
 def test_run_and_settings_traffic_lights_share_one_base_size():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    settings_block = source[source.index("def _create_api_config_content"):]
-    settings_block = settings_block[:settings_block.index("\n    def load_api_config_to_ui")]
+    settings_block = Path("gui_settings_page.py").read_text(encoding="utf-8")
     lamp_block = source[source.index("def _get_lamp_icon"):]
     lamp_block = lamp_block[:lamp_block.index("\n    def _apply_lamp_status")]
 
     assert "TRAFFIC_LIGHT_BASE_SIZE = 32" in source
-    assert "TRAFFIC_LIGHT_BASE_SIZE * self.dpi_scale * self.zoom_factor" in settings_block
+    assert "traffic_light_base_size * self.dpi_scale * self.zoom_factor" in settings_block
     assert "TRAFFIC_LIGHT_BASE_SIZE" in lamp_block
     assert "int(16 *" not in lamp_block
 
@@ -3438,11 +3433,12 @@ def test_save_api_config_sets_default_when_current_model_is_not_saved():
 
 def test_model_discovery_keeps_custom_base_url_explicit_and_scopes_catalog_cache():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
     fetch_block = source[source.index("def fetch_model_list"):]
     fetch_block = fetch_block[:fetch_block.index("\n    def _show_api_key_while_pressed")]
 
-    assert 'self.api_base_url_var = tk.StringVar()' in source
-    assert 'text=" 自动识别并获取模型"' in source
+    assert 'self.api_base_url_var = tk.StringVar()' in settings_source
+    assert 'text=" 自动识别并获取模型"' in settings_source
     assert 'if not base_url and not has_endpoint_discovery(provider):' in fetch_block
     assert '自定义/中转地址只验证用户明确输入的 URL' in fetch_block
     assert 'resolution = discover_api_endpoint(' in fetch_block
@@ -9515,15 +9511,15 @@ def test_data_maintenance_multisection_dialogs_use_structured_templates():
 
 
 def test_resume_storage_audit_button_is_in_data_maintenance_card():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    data_card = source[
-        source.index('data_card = self._create_card('):
-        source.index('diagnostic_card = self._create_card(')
+    settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
+    data_card = settings_source[
+        settings_source.index('data_card = self._create_card('):
+        settings_source.index('diagnostic_card = self._create_card(')
     ]
 
     assert 'text=" 简历存储体检"' in data_card
     assert 'command=self._show_resume_storage_audit' in data_card
-    assert 'self.icons.button(\n            "health_shield"' in data_card
+    assert 'self.icons.button(\n        "health_shield"' in data_card
 
 
 def test_resume_storage_audit_shows_privacy_safe_read_only_summary():

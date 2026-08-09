@@ -23,6 +23,7 @@ boss-resume-filter/
 ├── gui_result_page.py   # 筛选结果页 Tk 控件构建与显式控件引用模块
 ├── gui_run_page.py      # 运行控制页分步 Tk 构建、控件状态联动与事件绑定模块
 ├── gui_config_page.py   # 岗位配置页分步 Tk 构建、表单控件装配与事件绑定模块
+├── gui_settings_page.py # 系统设置页分步 Tk 构建、模型控件与数据工具入口装配模块
 ├── gui_candidate_diagnostics.py # 候选人状态体检弹窗的 Tk 构建与交互状态模块
 ├── gui_candidate_review.py # 候选人查看与复核工作台的 Tk 构建与视图切换模块
 ├── gui_candidate_actions.py # 今日待办弹窗的 Tk 构建、分组导航与局部选择状态模块

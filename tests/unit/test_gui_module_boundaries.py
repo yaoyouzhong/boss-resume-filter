@@ -15,6 +15,7 @@ import gui_config_page
 import gui_main
 import gui_result_page
 import gui_run_page
+import gui_settings_page
 import gui_stats_page
 import run_presenter
 import stats_presenter
@@ -94,6 +95,7 @@ def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():
         "gui_config_page",
         "gui_result_page",
         "gui_run_page",
+        "gui_settings_page",
         "gui_stats_page",
     ):
         assert not (_top_level_imports(module_name) & forbidden)
@@ -206,6 +208,45 @@ def test_config_page_keeps_loading_saving_and_diagnostics_in_main_controller():
         "load_job_to_form",
         "save_current_job",
         "parse_requirement",
+    ):
+        assert f"def {method_name}" not in builder
+        assert f"def {method_name}" in source
+
+
+def test_settings_page_compatibility_method_is_a_thin_incremental_delegate():
+    assert callable(gui_settings_page.build_settings_content_steps)
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _create_api_config_content_steps"):]
+    block = block[:block.index("\n    def load_api_config_to_ui")]
+
+    assert "yield from gui_settings_page.build_settings_content_steps(" in block
+    assert "ttk.Treeview" not in block
+    assert "tk.Button" not in block
+
+
+def test_settings_page_keeps_secrets_network_and_data_actions_in_main_controller():
+    imports = _top_level_imports("gui_settings_page")
+    assert not (
+        {
+            "ai_adapter",
+            "data_recovery",
+            "diagnostic_package",
+            "gui_main",
+            "security",
+            "threading",
+        }
+        & imports
+    )
+
+    builder = (ROOT / "gui_settings_page.py").read_text(encoding="utf-8")
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    for method_name in (
+        "save_api_config",
+        "fetch_model_list",
+        "test_api_connection",
+        "_export_data_backup",
+        "_restore_data_backup",
+        "_export_diagnostic_package",
     ):
         assert f"def {method_name}" not in builder
         assert f"def {method_name}" in source
