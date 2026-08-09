@@ -1,14 +1,14 @@
 """Generate presentation screenshots from the current GUI with synthetic data.
 
-The script never reads real candidate records. It redirects the GUI to a
-synthetic dataset before opening any result or statistics page.
+The script replaces saved job configuration and candidate records with
+in-memory or tracked synthetic fixtures before any page is captured.
 """
 
 from __future__ import annotations
 
-import json
 import copy
-import re
+import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -20,6 +20,15 @@ from PIL import Image, ImageDraw, ImageFont, ImageGrab
 ROOT = Path(__file__).resolve().parents[3]
 OUT_DIR = Path(__file__).resolve().parent
 DEMO_DATA_PATH = OUT_DIR / "demo-candidates.json"
+MENU_DEMO_DATA_PATH = OUT_DIR / "demo-candidates-menu.json"
+SCREENSHOT_ALIASES = {
+    "03-candidate-screening-results.png": ("02-candidate-screening-results.png",),
+    "04-ai-evaluation-detail.png": ("03-ai-evaluation-detail.png",),
+    "05-recruitment-data-dashboard.png": ("04-recruitment-data-dashboard.png",),
+}
+os.environ["BOSS_RESUME_FILTER_DISABLE_DATA_MIGRATION"] = "1"
+os.environ["BOSS_RESUME_FILTER_DISABLE_GUARD_PERSISTENCE"] = "1"
+os.environ["BOSS_RESUME_FILTER_DISABLE_STARTUP_UPDATE"] = "1"
 sys.path.insert(0, str(ROOT))
 
 import gui_main
@@ -55,6 +64,20 @@ DEMO_JOB_RULE = {
 }
 
 
+def build_demo_job_rules() -> dict[str, dict]:
+    """Return an isolated, fully synthetic job configuration."""
+    return {DEMO_JOB: copy.deepcopy(DEMO_JOB_RULE)}
+
+
+def install_demo_job_config_source() -> None:
+    """Prevent screenshot runs from reading the user's saved job configuration."""
+
+    def load_demo_job_config(*_args, **_kwargs) -> dict:
+        return {"job_requirements": build_demo_job_rules()}
+
+    gui_main.load_job_config_snapshot = load_demo_job_config
+
+
 def _candidate(
     index: int,
     score: int,
@@ -81,6 +104,7 @@ def _candidate(
         "技能标签：Java、Spring Cloud、MySQL、Redis、微服务、金融系统"
     )
     record = {
+        "demo_data_origin": "fully_synthetic",
         "geek_id": f"DEMO-{index:03d}",
         "name": name,
         "job_name": job,
@@ -213,6 +237,13 @@ def build_demo_candidates() -> list[dict]:
     return rows
 
 
+def write_demo_candidates(*paths: Path) -> None:
+    """Write the deterministic synthetic dataset to one or more demo paths."""
+    payload = json.dumps(build_demo_candidates(), ensure_ascii=False, indent=2) + "\n"
+    for path in paths or (DEMO_DATA_PATH,):
+        path.write_text(payload, encoding="utf-8")
+
+
 def _badge_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     font_path = Path(r"C:\Windows\Fonts\msyh.ttc")
     if font_path.exists():
@@ -224,7 +255,7 @@ def add_privacy_badge(image: Image.Image) -> Image.Image:
     """Add a visible presentation badge to every final screenshot."""
     output = image.convert("RGB")
     draw = ImageDraw.Draw(output)
-    text = "真实系统 · 信息已脱敏"
+    text = "真实系统界面 · 完全合成数据"
     font = _badge_font(max(18, output.width // 70))
     bbox = draw.textbbox((0, 0), text, font=font)
     text_w = bbox[2] - bbox[0]
@@ -251,6 +282,8 @@ def capture_widget(widget: tk.Widget, filename: str, *, privacy_badge: bool = Tr
     image = ImageGrab.grab(bbox=(x, y, x + width, y + height))
     final_image = add_privacy_badge(image) if privacy_badge else image
     final_image.save(OUT_DIR / filename)
+    for alias in SCREENSHOT_ALIASES.get(filename, ()):
+        final_image.save(OUT_DIR / alias)
 
 
 def find_toplevel(root: tk.Tk, title: str) -> tk.Toplevel:
@@ -279,12 +312,12 @@ def find_text_widget(parent: tk.Widget) -> tk.Text:
     return max(found, key=lambda item: item.winfo_width() * item.winfo_height())
 
 
-def select_real_job(app: gui_main.BossFilterGUI) -> str:
-    """Select a real configured job without changing the project configuration."""
+def select_demo_job(app: gui_main.BossFilterGUI) -> str:
+    """Select the in-memory synthetic job used by every demo screenshot."""
     jobs = list(app.job_rules)
-    if not jobs:
-        raise RuntimeError("No real job configuration found")
-    selected = next((name for name in jobs if "AI" in name), jobs[0])
+    if jobs != [DEMO_JOB]:
+        raise RuntimeError("Synthetic demo job configuration was not installed")
+    selected = DEMO_JOB
     app.config_job_combo["values"] = jobs
     app.config_job_combo.set(selected)
     app.on_job_selected(None)
@@ -292,132 +325,17 @@ def select_real_job(app: gui_main.BossFilterGUI) -> str:
     app.root.update_idletasks()
     app.root.update()
     app.config_canvas.configure(scrollregion=app.config_canvas.bbox("all"))
-    app.config_canvas.yview_moveto(0.28)
+    app.config_canvas.yview_moveto(0.0)
     app.root.update_idletasks()
     app.root.update()
     return selected
-
-
-def _mask_text(text: object, replacements: dict[str, str]) -> object:
-    """Mask common personal identifiers while retaining technical content."""
-    if not isinstance(text, str):
-        return text
-    masked = text
-    for source, target in replacements.items():
-        if source:
-            masked = masked.replace(source, target)
-    masked = re.sub(r"(?<!\d)1[3-9]\d{9}(?!\d)", "138****0000", masked)
-    masked = re.sub(
-        r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
-        "masked@example.com",
-        masked,
-    )
-    masked = re.sub(r"[\u4e00-\u9fffA-Za-z0-9（）()·]{2,30}(?:有限公司|公司)", "某科技公司", masked)
-    masked = re.sub(r"[\u4e00-\u9fffA-Za-z0-9（）()·]{2,24}(?:大学|学院)", "某高校", masked)
-    masked = re.sub(r"候选人\d{2}(?=\d+年经验)", "该候选人具备", masked)
-    return masked
-
-
-def _mask_nested(value: object, replacements: dict[str, str]) -> object:
-    """Recursively mask strings in nested candidate data."""
-    if isinstance(value, dict):
-        return {key: _mask_nested(item, replacements) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_mask_nested(item, replacements) for item in value]
-    if isinstance(value, str):
-        return _mask_text(value, replacements)
-    return value
-
-
-def build_sanitized_real_candidates(real_job_name: str) -> list[dict]:
-    """Create a privacy-safe copy of the current real candidate dataset."""
-    source_path = ROOT / "candidates_all.json"
-    rows = json.loads(source_path.read_text(encoding="utf-8"))
-    sanitized: list[dict] = []
-    global_replacements: dict[str, str] = {}
-    for original in rows:
-        for field, replacement in (
-            ("name", "候选人"),
-            ("company", "某科技公司"),
-            ("school", "某高校"),
-            ("geek_id", "MASKED-ID"),
-        ):
-            value = str(original.get(field) or "").strip()
-            if len(value) >= 2:
-                global_replacements[value] = replacement
-
-    for index, original in enumerate(rows, 1):
-        candidate = _mask_nested(copy.deepcopy(original), global_replacements)
-        alias = f"候选人{index:02d}"
-        original_name = str(candidate.get("name") or "")
-        original_company = str(candidate.get("company") or "")
-        original_school = str(candidate.get("school") or "")
-        replacements = dict(global_replacements)
-        if len(original_name) >= 2:
-            replacements[original_name] = alias
-        if len(original_company) >= 2:
-            replacements[original_company] = "某科技公司"
-        if len(original_school) >= 2:
-            replacements[original_school] = "某高校"
-        original_geek_id = str(original.get("geek_id") or "")
-        if len(original_geek_id) >= 2:
-            replacements[original_geek_id] = f"MASKED-{index:03d}"
-
-        candidate["name"] = alias
-        candidate["geek_id"] = f"MASKED-{index:03d}"
-        if candidate.get("job_id"):
-            candidate["job_id"] = f"JOB-MASKED-{index:03d}"
-        if "�" in str(candidate.get("job_name") or ""):
-            candidate["job_name"] = real_job_name
-        if candidate.get("company"):
-            candidate["company"] = "某科技公司"
-        if candidate.get("school"):
-            candidate["school"] = "某高校"
-        if candidate.get("resume_file"):
-            candidate["resume_file"] = f"{alias}_脱敏简历.pdf"
-
-        for key in (
-            "summary",
-            "llm_reason",
-            "resume_eval_reason",
-            "feedback_note",
-            "followup_note",
-            "blacklist_reason",
-        ):
-            if key in candidate:
-                candidate[key] = _mask_text(candidate.get(key), replacements)
-
-        evidence = candidate.get("keyword_evidence")
-        if isinstance(evidence, list):
-            for item in evidence:
-                if isinstance(item, dict) and "evidence" in item:
-                    item["evidence"] = _mask_text(item.get("evidence"), replacements)
-
-        profile = candidate.get("_api_profile")
-        if isinstance(profile, dict):
-            for edu in profile.get("educations") or []:
-                if isinstance(edu, dict) and edu.get("school"):
-                    edu["school"] = "某高校"
-            for work in profile.get("works") or []:
-                if isinstance(work, dict):
-                    if work.get("company"):
-                        work["company"] = "某科技公司"
-                    if work.get("responsibility"):
-                        work["responsibility"] = _mask_text(work["responsibility"], replacements)
-            if profile.get("personal_summary"):
-                profile["personal_summary"] = _mask_text(
-                    profile["personal_summary"], replacements
-                )
-
-        sanitized.append(candidate)
-
-    return sanitized
 
 
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     gui_main._enable_high_dpi_awareness()
     monitor_area = gui_main._get_windows_monitor_area()
+    install_demo_job_config_source()
 
     root = tk.Tk()
     root.withdraw()
@@ -429,9 +347,14 @@ def main() -> None:
     root.attributes("-topmost", False)
 
     app.show_page_config()
-    selected_job = select_real_job(app)
-    capture_widget(root, "01-job-requirement-parsing.png", privacy_badge=False)
-    print(f"Captured real job configuration: {selected_job}")
+    selected_job = select_demo_job(app)
+    capture_widget(root, "01-job-requirement-parsing.png")
+    print(f"Captured synthetic job configuration: {selected_job}")
+
+    app.config_canvas.yview_moveto(0.48)
+    capture_widget(root, "06-job-config-skills-top.png")
+    app.config_canvas.yview_moveto(1.0)
+    capture_widget(root, "07-job-config-skills-bottom.png")
 
     app.show_page_run()
     app.job_combo["values"] = ["全部岗位", *list(app.job_rules)]
@@ -439,18 +362,11 @@ def main() -> None:
     app.run_canvas.yview_moveto(0.0)
     root.update_idletasks()
     root.update()
-    capture_widget(root, "02-run-control.png", privacy_badge=False)
+    capture_widget(root, "02-run-control.png")
     app.hide_all_pages()
 
-    # Redirect candidate pages to a sanitized copy of the current real data.
-    DEMO_DATA_PATH.write_text(
-        json.dumps(
-            build_sanitized_real_candidates(selected_job),
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    # Candidate screenshots always use deterministic, fully synthetic records.
+    write_demo_candidates(DEMO_DATA_PATH, MENU_DEMO_DATA_PATH)
     gui_main.CANDIDATES_PATH = DEMO_DATA_PATH
     gui_main.CANDIDATES_XLSX_PATH = OUT_DIR / "sanitized-candidates.xlsx"
 
@@ -465,7 +381,7 @@ def main() -> None:
     app.result_tree.focus(first_item)
     app._show_candidate_detail(first_item)
     root.update()
-    detail = find_toplevel(root, "候选人详情")
+    detail = find_toplevel(root, "候选人查看与复核")
     detail.lift()
     detail_text = find_text_widget(detail)
     ai_section = detail_text.search("【AI 一次评估】", "1.0", stopindex="end")

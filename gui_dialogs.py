@@ -6,90 +6,19 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 
+from changelog_renderer import render_changelog_text
 from changelog_parser import normalize_version, parse_changelog_versions, resolve_local_changelog_path
 from ui_messagebox import messagebox
 import ui_theme
+from ui_windowing import clamp, place_window_centered
 
-
-def render_changelog_text(
-    text_widget,
-    body,
-    colors,
-    font_family,
-    font_family_bold,
-    font_scale,
-    layout_scale,
-    *,
-    section_font_size=13,
-    item_font_size=12,
-    include_version_title=False,
-):
-    """Render a small CHANGELOG markdown subset into a Tk Text widget."""
-    fs = lambda size: int(size * font_scale)
-    pad = lambda value: int(value * layout_scale)
-
-    section_font = (font_family_bold, fs(section_font_size))
-    item_font = (font_family, fs(item_font_size))
-    item_bold_font = (font_family_bold, fs(item_font_size))
-    item_left_margin = pad(18)
-    item_wrap_margin = pad(36)
-
-    text_widget.tag_configure("section_new", font=section_font, foreground=colors.get('success', ui_theme.SUCCESS))
-    text_widget.tag_configure("section_opt", font=section_font, foreground=colors['primary'])
-    text_widget.tag_configure("section_ui", font=section_font, foreground=colors.get('purple', ui_theme.PURPLE))
-    text_widget.tag_configure("section_fix", font=section_font, foreground=colors.get('danger', ui_theme.DANGER))
-    text_widget.tag_configure("section_build", font=section_font, foreground=colors.get('warning', ui_theme.WARNING))
-    text_widget.tag_configure("item", font=item_font, foreground=colors['text_secondary'],
-                              lmargin1=item_left_margin, lmargin2=item_wrap_margin)
-    text_widget.tag_configure("item_bold", font=item_bold_font, foreground=colors['text_primary'])
-
-    section_map = {
-        '新增功能': 'section_new',
-        '体验优化': 'section_opt',
-        '行为优化': 'section_opt',
-        '性能优化': 'section_opt',
-        'UI 改进': 'section_ui',
-        'UI改进': 'section_ui',
-        '问题修复': 'section_fix',
-        'Bug 修复': 'section_fix',
-        'Bug修复': 'section_fix',
-        '构建改进': 'section_build',
-    }
-
-    for line in body.splitlines():
-        stripped = line.lstrip('#').strip()
-        header_level = len(line) - len(line.lstrip('#'))
-        is_section = (header_level in (2, 3)) and stripped and not stripped.startswith('v')
-
-        if line.startswith("## v") and not include_version_title:
-            continue
-        if is_section:
-            stag = section_map.get(stripped, 'section_opt')
-            text_widget.insert("end", "\n" + stripped + "\n\n", stag)
-        elif line.startswith("- "):
-            item_text = line[2:]
-            if item_text.startswith("**"):
-                end_pos = item_text.find("**", 2)
-                if end_pos > 0:
-                    title_part = item_text[2:end_pos]
-                    rest = item_text[end_pos + 2:]
-                    full_text = "• " + title_part + rest + "\n"
-                    line_start = text_widget.index("end")
-                    text_widget.insert("end", full_text, "item")
-                    bold_start = f"{line_start} + 2 chars"
-                    bold_end = f"{line_start} + {2 + len(title_part)} chars"
-                    text_widget.tag_add("item_bold", bold_start, bold_end)
-                else:
-                    text_widget.insert("end", "• " + item_text + "\n", "item")
-            else:
-                text_widget.insert("end", "• " + item_text + "\n", "item")
+FONT_FAMILY = ui_theme.FONT_FAMILY
 
 
 def show_about_dialog(gui, version):
     """显示关于弹窗"""
     import webbrowser
     import updater
-    from gui_main import FONT_FAMILY
 
     dialog = tk.Toplevel(gui.root)
     dialog.title("关于 BOSS 简历筛选器")
@@ -217,7 +146,7 @@ def show_about_dialog(gui, version):
     dialog.bind('<Escape>', lambda e: dialog.destroy())
 
 
-def show_changelog_dialog(gui):
+def show_changelog_dialog(gui, current_version=""):
     """显示更新日志对话框（版本列表 + 详情分栏）
 
     Args:
@@ -247,11 +176,10 @@ def show_changelog_dialog(gui):
 
     fs = gui.dpi_scale * gui.zoom_factor
     changelog_fs = gui.font_scale * 0.88
-    from gui_main import _clamp, _place_window_centered, FONT_FAMILY
-    dialog_scale = _clamp(fs, 1.0, 1.50)
+    dialog_scale = clamp(fs, 1.0, 1.50)
     dw = int(940 * dialog_scale)
     dh = int(620 * dialog_scale)
-    _place_window_centered(dialog, dw, dh, parent=gui.root)
+    place_window_centered(dialog, dw, dh, parent=gui.root)
 
     # ---- 左侧版本列表（深色侧边栏风格）----
     sidebar_bg = ui_theme.BG_SIDEBAR
@@ -311,13 +239,11 @@ def show_changelog_dialog(gui):
 
     row_frames = []
     selected_row_idx = [0]
-    current_version = str(getattr(gui, "version", "") or getattr(gui, "__version__", ""))
-    if not current_version:
-        try:
-            import gui_main
-            current_version = getattr(gui_main, "__version__", "")
-        except Exception:
-            current_version = ""
+    current_version = str(
+        current_version
+        or getattr(gui, "version", "")
+        or getattr(gui, "__version__", "")
+    )
     current_idx = next(
         (i for i, (tag, _, _) in enumerate(versions)
          if normalize_version(tag) == normalize_version(current_version)),
@@ -501,6 +427,6 @@ def show_changelog_dialog(gui):
 
     # 内容创建完成后再按实际窗口尺寸复位一次，避免初始布局请求导致视觉中心偏移。
     dialog.update_idletasks()
-    _place_window_centered(dialog, dw, dh, parent=gui.root)
+    place_window_centered(dialog, dw, dh, parent=gui.root)
     dialog.deiconify()
     schedule_detail_scrollbar_refresh(100)

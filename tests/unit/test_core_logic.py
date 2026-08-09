@@ -17,7 +17,247 @@ import os
 import tempfile
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+
+def test_recommend_listener_aggregates_packets_and_switches_to_fast_drain():
+    """Listener data is enrichment only, but every queued response must be drained."""
+    url = "https://www.zhipin.com/wapi/zpjob/geek/recommend/list"
+    packets = [
+        SimpleNamespace(
+            url=url,
+            is_failed=False,
+            response=SimpleNamespace(
+                status=200,
+                headers={"content-type": "application/json"},
+                body={"id": "first"},
+                url=url,
+            ),
+            resourceType="XHR",
+        ),
+        SimpleNamespace(
+            url="https://www.zhipin.com/wapi/zpjob/geek/detail",
+            is_failed=False,
+            response=SimpleNamespace(
+                status_code=200,
+                headers={},
+                body={"id": "second"},
+                url="",
+            ),
+            resourceType="Fetch",
+        ),
+    ]
+
+    class Listener:
+        def __init__(self):
+            self.timeouts = []
+            self.results = [packets, None]
+
+        def wait(self, *, timeout, fit_count):
+            self.timeouts.append((timeout, fit_count))
+            return self.results.pop(0)
+
+    listener = Listener()
+    with patch.object(
+        bossmaster,
+        "_extract_candidates_from_api_payload",
+        side_effect=lambda payload: [{"geek_id": payload["id"]}],
+    ):
+        candidates, captured_url = bossmaster._consume_recommend_api_candidates(
+            listener, timeout=0.5
+        )
+
+    assert [item["geek_id"] for item in candidates] == ["first", "second"]
+    assert captured_url == url
+    assert listener.timeouts == [(0.5, False), (0.01, False)]
+
+
+def test_recommend_listener_read_failure_stops_enrichment_as_uncertain_error():
+    """A broken listener must not be mistaken for an empty successful response."""
+    class BrokenListener:
+        def wait(self, **_kwargs):
+            raise RuntimeError("listener disconnected")
+
+    try:
+        bossmaster._consume_recommend_api_candidates(BrokenListener())
+    except bossmaster.ApiClientError as error:
+        assert error.source == "Listener"
+        assert error.uncertain is True
+        assert "listener disconnected" in error.reason
+    else:
+        raise AssertionError("listener failure should stop the enrichment chain")
+
+
+def test_recommend_listener_failed_packet_stops_enrichment():
+    """A network-failed packet is not an empty page and must stop API enrichment."""
+    packet = SimpleNamespace(
+        url="https://www.zhipin.com/wapi/zpjob/geek/recommend/list",
+        is_failed=True,
+        fail_info=SimpleNamespace(errorText="net::ERR_CONNECTION_RESET"),
+    )
+
+    class Listener:
+        def wait(self, **_kwargs):
+            return packet
+
+    try:
+        bossmaster._consume_recommend_api_candidates(Listener())
+    except bossmaster.ApiClientError as error:
+        assert error.source == "Listener"
+        assert error.uncertain is True
+        assert "ERR_CONNECTION_RESET" in error.reason
+    else:
+        raise AssertionError("failed Listener packet should stop enrichment")
+
+
+def test_recommend_listener_skips_one_malformed_packet_and_keeps_later_data():
+    """One malformed non-risk payload must not discard later queued enrichment."""
+    url = "https://www.zhipin.com/wapi/zpjob/geek/recommend/list"
+    packets = [
+        SimpleNamespace(
+            url=url,
+            is_failed=False,
+            response=SimpleNamespace(status=200, headers={}, body={"id": "bad"}, url=url),
+            resourceType="XHR",
+        ),
+        SimpleNamespace(
+            url=url,
+            is_failed=False,
+            response=SimpleNamespace(status=200, headers={}, body={"id": "good"}, url=url),
+            resourceType="XHR",
+        ),
+    ]
+
+    class Listener:
+        def __init__(self):
+            self.results = [packets, None]
+
+        def wait(self, **_kwargs):
+            return self.results.pop(0)
+
+    with (
+        patch.object(
+            bossmaster,
+            "_extract_candidates_from_api_payload",
+            side_effect=[ValueError("bad payload"), [{"geek_id": "good"}]],
+        ),
+        contextlib.redirect_stdout(io.StringIO()) as output,
+    ):
+        candidates, captured_url = bossmaster._consume_recommend_api_candidates(Listener())
+
+    assert candidates == [{"geek_id": "good"}]
+    assert captured_url == url
+    assert "解析 BOSS Listener 响应失败" in output.getvalue()
+
+
+def test_list_greeting_returns_not_found_without_clicking():
+    class Page:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def ele(self, *_args, **_kwargs):
+            return None
+
+    with (
+        patch.object(bossmaster, "_ensure_boss_access_allowed"),
+        patch.object(bossmaster, "_detect_captcha", return_value=(False, "")),
+        patch.object(bossmaster, "get_iframe", return_value=None),
+        patch.object(bossmaster, "_find_card_by_scroll", return_value=None) as find_card,
+    ):
+        success, message = bossmaster.send_greeting_on_list_page(Page(), "g-missing")
+
+    assert success is False
+    assert "未找到卡片" in message
+    find_card.assert_called_once()
+
+
+def test_list_greeting_treats_existing_continue_button_as_confirmed():
+    button = SimpleNamespace(text="继续沟通")
+
+    class Card:
+        def parent(self):
+            return SimpleNamespace(ele=lambda *_args, **_kwargs: button)
+
+    class Page:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def ele(self, *_args, **_kwargs):
+            return Card()
+
+    with (
+        patch.object(bossmaster, "_ensure_boss_access_allowed"),
+        patch.object(bossmaster, "_detect_captcha", return_value=(False, "")),
+        patch.object(bossmaster, "get_iframe", return_value=None),
+    ):
+        success, message = bossmaster.send_greeting_on_list_page(Page(), "g-known")
+
+    assert success is True
+    assert "此前已建立沟通" in message
+
+
+def test_list_greeting_exception_after_click_returns_pending_verification():
+    button = SimpleNamespace(
+        text="立即沟通",
+        scroll=SimpleNamespace(to_see=lambda **_kwargs: None),
+        click=lambda: None,
+    )
+
+    class Card:
+        def parent(self):
+            return SimpleNamespace(ele=lambda *_args, **_kwargs: button)
+
+    class Page:
+        url = "https://www.zhipin.com/web/chat/recommend"
+
+        def ele(self, *_args, **_kwargs):
+            return Card()
+
+    with (
+        patch.object(bossmaster, "_ensure_boss_access_allowed"),
+        patch.object(bossmaster, "_detect_captcha", return_value=(False, "")),
+        patch.object(bossmaster, "_detect_limit_popup", return_value=(False, "")),
+        patch.object(bossmaster, "get_iframe", return_value=None),
+        patch.object(bossmaster.time, "sleep"),
+        patch.object(bossmaster, "verify_greeting_success", side_effect=RuntimeError("page detached")),
+    ):
+        success, message = bossmaster.send_greeting_on_list_page(Page(), "g-clicked")
+
+    assert success is None
+    assert "点击已执行，但发送结果待核实" in message
+    assert "page detached" in message
+
+
+def test_captcha_wait_honors_user_cancel_before_polling():
+    with (
+        patch.object(bossmaster, "_collect_captcha_diagnostic"),
+        patch.object(bossmaster, "_detect_captcha") as detect,
+        patch.object(bossmaster.time, "sleep") as sleep,
+        contextlib.redirect_stdout(io.StringIO()),
+    ):
+        resolved = bossmaster._wait_for_captcha_resolution(
+            object(),
+            max_wait=3,
+            captcha_callback=lambda _detail: False,
+            detail="安全验证",
+        )
+
+    assert resolved is False
+    detect.assert_not_called()
+    sleep.assert_not_called()
+
+
+def test_captcha_wait_returns_true_only_after_detection_clears():
+    with (
+        patch.object(bossmaster, "_collect_captcha_diagnostic"),
+        patch.object(bossmaster, "_detect_captcha", return_value=(False, "")) as detect,
+        patch.object(bossmaster.time, "sleep") as sleep,
+        contextlib.redirect_stdout(io.StringIO()),
+    ):
+        resolved = bossmaster._wait_for_captcha_resolution(object(), max_wait=3)
+
+    assert resolved is True
+    sleep.assert_called_once_with(bossmaster.CAPTCHA_CHECK_INTERVAL)
+    detect.assert_called_once()
 
 
 def test_smart_scan_stop_during_filtering_checkpoints_completed_candidates():

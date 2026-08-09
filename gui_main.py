@@ -31,6 +31,11 @@ from urllib.parse import urlparse
 import icons
 import ui_theme
 from ui_layout import result_display_columns
+from ui_windowing import (
+    clamp as _clamp,
+    get_windows_monitor_area as _get_windows_monitor_area,
+    place_window_centered as _place_window_centered,
+)
 from subprocess_utils import hidden_subprocess
 
 subprocess = hidden_subprocess(subprocess)
@@ -70,7 +75,6 @@ from candidate_workflow import (
     build_daily_candidate_actions,
     candidate_can_manual_approve_contact,
     candidate_greet_skip_reason,
-    candidate_has_manual_contact_approval,
     candidate_review_category,
     default_next_followup_at,
     derive_candidate_decision,
@@ -473,10 +477,6 @@ def _save_run_preferences(preferences: dict) -> None:
         logging.warning("保存运行偏好失败：%s", e)
 
 
-def _clamp(value, min_value, max_value):
-    return max(min_value, min(max_value, value))
-
-
 def _open_containing_folder(file_path: str) -> None:
     """Open the parent folder of an exported file using the host file manager."""
     folder = Path(file_path).expanduser().parent
@@ -580,69 +580,6 @@ def _is_system_dpi_aware_scale(tk_dpi_scale, physical_width, screen_width):
     return 0.90 <= width_ratio <= 1.15
 
 
-def _get_windows_monitor_area(window=None, parent=None):
-    """返回当前相关显示器工作区 (left, top, width, height)。"""
-    if sys.platform != 'win32':
-        return None
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        class RECT(ctypes.Structure):
-            _fields_ = [
-                ("left", ctypes.c_long),
-                ("top", ctypes.c_long),
-                ("right", ctypes.c_long),
-                ("bottom", ctypes.c_long),
-            ]
-
-        class MONITORINFO(ctypes.Structure):
-            _fields_ = [
-                ("cbSize", wintypes.DWORD),
-                ("rcMonitor", RECT),
-                ("rcWork", RECT),
-                ("dwFlags", wintypes.DWORD),
-            ]
-
-        user32 = ctypes.windll.user32
-        user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
-        user32.GetCursorPos.restype = wintypes.BOOL
-        user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
-        user32.MonitorFromPoint.restype = wintypes.HMONITOR
-        user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
-        user32.MonitorFromWindow.restype = wintypes.HMONITOR
-        user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFO)]
-        user32.GetMonitorInfoW.restype = wintypes.BOOL
-
-        monitor = None
-        if parent is not None:
-            parent.update_idletasks()
-            point = wintypes.POINT(
-                parent.winfo_rootx() + parent.winfo_width() // 2,
-                parent.winfo_rooty() + parent.winfo_height() // 2,
-            )
-            monitor = user32.MonitorFromPoint(point, 2)  # MONITOR_DEFAULTTONEAREST
-        else:
-            point = wintypes.POINT()
-            if user32.GetCursorPos(ctypes.byref(point)):
-                monitor = user32.MonitorFromPoint(point, 2)
-            if not monitor and window is not None:
-                monitor = user32.MonitorFromWindow(window.winfo_id(), 2)
-
-        if not monitor:
-            return None
-
-        info = MONITORINFO()
-        info.cbSize = ctypes.sizeof(MONITORINFO)
-        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
-            return None
-
-        work = info.rcWork
-        return work.left, work.top, work.right - work.left, work.bottom - work.top
-    except (ImportError, OSError, AttributeError, tk.TclError):
-        return None
-
-
 def _enable_high_dpi_awareness():
     """启用 System DPI Aware，避免 Windows 对 Tk 窗口做位图缩放。
 
@@ -720,132 +657,7 @@ def _get_primary_physical_width() -> int:
     return 0
 
 
-def _place_window_centered(
-    window,
-    width=None,
-    height=None,
-    parent=None,
-    screen_width=None,
-    screen_height=None,
-    screen_left=None,
-    screen_top=None,
-    max_width_ratio=0.9,
-    max_height_ratio=0.85,
-):
-    """居中放置窗口，并把最终位置夹在屏幕可见范围内。"""
-    if parent is not None:
-        parent.update_idletasks()
-    window.update_idletasks()
-
-    current_width = int(window.winfo_width() or 0)
-    current_height = int(window.winfo_height() or 0)
-    req_width = int(window.winfo_reqwidth() or 0)
-    req_height = int(window.winfo_reqheight() or 0)
-    width = int(width or (current_width if current_width > 1 else req_width))
-    height = int(height or (current_height if current_height > 1 else req_height))
-    monitor_area = None
-    if screen_width is None or screen_height is None:
-        monitor_area = _get_windows_monitor_area(window, parent)
-
-    if monitor_area is not None:
-        screen_left, screen_top, screen_width, screen_height = monitor_area
-    else:
-        screen_left = int(screen_left or 0)
-        screen_top = int(screen_top or 0)
-        screen_width = int(screen_width or window.winfo_screenwidth())
-        screen_height = int(screen_height or window.winfo_screenheight())
-
-    if width > screen_width:
-        width = max(1, int(screen_width * max_width_ratio))
-    if height > screen_height:
-        height = max(1, int(screen_height * max_height_ratio))
-
-    if parent is not None:
-        try:
-            # geometry() uses the outer-window origin.  Using winfo_rootx/y
-            # here mixes client-area and outer-window coordinates on Windows
-            # and leaves dialogs offset by the title bar and resize border.
-            parent_x = parent.winfo_x()
-            parent_y = parent.winfo_y()
-        except (tk.TclError, AttributeError):
-            parent_x = parent.winfo_rootx()
-            parent_y = parent.winfo_rooty()
-        parent_width = parent.winfo_width()
-        parent_height = parent.winfo_height()
-        x = parent_x + (parent_width - width) // 2
-        y = parent_y + (parent_height - height) // 2
-    else:
-        x = screen_left + (screen_width - width) // 2
-        y = screen_top + (screen_height - height) // 2
-
-    min_x = screen_left
-    min_y = screen_top
-    max_x = screen_left + max(0, screen_width - width)
-    max_y = screen_top + max(0, screen_height - height)
-    x = min(max(min_x, x), max_x)
-    y = min(max(min_y, y), max_y)
-    window.geometry(f"{width}x{height}{x:+d}{y:+d}")
-    if parent is not None:
-        _bind_parent_center_correction(window, parent, width, height, screen_left, screen_top, screen_width, screen_height)
-    return width, height, x, y
-
-
 messagebox.set_window_placer(_place_window_centered)
-
-
-def _get_parent_titlebar_center_offset(parent):
-    """估算父窗口标题栏导致的视觉中心下偏，只修正纵向中心。"""
-    try:
-        titlebar_height = int(parent.winfo_rooty()) - int(parent.winfo_y())
-    except (tk.TclError, AttributeError, TypeError, ValueError):
-        return 0
-    if titlebar_height <= 0 or titlebar_height > 120:
-        return 0
-    return titlebar_height // 2
-
-
-def _bind_parent_center_correction(window, parent, width, height, screen_left, screen_top, screen_width, screen_height):
-    """窗口显示后用 Tk 实际坐标再校正一次父子中心。"""
-    try:
-        if getattr(window, "_parent_center_correction_bound", False):
-            return
-        window._parent_center_correction_bound = True
-
-        def correct_once(event=None):
-            try:
-                window.unbind("<Map>", getattr(window, "_parent_center_correction_bind_id", ""))
-            except tk.TclError:
-                pass
-            try:
-                parent.update_idletasks()
-                window.update_idletasks()
-                parent_center_x = parent.winfo_rootx() + parent.winfo_width() // 2
-                parent_center_y = parent.winfo_rooty() + parent.winfo_height() // 2
-                window_center_x = window.winfo_rootx() + window.winfo_width() // 2
-                window_center_y = window.winfo_rooty() + window.winfo_height() // 2
-                dx = parent_center_x - window_center_x
-                dy = parent_center_y - window_center_y
-                if abs(dx) < 1 and abs(dy) < 1:
-                    return
-                try:
-                    new_x = window.winfo_x() + dx
-                    new_y = window.winfo_y() + dy
-                except (tk.TclError, AttributeError):
-                    new_x = window.winfo_rootx() + dx
-                    new_y = window.winfo_rooty() + dy
-                max_x = screen_left + max(0, screen_width - width)
-                max_y = screen_top + max(0, screen_height - height)
-                new_x = min(max(screen_left, new_x), max_x)
-                new_y = min(max(screen_top, new_y), max_y)
-                window.geometry(f"{width}x{height}{int(new_x):+d}{int(new_y):+d}")
-            except (tk.TclError, AttributeError):
-                return
-
-        bind_id = window.bind("<Map>", correct_once, add="+")
-        window._parent_center_correction_bind_id = bind_id
-        window.after(50, correct_once)
-    except (tk.TclError, AttributeError):
-        return
 
 
 def _place_main_window(root, monitor_area=None):
@@ -10107,7 +9919,6 @@ class BossFilterGUI:
         from PIL import Image, ImageDraw, ImageTk
 
         size = int(18 * self.dpi_scale * self.zoom_factor)
-        pad = max(1, size // 12)
 
         def make_icon(bg_color, symbol_type):
             img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
@@ -10568,7 +10379,6 @@ class BossFilterGUI:
                     c for c in candidates
                     if derive_candidate_decision(c).screening_result == '强烈推荐'
                 ]
-                detail_type = 'all'
             elif stat_type == 'recommended':
                 # 推荐
                 title = "推荐"
@@ -10576,7 +10386,6 @@ class BossFilterGUI:
                     c for c in candidates
                     if derive_candidate_decision(c).screening_result == '推荐'
                 ]
-                detail_type = 'all'
             elif stat_type == 'pending':
                 # 待定
                 title = "待定"
@@ -10584,7 +10393,6 @@ class BossFilterGUI:
                     c for c in candidates
                     if derive_candidate_decision(c).screening_result == '待定'
                 ]
-                detail_type = 'all'
             elif stat_type == 'greeted':
                 title = "已打招呼"
                 filtered = [
@@ -10593,7 +10401,6 @@ class BossFilterGUI:
                     in {'强烈推荐', '推荐', '待定'}
                     and c.get('greet_sent', False)
                 ]
-                detail_type = 'all'
             else:
                 return
 
@@ -12728,11 +12535,10 @@ class BossFilterGUI:
             # 解析 URL 获取主机，用于 DNS 预检查
             parsed = urlparse(base_url)
             hostname = parsed.hostname
-            port = parsed.port or (443 if parsed.scheme == 'https' else 80)
 
             # === 阶段 1: DNS 解析检查（快速失败）===
             try:
-                ip_addr = socket.gethostbyname(hostname)
+                socket.gethostbyname(hostname)
                 # DNS 解析成功，继续
             except socket.gaierror:
                 elapsed = time.time() - start_time
@@ -12795,10 +12601,6 @@ class BossFilterGUI:
                     parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
                 ))
                 return
-
-            # === 阶段 2: TCP 连接检查（可选，快速判断网络可达性）===
-            # 国内 API 跳过此步（减少一次握手），海外 API 执行
-            is_domestic = any(dom in base_url.lower() for dom in ['aliyun', 'tencent', 'baidu', 'volcengine', 'deepseek', 'zhipu', 'stepfun', 'moonshot', 'minimax', 'xiaomi'])
 
             # === 阶段 3: HTTPS 请求（宽松超时）===
             # 关键：每次使用全新 Session + 禁用 keep-alive，确保连接新鲜
@@ -25514,7 +25316,7 @@ class BossFilterGUI:
 
     def show_changelog(self):
         """显示更新日志（版本列表 + 详情分栏）"""
-        gui_dialogs.show_changelog_dialog(self)
+        gui_dialogs.show_changelog_dialog(self, __version__)
 
 
 def main():

@@ -666,39 +666,36 @@ def capture_captcha_image(page: Any) -> str:
         info.get("left", 0), info.get("top", 0),
         info.get("width", 0), info.get("height", 0),
     )
-    tmp_path = Path(tempfile.mktemp(suffix=".png"))
-    for method_name in ("get_screenshot", "save_screenshot"):
-        try:
-            ele = page.ele("css:input[name='yzm']")
-            if not ele:
-                break
-            parent = ele.parent()
-            img_ele = None
-            while parent:
-                img_ele = parent.ele("tag:img", timeout=0.1)
-                if img_ele:
+    with tempfile.TemporaryDirectory(prefix="boss-captcha-") as temp_dir:
+        tmp_path = Path(temp_dir) / "element.png"
+        for method_name in ("get_screenshot", "save_screenshot"):
+            try:
+                ele = page.ele("css:input[name='yzm']")
+                if not ele:
                     break
-                parent = parent.parent()
-            if not img_ele:
-                break
-            method = getattr(img_ele, method_name, None)
-            if not method:
+                parent = ele.parent()
+                img_ele = None
+                while parent:
+                    img_ele = parent.ele("tag:img", timeout=0.1)
+                    if img_ele:
+                        break
+                    parent = parent.parent()
+                if not img_ele:
+                    break
+                method = getattr(img_ele, method_name, None)
+                if not method:
+                    continue
+                method(path=str(tmp_path))
+                if tmp_path.exists() and tmp_path.stat().st_size > 0:
+                    return _image_bytes_to_data_url(tmp_path.read_bytes())
+            except Exception:
                 continue
-            method(path=str(tmp_path))
-            if tmp_path.exists() and tmp_path.stat().st_size > 0:
-                raw_bytes = tmp_path.read_bytes()
-                tmp_path.unlink(missing_ok=True)
-                return _image_bytes_to_data_url(raw_bytes)
-        except Exception:
-            continue
-    tmp_path.unlink(missing_ok=True)
 
-    # 策略 3：全页截图 + 区域裁剪
-    if bbox[2] > 0 and bbox[3] > 0:
-        full_path = Path(tempfile.mktemp(suffix=".png"))
-        try:
-            for m in ("get_screenshot", "save_screenshot", "screenshot"):
-                method = getattr(page, m, None)
+        # 策略 3：全页截图 + 区域裁剪
+        if bbox[2] > 0 and bbox[3] > 0:
+            full_path = Path(temp_dir) / "page.png"
+            for method_name in ("get_screenshot", "save_screenshot", "screenshot"):
+                method = getattr(page, method_name, None)
                 if not method:
                     continue
                 try:
@@ -718,10 +715,7 @@ def capture_captcha_image(page: Any) -> str:
                         cropped = full_img.crop((x1, y1, x2, y2))
                         buf = io.BytesIO()
                         cropped.convert("RGB").save(buf, format="PNG", optimize=True)
-                        full_path.unlink(missing_ok=True)
                         return _image_bytes_to_data_url(buf.getvalue())
-        finally:
-            full_path.unlink(missing_ok=True)
 
     raise RuntimeError("验证码图片截取失败，所有策略均未成功")
 

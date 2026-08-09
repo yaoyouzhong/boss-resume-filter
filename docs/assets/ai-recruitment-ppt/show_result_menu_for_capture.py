@@ -1,9 +1,8 @@
-"""Open the real result page with sanitized data and keep its context menu visible."""
+"""Open the result page with fully synthetic data and keep its context menu visible."""
 
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -21,6 +20,7 @@ spec.loader.exec_module(helper)
 
 helper.gui_main._enable_high_dpi_awareness()
 monitor_area = helper.gui_main._get_windows_monitor_area()
+helper.install_demo_job_config_source()
 
 root = tk.Tk()
 root.withdraw()
@@ -32,18 +32,9 @@ root.lift()
 root.focus_force()
 root.update()
 
-jobs = list(app.job_rules)
-if not jobs:
-    raise RuntimeError("No configured jobs")
-selected_job = next((name for name in jobs if "AI" in name), jobs[0])
-DEMO_PATH.write_text(
-    json.dumps(
-        helper.build_sanitized_real_candidates(selected_job),
-        ensure_ascii=False,
-        indent=2,
-    ),
-    encoding="utf-8",
-)
+if list(app.job_rules) != [helper.DEMO_JOB]:
+    raise RuntimeError("Synthetic demo job configuration was not installed")
+helper.write_demo_candidates(DEMO_PATH)
 helper.gui_main.CANDIDATES_PATH = DEMO_PATH
 helper.gui_main.CANDIDATES_XLSX_PATH = DEMO_PATH.with_suffix(".xlsx")
 

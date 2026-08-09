@@ -742,3 +742,28 @@ def test_cleanup_plan_preserves_branch_with_dirty_worktree():
         _raises(release_flow.pr_delivery.PRDeliveryError, "存在未提交修改"),
     ):
         release_flow._validate_cleanup_plan(state)
+
+
+def test_cleanup_plan_preserves_branch_when_remote_head_has_moved():
+    """Cleanup authorization is invalid once either remote branch changes."""
+    state = {
+        **_candidate_state(),
+        "cleanup_branches": [{
+            "branch": "codex/feature-a",
+            "head_sha": "a" * 40,
+            "role": "candidate",
+        }],
+    }
+
+    def remote_ref(remote, ref):
+        assert ref == "refs/heads/codex/feature-a"
+        return "d" * 40 if remote == "gitee" else "a" * 40
+
+    with (
+        patch.object(release_flow.pr_delivery, "_is_ancestor", return_value=True),
+        patch.object(release_flow.pr_delivery, "_local_branch_exists", return_value=False),
+        patch.object(release_flow.pr_delivery, "_worktree_for_branch", return_value=None),
+        patch.object(release_flow.pr_delivery, "_remote_ref", side_effect=remote_ref),
+        _raises(release_flow.ReleaseFlowError, "gitee 待清理分支在候选确认后发生变化"),
+    ):
+        release_flow._validate_cleanup_plan(state)
