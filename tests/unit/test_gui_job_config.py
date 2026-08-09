@@ -1763,71 +1763,61 @@ def test_save_capability_to_model_matches_provider_base_url_and_model():
 
 
 def test_result_scope_label_matches_filter_label_style():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
     assert 'text="结果范围:"' in result_block
 
 
 def test_result_page_defaults_to_all_records_and_offers_today():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
     assert 'values=("全部时间", "今天", "近7天", "近30天", "自定义")' in result_block
-    assert 'self.result_view_var = tk.StringVar(value="全部记录")' in result_block
+    assert 'view_var = tk.StringVar(value="全部记录")' in result_block
     assert '"推荐候选人", "复核通过", "待复核", "淘汰记录", "全部记录"' in result_block
 
 
 def test_result_page_keeps_gender_visible_and_all_fields_horizontally_scrollable():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
-    assert '"name", "gender", "exp", "salary", "skills", "score", "ai_eval"' in result_block
-    assert 'self.result_tree.heading("gender", text="性别")' in result_block
+    assert '"gender": "性别"' in result_block
+    assert '"gender": (55, 48)' in result_block
     assert 'orient="horizontal"' in result_block
-    assert 'command=self.result_tree.xview' in result_block
+    assert 'command=tree.xview' in result_block
     assert 'xscrollcommand=tree_scroll_x.set' in result_block
     assert 'tree_scroll_x.pack(' in result_block
 
 
 def test_result_blacklist_check_blends_with_page_background_in_every_state():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
-    style_block = result_block[result_block.index('_cb_style.configure('):]
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
+    style_block = result_block[result_block.index('checkbox_style.configure('):]
     style_block = style_block[:style_block.index('blacklist_check = ttk.Checkbutton(')]
 
-    assert "background=self.colors['bg_main']" in style_block
+    assert 'background=host.colors["bg_main"]' in style_block
     for state in ("active", "pressed", "selected", "disabled"):
-        assert f'(\"{state}\", self.colors[\'bg_main\'])' in style_block
+        assert f'(\"{state}\", host.colors[\"bg_main\"])' in style_block
 
 
 def test_result_page_keeps_workflow_actions_visible_and_groups_utilities():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
     assert 'text=" 今日待办"' in result_block
-    assert "self.icons.button('task_list', self.colors['primary'])" in result_block
+    assert 'host.icons.button("task_list", host.colors["primary"])' in result_block
     assert 'text=" 查看与复核"' in result_block
-    assert "self.icons.button('candidate_review', self.colors['primary'])" in result_block
-    review_button_block = result_block[result_block.index("self.result_review_button = ttk.Button("):]
-    review_button_block = review_button_block[:review_button_block.index("self.result_review_button._icon_ref")]
+    assert 'host.icons.button("candidate_review", host.colors["primary"])' in result_block
+    review_button_block = result_block[result_block.index("review_button = ttk.Button("):]
+    review_button_block = review_button_block[:review_button_block.index("review_button._icon_ref")]
     assert "style='Accent.TButton'" not in review_button_block
     assert 'text=" 联系候选人"' in result_block
     assert 'text="更多操作"' in result_block
     assert 'label=" 查看今日待办"' not in result_block
     assert 'label=" 候选人状态体检"' in result_block
-    assert "self.icons.button('health_shield', self.colors['primary'])" in result_block
+    assert 'host.icons.button("health_shield", host.colors["primary"])' in result_block
     assert 'label=" 导出 Excel"' in result_block
     assert 'label=" 清空候选人"' in result_block
     assert 'text=" 状态体检"' not in result_block
     assert 'text=" 导出 Excel"' not in result_block
     assert 'text=" 清空候选人"' not in result_block
-    assert "pady=(int(20 * self.dpi_scale * self.zoom_factor), 0)" in result_block
+    assert 'pady=(int(20 * scale), 0)' in result_block
 
 
 def test_system_settings_model_name_matches_provider_control_width():
@@ -1847,6 +1837,7 @@ def test_system_settings_model_name_matches_provider_control_width():
 
 def test_more_action_menubuttons_share_centered_overlay_arrow_style():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    result_source = Path("gui_result_page.py").read_text(encoding="utf-8")
     setup_block = source[source.index("def setup_styles"):]
     setup_block = setup_block[:setup_block.index("\n    def _create_status_icons")]
 
@@ -1856,18 +1847,21 @@ def test_more_action_menubuttons_share_centered_overlay_arrow_style():
     assert "padding=(24, 8)" in setup_block
     assert "anchor='center'" in setup_block
     assert "justify='center'" in setup_block
-    assert source.count("style='CenteredActions.TMenubutton'") == 2
+    assert (
+        source.count("style='CenteredActions.TMenubutton'")
+        + result_source.count('style="CenteredActions.TMenubutton"')
+        == 2
+    )
     assert "ConfigActions.TMenubutton" not in source
     assert "ResultActions.TMenubutton" not in source
 
     config_block = source[source.index("def create_config_page"):]
     config_block = config_block[:config_block.index("\n    def create_api_config_page")]
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    result_block = result_source
     assert "tk.Menu(select_frame, tearoff=0, font=self.font_label)" in config_block
-    assert "font=self.font_label," in result_block[result_block.index("more_menu = tk.Menu("):]
+    assert "font=host.font_label" in result_block[result_block.index("more_menu = tk.Menu("):]
     assert "menu=more_menu,\n            width=9," in config_block
-    assert "menu=more_menu,\n            width=9," in result_block
+    assert "menu=more_menu,\n        width=9," in result_block
     assert "self.icons.button('trash', self.colors['danger'])" in config_block
 
 
@@ -2718,13 +2712,12 @@ def test_home_and_result_empty_state_use_staged_navigation_entrypoint():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     home_block = source[source.index("def create_home_page"):]
     home_block = home_block[:home_block.index("\n    def create_config_page")]
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
     assert "command=lambda: self._request_sidebar_page(PageIndex.RUN)" in home_block
     assert "command=lambda: self._request_sidebar_page(PageIndex.RESULTS)" in home_block
     assert "command=lambda: self._request_sidebar_page(PageIndex.CONFIG)" in home_block
-    assert "action_command=lambda: self._request_sidebar_page(PageIndex.RUN)" in result_block
+    assert "action_command=lambda: host._request_sidebar_page(run_page_index)" in result_block
     assert "command=self.show_page_run" not in home_block
     assert "command=self.show_page_config" not in home_block
 
@@ -5030,9 +5023,9 @@ def test_browser_auto_check_debounces_one_transient_connection_failure():
 
 def test_result_page_stats_show_greeted_after_pending():
     """结果页依次展示强烈推荐、推荐、待定、已打招呼。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    stats_block = source[source.index("stats_data = [", source.index("def create_result_page")):]
-    stats_block = stats_block[:stats_block.index("\n\n        card_gap")]
+    source = Path("gui_result_page.py").read_text(encoding="utf-8")
+    stats_block = source[source.index("stats_data = ["):]
+    stats_block = stats_block[:stats_block.index("\n    card_gap")]
 
     assert '"通过筛选"' not in stats_block
     assert (
@@ -5060,24 +5053,20 @@ def test_result_page_greeted_detail_uses_passed_candidates_only():
 
 def test_result_page_has_greet_queue_entry():
     """筛选结果页提供显性的候选人联系入口。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
     assert 'text=" 联系候选人"' in result_block
-    assert "command=self._open_greet_queue_from_result" in result_block
-    assert "self.result_greet_queue_badge = tk.Label(" in result_block
+    assert "command=host._open_greet_queue_from_result" in result_block
+    assert "greet_queue_badge = tk.Label(" in result_block
     assert result_block.index('text=" 联系候选人"') < result_block.index('label=" 导出 Excel"')
 
 
 def test_result_page_hides_technical_json_button():
     """筛选结果页不暴露面向技术排障的 JSON 文件入口。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
     assert 'text=" 打开 JSON"' not in result_block
-    assert "command=self.open_json" not in result_block
+    assert "command=host.open_json" not in result_block
 
 
 def test_batch_greet_context_menu_adds_to_queue_instead_of_direct_send():
@@ -7390,8 +7379,7 @@ def test_inline_form_notes_use_flat_copy_without_outer_parentheses():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     run_block = source[source.index("def create_run_page"):]
     run_block = run_block[:run_block.index("\n    def create_result_page")]
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
     assert 'text="默认 50，推荐 20-100"' in run_block
     assert '_note_prefix = "对通过筛选的候选人进行 LLM 二次评估，"' in run_block
@@ -7399,19 +7387,19 @@ def test_inline_form_notes_use_flat_copy_without_outer_parentheses():
     assert '(推荐 50-200 轮次)' not in run_block
     assert 'StringVar(value=str(MAX_ROUNDS_DEFAULT))' in run_block
     assert gui_main.MAX_ROUNDS_DEFAULT == 50
-    assert 'self._result_search_placeholder = "姓名/性别/匹配分/推荐指数/状态"' in result_block
-    assert "textvariable=self.result_search_var, width=26" in result_block
-    assert "'text_placeholder', ui_theme.TEXT_PLACEHOLDER" in result_block
-    assert "max(8, int(8 * self.dpi_scale * self.zoom_factor))" in result_block
-    assert "bind('<FocusIn>', _hide_result_search_placeholder)" in result_block
-    assert "bind('<FocusOut>', _show_result_search_placeholder)" in result_block
+    assert 'self._result_search_placeholder = "姓名/性别/匹配分/推荐指数/状态"' in source
+    assert "textvariable=search_var," in result_block
+    assert '"text_placeholder",\n        ui_theme.TEXT_PLACEHOLDER' in result_block
+    assert "max(8, int(8 * scale))" in result_block
+    assert 'bind("<FocusIn>", hide_search_placeholder)' in result_block
+    assert 'bind("<FocusOut>", show_search_placeholder)' in result_block
     assert 'text="Esc 清空"' in result_block
-    assert "def _sync_result_search_clear_hint():" in result_block
-    assert "hint.pack_forget()" in result_block
-    assert "pack_options['before'] = result_view_label" in result_block
+    assert "def sync_search_clear_hint()" in result_block
+    assert "search_clear_hint.pack_forget()" in result_block
+    assert "before=view_label" in result_block
     assert 'text="姓名/性别/匹配分/推荐指数/状态，Esc 清空"' not in result_block
     assert 'bind_all("<Button-1>", self._on_global_left_click, add="+")' in source
-    assert 'lambda _event: self._refresh_results_and_reset_sort()' in result_block
+    assert 'lambda _event: host._refresh_results_and_reset_sort()' in result_block
     assert '"刷新结果并恢复默认排序"' in result_block
 
 

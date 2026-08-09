@@ -37,6 +37,7 @@ import gui_candidate_diagnostics
 import gui_candidate_review
 import gui_candidate_workbench
 import gui_contact_queue
+import gui_result_page
 import gui_stats_page
 import run_presenter
 import stats_presenter
@@ -6596,485 +6597,51 @@ class BossFilterGUI:
         self._bind_mousewheel(self.run_canvas, self.run_scrollable_frame)
 
     def create_result_page(self):
-        """创建筛选结果页面"""
-        self.result_page = ttk.Frame(self.pages_frame, style='Page.TFrame')
-
-        # 页面标题
-        self._create_page_header(self.result_page, "筛选结果")
-
-        # 岗位过滤
-        filter_frame = ttk.Frame(self.result_page, style='Page.TFrame')
-        filter_frame.pack(fill="x", pady=(0, int(10 * self.dpi_scale * self.zoom_factor)))
-        ttk.Label(filter_frame, text="岗位过滤:", font=self.font_label,
-                 background=self.colors['bg_main']).pack(side="left")
-        self.result_job_var = tk.StringVar(value="全部岗位")
-        self.result_job_combo = ttk.Combobox(filter_frame, textvariable=self.result_job_var,
-                                              values=["全部岗位"], width=28, state="readonly",
-                                              font=self.font_label)
-        self.result_job_combo.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
-        self.result_job_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_results())
-
-        # 时间范围；只有自定义时显示具体日期控件。
-        ttk.Label(filter_frame, text="时间范围:", font=self.font_label,
-                 background=self.colors['bg_main']).pack(side="left", padx=int(20 * self.dpi_scale * self.zoom_factor))
-        self.result_time_range_var = tk.StringVar(value="全部时间")
-        self.result_time_range_combo = ttk.Combobox(
-            filter_frame,
-            textvariable=self.result_time_range_var,
-            values=("全部时间", "今天", "近7天", "近30天", "自定义"),
-            width=10,
-            state="readonly",
-            font=self.font_label,
-            postcommand=self._close_result_date_dropdowns,
-        )
-        self.result_time_range_combo.pack(
-            side="left", padx=(0, int(8 * self.dpi_scale * self.zoom_factor))
-        )
-        self.result_time_range_combo.bind(
-            "<<ComboboxSelected>>", self._on_result_time_range_changed
-        )
-
-        self.result_custom_date_frame = ttk.Frame(filter_frame, style='Page.TFrame')
-        # 默认时间范围不需要日历。保留属性供日期过滤判断，首次选择“自定义”时再创建，
-        # 避免结果页首开同步导入 tkcalendar 并初始化两个隐藏 Calendar。
+        """创建筛选结果页面。"""
+        self._result_search_placeholder = "姓名/性别/匹配分/推荐指数/状态"
+        self._result_search_placeholder_active = True
+        self._result_search_focused = False
+        self.result_search_clear_hint = None
         self.result_date_start_entry = None
         self.result_date_end_entry = None
 
-        # 统计卡片区（纵向卡片布局）
-        stats_container = ttk.Frame(self.result_page, style='Page.TFrame')
-        stats_container.pack(fill="x", pady=int(15 * self.dpi_scale * self.zoom_factor))
-
-        self.result_stats_vars = {}
-        self.result_stats_greeted = {}
-        self.result_stats_click = {}
-        stats_data = [
-            ("strong_recommend", "强烈推荐", "strong", self.colors['purple']),
-            ("thumbs_up", "推荐", "recommended", self.colors['success']),
-            ("hourglass", "待定", "pending", self.colors['pending']),
-            ("chat", "已打招呼", "greeted", self.colors['warning']),
-        ]
-
-        card_gap = int(12 * self.dpi_scale * self.zoom_factor)
-        self._result_stat_icon_canvases = []
-        for idx, (icon_name, label_text, var_name, color) in enumerate(stats_data):
-            card_frame = ttk.Frame(stats_container, style='Card.TFrame')
-            card_padx = (0, card_gap) if idx < len(stats_data) - 1 else 0
-            card_frame.pack(side="left", fill="x", expand=True, padx=card_padx)
-
-            # 彩色圆形图标（大号）
-            icon_size = int(UI_CONFIG['stat_icon_size'] * self.dpi_scale * self.zoom_factor)
-            icon_canvas = tk.Canvas(card_frame, width=icon_size, height=icon_size,
-                                    bg=self.colors['bg_card'], highlightthickness=0)
-            icon_canvas.pack(anchor="center",
-                            pady=(int(12 * self.dpi_scale * self.zoom_factor), int(4 * self.dpi_scale * self.zoom_factor)))
-            margin = int(UI_CONFIG['icon_margin'] * self.dpi_scale * self.zoom_factor)
-            icon_canvas.create_oval(margin, margin, icon_size - margin, icon_size - margin,
-                                    fill=color, outline='')
-            stat_icon = self.icons.stat(icon_name, 'white')
-            icon_canvas.create_image(icon_size // 2, icon_size // 2, image=stat_icon)
-            icon_canvas._icon_ref = stat_icon
-
-            # 数值
-            var = tk.StringVar(value="0")
-            self.result_stats_vars[var_name] = var
-            value_label = ttk.Label(card_frame, textvariable=var, font=self.font_stat,
-                                   foreground=color, background=self.colors['bg_card'],
-                                   cursor="hand2")
-            value_label.pack(anchor="center", pady=(0, int(2 * self.dpi_scale * self.zoom_factor)))
-            self._result_stat_icon_canvases.append((icon_canvas, value_label))
-
-            # 已打招呼
-            greeted_var = tk.StringVar(
-                value="通过筛选中" if var_name == "greeted" else "0 已打招呼"
-            )
-            self.result_stats_greeted[var_name] = greeted_var
-            greeted_label = ttk.Label(card_frame, textvariable=greeted_var,
-                                     font=(FONT_FAMILY, int(10 * self.font_scale)),
-                                     foreground=self.colors['success'], background=self.colors['bg_card'])
-            greeted_label.pack(anchor="center", pady=(0, int(2 * self.dpi_scale * self.zoom_factor)))
-
-            # 标签
-            label = ttk.Label(card_frame, text=label_text, font=self.font_stat_label,
-                             foreground=self.colors['text_secondary'], background=self.colors['bg_card'])
-            label.pack(anchor="center", pady=(0, int(10 * self.dpi_scale * self.zoom_factor)))
-
-            # 绑定点击事件
-            self.result_stats_click[var_name] = label_text
-            value_label.bind("<Button-1>", lambda e, vt=var_name: self.show_result_stat_detail(vt))
-            label.bind("<Button-1>", lambda e, vt=var_name: self.show_result_stat_detail(vt))
-
-        # 搜索框 — 位于统计卡片和候选人列表之间
-        search_frame = ttk.Frame(self.result_page, style='Page.TFrame')
-        search_frame.pack(fill="x", pady=(int(12 * self.dpi_scale * self.zoom_factor), int(6 * self.dpi_scale * self.zoom_factor)))
-        ttk.Label(search_frame, text="搜索:", font=self.font_label,
-                 background=self.colors['bg_main']).pack(side="left")
-        self._result_search_placeholder = "姓名/性别/匹配分/推荐指数/状态"
-        self._result_search_placeholder_active = True
-        self.result_search_var = tk.StringVar(value=self._result_search_placeholder)
-        self.result_search_entry = ttk.Entry(
-            search_frame, textvariable=self.result_search_var, width=26, font=self.font_label)
-        _search_placeholder_color = self.colors.get(
-            'text_placeholder', ui_theme.TEXT_PLACEHOLDER
+        widgets = gui_result_page.build_result_page(
+            self,
+            UI_CONFIG,
+            font_family=FONT_FAMILY,
+            run_page_index=PageIndex.RUN,
         )
-        self.result_search_entry.configure(
-            foreground=_search_placeholder_color
-        )
-        self.result_search_entry.pack(
-            side="left", padx=(max(8, int(8 * self.dpi_scale * self.zoom_factor)), 0)
-        )
-        self._result_search_focused = False
-
-        def _sync_result_search_clear_hint():
-            hint = getattr(self, 'result_search_clear_hint', None)
-            if hint is None:
-                return
-            query_active = (
-                not self._result_search_placeholder_active
-                and bool(self.result_search_var.get().strip())
-            )
-            should_show = self._result_search_focused or query_active
-            if should_show and not hint.winfo_manager():
-                pack_options = {
-                    'side': 'left',
-                    'padx': (self.inline_note_gap, 0),
-                }
-                result_view_label = getattr(self, 'result_view_label', None)
-                if result_view_label is not None:
-                    pack_options['before'] = result_view_label
-                hint.pack(**pack_options)
-            elif not should_show and hint.winfo_manager():
-                hint.pack_forget()
-
-        def _hide_result_search_placeholder(_event=None):
-            self._result_search_focused = True
-            if self._result_search_placeholder_active:
-                self._result_search_placeholder_active = False
-                self.result_search_var.set("")
-                self.result_search_entry.configure(foreground=self.colors['text_primary'])
-            _sync_result_search_clear_hint()
-
-        def _show_result_search_placeholder(_event=None):
-            self._result_search_focused = False
-            if not self.result_search_var.get():
-                self._result_search_placeholder_active = True
-                self.result_search_var.set(self._result_search_placeholder)
-                self.result_search_entry.configure(
-                    foreground=_search_placeholder_color
-                )
-            _sync_result_search_clear_hint()
-
-        def _clear_result_search(_event=None):
-            self._result_search_placeholder_active = False
-            self.result_search_var.set("")
-            self.result_search_entry.configure(foreground=self.colors['text_primary'])
-            _sync_result_search_clear_hint()
-            return "break"
-
-        def _on_result_search_changed(*_):
-            self._filter_result_tree()
-            _sync_result_search_clear_hint()
-
-        self.result_search_var.trace_add('write', _on_result_search_changed)
-        self.result_search_entry.bind('<FocusIn>', _hide_result_search_placeholder)
-        self.result_search_entry.bind('<FocusOut>', _show_result_search_placeholder)
-        self.result_search_entry.bind('<Escape>', _clear_result_search)
-        self.result_search_clear_hint = ttk.Label(
-            search_frame, text="Esc 清空",
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_main'],
-        )
-
-        self.result_view_label = ttk.Label(
-            search_frame, text="结果范围:", font=self.font_label,
-            background=self.colors['bg_main'],
-        )
-        self.result_view_label.pack(
-                     side="left", padx=(int(16 * self.dpi_scale * self.zoom_factor), 0))
-        self.result_view_var = tk.StringVar(value="全部记录")
-        self.result_view_combo = ttk.Combobox(
-            search_frame,
-            textvariable=self.result_view_var,
-            values=("推荐候选人", "复核通过", "待复核", "淘汰记录", "全部记录"),
-            width=11,
-            state="readonly",
-            font=self.font_label,
-        )
-        self.result_view_combo.pack(side="left", padx=int(10 * self.dpi_scale * self.zoom_factor))
-        self.result_view_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_results())
-        self.result_count_var = tk.StringVar(value="0 / 共 0 人")
-        ttk.Label(
-            search_frame,
-            textvariable=self.result_count_var,
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_main'],
-        ).pack(side="left", padx=int(8 * self.dpi_scale * self.zoom_factor))
-
-        # 结果列表工具区（搜索栏最右侧）
-        self.result_show_blacklist_var = tk.BooleanVar(value=False)
-        _cb_style = ttk.Style()
-        _cb_style.configure(
-            "Blacklist.TCheckbutton",
-            font=self.font_label,
-            background=self.colors['bg_main'],
-        )
-        _cb_style.map(
-            "Blacklist.TCheckbutton",
-            background=[
-                ("active", self.colors['bg_main']),
-                ("pressed", self.colors['bg_main']),
-                ("selected", self.colors['bg_main']),
-                ("disabled", self.colors['bg_main']),
-            ],
-        )
-        blacklist_check = ttk.Checkbutton(
-            search_frame, text="显示已屏蔽", variable=self.result_show_blacklist_var,
-            command=lambda: self.refresh_results(), style="Blacklist.TCheckbutton")
-        icon_refresh_result = self.icons.get(
-            'refresh_clean',
-            int(24 * self.dpi_scale * self.zoom_factor),
-            self.colors['text_primary'],
-        )
-        refresh_icon = ttk.Label(
-            search_frame,
-            image=icon_refresh_result,
-            cursor="hand2",
-            background=self.colors['bg_main'],
-        )
-        refresh_icon._icon_ref = icon_refresh_result
-        refresh_icon.bind("<Button-1>", lambda _event: self._refresh_results_and_reset_sort())
-        refresh_icon.bind(
-            "<Enter>",
-            lambda event: self._show_tooltip(
-                "刷新结果并恢复默认排序",
-                event.x_root + int(12 * self.dpi_scale * self.zoom_factor),
-                event.y_root + int(12 * self.dpi_scale * self.zoom_factor),
-                ("result_refresh",),
-            ),
-        )
-        refresh_icon.bind("<Leave>", self._hide_tooltip)
-        refresh_icon.pack(
-            side="right",
-            padx=(int(6 * self.dpi_scale * self.zoom_factor), int(12 * self.dpi_scale * self.zoom_factor)),
-        )
-        blacklist_check.pack(side="right", padx=(0, int(6 * self.dpi_scale * self.zoom_factor)))
-
-        # 结果表格
-        table_container = ttk.Frame(self.result_page, style='Card.TFrame')
-        table_container.pack(fill="both", expand=True, pady=int(8 * self.dpi_scale * self.zoom_factor))
-
-        # 表格
-        columns = (
-            "name", "gender", "exp", "salary", "skills", "score", "ai_eval",
-            "level", "status", "age", "education", "job_status", "school", "company",
-        )
-        base_display_columns = result_display_columns(0, maximized=False)
-        self.result_tree = ttk.Treeview(
-            table_container,
-            columns=columns,
-            displaycolumns=base_display_columns,
-            show="headings",
-            height=4,
-            selectmode="extended",
-        )
-
-        self.result_tree.heading("name", text="姓名")
-        self.result_tree.heading("gender", text="性别")
-        self.result_tree.heading("exp", text="工作年限")
-        self.result_tree.heading("salary", text="薪资")
-        self.result_tree.heading("skills", text="技能匹配")
-        self.result_tree.heading("score", text="匹配分")
-        self.result_tree.heading("ai_eval", text="AI评估")
-        self.result_tree.heading("level", text="推荐指数")
-        self.result_tree.heading("status", text="状态 / 复核")
-        self.result_tree.heading("age", text="年龄")
-        self.result_tree.heading("education", text="学历")
-        self.result_tree.heading("job_status", text="求职状态")
-        self.result_tree.heading("school", text="毕业学校")
-        self.result_tree.heading("company", text="最近公司")
-
-        # 核心字段在前、扩展画像在后；窄窗口通过底部滚动条查看后续字段。
-        self.result_tree.column("name", width=80, minwidth=60, anchor='center')
-        self.result_tree.column("gender", width=55, minwidth=48, anchor='center')
-        self.result_tree.column("exp", width=85, minwidth=70, anchor='center')
-        self.result_tree.column("salary", width=85, minwidth=70, anchor='center')
-        self.result_tree.column("skills", width=85, minwidth=70, anchor='center')
-        self.result_tree.column("score", width=70, minwidth=60, anchor='center')
-        self.result_tree.column("ai_eval", width=70, minwidth=60, anchor='center')
-        self.result_tree.column("level", width=80, minwidth=70, anchor='center')
-        self.result_tree.column("status", width=180, minwidth=150, anchor='center')
-        self.result_tree.column("age", width=70, minwidth=60, anchor='center')
-        self.result_tree.column("education", width=90, minwidth=80, anchor='center')
-        self.result_tree.column("job_status", width=130, minwidth=90, anchor='center')
-        self.result_tree.column("school", width=150, minwidth=120, anchor='center')
-        self.result_tree.column("company", width=160, minwidth=125, anchor='center')
-
-        # 设置表格字体和样式
-        style = ttk.Style()
-        style.configure("Result.Treeview", font=self.font_table, rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor))
-        style.configure("Result.Treeview.Heading", font=(FONT_FAMILY, int(12 * self.font_scale), 'bold'))
-        self.result_tree.configure(style="Result.Treeview")
-        self._result_tree_font = font.Font(font=self.font_table)
+        self._result_page_widgets = widgets
+        self.result_page = widgets.page
+        self.result_job_var = widgets.job_var
+        self.result_job_combo = widgets.job_combo
+        self.result_time_range_var = widgets.time_range_var
+        self.result_time_range_combo = widgets.time_range_combo
+        self.result_custom_date_frame = widgets.custom_date_frame
+        self.result_stats_vars = widgets.stats_vars
+        self.result_stats_greeted = widgets.stats_greeted
+        self.result_stats_click = widgets.stats_click
+        self._result_stat_icon_canvases = widgets.stat_icon_canvases
+        self.result_search_var = widgets.search_var
+        self.result_search_entry = widgets.search_entry
+        self.result_search_clear_hint = widgets.search_clear_hint
+        self.result_view_label = widgets.view_label
+        self.result_view_var = widgets.view_var
+        self.result_view_combo = widgets.view_combo
+        self.result_count_var = widgets.count_var
+        self.result_show_blacklist_var = widgets.show_blacklist_var
+        self.result_tree = widgets.tree
+        self._result_tree_font = widgets.tree_font
+        self.result_empty_state = widgets.empty_state
+        self.result_review_button = widgets.review_button
+        self.result_greet_queue_button = widgets.greet_queue_button
+        self.result_greet_queue_badge = widgets.greet_queue_badge
+        self.result_more_menu_button = widgets.more_menu_button
+        self.result_more_menu = widgets.more_menu
 
         self._update_result_tree_columns()
-
-        tree_scroll = ttk.Scrollbar(table_container, orient="vertical", command=self.result_tree.yview)
-        tree_scroll_x = ttk.Scrollbar(
-            table_container,
-            orient="horizontal",
-            command=self.result_tree.xview,
-        )
-        self.result_tree.configure(
-            yscrollcommand=tree_scroll.set,
-            xscrollcommand=tree_scroll_x.set,
-        )
-
-        pad_x = int(20 * self.dpi_scale * self.zoom_factor)
-        pad_y = int(12 * self.dpi_scale * self.zoom_factor)
-        tree_scroll_x.pack(
-            side="bottom",
-            fill="x",
-            padx=pad_x,
-            pady=(0, int(6 * self.dpi_scale * self.zoom_factor)),
-        )
-        tree_scroll.pack(side="right", fill="y", pady=pad_y)
-        self.result_tree.pack(
-            side="left", fill="both", expand=True,
-            padx=(pad_x, 0), pady=pad_y,
-        )
-        self.result_tree.bind(
-            "<Configure>",
-            lambda _event: self._schedule_page_width_policy(),
-            add="+",
-        )
-        self.result_tree.bind(
-            "<<TreeviewSelect>>",
-            self._update_result_review_button_state,
-            add="+",
-        )
-
-        # 空态引导层（无可见候选人时覆盖表格区域）
-        self.result_empty_state = self._build_empty_state(
-            table_container, 'filter',
-            "暂无候选人",
-            "调整岗位或时间范围，或到运行控制页开始新一轮筛选",
-            action_text="开始筛选", action_command=lambda: self._request_sidebar_page(PageIndex.RUN),
-        )
-
-        # 操作按钮 - 放在表格下方
-        btn_frame = ttk.Frame(self.result_page, style='Page.TFrame')
-        btn_frame.pack(
-            fill="x",
-            padx=int(20 * self.dpi_scale * self.zoom_factor),
-            pady=(int(20 * self.dpi_scale * self.zoom_factor), 0),
-        )
-        btn_inner = ttk.Frame(btn_frame, style='Page.TFrame')
-        btn_inner.pack(anchor="center")
-
-        icon_today_actions = self.icons.button('task_list', self.colors['primary'])
-        btn_today_actions = ttk.Button(
-            btn_inner,
-            image=icon_today_actions,
-            text=" 今日待办",
-            compound=tk.LEFT,
-            command=self.show_daily_candidate_actions,
-        )
-        btn_today_actions._icon_ref = icon_today_actions
-        btn_today_actions.pack(
-            side="left", padx=int(8 * self.dpi_scale * self.zoom_factor)
-        )
-        icon_review_candidate = self.icons.button('candidate_review', self.colors['primary'])
-        self.result_review_button = ttk.Button(
-            btn_inner,
-            image=icon_review_candidate,
-            text=" 查看与复核",
-            compound=tk.LEFT,
-            command=self._open_selected_candidate_review,
-            state="disabled",
-        )
-        self.result_review_button._icon_ref = icon_review_candidate
-        self.result_review_button.pack(
-            side="left", padx=int(8 * self.dpi_scale * self.zoom_factor)
-        )
-        icon_greet_queue = self.icons.button('chat', self.colors['success'])
-        greet_queue_button_frame = ttk.Frame(btn_inner, style='Page.TFrame')
-        greet_queue_button_frame.pack(
-            side="left", padx=int(8 * self.dpi_scale * self.zoom_factor)
-        )
-        self.result_greet_queue_button = ttk.Button(
-            greet_queue_button_frame,
-            image=icon_greet_queue,
-            text=" 联系候选人",
-            compound=tk.LEFT,
-            command=self._open_greet_queue_from_result,
-        )
-        self.result_greet_queue_button._icon_ref = icon_greet_queue
-        self.result_greet_queue_button.pack()
-        self.result_greet_queue_badge = tk.Label(
-            greet_queue_button_frame,
-            text="",
-            font=(FONT_FAMILY, max(8, int(9 * self.font_scale)), 'bold'),
-            background=self.colors['danger'],
-            foreground='#FFFFFF',
-            padx=max(3, int(4 * self.dpi_scale * self.zoom_factor)),
-            pady=0,
-            cursor="hand2",
-        )
-        self.result_greet_queue_badge.bind(
-            "<Button-1>",
-            lambda _event: self._open_greet_queue_from_result(),
-        )
-        self.result_greet_queue_badge.bind(
-            "<Enter>", self._show_result_contact_badge_tooltip
-        )
-        self.result_greet_queue_badge.bind("<Leave>", self._hide_tooltip)
         self._refresh_contact_queue_badge()
 
-        icon_state_check = self.icons.button('health_shield', self.colors['primary'])
-        icon_chart_excel = self.icons.button('export', self.colors['text_primary'])
-        icon_clear = self.icons.button('trash', self.colors['danger'])
-        more_menu = tk.Menu(
-            btn_inner,
-            tearoff=0,
-            font=self.font_label,
-        )
-        more_menu._icon_refs = [
-            icon_state_check,
-            icon_chart_excel,
-            icon_clear,
-        ]
-        more_menu.add_command(
-            label=" 候选人状态体检",
-            image=icon_state_check,
-            compound=tk.LEFT,
-            command=self.show_candidate_state_diagnostics,
-        )
-        more_menu.add_separator()
-        more_menu.add_command(
-            label=" 导出 Excel",
-            image=icon_chart_excel,
-            compound=tk.LEFT,
-            command=self.export_excel,
-        )
-        more_menu.add_separator()
-        more_menu.add_command(
-            label=" 清空候选人",
-            image=icon_clear,
-            compound=tk.LEFT,
-            command=self.clear_candidates,
-        )
-        self.result_more_menu_button = ttk.Menubutton(
-            btn_inner,
-            text="更多操作",
-            menu=more_menu,
-            width=9,
-            style='CenteredActions.TMenubutton',
-        )
-        self.result_more_menu_button.pack(
-            side="left", padx=int(8 * self.dpi_scale * self.zoom_factor)
-        )
-        self.result_more_menu = more_menu
 
     def create_education_page(self):
         """创建学历核验页面。"""

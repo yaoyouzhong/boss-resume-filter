@@ -22,6 +22,7 @@ boss-resume-filter/
 ├── run_presenter.py     # 运行进度、终态日志与摘要文本模块
 ├── stats_presenter.py   # 统计看板聚合、岗位复盘模型与文本模块
 ├── gui_stats_page.py    # 数据统计页 Tk 控件构建与页面局部引用模块
+├── gui_result_page.py   # 筛选结果页 Tk 控件构建与显式控件引用模块
 ├── gui_candidate_diagnostics.py # 候选人状态体检弹窗的 Tk 构建与交互状态模块
 ├── gui_candidate_review.py # 候选人查看与复核工作台的 Tk 构建与视图切换模块
 ├── gui_candidate_actions.py # 今日待办弹窗的 Tk 构建、分组导航与局部选择状态模块
@@ -154,6 +155,7 @@ boss-resume-filter/
 - `gui_*_page.py` 只负责指定页面的 Tk 控件构建和页面局部引用；不得读写业务数据、访问网络或导入 `gui_main`。迁移期通过显式 Host 协议注入回调，并由 `gui_main.py` 保留原页面属性别名。
 - `gui_candidate_*.py` 只负责候选人工作台弹窗的 Tk 控件、局部选择状态和事件绑定；候选人加载、状态诊断、业务动作和报告写盘必须通过显式回调留在 `gui_main.py`，不得导入存储、网络或 `gui_main`。
 - `gui_contact_queue.py` 只构建联系清单窗口并绑定显式回调；清单持久化、浏览器预检、发送、暂停恢复、失败重试和状态复核必须留在 `gui_main.py`，不得导入存储、浏览器、网络或 `gui_main`。
+- `gui_result_page.py` 只构建筛选结果页控件、样式和事件绑定，并通过显式引用包交还 `gui_main.py`；候选人读取、过滤、排序、复核、联系、导出和状态持久化必须留在 `gui_main.py`，不得导入存储、网络或 `gui_main`。
 - 后续如新建 `gui_pages/`、`gui_workbenches/` 或 `gui_runtime/` 目录，必须先在本文档定义目录职责和依赖方向，再创建文件。
 
 ## 代码规范

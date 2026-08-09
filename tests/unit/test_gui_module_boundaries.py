@@ -12,6 +12,7 @@ import gui_candidate_diagnostics
 import gui_candidate_review
 import gui_contact_queue
 import gui_main
+import gui_result_page
 import gui_stats_page
 import run_presenter
 import stats_presenter
@@ -88,6 +89,7 @@ def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():
         "gui_candidate_review",
         "gui_candidate_workbench",
         "gui_contact_queue",
+        "gui_result_page",
         "gui_stats_page",
     ):
         assert not (_top_level_imports(module_name) & forbidden)
@@ -123,6 +125,49 @@ def test_stats_page_builder_exposes_an_explicit_widget_bundle():
         "summary_vars",
         "tree",
     }
+
+
+def test_result_page_builder_exposes_an_explicit_widget_bundle():
+    assert gui_result_page.ResultPageWidgets.__dataclass_fields__.keys() == {
+        "page",
+        "job_var",
+        "job_combo",
+        "time_range_var",
+        "time_range_combo",
+        "custom_date_frame",
+        "stats_vars",
+        "stats_greeted",
+        "stats_click",
+        "stat_icon_canvases",
+        "search_var",
+        "search_entry",
+        "search_clear_hint",
+        "view_label",
+        "view_var",
+        "view_combo",
+        "count_var",
+        "show_blacklist_var",
+        "tree",
+        "tree_font",
+        "empty_state",
+        "review_button",
+        "greet_queue_button",
+        "greet_queue_badge",
+        "more_menu_button",
+        "more_menu",
+    }
+
+
+def test_result_page_compatibility_method_is_a_thin_builder_delegate():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def create_result_page"):]
+    block = block[:block.index("\n    def create_education_page")]
+
+    assert "gui_result_page.build_result_page(" in block
+    assert "ttk.Treeview" not in block
+    assert "tk.Menu" not in block
+    assert "self._update_result_tree_columns()" in block
+    assert "self._refresh_contact_queue_badge()" in block
 
 
 def test_candidate_diagnostics_compatibility_method_is_a_thin_dialog_delegate():
