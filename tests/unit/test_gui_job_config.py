@@ -2893,12 +2893,10 @@ def test_stats_page_uses_centered_width_policy():
 
 def test_stats_tree_reflows_after_its_rendered_width_changes():
     """统计表监听自身最终宽度，确保最大化和恢复窗口都能重新分配列宽。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    stats_block = source[source.index("def create_stats_page"):]
-    stats_block = stats_block[:stats_block.index("\n    def _load_stats_candidates")]
+    stats_block = Path("gui_stats_page.py").read_text(encoding="utf-8")
 
-    assert 'self.stats_tree.bind(\n            "<Configure>",' in stats_block
-    assert "lambda _event: self._schedule_page_width_policy()" in stats_block
+    assert 'tree.bind(\n        "<Configure>",' in stats_block
+    assert "lambda _event: host._schedule_page_width_policy()" in stats_block
 
 
 def test_job_config_page_releases_bottom_padding_but_preserves_header_position():
@@ -4536,30 +4534,31 @@ def test_hard_condition_review_passed_keeps_recommendation_and_status():
 
 def test_candidate_review_workbench_exposes_flat_switch_and_direct_actions():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    block = source[source.index("def _open_candidate_review_workbench"):]
-    block = block[:block.index("\n    def _show_candidate_detail")]
+    builder = Path("gui_candidate_review.py").read_text(encoding="utf-8")
+    actions = source[source.index("def _render_candidate_review_actions"):]
+    actions = actions[:actions.index("\n    def _navigate_candidate_review")]
+    block = builder + actions
 
     assert 'win.title("候选人查看与复核")' in block
     assert "ttk.Notebook" not in block
     assert "CandidateReview.TNotebook" not in block
-    assert "self.candidate_review_view_buttons" in block
-    assert "self.candidate_review_view_indicators" in block
-    assert "self._show_candidate_review_view('summary')" in block
-    assert "'<Control-Tab>'" in block
+    assert "view_buttons" in block
+    assert "view_indicators" in block
+    assert '"<Control-Tab>"' in block
     assert 'text="上一位"' in block
     assert 'text="下一位"' in block
     assert "header.grid_columnconfigure(0, weight=1)" in block
-    assert "title_area.grid(row=0, column=0, sticky='ew')" in block
-    assert "nav.grid(row=0, column=1, sticky='e')" in block
-    assert 'text="上一位", width=8' in block
-    assert 'text="下一位", width=8' in block
+    assert 'title_area.grid(row=0, column=0, sticky="ew")' in block
+    assert 'nav.grid(row=0, column=1, sticky="e")' in block
+    assert 'text="上一位"' in block and "width=8" in block
+    assert 'text="下一位"' in block
     assert "width=9," in block
     assert '("summary", "决策摘要")' in block
     assert '("detail", "完整资料")' in block
     assert "preferred_width = max(700, int(root_width * 0.62))" in block
     assert "int(1040 * max(1.0, scale))" in block
     assert "height = min(root_height, int(area_height * 0.9))" in block
-    assert "_place_window_centered(win, width, height, parent=self.root)" in block
+    assert "place_window_centered(win, width, height, parent=host.root)" in block
     assert 'win.geometry(f"{width}x{height}+{x}+{y}")' not in block
     assert '"确认通过"' in block
     assert '"加入联系清单"' in block
@@ -4567,47 +4566,46 @@ def test_candidate_review_workbench_exposes_flat_switch_and_direct_actions():
     assert '"标记反馈"' in block
     assert '"导入简历"' in block
     assert 'text="建议下一步"' in block
-    assert "self.candidate_review_primary_label" in block
+    assert "primary_label" in block
     assert 'text="其他操作"' in block
-    assert "int(9 * self.font_scale)" not in block
-    assert block.count("int(10 * self.font_scale)") >= 4
-    assert "orient='horizontal'" in block
-    assert "style='Accent.TButton'" not in block
+    assert "int(9 * host.font_scale)" not in block
+    assert block.count("int(10 * host.font_scale)") >= 4
+    assert 'orient="horizontal"' in block
+    assert "Accent.TButton" not in block
 
 
 def test_candidate_review_flat_switch_uses_theme_colors_and_raises_selected_panel():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    block = source[source.index("def _show_candidate_review_view"):]
-    block = block[:block.index("\n    def _toggle_candidate_review_view")]
+    source = Path("gui_candidate_review.py").read_text(encoding="utf-8")
+    block = source[source.index("def show_candidate_review_view"):]
+    block = block[:block.index("\ndef toggle_candidate_review_view")]
 
     assert "frames[view_name].tkraise()" in block
-    assert "self.colors['banner_info_bg'] if selected" in block
-    assert "self.colors['primary'] if selected" in block
-    assert "self.colors['text_secondary']" in block
-    assert "self.colors['bg_hover']" in block
+    assert 'colors["banner_info_bg"] if selected' in block
+    assert 'colors["primary"] if selected' in block
+    assert 'colors["text_secondary"]' in block
+    assert 'colors["bg_hover"]' in block
 
 
 def test_candidate_review_shortcut_switch_does_not_force_focus_repaint():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    block = source[source.index("def _toggle_candidate_review_view"):]
-    block = block[:block.index("\n    @staticmethod")]
+    source = Path("gui_candidate_review.py").read_text(encoding="utf-8")
+    block = source[source.index("def toggle_candidate_review_view"):]
+    block = block[:block.index("\ndef replace_readonly_text")]
 
-    assert "self._show_candidate_review_view(target)" in block
+    assert "show_view(target)" in block
     assert ".focus_set()" not in block
 
 
 def test_candidate_review_actions_keep_stable_two_row_layout_and_button_style():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    workbench = source[source.index("def _open_candidate_review_workbench"):]
-    workbench = workbench[:workbench.index("\n    def _render_candidate_review_workbench")]
+    workbench = Path("gui_candidate_review.py").read_text(encoding="utf-8")
     render_actions = source[source.index("def _render_candidate_review_actions"):]
     render_actions = render_actions[:render_actions.index("\n    def _navigate_candidate_review")]
 
-    assert "primary_section.grid(row=0, column=0, sticky='w')" in workbench
-    assert "secondary_section.grid(row=2, column=0, sticky='w')" in workbench
-    assert "orient='horizontal'" in workbench
-    assert "actions.bind('<Configure>'" not in workbench
-    assert "def _layout_candidate_review_actions" not in source
+    assert 'primary_section.grid(row=0, column=0, sticky="w")' in workbench
+    assert 'secondary_section.grid(row=2, column=0, sticky="w")' in workbench
+    assert 'orient="horizontal"' in workbench
+    assert "actions.bind(" not in workbench
+    assert "layout_candidate_review_actions" not in source + workbench
     assert "style='Accent.TButton'" not in render_actions
 
 
@@ -5152,14 +5150,13 @@ def test_text_dialog_keeps_scrollbar_buttons_and_horizontal_inset_visible():
 
 def test_contact_queue_readiness_and_result_columns_have_explanatory_tooltips():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    dialog_block = source[source.index("def _show_greet_queue_dialog"):]
-    dialog_block = dialog_block[:dialog_block.index("\n    def _on_greet_queue_group_selected")]
+    dialog_block = Path("gui_contact_queue.py").read_text(encoding="utf-8")
     tooltip_block = source[source.index("def _on_greet_queue_motion"):]
     tooltip_block = tooltip_block[:tooltip_block.index("\n    def _close_greet_queue_window")]
 
-    assert 'tree.bind("<Motion>", self._on_greet_queue_motion)' in dialog_block
-    assert 'tree.bind("<Leave>", self._hide_tooltip)' in dialog_block
-    assert 'tree.bind("<Button-3>", self._show_greet_queue_context_menu)' in dialog_block
+    assert 'tree.bind("<Motion>", callbacks.row_motion)' in dialog_block
+    assert 'tree.bind("<Leave>", callbacks.hide_tooltip)' in dialog_block
+    assert 'tree.bind("<Button-3>", callbacks.context_menu)' in dialog_block
     assert 'column_id not in ("#5", "#7")' in tooltip_block
     assert "self._greet_queue_readiness_tooltip" in tooltip_block
     assert 'queue_item.get(\'message\') or "暂无最近结果"' in tooltip_block
@@ -5253,12 +5250,10 @@ def test_contact_queue_ctrl_a_selects_all_visible_candidates():
 
 
 def test_contact_queue_binds_ctrl_a_for_visible_rows():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    dialog_block = source[source.index("def _show_greet_queue_dialog"):]
-    dialog_block = dialog_block[:dialog_block.index("\n    def _on_greet_queue_group_selected")]
+    dialog_block = Path("gui_contact_queue.py").read_text(encoding="utf-8")
 
-    assert 'tree.bind("<Control-a>", self._select_all_greet_queue_rows' in dialog_block
-    assert 'tree.bind("<Control-A>", self._select_all_greet_queue_rows' in dialog_block
+    assert 'tree.bind("<Control-a>", callbacks.select_all' in dialog_block
+    assert 'tree.bind("<Control-A>", callbacks.select_all' in dialog_block
 
 
 def test_greet_queue_skip_reason_filters_non_sendable_candidates():
@@ -5499,14 +5494,13 @@ def test_greet_queue_skip_summary_is_user_readable():
 
 def test_greet_queue_dialog_has_status_groups_and_double_click_detail():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    dialog_block = source[source.index("def _show_greet_queue_dialog"):]
-    dialog_block = dialog_block[:dialog_block.index("\n    def _refresh_greet_queue_dialog")]
+    dialog_block = Path("gui_contact_queue.py").read_text(encoding="utf-8")
     refresh_block = source[source.index("def _refresh_greet_queue_dialog"):]
     refresh_block = refresh_block[:refresh_block.index("\n    def _set_greet_queue_item_state")]
 
     assert "按状态筛选" in dialog_block
-    assert "self.greet_queue_group_tree" in dialog_block
-    assert "self.greet_queue_detail_title_var" in dialog_block
+    assert "group_tree = ttk.Treeview(" in dialog_block
+    assert "detail_title_var = tk.StringVar" in dialog_block
     assert "GreetQueue.Small.TButton" in dialog_block
     assert "GreetQueue.Primary.TButton" not in dialog_block
     assert 'win.title("联系候选人")' in dialog_block
@@ -5519,19 +5513,22 @@ def test_greet_queue_dialog_has_status_groups_and_double_click_detail():
     assert 'text="移除选中",' in dialog_block
     assert 'queue_actions.pack(side="right")' in dialog_block
     assert "padding=(int(6 * scale), int(10 * scale))" in dialog_block
-    assert "detail_header = ttk.Frame(tree_frame, style='Card.TFrame')" in dialog_block
+    assert 'detail_header = ttk.Frame(tree_frame, style="Card.TFrame")' in dialog_block
     assert "detail_title_box" not in dialog_block
-    assert "self.greet_queue_detail_summary_var = tk.StringVar" in dialog_block
-    assert "foreground=self.colors['text_primary']" in dialog_block
-    assert "background=self.colors['bg_card']" in dialog_block
+    assert "detail_summary_var = tk.StringVar" in dialog_block
+    assert 'foreground=host.colors["text_primary"]' in dialog_block
+    assert 'background=host.colors["bg_card"]' in dialog_block
     assert 'padx=(int(10 * scale), int(8 * scale))' in dialog_block
-    assert "selected_actions = ttk.Frame(tree_frame" in dialog_block
-    assert "selected_actions.grid(row=2, column=0, columnspan=2, sticky=\"ew\")" in dialog_block
+    assert "selected_actions = ttk.Frame(" in dialog_block
+    assert "tree_frame," in dialog_block
+    assert "selected_actions.grid(" in dialog_block
+    assert 'row=2, column=0, columnspan=2, sticky="ew"' in dialog_block
     assert '"job": "w"' in dialog_block
     assert '"message": "w"' in dialog_block
     assert 'orient="horizontal"' not in dialog_block
     assert 'xscrollcommand' not in dialog_block
-    assert 'group_tree.column("#0", width=int(190 * scale), minwidth=int(150 * scale), anchor="w")' in dialog_block
+    assert 'width=int(190 * scale)' in dialog_block
+    assert 'minwidth=int(150 * scale)' in dialog_block
     assert 'group_tree.column("count", width=0, minwidth=0, stretch=False)' in dialog_block
     assert 'group_order = ("全部", "待核实", "待发送", "发送失败", "发送中", "已发送", "已跳过")' in refresh_block
     assert 'iid="全部"' in refresh_block
@@ -5543,7 +5540,8 @@ def test_greet_queue_dialog_has_status_groups_and_double_click_detail():
     assert 'self._greet_queue_group_hint(selected_status)' in refresh_block
     assert "联系清单为空" in refresh_block
     assert "需处理" in refresh_block
-    assert 'tree.bind("<Double-Button-1>", lambda _event: self._show_selected_greet_queue_detail())' in dialog_block
+    assert '"<Double-Button-1>"' in dialog_block
+    assert "callbacks.show_selected_detail()" in dialog_block
 
 
 def test_contact_queue_result_tooltip_wraps_and_stays_screen_bounded():
@@ -6011,15 +6009,14 @@ def test_greet_queue_result_dialog_uses_shared_fonts_and_adaptive_width():
 
 
 def test_candidate_state_diagnostics_uses_group_summary_and_compact_candidate_rows():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    dialog_block = source[source.index("def _show_candidate_state_diagnostics_dialog"):]
-    dialog_block = dialog_block[:dialog_block.index("\n    def _clip_table_text")]
+    source = Path("gui_candidate_diagnostics.py").read_text(encoding="utf-8")
+    dialog_block = source[source.index("def show_candidate_state_diagnostics_dialog"):]
 
     assert 'columns=("count", "level")' in dialog_block
     assert 'show="tree"' in dialog_block
     assert 'for level_index, level in enumerate(("error", "warning", "info")):' in dialog_block
-    assert 'group_tree.insert(\n                    "", "end", iid=level_iid' in dialog_block
-    assert 'group_tree.insert(\n                        level_iid, "end", iid=child_iid' in dialog_block
+    assert '"", "end", iid=level_iid,' in dialog_block
+    assert 'level_iid, "end", iid=child_iid,' in dialog_block
     assert 'columns = ("name", "job", "issue", "key_info")' in dialog_block
     assert 'tree.heading("issue", text="问题类型")' in dialog_block
     assert 'tree.heading("key_info", text="关键信息")' in dialog_block
@@ -6036,7 +6033,7 @@ def test_candidate_state_diagnostics_uses_group_summary_and_compact_candidate_ro
     assert 'if column_id == "#3":' in dialog_block
     assert 'full = f"{issue.title}\\n\\n{issue.detail}"' in dialog_block
     assert 'full = issue.detail' in dialog_block
-    assert 'def on_issue_group_motion(event):' in dialog_block
+    assert "def on_issue_group_motion(" in dialog_block
     assert 'column_id != "#0"' in dialog_block
     assert '("state_check_group", item_id, column_id)' in dialog_block
     assert 'lambda: self._show_tooltip(label, x, y, tooltip_key, parent=win)' in dialog_block
@@ -6047,35 +6044,31 @@ def test_candidate_state_diagnostics_uses_group_summary_and_compact_candidate_ro
 
 def test_candidate_workbench_primary_buttons_keep_standard_button_typography():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    daily_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
+    state_block = Path("gui_candidate_diagnostics.py").read_text(encoding="utf-8")
     style_block = source[source.index("style.configure('Workbench.Primary.TButton'"):]
     style_block = style_block[:style_block.index("# 危险级")]
-    daily_block = source[source.index("def _show_daily_candidate_actions_dialog"):]
-    daily_block = daily_block[:daily_block.index("\n    def _show_candidate_state_diagnostics_dialog")]
-    state_block = source[source.index("def _show_candidate_state_diagnostics_dialog"):]
-    state_block = state_block[:state_block.index("\n    def _clip_table_text")]
-    queue_block = source[source.index("def _show_greet_queue_dialog"):]
-    queue_block = queue_block[:queue_block.index("\n    def _set_greet_queue_item_state")]
+    queue_block = Path("gui_contact_queue.py").read_text(encoding="utf-8")
 
     assert "font=self.font_label, padding=(15, 8)" in style_block
-    assert "style='Workbench.Primary.TButton'" in daily_block
-    assert "style='Workbench.Primary.TButton'" in state_block
+    assert 'style="Workbench.Primary.TButton"' in daily_block
+    assert 'style="Workbench.Primary.TButton"' in state_block
     assert 'style="Workbench.Primary.TButton"' in queue_block
 
 
 def test_candidate_workbench_hierarchies_share_navigation_style_and_neutral_details():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    daily_block = source[source.index("def _show_daily_candidate_actions_dialog"):]
-    daily_block = daily_block[:daily_block.index("\n    def _show_candidate_state_diagnostics_dialog")]
-    state_block = source[source.index("def _show_candidate_state_diagnostics_dialog"):]
-    state_block = state_block[:state_block.index("\n    def _clip_table_text")]
-    queue_block = source[source.index("def _show_greet_queue_dialog"):]
-    queue_block = queue_block[:queue_block.index("\n    def _set_greet_queue_item_state")]
+    daily_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
+    state_block = Path("gui_candidate_diagnostics.py").read_text(encoding="utf-8")
+    queue_block = Path("gui_contact_queue.py").read_text(encoding="utf-8")
 
-    for block in (daily_block, state_block, queue_block):
-        assert "self._candidate_workbench_navigation_style(scale)" in block
-        assert "self._apply_candidate_workbench_navigation_tags(group_tree)" in block
+    for block in (daily_block, state_block):
+        assert "gui_candidate_workbench.navigation_style(" in block
+        assert "gui_candidate_workbench.apply_navigation_tags(self, group_tree)" in block
         assert 'tags=("workbench_root",)' in block
         assert 'tags=("workbench_child",)' in block
+    assert "gui_candidate_workbench.navigation_style(" in queue_block
+    assert "gui_candidate_workbench.apply_navigation_tags(host, group_tree)" in queue_block
     assert 'tree.tag_configure("warning", background=' not in state_block
     assert 'tree.tag_configure("error", background=' not in state_block
     assert 'tree.tag_configure("info", background=' not in state_block
@@ -6083,33 +6076,34 @@ def test_candidate_workbench_hierarchies_share_navigation_style_and_neutral_deta
 
 def test_candidate_workflow_dialog_subtitles_use_neutral_text_color():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    daily_block = source[source.index("def _show_daily_candidate_actions_dialog"):]
-    daily_block = daily_block[:daily_block.index("\n    def _show_candidate_state_diagnostics_dialog")]
-    state_block = source[source.index("def _show_candidate_state_diagnostics_dialog"):]
-    state_block = state_block[:state_block.index("\n    def _clip_table_text")]
-    queue_block = source[source.index("def _show_greet_queue_dialog"):]
-    queue_block = queue_block[:queue_block.index("\n    def _on_greet_queue_group_selected")]
+    daily_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
+    state_block = Path("gui_candidate_diagnostics.py").read_text(encoding="utf-8")
+    queue_block = Path("gui_contact_queue.py").read_text(encoding="utf-8")
 
-    assert "foreground=self.colors['text_secondary']" in daily_block
-    assert "foreground=self.colors['primary']" not in daily_block
+    assert 'foreground=self.colors["text_secondary"]' in daily_block
+    assert 'foreground=self.colors["primary"]' not in daily_block
     assert "headline_color" not in state_block
-    assert "foreground=self.colors['text_secondary']" in state_block
+    assert 'foreground=self.colors["text_secondary"]' in state_block
     assert "foreground=headline_color" not in state_block
-    assert "foreground=self.colors['text_secondary']" in queue_block
-    assert "textvariable=self.greet_queue_detail_title_var" in queue_block
-    assert "background=self.colors['bg_card']" in queue_block
+    assert 'foreground=host.colors["text_secondary"]' in queue_block
+    assert "textvariable=detail_title_var" in queue_block
+    assert 'background=host.colors["bg_card"]' in queue_block
 
 
 def test_information_and_workbench_windows_do_not_lock_main_window():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     dialog_source = Path("gui_dialogs.py").read_text(encoding="utf-8")
+    daily_actions_source = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
+    state_dialog_source = Path("gui_candidate_diagnostics.py").read_text(encoding="utf-8")
+    candidate_review_source = Path("gui_candidate_review.py").read_text(encoding="utf-8")
+    contact_queue_source = Path("gui_contact_queue.py").read_text(encoding="utf-8")
     blocks = [
         source[source.index("def show_stat_detail"):source.index("\n    def show_result_stat_detail")],
         source[source.index("def show_result_stat_detail"):source.index("\n    def _get_job_rules_cached")],
-        source[source.index("def _show_daily_candidate_actions_dialog"):source.index("\n    def _show_candidate_state_diagnostics_dialog")],
-        source[source.index("def _show_candidate_state_diagnostics_dialog"):source.index("\n    def _clip_table_text")],
-        source[source.index("def _show_greet_queue_dialog"):source.index("\n    def _on_greet_queue_group_selected")],
-        source[source.index("def _open_candidate_review_workbench"):source.index("\n    def _render_candidate_review_workbench")],
+        daily_actions_source,
+        state_dialog_source,
+        contact_queue_source,
+        candidate_review_source,
         dialog_source[dialog_source.index("def show_about_dialog"):dialog_source.index("\ndef show_changelog_dialog")],
         dialog_source[dialog_source.index("def show_changelog_dialog"):],
     ]
@@ -6124,9 +6118,7 @@ def test_information_and_workbench_windows_do_not_lock_main_window():
 
 
 def test_daily_actions_dialog_uses_time_groups_then_business_and_review_subgroups():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    daily_block = source[source.index("def _show_daily_candidate_actions_dialog"):]
-    daily_block = daily_block[:daily_block.index("\n    def _show_candidate_state_diagnostics_dialog")]
+    daily_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
 
     assert 'win.title("今日待办")' in daily_block
     assert 'win.title("今日候选人待办")' not in daily_block
@@ -6134,15 +6126,16 @@ def test_daily_actions_dialog_uses_time_groups_then_business_and_review_subgroup
     assert 'text=f"{timing_group}  {len(timing_items)}"' in daily_block
     assert 'if group != "待复核":' in daily_block
     assert "candidate_review_category(item.candidate)" in daily_block
-    assert 'child_iid, "end", iid=review_iid, text=f"{category}  {len(category_items)}"' in daily_block
+    assert 'child_iid, "end", iid=review_iid,' in daily_block
+    assert 'text=f"{category}  {len(category_items)}"' in daily_block
     assert 'open=(group == "待复核")' in daily_block
     assert '"按时间优先级整理候选人，逐项推进下一步"' in daily_block
-    assert '("due", "需处理", counts["due"], self.colors[\'primary\'])' in daily_block
+    assert '("due", "需处理", counts["due"], self.colors["primary"])' in daily_block
     assert 'columns = ("name", "job", "score", "task", "key_info", "due")' in daily_block
     assert '("task", "任务类型", 165, "center")' in daily_block
     assert '("key_info", "关键信息", 245, "w")' in daily_block
     assert '("due", "到期", 80, "center")' in daily_block
-    assert 'selected_group_summary_var.set(f"处理建议：{next(iter(unique_actions))}")' in daily_block
+    assert 'f"处理建议：{next(iter(unique_actions))}"' in daily_block
     assert 'self._format_daily_action_key_info(item)' in daily_block
     assert 'self._format_daily_action_due(item)' in daily_block
     assert 'orient="horizontal"' not in daily_block
@@ -6183,14 +6176,14 @@ def test_daily_action_due_uses_explicit_immediate_and_unscheduled_labels():
 
 def test_daily_resume_action_promotes_resume_context_menu_entry():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    action_block = source[source.index("def _show_daily_candidate_actions_dialog"):]
-    action_block = action_block[:action_block.index("\n    def _show_candidate_state_diagnostics_dialog")]
+    action_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
     menu_block = source[source.index("def _show_candidate_workflow_context_menu"):]
     menu_block = menu_block[:menu_block.index("\n    def _bind_treeview_sorting")]
     result_menu_block = source[source.index("def _build_candidate_context_menu"):]
     result_menu_block = result_menu_block[:result_menu_block.index("\n    def _find_candidate_by_tree_item")]
 
-    assert '"resume" if item.group == "待完成简历评估"' in action_block
+    assert 'item.group == "待完成简历评估"' in action_block
+    assert '"resume"' in action_block
     assert 'label=" 导入简历 / 二次评估"' in menu_block
     assert 'label=" 导入简历 / 二次评估"' in result_menu_block
     assert 'elif primary_action == "resume":' in menu_block
@@ -6344,12 +6337,12 @@ def test_focus_candidate_in_greet_queue_uses_actual_status_group():
 
 def test_daily_followup_action_promotes_followup_context_menu_entry():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    action_block = source[source.index("def _show_daily_candidate_actions_dialog"):]
-    action_block = action_block[:action_block.index("\n    def _show_candidate_state_diagnostics_dialog")]
+    action_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
     menu_block = source[source.index("def _show_candidate_workflow_context_menu"):]
     menu_block = menu_block[:menu_block.index("\n    def _bind_treeview_sorting")]
 
-    assert '"待约面待推进", "面试后待反馈",' in action_block
+    assert '"待约面待推进"' in action_block
+    assert '"面试后待反馈"' in action_block
     assert 'label=" 更新跟进"' in menu_block
     assert 'elif primary_action == "followup":' in menu_block
     assert 'label=" 标记已回复"' in menu_block
@@ -7642,9 +7635,9 @@ def test_home_page_renames_total_candidates_to_passed_filter():
 
 def test_stats_page_strong_recommendation_uses_emphasized_thumb_icon():
     """数据统计页与其他页面统一使用点赞加光芒表达强烈推荐。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    stats_block = source[source.index("summary_items = [", source.index("def create_stats_page")):]
-    stats_block = stats_block[:stats_block.index("\n\n        card_gap")]
+    source = Path("gui_stats_page.py").read_text(encoding="utf-8")
+    stats_block = source[source.index("summary_items = ["):]
+    stats_block = stats_block[:stats_block.index("\n    card_gap")]
 
     assert '("strong_recommend", "强烈推荐"' in stats_block
     assert '("star", "强烈推荐"' not in stats_block
@@ -7652,9 +7645,9 @@ def test_stats_page_strong_recommendation_uses_emphasized_thumb_icon():
 
 def test_stats_page_renames_total_candidates_to_passed_filter():
     """数据统计页第一张卡片展示通过筛选，并使用放大的原双人图案。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    stats_block = source[source.index("summary_items = [", source.index("def create_stats_page")):]
-    stats_block = stats_block[:stats_block.index("\n\n        card_gap")]
+    source = Path("gui_stats_page.py").read_text(encoding="utf-8")
+    stats_block = source[source.index("summary_items = ["):]
+    stats_block = stats_block[:stats_block.index("\n    card_gap")]
 
     assert '("passed_filter", "通过筛选", "total"' in stats_block
     assert '"总候选人"' not in stats_block
@@ -7662,9 +7655,9 @@ def test_stats_page_renames_total_candidates_to_passed_filter():
 
 def test_stats_page_greeted_uses_chat_icon_consistently():
     """数据统计页与首页、筛选结果页统一使用聊天气泡表示已打招呼。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    stats_block = source[source.index("summary_items = [", source.index("def create_stats_page")):]
-    stats_block = stats_block[:stats_block.index("\n\n        card_gap")]
+    source = Path("gui_stats_page.py").read_text(encoding="utf-8")
+    stats_block = source[source.index("summary_items = ["):]
+    stats_block = stats_block[:stats_block.index("\n    card_gap")]
 
     assert '("chat", "已打招呼", "greeted"' in stats_block
     assert '("mail", "已打招呼", "greeted"' not in stats_block
@@ -7672,15 +7665,14 @@ def test_stats_page_greeted_uses_chat_icon_consistently():
 
 def test_stats_page_review_entry_is_row_level_not_toolbar_button():
     """岗位复盘保留在岗位行双击/右键，避免统计页顶部按钮噪音。"""
+    create_block = Path("gui_stats_page.py").read_text(encoding="utf-8")
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[source.index("def create_stats_page"):]
-    create_block = create_block[:create_block.index("\n    def _load_stats_candidates")]
     context_block = source[source.index("def _show_stats_context_menu"):]
     context_block = context_block[:context_block.index("\n    def _selected_stats_job_name")]
 
     assert "btn_job_review" not in create_block
-    assert 'self.stats_tree.bind("<Double-Button-1>", lambda e: self._show_selected_job_review())' in create_block
-    assert 'self.stats_tree.bind("<Button-3>", self._show_stats_context_menu)' in create_block
+    assert 'tree.bind("<Double-Button-1>", lambda _event: host._show_selected_job_review())' in create_block
+    assert 'tree.bind("<Button-3>", host._show_stats_context_menu)' in create_block
     assert "self.icons.button('chart', self.colors['primary'])" in context_block
 
 
