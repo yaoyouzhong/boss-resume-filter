@@ -7826,24 +7826,22 @@ def test_job_review_dialog_opens_structured_workbench_with_shared_model():
 
 
 def test_job_review_workbench_uses_cards_funnel_and_contextual_actions():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    block = source[source.index("def _show_job_review_workbench"):]
-    block = block[:block.index("\n    def _show_job_review_feedback_candidates")]
+    block = Path("gui_job_review.py").read_text(encoding="utf-8")
 
     assert '"筛选转化"' in block
     assert '"反馈质量"' in block
     assert '"问题洞察"' in block
     assert '"建议调整"' in block
-    assert "if insight_sections:" in block
+    assert "if not insight_sections:" in block
     assert 'text="查看反馈候选人"' in block
     assert 'text="前往岗位配置"' in block
-    assert "if review['feedback_count'] < 5:" in block
+    assert 'if review["feedback_count"] < 5:' in block
     assert "title_trailing_builder=build_suggestion_action" in block
-    assert "enumerate(review['suggestions'], start=1)" in block
-    assert "anchor='w'" in block
-    assert "int(9 * self.font_scale)" not in block
-    assert "self._show_text_dialog(" not in block
-    assert "root_height = self.root.winfo_height()" in block
+    assert 'enumerate(review["suggestions"], start=1)' in block
+    assert 'anchor="w"' in block
+    assert "int(9 * host.font_scale)" not in block
+    assert "_show_text_dialog(" not in block
+    assert "root_height = host.root.winfo_height()" in block
     assert "height = min(int(760 * scale), root_height, int(area_height * 0.82))" in block
     assert "width, height = int(820 * scale), int(760 * scale)" in block
 

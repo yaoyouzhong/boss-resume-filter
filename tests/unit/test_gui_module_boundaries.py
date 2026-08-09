@@ -12,6 +12,7 @@ import gui_candidate_diagnostics
 import gui_candidate_review
 import gui_contact_queue
 import gui_config_page
+import gui_job_review
 import gui_main
 import gui_model_catalog_dialog
 import gui_result_page
@@ -96,6 +97,7 @@ def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():
         "gui_candidate_workbench",
         "gui_contact_queue",
         "gui_config_page",
+        "gui_job_review",
         "gui_result_page",
         "gui_run_page",
         "gui_settings_page",
@@ -274,6 +276,64 @@ def test_stats_detail_controller_rejects_identity_less_removals():
     predicate = gui._remove_candidate_records.call_args.args[0]
     assert predicate(removable) is True
     assert predicate({"geek_id": "candidate-2", "job_name": "Java"}) is False
+
+
+def test_job_review_builder_exposes_explicit_callbacks_and_widget_bundle():
+    assert gui_job_review.JobReviewCallbacks.__dataclass_fields__.keys() == {
+        "show_feedback_candidates",
+        "open_job_config",
+        "format_suggestion",
+    }
+    assert gui_job_review.JobReviewWidgets.__dataclass_fields__.keys() == {
+        "window",
+        "canvas",
+        "content",
+        "close",
+    }
+
+
+def test_job_review_compatibility_method_only_wires_business_callbacks():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _show_job_review_workbench"):]
+    block = block[:block.index("\n    def _show_job_review_feedback_candidates")]
+
+    assert "gui_job_review.JobReviewCallbacks(" in block
+    assert "gui_job_review.build_job_review_workbench(" in block
+    assert "self._show_job_review_feedback_candidates(job_name, candidates)" in block
+    assert "self._open_job_config_from_review(job_name)" in block
+    assert "tk.Toplevel" not in block
+    assert "ttk.Frame" not in block
+
+
+def test_job_review_delegate_keeps_feedback_and_navigation_in_main_controller():
+    gui = gui_main.BossFilterGUI.__new__(gui_main.BossFilterGUI)
+    gui.stats_time_var = Mock()
+    gui.stats_time_var.get.return_value = "近30天"
+    gui._show_job_review_feedback_candidates = Mock()
+    gui._open_job_config_from_review = Mock()
+    gui._format_job_review_suggestion = Mock(return_value=("标题", "详情"))
+    candidates = [{"geek_id": "candidate-1"}]
+    review = {"candidate_count": 1}
+    workbench = object()
+
+    with patch.object(
+        gui_job_review,
+        "build_job_review_workbench",
+        return_value=workbench,
+    ) as build:
+        result = gui._show_job_review_workbench("Java", candidates, review)
+
+    assert result is workbench
+    assert build.call_args.kwargs["time_range"] == "近30天"
+    callbacks = build.call_args.kwargs["callbacks"]
+    callbacks.show_feedback_candidates()
+    callbacks.open_job_config()
+    assert callbacks.format_suggestion("建议") == ("标题", "详情")
+    gui._show_job_review_feedback_candidates.assert_called_once_with(
+        "Java",
+        candidates,
+    )
+    gui._open_job_config_from_review.assert_called_once_with("Java")
 
 
 def test_result_page_compatibility_method_is_a_thin_builder_delegate():

@@ -22,6 +22,7 @@ boss-resume-filter/
 ├── stats_presenter.py   # 统计看板聚合、岗位复盘模型与文本模块
 ├── gui_stats_page.py    # 数据统计页 Tk 控件构建与页面局部引用模块
 ├── gui_stats_detail.py  # 首页/结果页统计候选人明细弹窗与列表交互模块
+├── gui_job_review.py    # 岗位复盘工作台 Tk 构建、漏斗与洞察展示模块
 ├── gui_result_page.py   # 筛选结果页 Tk 控件构建与显式控件引用模块
 ├── gui_run_page.py      # 运行控制页分步 Tk 构建、控件状态联动与事件绑定模块
 ├── gui_config_page.py   # 岗位配置页分步 Tk 构建、表单控件装配与事件绑定模块
@@ -146,6 +147,7 @@ boss-resume-filter/
 - `gui_contact_queue.py` 只构建联系清单窗口并绑定显式回调；清单持久化、浏览器预检、发送、暂停恢复、失败重试和状态复核必须留在 `gui_main.py`，不得导入存储、浏览器、网络或 `gui_main`。
 - `gui_result_page.py` 只构建筛选结果页控件、样式和事件绑定，并通过显式引用包交还 `gui_main.py`；候选人读取、过滤、排序、复核、联系、导出和状态持久化必须留在 `gui_main.py`，不得导入存储、网络或 `gui_main`。
 - `gui_stats_detail.py` 只构建首页/结果页统计候选人明细弹窗及列表交互；统计筛选口径、候选人读取、删除持久化、页面刷新和候选人业务动作必须由 `gui_main.py` 通过显式回调提供，不得导入存储、网络或 `gui_main`。
+- `gui_job_review.py` 只消费 `stats_presenter.py` 已生成的岗位复盘模型并构建工作台；候选人加载、反馈样本口径、复盘建议计算和岗位配置导航必须留在 `gui_main.py`/`stats_presenter.py`，通过显式回调接入，不得导入存储、网络或 `gui_main`。
 - `gui_run_page.py` 只负责运行控制页的分步 Tk 构建、表单状态联动和事件绑定；API Key 查询、浏览器检测、扫描启动/停止、进度数据和日志业务必须通过宿主回调留在 `gui_main.py`，不得导入存储、浏览器、网络或 `gui_main`。
 - 后续如新建 `gui_pages/`、`gui_workbenches/` 或 `gui_runtime/` 目录，必须先在本文档定义目录职责和依赖方向，再创建文件。
 
