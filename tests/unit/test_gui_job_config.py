@@ -1880,10 +1880,11 @@ def test_combobox_style_keeps_readonly_text_visible_and_clears_inactive_highligh
 
 def test_checkbutton_style_uses_large_checkmark_indicator_but_ai_keeps_switch():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    run_source = Path("gui_run_page.py").read_text(encoding="utf-8")
     setup_block = source[source.index("def setup_styles"):]
     setup_block = setup_block[:setup_block.index("\n    def create_sidebar")]
-    run_block = source[source.index("# AI 辅助评估开关"):]
-    run_block = run_block[:run_block.index("\n        yield")]
+    run_block = run_source[run_source.index("# AI 辅助评估开关"):]
+    run_block = run_block[:run_block.index("\n    yield")]
 
     assert "checkbox_size = max(24, int(round(24 * fs)))" in setup_block
     assert "checkbox_indicator = 'App.Checkbutton.indicator'" in setup_block
@@ -1893,7 +1894,7 @@ def test_checkbutton_style_uses_large_checkmark_indicator_but_ai_keeps_switch():
     check_layout = check_layout[:check_layout.index("\n        style.configure(")]
     assert "Checkbutton.focus" not in check_layout
     assert "('Checkbutton.label', {" in check_layout
-    assert "enabled_variable=self.ai_eval_available_var" in run_block
+    assert "enabled_variable=host.ai_eval_available_var" in run_block
 
 
 def test_ai_switch_is_compact_and_supersampled():
@@ -6769,8 +6770,7 @@ def test_browser_reconnect_rechecks_cooldown_before_launch():
 
 def test_gui_run_builds_contact_list_without_direct_sending():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    run_page_block = source[source.index("def create_run_page"):]
-    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+    run_page_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     worker_block = source[source.index("def run_worker"):]
     worker_block = worker_block[:worker_block.index("\n        # 启动后台线程")]
 
@@ -6786,9 +6786,7 @@ def test_gui_run_builds_contact_list_without_direct_sending():
 
 
 def test_run_page_describes_actual_ai_score_adjustment_range():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    run_page_block = source[source.index("def create_run_page"):]
-    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+    run_page_block = Path("gui_run_page.py").read_text(encoding="utf-8")
 
     assert '_note_suffix = "15 分调整"' in run_page_block
     assert '_note_suffix = "10 分调整"' not in run_page_block
@@ -6796,19 +6794,18 @@ def test_run_page_describes_actual_ai_score_adjustment_range():
 
 def test_run_page_exposes_user_friendly_advanced_scan_settings():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    run_page_block = source[source.index("def create_run_page"):]
-    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+    run_page_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     worker_block = source[source.index("def run_worker"):]
     worker_block = worker_block[:worker_block.index("\n    def on_closing")]
 
     assert "高级运行设置" in run_page_block
     assert "高级扫描设置" not in run_page_block
     assert "⚠ 部分设置会增加扫描耗时或页面访问量，请谨慎调高" in run_page_block
-    assert "font=(FONT_FAMILY, max(8, int(10 * self.font_scale)))" in run_page_block
+    assert "font=(font_family, max(8, int(10 * host.font_scale)))" in run_page_block
     assert "'warning_text', ui_theme.WARNING_TEXT" in run_page_block
     assert "'banner_warning_bg', ui_theme.BANNER_WARNING_BG" in run_page_block
-    assert "padx=max(6, int(8 * self.dpi_scale * self.zoom_factor))" in run_page_block
-    assert "pady=max(2, int(3 * self.dpi_scale * self.zoom_factor))" in run_page_block
+    assert "padx=max(6, int(8 * host.dpi_scale * host.zoom_factor))" in run_page_block
+    assert "pady=max(2, int(3 * host.dpi_scale * host.zoom_factor))" in run_page_block
     assert 'advanced_inner.pack(fill="x")' in run_page_block
     assert '_create_advanced_setting_label(0, "滚动轮次:")' in run_page_block
     assert "扫描增强:" in run_page_block
@@ -6818,11 +6815,11 @@ def test_run_page_exposes_user_friendly_advanced_scan_settings():
     assert "后续联系:" in run_page_block
     assert "扫描后准备联系信息" in run_page_block
     assert "最多准备:" in run_page_block
-    assert 'font=(FONT_FAMILY, int(11 * self.font_scale))' in run_page_block
-    assert "_sub_font = (FONT_FAMILY, int(11 * self.font_scale))" in run_page_block
-    assert "_spin_font = (FONT_FAMILY, int(12 * self.font_scale))" in run_page_block
-    assert "textvariable=self.api_direct_pages_var" in run_page_block
-    assert "textvariable=self.greet_context_capture_limit_var" in run_page_block
+    assert 'font=(font_family, int(11 * host.font_scale))' in run_page_block
+    assert "_sub_font = (font_family, int(11 * host.font_scale))" in run_page_block
+    assert "_spin_font = (font_family, int(12 * host.font_scale))" in run_page_block
+    assert "textvariable=host.api_direct_pages_var" in run_page_block
+    assert "textvariable=host.greet_context_capture_limit_var" in run_page_block
     assert "读取越多越慢" not in run_page_block
     assert "准备人数越多耗时越长" not in run_page_block
     assert "api_direct_pages * 20" in worker_block
@@ -6842,9 +6839,9 @@ def test_run_page_exposes_user_friendly_advanced_scan_settings():
     assert [advanced_block.index(label) for label in setting_labels] == sorted(
         advanced_block.index(label) for label in setting_labels
     )
-    assert "before_widget = getattr(self, 'run_progress_frame', None)" in advanced_block
+    assert "before_widget = getattr(host, 'run_progress_frame', None)" in advanced_block
     assert "before=before_widget, **pack_kwargs" in advanced_block
-    assert "self.run_progress_frame = progress_frame" in run_page_block
+    assert "host.run_progress_frame = progress_frame" in run_page_block
     assert "advanced_inner.columnconfigure(0, minsize=_run_control_lead_width)" in advanced_block
     assert "def _create_advanced_setting_label(row_index, label_text):" in advanced_block
     assert "row_rounds_controls.grid(" in advanced_block
@@ -6854,16 +6851,16 @@ def test_run_page_exposes_user_friendly_advanced_scan_settings():
     assert 'api_switch.pack(side="left")' in advanced_block
     assert 'contact_prepare_switch.pack(side="left")' in advanced_block
     assert "_create_run_control_lead(row_advanced_header)" not in advanced_block
-    assert "self.scan_advanced_summary_label" in advanced_block
+    assert "host.scan_advanced_summary_label" in advanced_block
     assert 'text="恢复默认"' in advanced_block
-    assert "self.scan_advanced_warning_label.pack(" in advanced_block
-    assert "self.scan_advanced_warning_label.pack_forget()" in advanced_block
-    assert "self.scan_advanced_summary_label.pack_forget()" in advanced_block
+    assert "host.scan_advanced_warning_label.pack(" in advanced_block
+    assert "host.scan_advanced_warning_label.pack_forget()" in advanced_block
+    assert "host.scan_advanced_summary_label.pack_forget()" in advanced_block
     assert "def _restore_advanced_run_defaults(_event=None):" in advanced_block
     assert "'<Return>', _toggle_advanced_scan_settings" in advanced_block
     assert "'<space>', _toggle_advanced_scan_settings" in advanced_block
-    assert "self.api_direct_risk_label" in advanced_block
-    assert "self.greet_context_risk_label" in advanced_block
+    assert "host.api_direct_risk_label" in advanced_block
+    assert "host.greet_context_risk_label" in advanced_block
     assert '"访问量和耗时会明显增加"' in advanced_block
     assert advanced_block.count('"继续调高会增加触发风控的风险"') == 2
     assert "listener_first=not api_direct_enabled" in worker_block
@@ -6875,23 +6872,19 @@ def test_run_page_exposes_user_friendly_advanced_scan_settings():
 
 
 def test_ai_timeout_setting_follows_ai_evaluation_switch():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    run_page_block = source[source.index("def create_run_page"):]
-    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+    run_page_block = Path("gui_run_page.py").read_text(encoding="utf-8")
 
-    assert "self.llm_read_timeout_spin = ttk.Spinbox(" in run_page_block
+    assert "host.llm_read_timeout_spin = ttk.Spinbox(" in run_page_block
     assert (
         'state="normal" if ai_enabled else "disabled"'
         in run_page_block
     )
-    assert "self.ai_eval_var.trace_add('write', _sync_advanced_scan_controls)" in run_page_block
+    assert "host.ai_eval_var.trace_add('write', _sync_advanced_scan_controls)" in run_page_block
     assert 'else "开启 AI 辅助评估后可设置"' in run_page_block
 
 
 def test_dynamic_ai_timeout_hint_isolated_from_following_advanced_rows():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    run_page_block = source[source.index("def create_run_page"):]
-    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+    run_page_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     api_block = run_page_block[run_page_block.index("# 3. 扫描信息补全"):]
     api_block = api_block[:api_block.index("# 4. 联系信息准备")]
     contact_block = run_page_block[run_page_block.index("# 4. 联系信息准备"):]
@@ -6899,12 +6892,12 @@ def test_dynamic_ai_timeout_hint_isolated_from_following_advanced_rows():
 
     assert "row_api_controls = ttk.Frame(advanced_inner" in api_block
     assert "row_contact_controls = ttk.Frame(advanced_inner" in contact_block
-    assert "row_api_controls, self.api_direct_enabled_var" in api_block
-    assert "row_contact_controls, self.greet_context_capture_enabled_var" in contact_block
-    assert "ttk.Label(\n            row_api_controls," in api_block
-    assert "ttk.Label(\n            row_contact_controls," in contact_block
-    assert "ttk.Spinbox(\n            row_api_controls," in api_block
-    assert "ttk.Spinbox(\n            row_contact_controls," in contact_block
+    assert "row_api_controls, host.api_direct_enabled_var" in api_block
+    assert "row_contact_controls, host.greet_context_capture_enabled_var" in contact_block
+    assert "ttk.Label(\n        row_api_controls," in api_block
+    assert "ttk.Label(\n        row_contact_controls," in contact_block
+    assert "ttk.Spinbox(\n        row_api_controls," in api_block
+    assert "ttk.Spinbox(\n        row_contact_controls," in contact_block
     assert "column=2" not in api_block
     assert "column=3" not in api_block
     assert "column=2" not in contact_block
@@ -6913,15 +6906,14 @@ def test_dynamic_ai_timeout_hint_isolated_from_following_advanced_rows():
 
 def test_run_page_job_selector_defaults_to_recent_or_saved_job():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    run_page_block = source[source.index("def create_run_page"):]
-    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+    run_page_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     show_page_run_block = source[source.index("def show_page_run"):]
     show_page_run_block = show_page_run_block[:show_page_run_block.index("\n    def show_page_result")]
     save_job_block = source[source.index("def save_current_job"):]
     save_job_block = save_job_block[:save_job_block.index("\n    def _restore_or_clear_job_form")]
 
-    assert 'self.job_select_var = tk.StringVar(value="")' in run_page_block
-    assert "_sync_run_job_combo_values(self.job_rules, prefer_current=False)" in run_page_block
+    assert 'host.job_select_var = tk.StringVar(value="")' in run_page_block
+    assert "host._sync_run_job_combo_values(host.job_rules, prefer_current=False)" in run_page_block
     assert "self._sync_run_job_combo_values(job_rules)" in show_page_run_block
     assert "self._remember_run_job_selection(normalized_job_name)" in save_job_block
 
@@ -7304,8 +7296,7 @@ def test_run_worker_preserves_scan_completion_state():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     run_block = source[source.index("def run_worker"):]
     run_block = run_block[:run_block.index("\n    def on_closing")]
-    create_block = source[source.index("def create_run_page"):]
-    create_block = create_block[:create_block.index("\n    def create_result_page")]
+    create_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     start_block = source[source.index("def start_run"):]
     start_block = start_block[:start_block.index("\n    def stop_run")]
 
@@ -7319,32 +7310,29 @@ def test_run_worker_preserves_scan_completion_state():
     assert 'self._replace_run_summary_contact_queue_count(final_desc, 0)' in run_block
     assert 'self._set_run_summary(summary_desc)' in run_block
     assert 'self._reset_run_summary()' in start_block
-    assert 'self.run_summary_text_label' in create_block
+    assert 'host.run_summary_text_label' in create_block
     assert '本轮结果摘要' in create_block
     assert '✔ 运行完成' not in run_block
 
 
 def test_run_control_buttons_keep_icons_visible_while_disabled():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[source.index("def create_run_page"):]
-    create_block = create_block[:create_block.index("\n    def create_result_page")]
+    create_block = Path("gui_run_page.py").read_text(encoding="utf-8")
 
-    assert "icon_play_run_disabled = self.icons.button('play', self.colors['text_muted'])" in create_block
+    assert "icon_play_run_disabled = host.icons.button('play', host.colors['text_muted'])" in create_block
     assert "image=(icon_play_run, 'disabled', icon_play_run_disabled)" in create_block
-    assert "self.start_btn._icon_refs = (icon_play_run, icon_play_run_disabled)" in create_block
-    assert "icon_stop_disabled = self.icons.button('stop', self.colors['text_muted'])" in create_block
+    assert "host.start_btn._icon_refs = (icon_play_run, icon_play_run_disabled)" in create_block
+    assert "icon_stop_disabled = host.icons.button('stop', host.colors['text_muted'])" in create_block
     assert "image=(icon_stop, 'disabled', icon_stop_disabled)" in create_block
-    assert "self.stop_btn._icon_refs = (icon_stop, icon_stop_disabled)" in create_block
+    assert "host.stop_btn._icon_refs = (icon_stop, icon_stop_disabled)" in create_block
 
 
 def test_run_control_uses_compact_rounds_input_and_matching_button_fonts():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     styles_block = source[source.index("def setup_styles"):]
     styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
-    create_block = source[source.index("def create_run_page"):]
-    create_block = create_block[:create_block.index("\n    def create_result_page")]
+    create_block = Path("gui_run_page.py").read_text(encoding="utf-8")
 
-    assert "increment=10,\n            textvariable=self.rounds_var,\n            width=8" in create_block
+    assert "increment=10,\n        textvariable=host.rounds_var,\n        width=8" in create_block
     assert "'RunControl.Danger.TButton'" in styles_block
     assert "font=(FONT_FAMILY_SEMIBOLD, int(13 * page_fs))" in styles_block
     assert "style='Accent.TButton'" in create_block
@@ -7352,9 +7340,7 @@ def test_run_control_uses_compact_rounds_input_and_matching_button_fonts():
 
 
 def test_run_control_inputs_share_browser_action_start_column():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[source.index("def create_run_page"):]
-    create_block = create_block[:create_block.index("\n    def create_result_page")]
+    create_block = Path("gui_run_page.py").read_text(encoding="utf-8")
 
     assert "_run_control_lead_width = (" in create_block
     assert "def _create_run_control_lead(parent, text=None, label_font=None):" in create_block
@@ -7362,23 +7348,22 @@ def test_run_control_inputs_share_browser_action_start_column():
     assert "btn_browser.pack(side=\"left\")" in create_block
     assert '_create_advanced_setting_label(0, "滚动轮次:")' in create_block
     assert "row_rounds_controls.grid(" in create_block
-    assert "self.rounds_spin.pack(side=\"left\")" in create_block
+    assert "host.rounds_spin.pack(side=\"left\")" in create_block
     assert '_create_run_control_lead(row_job, "选择岗位:")' in create_block
-    assert "self.job_combo.pack(side=\"left\")" in create_block
+    assert "host.job_combo.pack(side=\"left\")" in create_block
     assert '_create_run_control_lead(row2, "筛选完成:")' in create_block
     assert "contact_combo.pack(side=\"left\")" in create_block
-    assert "self.scan_advanced_toggle_label.pack(side=\"left\")" in create_block
+    assert "host.scan_advanced_toggle_label.pack(side=\"left\")" in create_block
     assert '_create_run_control_lead(row_ai, "AI 评估:")' in create_block
     assert "ai_switch.pack(side=\"left\")" in create_block
     assert '1, "AI 响应超时:"' in create_block
     assert "row_ai_timeout_controls.grid(" in create_block
-    assert "self.llm_read_timeout_spin.pack(side=\"left\")" in create_block
+    assert "host.llm_read_timeout_spin.pack(side=\"left\")" in create_block
 
 
 def test_inline_form_notes_use_flat_copy_without_outer_parentheses():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    run_block = source[source.index("def create_run_page"):]
-    run_block = run_block[:run_block.index("\n    def create_result_page")]
+    run_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
     assert 'text="默认 50，推荐 20-100"' in run_block
@@ -7407,12 +7392,11 @@ def test_run_log_and_shared_dialogs_use_the_larger_font():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     styles_block = source[source.index("def setup_styles"):]
     styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
-    create_block = source[source.index("def create_run_page"):]
-    create_block = create_block[:create_block.index("\n    def create_result_page")]
+    create_block = Path("gui_run_page.py").read_text(encoding="utf-8")
 
     assert "self.font_log = (FONT_FAMILY, int(12 * page_fs))" in styles_block
     assert "font_run_log" not in styles_block
-    assert "font=self.font_log" in create_block
+    assert "font=host.font_log" in create_block
 
 
 def test_ai_parse_reminder_uses_shared_modal_font_without_compact_delta():

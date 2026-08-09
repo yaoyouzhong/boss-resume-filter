@@ -13,6 +13,7 @@ import gui_candidate_review
 import gui_contact_queue
 import gui_main
 import gui_result_page
+import gui_run_page
 import gui_stats_page
 import run_presenter
 import stats_presenter
@@ -90,6 +91,7 @@ def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():
         "gui_candidate_workbench",
         "gui_contact_queue",
         "gui_result_page",
+        "gui_run_page",
         "gui_stats_page",
     ):
         assert not (_top_level_imports(module_name) & forbidden)
@@ -168,6 +170,51 @@ def test_result_page_compatibility_method_is_a_thin_builder_delegate():
     assert "tk.Menu" not in block
     assert "self._update_result_tree_columns()" in block
     assert "self._refresh_contact_queue_badge()" in block
+
+
+def test_run_page_compatibility_method_is_a_thin_incremental_delegate():
+    assert callable(gui_run_page.build_run_page_steps)
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _create_run_page_steps"):]
+    block = block[:block.index("\n    def _schedule_run_page_api_key_check")]
+
+    assert "yield from gui_run_page.build_run_page_steps(" in block
+    assert "ttk.Frame" not in block
+    assert "tk.Text" not in block
+
+
+def test_run_page_keeps_api_key_resolution_in_main_controller():
+    imports = _top_level_imports("gui_run_page")
+    assert not ({"security", "threading"} & imports)
+    assert "_get_api_key_cached" not in (
+        ROOT / "gui_run_page.py"
+    ).read_text(encoding="utf-8")
+
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _schedule_run_page_api_key_check"):]
+    block = block[:block.index("\n    def create_result_page")]
+    assert "self._get_api_key_cached(" in block
+    assert "threading.Thread(" in block
+
+
+def test_run_page_api_key_check_does_not_start_after_leaving_run_page():
+    gui = gui_main.BossFilterGUI.__new__(gui_main.BossFilterGUI)
+    gui.root = Mock()
+    gui.current_page_index = gui_main.PageIndex.HOME
+    gui.run_page = object()
+    gui.api_config = {"api_provider": "openai", "base_url": ""}
+    gui._get_api_key_cached = Mock()
+    gui._update_ai_eval_status = Mock()
+    gui.run_on_ui = Mock()
+
+    with patch.object(gui_main.threading, "Thread") as thread:
+        gui._schedule_run_page_api_key_check(Mock())
+        delay, callback = gui.root.after.call_args.args
+        callback()
+
+    assert delay == 150
+    thread.assert_not_called()
+    gui._get_api_key_cached.assert_not_called()
 
 
 def test_candidate_diagnostics_compatibility_method_is_a_thin_dialog_delegate():
