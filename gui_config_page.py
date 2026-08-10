@@ -36,8 +36,12 @@ def build_config_page_steps(
     scroll_frame = ttk.Frame(self.config_page, style='Card.TFrame')
     scroll_frame.pack(fill="both", expand=True)
 
-    self.config_canvas, self.config_scrollable_frame = self._create_scroll_container(
-        scroll_frame, self.colors['bg_card'])
+    self.config_canvas, self.config_scrollable_frame = (
+        self.scroll_support.create_scroll_container(
+            scroll_frame,
+            self.colors['bg_card'],
+        )
+    )
 
     # 使用 scrollable_frame 作为实际容器
     config_container = self.config_scrollable_frame
@@ -635,7 +639,7 @@ def build_config_page_steps(
     )
     self.skill_weight_spinbox.pack(side="left")
     self.bind_entry_context_menu(self.skill_weight_spinbox)
-    self._bind_bounded_spinbox_mousewheel(
+    self.scroll_support.bind_bounded_spinbox_mousewheel(
         self.skill_weight_spinbox, self.new_skill_weight_var, 1, 3
     )
 
@@ -679,7 +683,7 @@ def build_config_page_steps(
     )
     self.add_skill_weight_spinbox.pack(side="left")
     self.bind_entry_context_menu(self.add_skill_weight_spinbox)
-    self._bind_bounded_spinbox_mousewheel(
+    self.scroll_support.bind_bounded_spinbox_mousewheel(
         self.add_skill_weight_spinbox, self.new_skill_add_weight_var, 1, 3
     )
 
@@ -872,4 +876,7 @@ def build_config_page_steps(
     )
 
     # 在所有控件创建完毕后绑定滚轮事件
-    self._bind_mousewheel(self.config_canvas, self.config_scrollable_frame)
+    self.scroll_support.bind_mousewheel(
+        self.config_canvas,
+        self.config_scrollable_frame,
+    )

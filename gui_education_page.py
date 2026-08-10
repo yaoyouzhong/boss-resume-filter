@@ -8,6 +8,18 @@ from tkinter import font, ttk
 from typing import Any, Protocol
 
 
+class ScrollSupport(Protocol):
+    def create_scroll_container(
+        self,
+        parent: tk.Misc,
+        bg_color: str,
+        *,
+        auto_hide_scrollbar: bool = False,
+    ) -> tuple[tk.Canvas, ttk.Frame]: ...
+
+    def bind_mousewheel(self, canvas: tk.Canvas, frame: tk.Misc) -> None: ...
+
+
 class EducationPageHost(Protocol):
     """Narrow host contract required to build the education page."""
 
@@ -20,6 +32,7 @@ class EducationPageHost(Protocol):
     font_label: Any
     icons: Any
     _context_menus: list[tk.Menu]
+    scroll_support: ScrollSupport
 
     def _create_page_header(
         self,
@@ -28,14 +41,6 @@ class EducationPageHost(Protocol):
         subtitle: str | None = None,
         top_padding: int = 0,
     ) -> tk.Misc: ...
-
-    def _create_scroll_container(
-        self,
-        parent: tk.Misc,
-        bg_color: str,
-        *,
-        auto_hide_scrollbar: bool = False,
-    ) -> tuple[tk.Canvas, ttk.Frame]: ...
 
     def _create_card(
         self,
@@ -71,8 +76,6 @@ class EducationPageHost(Protocol):
     def _fill_chsi_page(self) -> None: ...
 
     def _solve_captcha(self) -> None: ...
-
-    def _bind_mousewheel(self, canvas: tk.Canvas, frame: ttk.Frame) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -124,7 +127,7 @@ def build_education_page(
 
     scroll_frame = ttk.Frame(page, style="Page.TFrame")
     scroll_frame.pack(fill="both", expand=True)
-    canvas, scrollable_frame = host._create_scroll_container(
+    canvas, scrollable_frame = host.scroll_support.create_scroll_container(
         scroll_frame,
         host.colors["bg_main"],
         auto_hide_scrollbar=True,
@@ -399,7 +402,7 @@ def build_education_page(
         justify="left",
     ).pack(anchor="w", fill="x", pady=(20, 0))
     queue_card.pack_forget()
-    host._bind_mousewheel(canvas, scrollable_frame)
+    host.scroll_support.bind_mousewheel(canvas, scrollable_frame)
 
     return EducationPageWidgets(
         page=page,

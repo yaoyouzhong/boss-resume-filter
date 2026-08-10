@@ -40,6 +40,7 @@ boss-resume-filter/
 ├── gui_run_page.py      # 运行控制页分步 Tk 构建、控件状态联动与事件绑定模块
 ├── gui_style_setup.py   # 全局 Tk/ttk 样式、字体和设计令牌注册模块
 ├── gui_app_shell.py     # 应用侧边栏、页面注册、导航与按需打开生命周期模块
+├── gui_scroll_support.py # 跨平台滚动容器、滚轮路由与 Cocoa 触控板生命周期模块
 ├── gui_config_page.py   # 岗位配置页分步 Tk 构建、表单控件装配与事件绑定模块
 ├── gui_settings_page.py # 系统设置页分步 Tk 构建、模型控件与数据工具入口装配模块
 ├── gui_education_page.py # 学历核验页 Tk 控件构建、队列列表与事件绑定模块
@@ -199,6 +200,7 @@ boss-resume-filter/
 - `gui_run_page.py` 只负责运行控制页的分步 Tk 构建、表单状态联动和事件绑定；API Key 查询、浏览器检测、扫描启动/停止、进度数据和日志业务必须通过宿主回调留在 `gui_main.py`，不得导入存储、浏览器、网络或 `gui_main`。
 - `gui_style_setup.py` 只注册全局 Tk/ttk 样式、字体、颜色令牌和控件状态图；不得读取业务数据、访问存储/浏览器/网络或导入 `gui_main`，通过显式宿主对象接收根窗口、缩放和图标依赖。
 - `gui_app_shell.py` 只负责页面身份/注册表、侧边栏与导航视觉、页面按需创建/加载反馈、页面显示隐藏和全局宽度策略；允许导入 Tk、主题和统一消息框，但不得读取业务数据、访问存储/浏览器/网络或导入 `gui_main`。它通过构造参数接收版本、字体和 UI 配置，通过显式宿主回调触发页面局部刷新；页面模块应调用 `host.app_shell` 导航，不得要求 `BossFilterGUI` 新增同名转发方法。仅为现有脚本兼容保留的 `show_page_*`/`hide_all_pages`/`update_nav_highlight` 门面必须保持薄委托。
+- `gui_scroll_support.py` 只负责通用 Canvas 滚动容器、滚轮增量归一化、控件级滚轮绑定、当前页面 Canvas 路由和 macOS Cocoa 触控板 hook；允许导入 Tk、`ctypes` 和页面身份，但不得读取业务数据、访问存储/浏览器/网络或导入 `gui_main`。页面模块统一调用 `host.scroll_support`，不得把滚动实现或同名转发方法留在 `BossFilterGUI`；Cocoa hook 失败只允许保持原有静默降级，不得影响非 macOS 启动。
 - `gui_education_page.py` 只负责学历核验页的 Tk 控件、队列列表、页面局部状态和事件绑定；证书读取与识别、模型调用、学信网填写、验证码和浏览器操作必须通过显式 Host 回调留在 `gui_main.py`，不得导入存储、AI、浏览器、网络或 `gui_main`。
 - `gui_home_page.py` 只负责首页标题、岗位筛选控件、统计卡和快速入口的 Tk 构建与事件绑定；岗位加载、统计口径和候选人明细必须通过显式 Host 回调留在 `gui_main.py`，页面导航统一调用 `host.app_shell`；不得读取存储或导入网络、浏览器、`gui_main`。首页仍是启动时唯一立即创建的业务页，不得因拆分引入隐藏页预构建。
 - `resume_parser.py` 只把本地 PDF、DOCX、TXT、MD、RTF 或 HTML 简历转为文本并抛出可预期的分类异常；不得导入 `tkinter`、`gui_main`、候选人存储或网络模块，不得修改候选人数据或受管简历引用。

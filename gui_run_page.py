@@ -33,8 +33,10 @@ def build_run_page_steps(
     scroll_frame = ttk.Frame(host.run_page, style='Page.TFrame')
     scroll_frame.pack(fill="both", expand=True)
 
-    host.run_canvas, scrollable_frame = host._create_scroll_container(
-        scroll_frame, host.colors['bg_card'])
+    host.run_canvas, scrollable_frame = host.scroll_support.create_scroll_container(
+        scroll_frame,
+        host.colors['bg_card'],
+    )
 
     host.run_scrollable_frame = scrollable_frame  # 保存引用，供 mousewheel 绑定使用
 
@@ -912,4 +914,7 @@ def build_run_page_steps(
     host.update_progress()
 
     # 在所有控件创建完毕后绑定滚轮事件
-    host._bind_mousewheel(host.run_canvas, host.run_scrollable_frame)
+    host.scroll_support.bind_mousewheel(
+        host.run_canvas,
+        host.run_scrollable_frame,
+    )

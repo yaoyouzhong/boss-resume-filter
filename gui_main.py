@@ -56,6 +56,7 @@ import gui_job_review
 import gui_app_shell
 import gui_result_page
 import gui_run_page
+import gui_scroll_support
 import gui_settings_page
 import gui_model_catalog_dialog
 import gui_stats_page
@@ -1062,6 +1063,7 @@ class BossFilterGUI:
             font_family_semibold=FONT_FAMILY_SEMIBOLD,
             version=__version__,
         )
+        self.scroll_support = gui_scroll_support.ScrollSupport(self)
 
         # 创建进度状态图标（依赖 self.colors，必须在 setup_styles 之后）
         self._create_status_icons()
@@ -1091,17 +1093,17 @@ class BossFilterGUI:
         self._over_text_widget = False
 
         # 统一绑定滚轮事件 - 根据当前页面分发到对应的 Canvas
-        self.root.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.root.bind_all("<MouseWheel>", self.scroll_support.on_mousewheel)
         # 普通 Frame/Label 不会主动获取焦点；全局点击用于收起结果页搜索框占位状态。
         self.root.bind_all("<Button-1>", self._on_global_left_click, add="+")
         # macOS/Linux 触控板可能生成 Button-4/5 事件
         if sys.platform != 'win32':
-            self.root.bind_all("<Button-4>", self._on_mousewheel)
-            self.root.bind_all("<Button-5>", self._on_mousewheel)
+            self.root.bind_all("<Button-4>", self.scroll_support.on_mousewheel)
+            self.root.bind_all("<Button-5>", self.scroll_support.on_mousewheel)
 
         # macOS Tk 9.0+: Cocoa 层拦截触控板滚动事件并转发给 Tk
         if _NEED_COCOA_SCROLL_HOOK:
-            self.root.after(500, self._setup_cocoa_scroll_hook)
+            self.root.after(500, self.scroll_support.setup_cocoa_scroll_hook)
 
         # 全局快捷键（F5 / Ctrl+F / Delete / Ctrl+1~7）
         if not standalone_education:
@@ -1899,419 +1901,16 @@ class BossFilterGUI:
         self.api_config_page = ttk.Frame(self.pages_frame, style='Page.TFrame')
 
         # 创建可滚动容器（macOS Tk 9.0+ 用 Text，其他用 Canvas）
-        self.api_canvas, self.api_scrollable_frame = self._create_scroll_container(
-            self.api_config_page, self.colors['bg_card'])
+        self.api_canvas, self.api_scrollable_frame = (
+            self.scroll_support.create_scroll_container(
+                self.api_config_page,
+                self.colors['bg_card'],
+            )
+        )
 
         yield
         yield from self._create_api_config_content_steps()
 
-
-    @staticmethod
-    def _delta_to_units(delta):
-        """将鼠标滚轮 delta 转换为滚动单位数。
-
-        Windows 鼠标滚轮每格 delta=±120；macOS 触控板 delta 通常为 ±1。
-        直接除以 120 取整在 macOS 上恒为 0，故按平台分别处理。
-        """
-        if sys.platform == 'darwin':
-            return -1 if delta > 0 else 1
-        return int(-1 * (delta / 120))
-
-    @staticmethod
-    def _bind_bounded_spinbox_mousewheel(spinbox, variable, minimum, maximum):
-        """Adjust a numeric Spinbox with the wheel without scrolling its page."""
-        def _on_wheel(event):
-            delta = getattr(event, 'delta', 0)
-            button = getattr(event, 'num', None)
-            if delta > 0 or button == 4:
-                direction = 1
-            elif delta < 0 or button == 5:
-                direction = -1
-            else:
-                return 'break'
-            try:
-                current = int(variable.get())
-            except (TypeError, ValueError):
-                current = minimum
-            variable.set(str(max(minimum, min(maximum, current + direction))))
-            return 'break'
-
-        spinbox.bind('<MouseWheel>', _on_wheel)
-        if sys.platform != 'win32':
-            spinbox.bind('<Button-4>', _on_wheel)
-            spinbox.bind('<Button-5>', _on_wheel)
-
-    @staticmethod
-    def _create_scroll_container(parent, bg_color, auto_hide_scrollbar=False):
-        """创建可滚动容器，返回 (canvas, container_frame)。
-
-        所有平台统一使用 Canvas + create_window。
-        macOS Tk 9.0+ 触控板滚动通过 _setup_cocoa_scroll_hook() 在 ObjC 层拦截。
-        """
-        canvas = tk.Canvas(parent, bg=bg_color, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        container = ttk.Frame(canvas, style='TFrame')
-
-        canvas_window = canvas.create_window((0, 0), window=container, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        sync_after_id = None
-
-        if auto_hide_scrollbar:
-            def _sync_layout():
-                """Fill the viewport when content is short and scroll only on overflow."""
-                nonlocal sync_after_id
-                sync_after_id = None
-                try:
-                    viewport_height = max(1, canvas.winfo_height())
-                    requested_height = max(1, container.winfo_reqheight())
-                    content_height = max(requested_height, viewport_height)
-                    canvas.itemconfig(canvas_window, height=content_height)
-                    canvas.configure(
-                        scrollregion=(0, 0, canvas.winfo_width(), content_height)
-                    )
-
-                    has_overflow = requested_height > viewport_height + 8
-                    if has_overflow and not scrollbar.winfo_manager():
-                        scrollbar.pack(side="right", fill="y")
-                    elif not has_overflow:
-                        if scrollbar.winfo_manager():
-                            scrollbar.pack_forget()
-                        canvas.yview_moveto(0)
-                except tk.TclError:
-                    return
-
-            def _schedule_sync(_event=None):
-                nonlocal sync_after_id
-                if sync_after_id is not None:
-                    try:
-                        canvas.after_cancel(sync_after_id)
-                    except tk.TclError:
-                        return
-                sync_after_id = canvas.after_idle(_sync_layout)
-
-            container.bind("<Configure>", _schedule_sync)
-            canvas._schedule_overflow_sync = _schedule_sync
-        else:
-            container.bind(
-                "<Configure>",
-                lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
-            )
-
-        # Canvas 宽度变化 → 同步嵌入 Frame 宽度与自适应高度
-        def _on_canvas_configure(event):
-            canvas.itemconfig(canvas_window, width=event.width)
-            if auto_hide_scrollbar:
-                _schedule_sync()
-        canvas.bind("<Configure>", _on_canvas_configure)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        if not auto_hide_scrollbar:
-            scrollbar.pack(side="right", fill="y")
-        return canvas, container
-
-    @staticmethod
-    def _bind_mousewheel(canvas, parent_frame):
-        """在 Canvas 及其所有子控件上绑定滚轮事件（instance binding 优先级最高）。
-
-        macOS 上 ttk 控件的 class binding 会先消费 <MouseWheel> 事件，
-        bind_all 优先级最低无法拦截。必须在每个控件上用 bind() 绑定 instance handler，
-        返回 'break' 阻止后续 class binding。
-
-        macOS 触控板可能生成 <MouseWheel>（delta=±1）或 <Button-4>/<Button-5> 事件，
-        需要同时绑定三种事件类型。
-
-        首次绑定后标记 canvas._mousewheel_bound，后续调用直接跳过，避免页面切换时
-        递归遍历所有子控件重复绑定导致卡顿。
-        """
-        if getattr(canvas, '_mousewheel_bound', False):
-            return
-
-        def _on_wheel(event):
-            """处理滚轮/触控板滚动事件"""
-            # 优先使用 delta（MouseWheel 事件）
-            if hasattr(event, 'delta') and event.delta != 0:
-                units = BossFilterGUI._delta_to_units(event.delta)
-            # 回退到 num（Button-4/5 事件，macOS X11 兼容模式）
-            elif hasattr(event, 'num'):
-                if event.num == 4:
-                    units = -1
-                elif event.num == 5:
-                    units = 1
-                else:
-                    return
-            else:
-                return
-            if units != 0:
-                canvas.yview_scroll(units, "units")
-            return 'break'
-
-        # 跳过自带滚轮的控件类型
-        _skip_types = (ttk.Spinbox, ttk.Combobox, ttk.Scrollbar, tk.Text, tk.Entry, tk.Listbox)
-
-        def _bind_recursive(widget):
-            if isinstance(widget, _skip_types):
-                return
-            # Treeview 也跳过
-            if hasattr(widget, 'identify_region'):
-                return
-            widget.bind("<MouseWheel>", _on_wheel)
-            # macOS/Linux 触控板可能生成 Button-4/5 事件
-            if sys.platform != 'win32':
-                widget.bind("<Button-4>", _on_wheel)
-                widget.bind("<Button-5>", _on_wheel)
-            for child in widget.winfo_children():
-                _bind_recursive(child)
-
-        # Canvas 自身
-        canvas.bind("<MouseWheel>", _on_wheel)
-        if sys.platform != 'win32':
-            canvas.bind("<Button-4>", _on_wheel)
-            canvas.bind("<Button-5>", _on_wheel)
-        # 递归绑定所有子控件
-        _bind_recursive(parent_frame)
-        canvas._mousewheel_bound = True
-
-    # ── macOS Tk 9.0+ Cocoa 触控板滚动 hook ──────────────────────────────
-    # Tk 9.0 的 Cocoa 后端在 NSView.scrollWheel: 中消费触控板事件，
-    # 不向 Canvas 等非原生滚动控件生成 Tk MouseWheel 事件。
-    # 通过 ObjC Runtime swizzle 拦截 scrollWheel:，直接滚动当前页面的 Canvas。
-
-    _cocoa_hook_installed = False
-    _cocoa_refs = {}            # 防止 ObjC 对象/回调被 GC
-
-    def _setup_cocoa_scroll_hook(self):
-        """设置 Cocoa scrollWheel: 拦截（仅 macOS Tk 9.0+）。
-
-        通过 ObjC Runtime swizzle NSView.scrollWheel:，
-        对非 NSScrollView 子视图直接调用当前页面 Canvas 的 yview_scroll。
-        如果设置失败（ctypes/libobjc 不可用），静默降级（触控板不可滚动）。
-        """
-        if BossFilterGUI._cocoa_hook_installed:
-            return
-        try:
-            import ctypes
-            import ctypes.util
-
-            objc_path = ctypes.util.find_library('objc')
-            if not objc_path:
-                return
-            objc = ctypes.cdll.LoadLibrary(objc_path)
-
-            # ── ObjC Runtime 函数签名 ──
-            objc.sel_registerName.restype = ctypes.c_void_p
-            objc.sel_registerName.argtypes = [ctypes.c_char_p]
-            objc.objc_getClass.restype = ctypes.c_void_p
-            objc.objc_getClass.argtypes = [ctypes.c_char_p]
-            objc.class_getInstanceMethod.restype = ctypes.c_void_p
-            objc.class_getInstanceMethod.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-            objc.method_getImplementation.restype = ctypes.c_void_p
-            objc.method_getImplementation.argtypes = [ctypes.c_void_p]
-            objc.method_setImplementation.restype = ctypes.c_void_p
-            objc.method_setImplementation.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-
-            # objc_msgSend 用于方法调用
-            objc.objc_msgSend.restype = ctypes.c_void_p
-            objc.objc_msgSend.argtypes = [
-                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-
-            sel_scroll = objc.sel_registerName(b'scrollWheel:')
-            sel_shared = objc.sel_registerName(b'sharedApplication')
-            sel_keywin = objc.sel_registerName(b'keyWindow')
-            sel_cv = objc.sel_registerName(b'contentView')
-            sel_super = objc.sel_registerName(b'superview')
-            sel_is_kind = objc.sel_registerName(b'isKindOfClass:')
-            sel_delta_y = objc.sel_registerName(b'scrollingDeltaY')
-
-            cls_nsapp = objc.objc_getClass(b'NSApplication')
-            cls_nsview = objc.objc_getClass(b'NSView')
-            cls_nssv = objc.objc_getClass(b'NSScrollView')
-
-            if not all([cls_nsapp, cls_nsview, cls_nssv]):
-                return
-
-            # ── 获取 NSApplication.sharedApplication.keyWindow.contentView ──
-            app = objc.objc_msgSend(cls_nsapp, sel_shared, None)
-            if not app:
-                self.root.after(1000, self._setup_cocoa_scroll_hook)
-                return
-            kw = objc.objc_msgSend(app, sel_keywin, None)
-            if not kw:
-                self.root.after(1000, self._setup_cocoa_scroll_hook)
-                return
-            content_view = objc.objc_msgSend(kw, sel_cv, None)
-            if not content_view:
-                self.root.after(1000, self._setup_cocoa_scroll_hook)
-                return
-
-            # ── scrollingDeltaY 调用函数（处理 x86_64 fpret vs ARM64） ──
-            try:
-                objc.objc_msgSend_fpret.restype = ctypes.c_double
-                objc.objc_msgSend_fpret.argtypes = [
-                    ctypes.c_void_p, ctypes.c_void_p]
-                _msg_send_double = objc.objc_msgSend_fpret
-            except AttributeError:
-                # ARM64 没有 fpret，创建独立的 CFUNCTYPE 避免修改 objc_msgSend 签名
-                _msg_send_double = ctypes.CFUNCTYPE(
-                    ctypes.c_double, ctypes.c_void_p, ctypes.c_void_p
-                )(objc.objc_msgSend)
-
-            # ── isKindOfClass: 调用函数（3 个 c_void_p 参数） ──
-            _msg_send_is_kind = ctypes.CFUNCTYPE(
-                ctypes.c_bool,
-                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
-            )(objc.objc_msgSend)
-
-            # ── 保存引用，防止被 GC ──
-            BossFilterGUI._cocoa_refs['app'] = app
-            BossFilterGUI._cocoa_refs['content_view'] = content_view
-
-            # ── scrollWheel: 替代实现 ──
-            # C 签名: void scrollWheel:(id self, SEL _cmd, id event)
-            SCROLL_CB = ctypes.CFUNCTYPE(
-                None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
-
-            def _cocoa_scroll_impl(view, _cmd, event):
-                """swizzle 后的 scrollWheel: 实现。
-
-                对 NSScrollView 内部视图（Text/Treeview/Listbox）跳过，
-                让 Cocoa 原生滚动处理。对其他视图直接滚动当前页面的 Canvas。
-                """
-                try:
-                    # 鼠标在 Text 控件上时，让 Text 自身处理滚动
-                    if getattr(self, '_over_text_widget', False):
-                        return
-
-                    # 检查 view 是否在 NSScrollView 内部
-                    # （Text/Treeview/Listbox 的 Cocoa 实现是 NSScrollView）
-                    v = view
-                    for _ in range(10):  # 最多向上 10 层
-                        sv = objc.objc_msgSend(v, sel_super, None)
-                        if not sv:
-                            break
-                        if _msg_send_is_kind(sv, sel_is_kind, cls_nssv):
-                            return  # 在 NSScrollView 内部 → 让原生滚动处理
-                        v = sv
-
-                    # 获取 deltaY（浮点数）
-                    delta_y = _msg_send_double(event, sel_delta_y)
-                    if delta_y == 0:
-                        return
-
-                    # Cocoa deltaY > 0 = 向上 → units = -1（内容上移）
-                    # Cocoa deltaY < 0 = 向下 → units = 1（内容下移）
-                    units = -1 if delta_y > 0 else 1
-
-                    # 直接滚动当前页面的 Canvas
-                    page_canvas = {
-                        PageIndex.CONFIG: getattr(self, 'config_canvas', None),
-                        PageIndex.RUN: getattr(self, 'run_canvas', None),
-                        PageIndex.EDUCATION: getattr(self, 'education_canvas', None),
-                        PageIndex.SETTINGS: getattr(self, 'api_canvas', None),
-                    }.get(getattr(self, 'current_page_index', -1))
-
-                    if page_canvas:
-                        page_canvas.yview_scroll(units, "units")
-
-                except Exception:
-                    pass
-
-            # ── Swizzle NSView.scrollWheel: ──
-            scroll_callback = SCROLL_CB(_cocoa_scroll_impl)
-            cb_ptr = ctypes.cast(scroll_callback, ctypes.c_void_p).value
-
-            method = objc.class_getInstanceMethod(cls_nsview, sel_scroll)
-            if not method:
-                return
-
-            # 保存原始实现（用于 fallback）并替换
-            orig_impl = objc.method_getImplementation(method)
-            objc.method_setImplementation(method, cb_ptr)
-
-            # 防止回调和 ObjC 引用被 GC
-            BossFilterGUI._cocoa_refs['callback'] = scroll_callback
-            BossFilterGUI._cocoa_refs['orig_impl'] = orig_impl
-
-            BossFilterGUI._cocoa_hook_installed = True
-
-        except Exception:
-            pass
-
-    def _on_mousewheel(self, event):
-        """统一处理滚轮事件 - 根据当前页面分发到对应的 Canvas
-
-        使用 bind_all（最高优先级），从事件源控件向上遍历找到所属 Canvas，
-        避免 macOS 上 ttk class binding 消费事件的问题。
-        """
-        widget = event.widget
-
-        # 让自带滚轮处理的控件自行处理
-        if isinstance(widget, (tk.Text, tk.Entry, tk.Listbox, ttk.Scrollbar, ttk.Combobox, ttk.Spinbox)):
-            return
-        # Treeview 也需要跳过（自带垂直滚动）
-        if hasattr(widget, 'identify_region'):
-            return
-
-        # 计算滚动量
-        if hasattr(event, 'delta') and event.delta != 0:
-            units = self._delta_to_units(event.delta)
-        elif hasattr(event, 'num'):
-            if event.num == 4:
-                units = -1
-            elif event.num == 5:
-                units = 1
-            else:
-                return
-        else:
-            return
-
-        if units == 0:
-            return
-
-        # 检查事件源是否直接就是目标 Canvas
-        target_canvas = None
-        if hasattr(self, 'config_canvas') and widget is self.config_canvas:
-            target_canvas = self.config_canvas
-        elif hasattr(self, 'api_canvas') and widget is self.api_canvas:
-            target_canvas = self.api_canvas
-        elif hasattr(self, 'run_canvas') and widget is self.run_canvas:
-            target_canvas = self.run_canvas
-        elif hasattr(self, 'education_canvas') and widget is self.education_canvas:
-            target_canvas = self.education_canvas
-        else:
-            # 从事件源控件向上遍历，找到所属的可滚动 Canvas
-            try:
-                w = widget
-                while w is not None:
-                    parent = w.master
-                    if parent is getattr(self, 'config_canvas', None):
-                        target_canvas = self.config_canvas
-                        break
-                    elif parent is getattr(self, 'api_canvas', None):
-                        target_canvas = self.api_canvas
-                        break
-                    elif parent is getattr(self, 'run_canvas', None):
-                        target_canvas = self.run_canvas
-                        break
-                    elif parent is getattr(self, 'education_canvas', None):
-                        target_canvas = self.education_canvas
-                        break
-                    w = parent
-            except Exception:
-                return
-
-        if target_canvas is None:
-            target_canvas = {
-                PageIndex.CONFIG: getattr(self, 'config_canvas', None),
-                PageIndex.RUN: getattr(self, 'run_canvas', None),
-                PageIndex.EDUCATION: getattr(self, 'education_canvas', None),
-            }.get(getattr(self, 'current_page_index', -1))
-
-        if target_canvas is None:
-            return
-
-        target_canvas.yview_scroll(units, "units")
-        return 'break'
 
     def _on_rounds_mousewheel(self, event):
         """滚动轮次 Spinbox 的鼠标滚轮处理"""
@@ -3429,7 +3028,10 @@ class BossFilterGUI:
         self._refresh_model_assignment_controls()
 
         # 在所有控件创建完毕后绑定滚轮事件
-        self._bind_mousewheel(self.api_canvas, self.api_scrollable_frame)
+        self.scroll_support.bind_mousewheel(
+            self.api_canvas,
+            self.api_scrollable_frame,
+        )
 
     def _get_model_list_max_rows(self):
         """Return saved-model list max rows for the current window height."""
@@ -4959,7 +4561,10 @@ class BossFilterGUI:
         self.result_detail_frame.pack(fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
         self.update_nav_highlight()
         # 重新绑定滚轮事件（覆盖动态创建的控件）
-        self._bind_mousewheel(self.config_canvas, self.config_scrollable_frame)
+        self.scroll_support.bind_mousewheel(
+            self.config_canvas,
+            self.config_scrollable_frame,
+        )
 
     def show_page_run(self):
         """显示运行页面"""
@@ -4979,7 +4584,10 @@ class BossFilterGUI:
         except Exception:
             pass
         # 重新绑定滚轮事件（覆盖动态创建的控件）
-        self._bind_mousewheel(self.run_canvas, self.run_scrollable_frame)
+        self.scroll_support.bind_mousewheel(
+            self.run_canvas,
+            self.run_scrollable_frame,
+        )
 
     def show_page_result(self):
         """显示结果页面"""
@@ -5030,7 +4638,10 @@ class BossFilterGUI:
         self.current_page_index = PageIndex.EDUCATION
         self.app_shell.schedule_page_width_policy()
         self.update_nav_highlight()
-        self._bind_mousewheel(self.education_canvas, self.education_scrollable_frame)
+        self.scroll_support.bind_mousewheel(
+            self.education_canvas,
+            self.education_scrollable_frame,
+        )
 
     def show_page_api(self):
         """显示 API 配置页面（系统设置）"""
@@ -5045,7 +4656,10 @@ class BossFilterGUI:
         self.app_shell.schedule_page_width_policy()
         self.update_nav_highlight()
         # 重新绑定滚轮事件（覆盖动态创建的控件）
-        self._bind_mousewheel(self.api_canvas, self.api_scrollable_frame)
+        self.scroll_support.bind_mousewheel(
+            self.api_canvas,
+            self.api_scrollable_frame,
+        )
         self._schedule_api_key_resolution()
 
     def hide_all_pages(self):

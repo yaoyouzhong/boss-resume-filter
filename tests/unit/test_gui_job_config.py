@@ -14,6 +14,7 @@ from unittest.mock import Mock, call, patch
 
 import gui_main
 import gui_app_shell
+import gui_scroll_support
 import icons
 import bossmaster
 from gui_main import (
@@ -851,7 +852,12 @@ def test_bounded_spinbox_mousewheel_adjusts_one_step_and_clamps_range():
     spinbox = Mock()
     variable = _FakeVar("2")
 
-    BossFilterGUI._bind_bounded_spinbox_mousewheel(spinbox, variable, 1, 3)
+    gui_scroll_support.ScrollSupport.bind_bounded_spinbox_mousewheel(
+        spinbox,
+        variable,
+        1,
+        3,
+    )
 
     wheel_handler = spinbox.bind.call_args_list[0].args[1]
     assert wheel_handler(types.SimpleNamespace(delta=120)) == "break"
@@ -1652,7 +1658,7 @@ def test_saved_model_list_marks_active_models_with_role_colors():
     gui._update_model_list_height = Mock()
     gui._update_model_list_columns = Mock()
     gui._refresh_model_assignment_controls = Mock()
-    gui._bind_mousewheel = Mock()
+    gui.scroll_support = Mock()
     gui.api_canvas = Mock()
     gui.api_scrollable_frame = Mock()
 
@@ -8593,13 +8599,13 @@ def test_education_page_has_scroll_container_and_conditional_queue():
         source.index("def _save_current_education_fields")
     ]
 
-    assert "canvas, scrollable_frame = host._create_scroll_container" in create_block
+    assert "host.scroll_support.create_scroll_container(" in create_block
     assert 'host._create_page_header(\n        page,' in create_block
     assert 'scroll_frame = ttk.Frame(page' in create_block
-    assert '_create_scroll_container(\n        scroll_frame,' in create_block
+    assert 'create_scroll_container(\n        scroll_frame,' in create_block
     assert "auto_hide_scrollbar=True" in create_block
     assert create_block.index("host._create_page_header(") < create_block.index(
-        "host._create_scroll_container("
+        "host.scroll_support.create_scroll_container("
     )
     scroll_content = create_block[create_block.index("content = scrollable_frame"):]
     assert "host._create_page_header(" not in scroll_content
@@ -8628,14 +8634,15 @@ def test_education_page_has_scroll_container_and_conditional_queue():
 
 
 def test_mousewheel_routes_education_and_api_pages_to_correct_canvas():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
+    source = Path("gui_scroll_support.py").read_text(encoding="utf-8")
     cocoa_block = source[
-        source.index("page_canvas = {"):
-        source.index("}.get(getattr(self, 'current_page_index', -1))")
+        source.index("page_canvases = {"):
+        source.index("return page_canvases.get(")
     ]
 
-    assert "PageIndex.EDUCATION: getattr(self, 'education_canvas', None)" in cocoa_block
-    assert "PageIndex.SETTINGS: getattr(self, 'api_canvas', None)" in cocoa_block
+    assert 'PageIndex.EDUCATION: getattr(self.host, "education_canvas", None)' in cocoa_block
+    assert 'page_canvases[PageIndex.SETTINGS] = getattr(' in cocoa_block
+    assert '"api_canvas"' in cocoa_block
 
 
 def test_education_queue_context_menu_uses_smaller_font():
@@ -8895,10 +8902,10 @@ def test_education_queue_scrollbar_returns_after_delete_and_reimport():
 
 
 def test_education_scrollbar_is_visible_only_when_content_overflows():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
+    source = Path("gui_scroll_support.py").read_text(encoding="utf-8")
     helper_block = source[
-        source.index("def _create_scroll_container"):
-        source.index("def _bind_mousewheel")
+        source.index("def create_scroll_container"):
+        source.index("def bind_mousewheel")
     ]
 
     assert "max(requested_height, viewport_height)" in helper_block
@@ -8906,7 +8913,7 @@ def test_education_scrollbar_is_visible_only_when_content_overflows():
     assert 'scrollbar.pack(side="right", fill="y")' in helper_block
     assert "scrollbar.pack_forget()" in helper_block
     assert "canvas.yview_moveto(0)" in helper_block
-    assert "canvas._schedule_overflow_sync = _schedule_sync" in helper_block
+    assert "canvas._schedule_overflow_sync = schedule_sync" in helper_block
 
 
 def test_education_queue_scrollbar_has_visible_local_style():

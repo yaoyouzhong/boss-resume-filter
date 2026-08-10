@@ -10,6 +10,10 @@ from typing import Any, Protocol
 from ui_windowing import get_windows_monitor_area, place_window_centered
 
 
+class ScrollSupport(Protocol):
+    def bind_mousewheel(self, canvas: tk.Canvas, content: tk.Misc) -> None: ...
+
+
 class JobReviewHost(Protocol):
     """Narrow UI contract used by the job review builder."""
 
@@ -18,6 +22,7 @@ class JobReviewHost(Protocol):
     dpi_scale: float
     zoom_factor: float
     font_scale: float
+    scroll_support: ScrollSupport
 
     def _create_card(
         self,
@@ -25,8 +30,6 @@ class JobReviewHost(Protocol):
         title: str,
         **kwargs: Any,
     ) -> tk.Misc: ...
-
-    def _bind_mousewheel(self, canvas: tk.Canvas, content: tk.Misc) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -588,7 +591,7 @@ def build_job_review_workbench(
     footer.grid(row=1, column=0, sticky="ew")
     ttk.Button(footer, text="关闭", command=close).pack(side="right")
 
-    host._bind_mousewheel(canvas, content)
+    host.scroll_support.bind_mousewheel(canvas, content)
     window.protocol("WM_DELETE_WINDOW", close)
     window.bind("<Escape>", lambda _event: close())
     _place_workbench(host, window, scale)

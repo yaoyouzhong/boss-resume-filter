@@ -31,6 +31,7 @@ import gui_main
 import gui_model_catalog_dialog
 import gui_result_page
 import gui_run_page
+import gui_scroll_support
 import gui_settings_page
 import gui_stats_detail
 import gui_stats_page
@@ -426,6 +427,53 @@ def test_gui_app_shell_excludes_gui_business_storage_browser_and_network_depende
         "_schedule_page_width_policy",
         "_apply_page_width_policy",
     }.isdisjoint(method_names)
+
+
+def test_gui_scroll_support_excludes_business_storage_browser_and_gui_main_dependencies():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "candidate_workflow",
+        "contact_queue",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("gui_scroll_support") & forbidden)
+    assert callable(gui_scroll_support.ScrollSupport)
+
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    gui_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BossFilterGUI"
+    )
+    method_names = {
+        node.name
+        for node in gui_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "self.scroll_support = gui_scroll_support.ScrollSupport(self)" in source
+    assert {
+        "_delta_to_units",
+        "_bind_bounded_spinbox_mousewheel",
+        "_create_scroll_container",
+        "_bind_mousewheel",
+        "_setup_cocoa_scroll_hook",
+        "_on_mousewheel",
+    }.isdisjoint(method_names)
+    for page_module in (
+        "gui_config_page.py",
+        "gui_run_page.py",
+        "gui_education_page.py",
+        "gui_job_review.py",
+    ):
+        page_source = (ROOT / page_module).read_text(encoding="utf-8")
+        assert ".scroll_support." in page_source
 
 
 def test_gui_compatibility_methods_delegate_to_presenters():
