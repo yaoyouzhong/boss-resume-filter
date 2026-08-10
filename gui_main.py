@@ -49,7 +49,6 @@ import gui_candidate_diagnostics
 import gui_candidate_menus
 import gui_candidate_review
 import gui_candidate_state_dialogs
-import gui_candidate_workbench
 import gui_contact_queue
 import gui_config_page
 import gui_data_maintenance_dialogs
@@ -62,6 +61,7 @@ import gui_settings_page
 import gui_model_catalog_dialog
 import gui_stats_page
 import gui_stats_detail
+import gui_style_setup
 from model_catalog import analyze_model_catalog, fetch_model_catalog
 from result_controller import (
     ResultController,
@@ -191,7 +191,6 @@ from storage import (
 from resume_store import (
     RESUME_STATE_FIELDS,
     audit_managed_resumes,
-    clear_candidate_resume_state,
 )
 from contact_controller import (
     ContactController,
@@ -221,7 +220,6 @@ from ui_messagebox import messagebox
 from paths import (
     BASE_DIR,
     CONTACT_QUEUE_PATH,
-    get_base_dir,
     ensure_config_files,
     get_api_config_path,
 )
@@ -1081,7 +1079,25 @@ class BossFilterGUI:
         self._highlighted_page_index = None
 
         # 设置样式
-        self.setup_styles()
+        gui_style_setup.setup_styles(self)
+
+        modal_font_size = max(9, self.font_log[1])
+        messagebox.set_ui_fonts(
+            headline=(FONT_FAMILY, max(10, self.font_log[1]), 'bold'),
+            message=(FONT_FAMILY, modal_font_size),
+            button=(FONT_FAMILY, modal_font_size),
+        )
+        structured_message_size = max(9, modal_font_size - 2)
+        messagebox.set_structured_ui_fonts(
+            headline=(FONT_FAMILY, structured_message_size + 2, 'bold'),
+            message=(FONT_FAMILY, structured_message_size),
+            meta=(FONT_FAMILY, max(9, structured_message_size - 1)),
+            button=(FONT_FAMILY, structured_message_size),
+        )
+        # 警告/错误弹窗自动带语义图标，提升可扫读性
+        messagebox.icon_kinds = frozenset({"warning", "error"})
+
+        # 设置 Combobox 下拉列表字体由 gui_style_setup 统一注册
 
         # 创建进度状态图标（依赖 self.colors，必须在 setup_styles 之后）
         self._create_status_icons()
@@ -1412,313 +1428,6 @@ class BossFilterGUI:
             self.root.focus_force()
         except tk.TclError:
             pass
-
-    def setup_styles(self):
-        """设置自定义样式"""
-        style = ttk.Style()
-
-        # 统一使用 clam：唯一允许完整定制背景/边框/hover 的主题，
-        # vista 下按钮等控件无法着色，导致主操作与普通按钮无视觉层级
-        try:
-            style.theme_use('clam')
-        except tk.TclError:
-            pass  # 使用默认主题
-
-        # 配色方案 - 统一来自 ui_theme 设计令牌
-        self.colors = ui_theme.build_palette()
-
-        # 设置右侧功能页字体。左侧边栏在 create_sidebar() 中单独计算，避免被这里牵动。
-        fs = self.dpi_scale * self.zoom_factor
-        page_fs = fs * 0.92 * self.font_boost
-        self.font_title = (FONT_FAMILY, int(28 * page_fs))
-        self.font_section = (FONT_FAMILY, int(16 * page_fs))
-        self.font_label = (FONT_FAMILY, int(13 * page_fs))  # 通用 UI 字体（表单标签、按钮、下拉框、副标题）
-        self.font_stat = (FONT_FAMILY, int(36 * page_fs))
-        self.font_stat_label = (FONT_FAMILY, int(15 * page_fs))
-        self.font_log = (FONT_FAMILY, int(12 * page_fs))
-        self.font_table = (FONT_FAMILY, int(12 * page_fs))  # 表格字体
-        modal_font_size = max(9, self.font_log[1])
-        messagebox.set_ui_fonts(
-            headline=(FONT_FAMILY, max(10, self.font_log[1]), 'bold'),
-            message=(FONT_FAMILY, modal_font_size),
-            button=(FONT_FAMILY, modal_font_size),
-        )
-        structured_message_size = max(9, modal_font_size - 2)
-        messagebox.set_structured_ui_fonts(
-            headline=(FONT_FAMILY, structured_message_size + 2, 'bold'),
-            message=(FONT_FAMILY, structured_message_size),
-            meta=(FONT_FAMILY, max(9, structured_message_size - 1)),
-            button=(FONT_FAMILY, structured_message_size),
-        )
-        # 警告/错误弹窗自动带语义图标，提升可扫读性
-        messagebox.icon_kinds = frozenset({"warning", "error"})
-
-        # 设置 Combobox 下拉列表字体（与 font_label 保持一致）
-        # 必须用元组格式 + priority 80，确保 Tk option database 正确解析并覆盖默认值
-        self.root.option_add('*TCombobox*Listbox.font', self.font_label, 80)
-
-        # 禁用所有 Combobox 的鼠标滚轮（防止误触改变选中值）
-        self.root.bind_class('TCombobox', '<MouseWheel>', lambda e: 'break')
-        self.root.bind_class('TCombobox', '<Button-4>', lambda e: 'break')
-        self.root.bind_class('TCombobox', '<Button-5>', lambda e: 'break')
-
-        # 配置样式
-        c = self.colors
-        style.configure('TFrame', background=c['bg_card'])
-        style.configure('Page.TFrame', background=c['bg_main'])
-        style.configure('TLabel', font=self.font_label, foreground=c['text_primary'],
-                        background=c['bg_card'])
-
-        # ---------------- 三级按钮体系（clam 下可完整着色） ----------------
-        # 次级（默认）：白底灰边，hover 浅灰
-        style.configure('TButton', font=self.font_label, padding=(15, 8),
-                        background=c['bg_card'], foreground=c['text_primary'],
-                        bordercolor=c.get('border_strong', ui_theme.BORDER_STRONG),
-                        focuscolor=c['primary'], lightcolor=c['bg_card'], darkcolor=c['bg_card'])
-        style.layout(
-            'TButton',
-            [
-                ('Button.border', {
-                    'sticky': 'nswe',
-                    'border': '1',
-                    'children': [
-                        ('Button.padding', {
-                            'sticky': 'nswe',
-                            'children': [('Button.label', {'sticky': 'nswe'})],
-                        }),
-                    ],
-                }),
-            ],
-        )
-        style.map('TButton',
-                  background=[('pressed', c['bg_hover']), ('active', c['bg_hover']),
-                              ('disabled', c['bg_input'])],
-                  foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
-                  bordercolor=[('focus', c['primary'])])
-        # Menubutton 的原生下拉指示区默认会从文字区域扣除宽度，导致文字
-        # 相对整个按钮视觉偏左。让箭头覆盖在右侧对称内边距中，文字继续
-        # 使用完整按钮宽度居中，同时保留原生下拉提示和交互。
-        style.layout(
-            'CenteredActions.TMenubutton',
-            [
-                ('Menubutton.button', {
-                    'sticky': 'nswe',
-                    'children': [
-                        ('Menubutton.padding', {
-                            'sticky': 'nswe',
-                            'children': [('Menubutton.label', {'sticky': ''})],
-                        }),
-                        ('Menubutton.dropdown', {'sticky': 'e'}),
-                    ],
-                }),
-            ],
-        )
-        style.configure(
-            'CenteredActions.TMenubutton',
-            font=self.font_label,
-            padding=(24, 8),
-            anchor='center',
-            justify='center',
-        )
-        # 主级（Accent）：实心品牌蓝白字，hover 深蓝，pressed 更深
-        style.configure('Accent.TButton', font=(FONT_FAMILY_SEMIBOLD, int(13 * page_fs)), padding=(20, 8),
-                        background=c['primary'], foreground='#FFFFFF',
-                        bordercolor=c['primary_dark'], focuscolor=c['primary_dark'],
-                        lightcolor=c['primary'], darkcolor=c['primary'])
-        style.map('Accent.TButton',
-                  background=[('pressed', c.get('primary_deep', ui_theme.PRIMARY_DEEP)),
-                              ('active', c['primary_dark']),
-                              ('disabled', c['bg_input'])],
-                  foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
-                  bordercolor=[('disabled', c['border'])])
-        # 工作台主动作：与普通按钮保持相同字号和内边距，仅用颜色区分主次。
-        style.configure('Workbench.Primary.TButton', font=self.font_label, padding=(15, 8),
-                        background=c['primary'], foreground='#FFFFFF',
-                        bordercolor=c['primary_dark'], focuscolor=c['primary_dark'],
-                        lightcolor=c['primary'], darkcolor=c['primary'])
-        style.map('Workbench.Primary.TButton',
-                  background=[('pressed', c.get('primary_deep', ui_theme.PRIMARY_DEEP)),
-                              ('active', c['primary_dark']),
-                              ('disabled', c['bg_input'])],
-                  foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
-                  bordercolor=[('disabled', c['border'])])
-        # 危险级（Danger）：实心红，用于删除/停止等需警示的动作
-        style.configure('Danger.TButton', font=self.font_label, padding=(15, 8),
-                        background=c['danger'], foreground='#FFFFFF',
-                        bordercolor=c.get('danger_text', ui_theme.DANGER_TEXT),
-                        lightcolor=c['danger'], darkcolor=c['danger'])
-        style.map('Danger.TButton',
-                  background=[('pressed', c.get('danger_deep', ui_theme.DANGER_DEEP)), ('active', c.get('danger_text', ui_theme.DANGER_TEXT)),
-                              ('disabled', c['bg_input'])],
-                  foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
-                  bordercolor=[('disabled', c['border'])])
-        # 运行控制的开始/停止按钮使用同一字体，仅保留颜色语义差异。
-        style.configure(
-            'RunControl.Danger.TButton',
-            font=(FONT_FAMILY_SEMIBOLD, int(13 * page_fs)),
-        )
-
-        style.configure('Card.TFrame', background=c['bg_card'], relief='solid', borderwidth=1)
-        style.configure('WelcomeCard.TFrame', background=self.colors['bg_card'],
-                        relief='flat', borderwidth=0)
-        style.configure('WelcomeInner.TFrame', background=self.colors['bg_card'])
-        style.configure('PageHeader.TFrame', background=self.colors['bg_card'],
-                        relief='flat', borderwidth=0)
-        style.configure('PageHeaderInner.TFrame', background=self.colors['bg_card'])
-        style.configure('Sidebar.TFrame', background=self.colors['bg_sidebar'])
-        sidebar_font_size = int(11 * self.font_scale)
-        style.configure('Sidebar.TLabel', font=(FONT_FAMILY, sidebar_font_size),
-                       foreground=self.colors['text_sidebar'], background=self.colors['bg_sidebar'])
-        style.configure('SidebarSelected.TLabel', font=(FONT_FAMILY, sidebar_font_size, 'bold'),
-                       foreground=self.colors['text_sidebar_active'], background=self.colors['bg_sidebar'])
-        style.configure('Header.TLabel', font=self.font_title, foreground=self.colors['text_primary'])
-        style.configure('Section.TLabel', font=self.font_section, foreground=self.colors['text_primary'])
-        style.configure('Stat.TLabel', font=self.font_stat, foreground=self.colors['primary'])
-        style.configure('StatLabel.TLabel', font=self.font_stat_label, foreground=self.colors['text_secondary'])
-        style.configure('Primary.TLabel', font=self.font_label, foreground=self.colors['primary'])
-        style.configure('Success.TLabel', font=self.font_label, foreground=self.colors['success'])
-        style.configure('Warning.TLabel', font=self.font_label, foreground=self.colors['warning'])
-        # 下拉菜单样式 - 设置行高确保文字垂直居中
-        combo_font_size = int(15 * self.font_scale)
-        style.configure('TCombobox', font=self.font_label)
-        style.configure('TCombobox', rowheight=int(combo_font_size * 1.8))
-        # macOS aqua 下 fieldbackground 只能通过 map 设置，configure 被原生渲染忽略
-        style.map(
-            'TCombobox',
-            fieldbackground=[
-                ('disabled', c['bg_input']),
-                ('readonly', c['bg_card']),
-                ('!disabled', c['bg_card']),
-            ],
-            foreground=[
-                ('disabled', c['text_muted']),
-                ('readonly', c['text_primary']),
-                ('!disabled', c['text_primary']),
-            ],
-            selectbackground=[
-                ('disabled', c['bg_input']),
-                ('readonly', c['bg_card']),
-                ('!focus', c['bg_card']),
-                ('focus', c['primary']),
-            ],
-            selectforeground=[
-                ('disabled', c['text_muted']),
-                ('readonly', c['text_primary']),
-                ('!focus', c['text_primary']),
-                ('focus', '#FFFFFF'),
-            ],
-        )
-        style.map('TSpinbox',
-                  fieldbackground=[('!disabled', self.colors['bg_card']),
-                                   ('disabled', self.colors['bg_input'])])
-        # 基础筛选的下拉框和 Spinbox 都带箭头区；按当前字体字符宽补偿，
-        # 使 width=6 的两类控件与 width=8 的薪资 Entry 保持相同像素宽度。
-        _filter_char_width = font.Font(font=self.font_label).measure("0")
-        style.configure(
-            'CompactFilter.TCombobox',
-            padding=(max(0, _filter_char_width - 6), 0),
-        )
-        style.configure(
-            'CompactFilter.TSpinbox',
-            padding=(max(0, _filter_char_width - 4), 0),
-        )
-        style.map('TEntry',
-                  fieldbackground=[('!disabled', self.colors['bg_card']),
-                                   ('disabled', self.colors['bg_input'])])
-        # 模型名称 Entry 没有 Combobox 的下拉箭头区，补足固定边框差值，
-        # 使同为 width=18 时两者的视觉外宽一致。
-        style.configure('SettingsModel.TEntry', padding=(8, 0))
-
-        # ---------------- 表格 / 表头 / 滚动条 / 输入控件（clam 扁平化） ----------------
-        style.configure('Treeview',
-                        background=c['bg_card'], fieldbackground=c['bg_card'],
-                        foreground=c['text_primary'],
-                        bordercolor=c['border'], lightcolor=c['border'], darkcolor=c['border'])
-        style.map('Treeview',
-                  background=[('selected', c.get('banner_info_bg', ui_theme.BANNER_INFO_BG))],
-                  foreground=[('selected', c['primary_dark'])])
-        style.configure('Treeview.Heading',
-                        background=c.get('bg_footer', ui_theme.BG_FOOTER),
-                        foreground=c['text_secondary'],
-                        bordercolor=c['border'], padding=(4, 3), relief='flat')
-        style.map('Treeview.Heading',
-                  background=[('active', c['bg_hover'])],
-                  foreground=[('active', c['text_primary'])])
-        for _sb in ('Vertical.TScrollbar', 'Horizontal.TScrollbar'):
-            style.configure(_sb,
-                            background=c['border'], troughcolor=c['bg_main'],
-                            bordercolor=c['bg_main'], arrowcolor=c['text_secondary'],
-                            lightcolor=c['border'], darkcolor=c['border'])
-            style.map(_sb, background=[('active', c.get('border_strong', ui_theme.BORDER_STRONG)),
-                                       ('pressed', c['text_secondary'])])
-        # 输入控件：白底灰边，聚焦时品牌蓝边
-        for _input in ('TEntry', 'TCombobox', 'TSpinbox'):
-            style.configure(_input,
-                            bordercolor=c.get('border_strong', ui_theme.BORDER_STRONG),
-                            lightcolor=c.get('border_strong', ui_theme.BORDER_STRONG),
-                            darkcolor=c.get('border_strong', ui_theme.BORDER_STRONG),
-                            focuscolor=c['primary'])
-            style.map(_input,
-                      bordercolor=[('focus', c['primary'])],
-                      lightcolor=[('focus', c['primary'])],
-                      darkcolor=[('focus', c['primary'])])
-        checkbox_size = max(24, int(round(24 * fs)))
-        checkbox_off = self.icons.get(
-            'checkbox_off', checkbox_size, c.get('border_strong', ui_theme.BORDER_STRONG)
-        )
-        checkbox_on = self.icons.get('checkbox_on', checkbox_size, c['primary'])
-        checkbox_disabled_off = self.icons.get(
-            'checkbox_off', checkbox_size, c['text_muted']
-        )
-        checkbox_disabled_on = self.icons.get(
-            'checkbox_on', checkbox_size, c['text_muted']
-        )
-        self._checkbox_style_images = (
-            checkbox_off,
-            checkbox_on,
-            checkbox_disabled_off,
-            checkbox_disabled_on,
-        )
-        checkbox_indicator = 'App.Checkbutton.indicator'
-        if checkbox_indicator not in style.element_names():
-            style.element_create(
-                checkbox_indicator,
-                'image',
-                checkbox_off,
-                ('disabled', 'selected', checkbox_disabled_on),
-                ('disabled', checkbox_disabled_off),
-                ('selected', checkbox_on),
-                sticky='w',
-            )
-        style.layout(
-            'TCheckbutton',
-            [
-                ('Checkbutton.padding', {
-                    'sticky': 'nswe',
-                    'children': [
-                        (checkbox_indicator, {'side': 'left', 'sticky': ''}),
-                        ('Checkbutton.label', {
-                            'side': 'left',
-                            'sticky': 'nswe',
-                        }),
-                    ],
-                }),
-            ],
-        )
-        style.configure(
-            'TCheckbutton',
-            background=c['bg_card'],
-            foreground=c['text_primary'],
-            padding=(2, 2),
-        )
-        style.configure('TRadiobutton', background=c['bg_card'], foreground=c['text_primary'])
-        style.configure('Horizontal.TProgressbar',
-                        troughcolor=c['bg_main'], background=c['primary'],
-                        bordercolor=c['bg_main'], lightcolor=c['primary'], darkcolor=c['primary'])
-        style.configure('TSeparator', background=c['border'])
-
-        style.configure('Custom.TLabelframe', font=self.font_label, background=self.colors['bg_card'])
-        style.configure('Custom.TLabelframe.Label', font=self.font_label, background=self.colors['bg_card'])
 
     def create_sidebar(self):
         """创建左侧边栏"""
@@ -2612,9 +2321,6 @@ class BossFilterGUI:
         yield
         yield from self._create_api_config_content_steps()
 
-    def _on_api_canvas_configure(self, event):
-        """调整可滚动框架宽度以匹配 Canvas"""
-        self.api_canvas.itemconfig(self.api_canvas_frame, width=event.width)
 
     @staticmethod
     def _delta_to_units(delta):
@@ -3158,10 +2864,6 @@ class BossFilterGUI:
         self.job_select_var.set(selected)
         return selected
 
-    def _create_api_config_content(self) -> None:
-        """同步创建系统设置内容。"""
-        for _step in self._create_api_config_content_steps():
-            pass
 
     def _create_api_config_content_steps(self) -> Iterator[None]:
         """创建系统设置页面内容。"""
@@ -3236,12 +2938,6 @@ class BossFilterGUI:
         """Format one persisted local activity timestamp for compact UI notes."""
         return _DATA_MAINTENANCE_CONTROLLER.format_time(value)
 
-    def _maintenance_time_value(self, activity: str):
-        key = MAINTENANCE_TIME_PREFERENCE_KEYS.get(activity)
-        if not key:
-            return None
-        preferences = getattr(self, "_run_preferences", {}) or {}
-        return preferences.get(key)
 
     def _remember_maintenance_success(
         self,
@@ -5519,13 +5215,6 @@ class BossFilterGUI:
 
     _REASON_SUGGESTIONS = stats_presenter.REASON_SUGGESTIONS
 
-    @staticmethod
-    def _build_job_review_suggestions(status_counts, reason_counts, feedback_count):
-        return stats_presenter.build_job_review_suggestions(
-            status_counts,
-            reason_counts,
-            feedback_count,
-        )
 
     def _show_text_dialog(
         self,
@@ -6445,24 +6134,6 @@ class BossFilterGUI:
         """移除所有 api_key 字段（顶层 + saved_models 内嵌），返回可安全写入磁盘的副本"""
         return _SETTINGS_CONTROLLER.sanitize_for_save(config)
 
-    def _is_education_model_item(self, item_id: str) -> bool:
-        """判断 Treeview 中的模型项是否为当前指定的学历核验模型"""
-        if not hasattr(self, 'api_config') or not self.api_config:
-            return False
-        edu_ref = self.api_config.get("education_model_ref")
-        if not edu_ref:
-            return False
-        values = self.model_list_tree.item(item_id, 'values')
-        if not values or len(values) < 4:
-            return False
-        name = values[0]
-        provider_display = values[1]
-        provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
-        return self._model_ref_matches({
-            "model": name,
-            "api_provider": provider_key,
-            "base_url": values[3],
-        }, edu_ref)
 
     def _on_default_model_selected(self, event=None):
         """将用途选择器中的模型设为默认 AI 模型。"""
@@ -6536,31 +6207,6 @@ class BossFilterGUI:
             self._set_assigned_model_test_state(target_role, "error")
         messagebox.showwarning("模型未保存", "当前模型不在已保存模型列表中，请先保存模型配置。")
 
-    def _set_education_model(self):
-        """将选中模型设为学历核验专用模型"""
-        selection = self.model_list_tree.selection()
-        if not selection:
-            messagebox.showwarning("警告", "请先选择一个模型")
-            return
-        item = self.model_list_tree.item(selection[0])
-        values = item['values']
-        if not values or len(values) < 2:
-            return
-        name = values[0]
-        provider_display = values[1]
-        selected_base_url = values[3] if len(values) >= 4 else ""
-        provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
-        # 从 saved_models 中查找完整配置
-        model_config = None
-        for m in getattr(self, 'saved_models', []):
-            if self._model_ref_matches(m, {
-                "model": name, "api_provider": provider_key, "base_url": selected_base_url,
-            }):
-                model_config = m
-                break
-        if not model_config or not hasattr(self, 'api_config') or not self.api_config:
-            return
-        self._set_education_model_ref(model_config)
 
     def _unset_education_model(self):
         """取消学历核验专用模型，回退默认 AI 模型"""
@@ -6744,39 +6390,6 @@ class BossFilterGUI:
                 ),
             )
 
-    def use_selected_model(self):
-        """使用选中的模型 - 从系统钥匙串读取加密的 API Key（按服务商管理）"""
-        selection = self.model_list_tree.selection()
-        if not selection:
-            self._update_api_status(
-                text="⚠ 请先在已保存模型列表中选择一个模型",
-                foreground=self.colors['warning'],
-            )
-            return
-
-        # 获取选中的模型信息
-        item = self.model_list_tree.item(selection[0])
-        model_name = item['values'][0]
-        provider_display = item['values'][1]
-        selected_base_url = item['values'][3] if len(item.get('values', ())) > 3 else ""
-        # 将显示名称转换为内部键
-        provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
-
-        # 查找对应的配置
-        model_config = None
-        for saved in self.saved_models:
-            if self._model_ref_matches(saved, {
-                "model": model_name,
-                "api_provider": provider_key,
-                "base_url": selected_base_url,
-            }):
-                model_config = saved
-                break
-
-        if model_config:
-            self._activate_saved_model(model_config, announce=True)
-        else:
-            messagebox.showerror("错误", f"未找到模型 '{model_name}' 的配置信息")
 
     def _activate_saved_model(self, model_config, announce=True):
         """将已保存模型设为默认 AI 模型。"""
@@ -7187,7 +6800,6 @@ class BossFilterGUI:
     def fetch_model_list(self):
         """获取服务商的模型列表 - 使用当前输入的 API Key 和 Base URL"""
         import requests
-        import json
 
         # 防止重复打开对话框
         if self._model_dialog is not None:
@@ -10376,24 +9988,12 @@ class BossFilterGUI:
 
         self.root.after(200, self.update_progress)
 
-    def _bind_run_canvas_width(self, canvas_frame):
-        """绑定 run_canvas 内部窗口宽度，使其跟随 canvas 宽度"""
-        window_id = getattr(self, '_run_canvas_window_id', None)
-        if window_id is None:
-            return
-        def on_resize(event):
-            self.run_canvas.itemconfig(window_id, width=event.width)
-        canvas_frame.bind("<Configure>", on_resize)
 
     @staticmethod
     def _parse_salary_exp(summary, structured=None):
         """Keep the historical GUI entry point as a presenter delegate."""
         return candidate_presenter.parse_salary_experience(summary, structured)
 
-    @staticmethod
-    def _center_window_on_screen(window, width, height):
-        """将子窗口相对于屏幕居中（不依赖父窗口位置）"""
-        _place_window_centered(window, width, height)
 
     def _capture_run_request(self):
         """Snapshot every Tk-owned run value before starting the worker thread."""
@@ -11004,27 +10604,9 @@ class BossFilterGUI:
             scope = f"{scope} / {date_scope}"
         return candidates, scope
 
-    def _create_candidate_workbench_header(self, parent, title, subtitle, scope):
-        """Create the shared title and scope block used by candidate workbenches."""
-        return gui_candidate_workbench.create_header(
-            self,
-            parent,
-            title,
-            subtitle,
-            scope,
-        )
 
-    def _create_candidate_workbench_metrics(self, parent, metrics):
-        """Create a compact segmented metric strip and return its value variables."""
-        return gui_candidate_workbench.create_metrics(self, parent, metrics)
 
-    def _candidate_workbench_navigation_style(self, scale):
-        """Configure the shared hierarchy style used by candidate workbenches."""
-        return gui_candidate_workbench.navigation_style(self, scale, UI_CONFIG)
 
-    def _apply_candidate_workbench_navigation_tags(self, tree):
-        """Apply identical root and child typography to a workbench hierarchy."""
-        gui_candidate_workbench.apply_navigation_tags(self, tree)
 
     def _show_daily_candidate_actions_dialog(self, scope, items):
         """Show the daily candidate action queue through its dedicated Tk module."""
@@ -12091,10 +11673,6 @@ class BossFilterGUI:
         """Return normalized candidate gender from current or legacy records."""
         return candidate_presenter.candidate_gender_display(candidate)
 
-    @staticmethod
-    def _extract_summary_display_fields(summary):
-        """从摘要提取结果表需要的学历、年龄和求职状态。"""
-        return candidate_presenter.extract_summary_display_fields(summary)
 
     @staticmethod
     def _latest_history_value(entries, field, summary, summary_prefix):
@@ -13710,10 +13288,6 @@ class BossFilterGUI:
     def _greet_queue_readiness_tooltip(candidate):
         return contact_presenter.greet_queue_readiness_tooltip(candidate)
 
-    @staticmethod
-    def _greet_queue_method_label(candidate):
-        """Compatibility alias for existing callers and older queue tests."""
-        return contact_presenter.greet_queue_method_label(candidate)
 
     def _build_greet_queue_item(self, candidate, source="manual"):
         return _CONTACT_CONTROLLER.build_item(candidate, source=source)
@@ -15200,8 +14774,6 @@ class BossFilterGUI:
             return
         self.greet_queue_window.destroy()
 
-    def _create_review_text_area(self, parent):
-        return gui_candidate_review.create_review_text_area(self, parent)
 
     def _show_candidate_review_view(self, view_name):
         """Switch the review content immediately and refresh the flat selected state."""
@@ -15572,20 +15144,7 @@ class BossFilterGUI:
         except Exception as e:
             messagebox.showerror("错误", f"打开查看与复核失败：{e}")
 
-    def _greet_single_candidate(self, item, candidate=None, parent=None, tree=None, tree_item=None):
-        """Compatibility entry that routes every GUI contact action through the contact list."""
-        _parent = parent or self.root
-        if candidate is None and item is not None:
-            candidate = self._find_candidate_by_tree_item(item)
-        if not candidate:
-            messagebox.showwarning("联系候选人", "未找到候选人信息。", parent=_parent)
-            return
-        self._add_candidates_to_greet_queue([candidate], parent=_parent)
 
-    def _greet_selected_candidates(self, selection, filtered_ref, tree, parent=None):
-        """Compatibility entry that adds multi-selected candidates to the contact list."""
-        candidates = self._collect_selected_candidates_for_queue(selection, filtered_ref, tree)
-        self._add_candidates_to_greet_queue(candidates, parent=parent or self.root)
 
 
     def _update_greet_status(self, candidate, method) -> bool:
@@ -15775,12 +15334,6 @@ class BossFilterGUI:
         except Exception as e:
             messagebox.showerror("错误", f"导出失败：{e}")
 
-    def open_json(self):
-        """打开 JSON 文件"""
-        if CANDIDATES_PATH.exists():
-            os.startfile(str(CANDIDATES_PATH))
-        else:
-            messagebox.showwarning("警告", "文件不存在")
 
     def _clear_candidates_from_dialog(
         self,
@@ -15903,34 +15456,6 @@ class BossFilterGUI:
             ),
         )
 
-    def show_help(self):
-        """显示帮助"""
-        help_text = """BOSS 简历筛选器 - 使用说明
-
-1. 岗位配置：
-   - 选择或新建岗位
-   - 配置经验、学历、技能要求
-   - 保存配置
-
-2. 运行控制：
-    - 设置 DOM 滚动轮次（深度扫描可提高到 20-100）
-   - 选择打招呼等级
-   - 点击"开始运行"
-
-3. 筛选结果：
-   - 查看候选人列表
-   - 导出 Excel 文件
-
-注意事项：
-- 需要 Chrome 浏览器
-- 程序启动后需手动导航到 BOSS 直聘推荐页面
-- 定期备份 candidates_all.json 文件"""
-        self._show_text_dialog(
-            "使用说明",
-            help_text,
-            width=640,
-            height=460,
-        )
 
     def show_about(self):
         """显示关于弹窗"""

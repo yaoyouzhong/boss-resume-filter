@@ -33,6 +33,7 @@ import gui_run_page
 import gui_settings_page
 import gui_stats_detail
 import gui_stats_page
+import gui_style_setup
 import model_catalog
 import resume_parser
 import resume_import_service
@@ -365,6 +366,26 @@ def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():
         "gui_stats_page",
     ):
         assert not (_top_level_imports(module_name) & forbidden)
+
+
+def test_gui_style_setup_owns_only_global_tk_style_registration():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "contact_queue",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("gui_style_setup") & forbidden)
+    assert callable(gui_style_setup.setup_styles)
+
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    assert "gui_style_setup.setup_styles(self)" in source
+    assert "def setup_styles(self)" not in source
 
 
 def test_gui_compatibility_methods_delegate_to_presenters():
@@ -1334,7 +1355,7 @@ def test_clear_candidates_dialog_exposes_choices_and_controller_callback():
 def test_clear_candidates_compatibility_method_is_a_thin_delegate():
     source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
     block = source[source.index("def clear_candidates"):]
-    block = block[:block.index("\n    def show_help")]
+    block = block[:block.index("\n    def show_about")]
 
     assert "gui_data_maintenance_dialogs.show_clear_candidates_dialog(" in block
     assert "load_candidates_all(CANDIDATES_PATH)" in block
@@ -1405,16 +1426,25 @@ def test_candidate_review_view_helpers_preserve_selection_and_toggle_behavior():
     show_view.assert_called_once_with("detail")
 
 
-def test_candidate_workbench_compatibility_methods_delegate_to_shared_primitives():
+def test_candidate_workbench_builders_use_shared_primitives_without_gui_wrappers():
     source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
-    block = source[source.index("def _create_candidate_workbench_header"):]
-    block = block[:block.index("\n    def _show_daily_candidate_actions_dialog")]
+    builders = "\n".join(
+        (ROOT / module_name).read_text(encoding="utf-8")
+        for module_name in (
+            "gui_candidate_actions.py",
+            "gui_candidate_diagnostics.py",
+            "gui_contact_queue.py",
+        )
+    )
 
-    assert "gui_candidate_workbench.create_header(" in block
-    assert "gui_candidate_workbench.create_metrics(" in block
-    assert "gui_candidate_workbench.navigation_style(" in block
-    assert "gui_candidate_workbench.apply_navigation_tags(" in block
-    assert "ttk.Frame(" not in block
+    assert "def _create_candidate_workbench_header" not in source
+    assert "def _create_candidate_workbench_metrics" not in source
+    assert "def _candidate_workbench_navigation_style" not in source
+    assert "def _apply_candidate_workbench_navigation_tags" not in source
+    assert "gui_candidate_workbench.create_header(" in builders
+    assert "gui_candidate_workbench.create_metrics(" in builders
+    assert "gui_candidate_workbench.navigation_style(" in builders
+    assert "gui_candidate_workbench.apply_navigation_tags(" in builders
 
 
 def test_contact_queue_builder_exposes_explicit_callbacks_and_widget_bundle():

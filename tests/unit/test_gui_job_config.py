@@ -10,7 +10,7 @@ import time
 import types
 from datetime import date, datetime
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, call, patch
+from unittest.mock import Mock, call, patch
 
 import gui_main
 import icons
@@ -520,11 +520,9 @@ def test_job_config_basic_filters_use_compact_grouped_rows_and_keep_alignment():
 
 
 def test_compact_filter_spinbox_matches_combobox_pixel_width_contract():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    styles_block = source[source.index("def setup_styles"):]
-    styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
+    styles_block = Path("gui_style_setup.py").read_text(encoding="utf-8")
 
-    assert '_filter_char_width = font.Font(font=self.font_label).measure("0")' in styles_block
+    assert '_filter_char_width = font.Font(font=host.font_label).measure("0")' in styles_block
     assert "'CompactFilter.TCombobox'" in styles_block
     assert "padding=(max(0, _filter_char_width - 6), 0)" in styles_block
     assert "'CompactFilter.TSpinbox'" in styles_block
@@ -1820,12 +1818,10 @@ def test_result_page_keeps_workflow_actions_visible_and_groups_utilities():
 
 
 def test_system_settings_model_name_matches_provider_control_width():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
     settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
     settings_block = settings_source[settings_source.index("# 模型接入配置"):]
     settings_block = settings_block[:settings_block.index("# 第三行：API Key")]
-    styles_block = source[source.index("def setup_styles"):]
-    styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
+    styles_block = Path("gui_style_setup.py").read_text(encoding="utf-8")
 
     assert "self.api_provider_combo = ttk.Combobox" in settings_block
     assert "width=18, font=self.font_label" in settings_block
@@ -1839,8 +1835,7 @@ def test_more_action_menubuttons_share_centered_overlay_arrow_style():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     config_source = Path("gui_config_page.py").read_text(encoding="utf-8")
     result_source = Path("gui_result_page.py").read_text(encoding="utf-8")
-    setup_block = source[source.index("def setup_styles"):]
-    setup_block = setup_block[:setup_block.index("\n    def _create_status_icons")]
+    setup_block = Path("gui_style_setup.py").read_text(encoding="utf-8")
 
     assert "style.layout(" in setup_block
     assert "'CenteredActions.TMenubutton'" in setup_block
@@ -1867,11 +1862,9 @@ def test_more_action_menubuttons_share_centered_overlay_arrow_style():
 
 
 def test_combobox_style_keeps_readonly_text_visible_and_clears_inactive_highlight():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    setup_block = source[source.index("def setup_styles"):]
-    setup_block = setup_block[:setup_block.index("\n    def create_sidebar")]
-    combo_map = setup_block[setup_block.index("style.map(\n            'TCombobox'"):]
-    combo_map = combo_map[:combo_map.index("\n        style.map('TSpinbox'")]
+    setup_block = Path("gui_style_setup.py").read_text(encoding="utf-8")
+    combo_map = setup_block[setup_block.index("style.map(\n        'TCombobox'"):]
+    combo_map = combo_map[:combo_map.index("\n    style.map('TSpinbox'")]
 
     assert "('readonly', c['text_primary'])" in combo_map
     assert "('readonly', c['bg_card'])" in combo_map
@@ -1880,19 +1873,17 @@ def test_combobox_style_keeps_readonly_text_visible_and_clears_inactive_highligh
 
 
 def test_checkbutton_style_uses_large_checkmark_indicator_but_ai_keeps_switch():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
     run_source = Path("gui_run_page.py").read_text(encoding="utf-8")
-    setup_block = source[source.index("def setup_styles"):]
-    setup_block = setup_block[:setup_block.index("\n    def create_sidebar")]
+    setup_block = Path("gui_style_setup.py").read_text(encoding="utf-8")
     run_block = run_source[run_source.index("# AI 辅助评估开关"):]
     run_block = run_block[:run_block.index("\n    yield")]
 
     assert "checkbox_size = max(24, int(round(24 * fs)))" in setup_block
     assert "checkbox_indicator = 'App.Checkbutton.indicator'" in setup_block
     assert "('selected', checkbox_on)" in setup_block
-    assert "style.layout(\n            'TCheckbutton'" in setup_block
-    check_layout = setup_block[setup_block.index("style.layout(\n            'TCheckbutton'"):]
-    check_layout = check_layout[:check_layout.index("\n        style.configure(")]
+    assert "style.layout(\n        'TCheckbutton'" in setup_block
+    check_layout = setup_block[setup_block.index("style.layout(\n        'TCheckbutton'"):]
+    check_layout = check_layout[:check_layout.index("\n    style.configure(")]
     assert "Checkbutton.focus" not in check_layout
     assert "('Checkbutton.label', {" in check_layout
     assert "enabled_variable=host.ai_eval_available_var" in run_block
@@ -1975,11 +1966,9 @@ def test_ai_eval_status_enables_switch_only_with_complete_model_config():
 
 
 def test_button_style_removes_inner_focus_ring_and_keeps_outer_focus_border():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    setup_block = source[source.index("def setup_styles"):]
-    setup_block = setup_block[:setup_block.index("\n    def create_sidebar")]
-    button_layout = setup_block[setup_block.index("style.layout(\n            'TButton'"):]
-    button_layout = button_layout[:button_layout.index("\n        style.map('TButton'")]
+    setup_block = Path("gui_style_setup.py").read_text(encoding="utf-8")
+    button_layout = setup_block[setup_block.index("style.layout(\n        'TButton'"):]
+    button_layout = button_layout[:button_layout.index("\n    style.map('TButton'")]
 
     assert "Button.focus" not in button_layout
     assert "('Button.border', {" in button_layout
@@ -3658,15 +3647,16 @@ def test_education_captcha_retries_three_times_before_manual_fallback():
     assert any("3/3" in status for status, _detail in progress)
 
 
-def test_use_selected_model_matches_provider_and_base_url_not_model_name_only():
+def test_activate_saved_model_uses_the_full_selected_connection_identity():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    use_block = source[source.index("def use_selected_model"):]
+    use_block = source[source.index("def _activate_saved_model"):]
     use_block = use_block[:use_block.index("\n    def test_saved_model_connectivity")]
 
-    assert 'selected_base_url = item[\'values\'][3]' in use_block
-    assert '"api_provider": provider_key' in use_block
-    assert '"base_url": selected_base_url' in use_block
-    assert 'if saved.get("model") == model_name:' not in use_block
+    assert 'provider_key = model_config.get("api_provider", "")' in use_block
+    assert 'base_url = model_config.get("base_url", "")' in use_block
+    assert 'model_name = model_config.get("model", "")' in use_block
+    assert 'self.api_config["api_provider"] = provider_key' in use_block
+    assert 'self.api_config["base_url"] = base_url' in use_block
 
 
 def test_latest_history_value_uses_latest_end_date_not_list_order():
@@ -5955,14 +5945,17 @@ def test_job_name_mismatch_confirmation_explains_names_may_differ():
     assert confirm.call_args.kwargs["yes_label"] == "确认对应，继续"
 
 
-def test_legacy_gui_contact_methods_only_add_to_contact_list():
+def test_gui_contact_entry_points_only_add_to_contact_list():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    block = source[source.index("def _greet_single_candidate"):]
-    block = block[:block.index("\n    def _update_greet_status")]
+    result_builder = Path("gui_result_page.py").read_text(encoding="utf-8")
 
-    assert block.count("self._add_candidates_to_greet_queue(") == 2
-    assert "send_greeting_with_context" not in block
-    assert "send_greeting_on_list_page" not in block
+    assert "def _greet_single_candidate" not in source
+    assert "def _greet_selected_candidates" not in source
+    assert "add_to_queue=lambda selected" in source
+    assert "add_queue=lambda:" in source
+    assert "command=host._open_greet_queue_from_result" in result_builder
+    assert "send_greeting_with_context" not in result_builder
+    assert "send_greeting_on_list_page" not in result_builder
 
 
 def test_greet_queue_skip_summary_is_user_readable():
@@ -6577,21 +6570,20 @@ def test_candidate_state_diagnostics_uses_group_summary_and_compact_candidate_ro
 
 
 def test_candidate_workbench_primary_buttons_keep_standard_button_typography():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
     daily_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
     state_block = Path("gui_candidate_diagnostics.py").read_text(encoding="utf-8")
-    style_block = source[source.index("style.configure('Workbench.Primary.TButton'"):]
+    style_source = Path("gui_style_setup.py").read_text(encoding="utf-8")
+    style_block = style_source[style_source.index("style.configure('Workbench.Primary.TButton'"):]
     style_block = style_block[:style_block.index("# 危险级")]
     queue_block = Path("gui_contact_queue.py").read_text(encoding="utf-8")
 
-    assert "font=self.font_label, padding=(15, 8)" in style_block
+    assert "font=host.font_label, padding=(15, 8)" in style_block
     assert 'style="Workbench.Primary.TButton"' in daily_block
     assert 'style="Workbench.Primary.TButton"' in state_block
     assert 'style="Workbench.Primary.TButton"' in queue_block
 
 
 def test_candidate_workbench_hierarchies_share_navigation_style_and_neutral_details():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
     daily_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
     state_block = Path("gui_candidate_diagnostics.py").read_text(encoding="utf-8")
     queue_block = Path("gui_contact_queue.py").read_text(encoding="utf-8")
@@ -6609,7 +6601,6 @@ def test_candidate_workbench_hierarchies_share_navigation_style_and_neutral_deta
 
 
 def test_candidate_workflow_dialog_subtitles_use_neutral_text_color():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
     daily_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
     state_block = Path("gui_candidate_diagnostics.py").read_text(encoding="utf-8")
     queue_block = Path("gui_contact_queue.py").read_text(encoding="utf-8")
@@ -7887,14 +7878,12 @@ def test_run_control_buttons_keep_icons_visible_while_disabled():
 
 
 def test_run_control_uses_compact_rounds_input_and_matching_button_fonts():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    styles_block = source[source.index("def setup_styles"):]
-    styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
+    styles_block = Path("gui_style_setup.py").read_text(encoding="utf-8")
     create_block = Path("gui_run_page.py").read_text(encoding="utf-8")
 
     assert "increment=10,\n        textvariable=host.rounds_var,\n        width=8" in create_block
     assert "'RunControl.Danger.TButton'" in styles_block
-    assert "font=(FONT_FAMILY_SEMIBOLD, int(13 * page_fs))" in styles_block
+    assert "font=(ui_theme.FONT_FAMILY_SEMIBOLD, int(13 * page_fs))" in styles_block
     assert "style='Accent.TButton'" in create_block
     assert "style='RunControl.Danger.TButton'" in create_block
 
@@ -7949,12 +7938,10 @@ def test_inline_form_notes_use_flat_copy_without_outer_parentheses():
 
 
 def test_run_log_and_shared_dialogs_use_the_larger_font():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    styles_block = source[source.index("def setup_styles"):]
-    styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
+    styles_block = Path("gui_style_setup.py").read_text(encoding="utf-8")
     create_block = Path("gui_run_page.py").read_text(encoding="utf-8")
 
-    assert "self.font_log = (FONT_FAMILY, int(12 * page_fs))" in styles_block
+    assert "host.font_log = (ui_theme.FONT_FAMILY, int(12 * page_fs))" in styles_block
     assert "font_run_log" not in styles_block
     assert "font=host.font_log" in create_block
 
@@ -8548,7 +8535,6 @@ def test_education_import_uses_multi_file_dialog():
 
 
 def test_education_queue_supports_multi_select_batch_recognition_and_context_menu():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
     create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
     recognize_block = Path("education_controller.py").read_text(encoding="utf-8")
 
