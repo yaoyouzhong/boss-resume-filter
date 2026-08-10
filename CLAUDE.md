@@ -15,7 +15,7 @@ boss-resume-filter/
 ├── release_user_audit.py # 用户视角发布审计模块
 ├── storage.py            # 候选人数据持久化模块（去重、原子写入、备份恢复）
 ├── contact_queue.py      # GUI 候选人联系清单持久化与恢复模块
-├── candidate_presenter.py # 候选人状态、AI 评估与复核文本的纯格式化模块
+├── candidate_presenter.py # 候选人详情、状态、AI 评估与复核文本的纯格式化模块
 ├── candidate_diagnostics_presenter.py # 候选人状态体检列表的纯展示转换模块
 ├── contact_presenter.py # 联系清单就绪状态、确认内容与结果文本模块
 ├── run_presenter.py     # 运行进度、终态日志与摘要文本模块

@@ -128,6 +128,20 @@ def test_gui_compatibility_methods_delegate_to_presenters():
     )
 
 
+def test_candidate_detail_compatibility_method_is_a_thin_presenter_delegate():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _format_candidate_detail"):]
+    block = block[:block.index("\n    @staticmethod\n    def _greet_queue_key")]
+
+    assert "candidate_presenter.format_candidate_detail(" in block
+    assert "extract_summary_info(candidate.get('summary', ''))" in block
+    assert "feedback_reasons=self._feedback_reasons(candidate)" in block
+    assert "candidate.get('llm_dimension_scores')" in block
+    assert "dimension_labels=dimension_labels" in block
+    assert "lines.append" not in block
+    assert "tk." not in block
+
+
 def test_stats_page_builder_exposes_an_explicit_widget_bundle():
     assert gui_stats_page.StatsPageWidgets.__dataclass_fields__.keys() == {
         "page",
