@@ -21,6 +21,7 @@ import gui_settings_page
 import gui_stats_detail
 import gui_stats_page
 import model_catalog
+import resume_parser
 import run_presenter
 import stats_presenter
 import ui_windowing
@@ -77,6 +78,38 @@ def test_presenters_are_leaf_modules_without_ui_storage_or_network_imports():
         "stats_presenter",
     ):
         assert not (_top_level_imports(module_name) & forbidden)
+
+
+def test_resume_parser_is_ui_free_and_does_not_mutate_candidate_state():
+    forbidden = {
+        "bossmaster",
+        "gui_main",
+        "resume_store",
+        "storage",
+        "tkinter",
+        "requests",
+        "socket",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("resume_parser") & forbidden)
+    assert callable(resume_parser.parse_resume_text)
+
+
+def test_resume_import_controller_delegates_file_parsing_only():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _import_resume"):]
+    block = block[:block.index("\n    def _revert_resume_eval")]
+
+    assert "parse_resume_text(filepath)" in block
+    assert "store_resume_copy(filepath" in block
+    assert "mutate_candidates_with_resume_cleanup(" in block
+    assert "evaluate_with_resume(" in block
+    assert "pdfminer.high_level" not in block
+    assert "docx.Document" not in block
+    assert "striprtf.striprtf" not in block
+    assert "re.sub(" not in block
+    assert "open(filepath" not in block
 
 
 def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():

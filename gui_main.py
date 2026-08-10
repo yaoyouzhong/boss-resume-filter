@@ -177,6 +177,13 @@ from resume_store import (
     delete_managed_resume,
     store_resume_copy,
 )
+from resume_parser import (
+    ResumeContentTooShortError,
+    ResumeParserDependencyError,
+    ResumeTextReadError,
+    UnsupportedResumeFormatError,
+    parse_resume_text,
+)
 import gui_dialogs
 from ui_messagebox import messagebox
 
@@ -14047,107 +14054,52 @@ class BossFilterGUI:
             return
 
         # 2. 解析文件
-        ext = os.path.splitext(filepath)[1].lower()
-        resume_text = ""
         try:
-            if ext == '.pdf':
-                try:
-                    from pdfminer.high_level import extract_text as _pdfminer_extract
-                except ImportError:
-                    messagebox.show_notice(
-                        "无法解析 PDF 简历",
-                        headline="当前环境缺少 PDF 解析组件",
-                        message="安装 pdfminer.six 后可继续导入该文件。",
-                        detail="安装命令：pip install pdfminer.six",
-                        parent=self.root,
-                    )
-                    return
-                resume_text = _pdfminer_extract(filepath) or ""
-            elif ext == '.docx':
-                try:
-                    import docx
-                except ImportError:
-                    messagebox.show_notice(
-                        "无法解析 Word 简历",
-                        headline="当前环境缺少 Word 解析组件",
-                        message="安装 python-docx 后可继续导入该文件。",
-                        detail="安装命令：pip install python-docx",
-                        parent=self.root,
-                    )
-                    return
-                doc = docx.Document(filepath)
-                resume_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-            elif ext in ('.txt', '.md'):
-                # 纯文本 / Markdown：直接读取，尝试多种编码
-                for enc in ('utf-8', 'gbk', 'gb2312', 'latin-1'):
-                    try:
-                        with open(filepath, 'r', encoding=enc) as f:
-                            resume_text = f.read()
-                        break
-                    except (UnicodeDecodeError, UnicodeError):
-                        continue
-                if not resume_text:
-                    messagebox.show_failure(
-                        "读取简历",
-                        headline="未能读取简历文本",
-                        message="无法使用常见编码读取这个文件。",
-                        detail=Path(filepath).name,
-                        notice="请确认文件是有效的纯文本文件后重试。",
-                        parent=parent or self.root,
-                    )
-                    return
-            elif ext == '.rtf':
-                try:
-                    from striprtf.striprtf import rtf_to_text
-                except ImportError:
-                    messagebox.show_notice(
-                        "无法解析 RTF 简历",
-                        headline="当前环境缺少 RTF 解析组件",
-                        message="安装 striprtf 后可继续导入该文件。",
-                        detail="安装命令：pip install striprtf",
-                        parent=self.root,
-                    )
-                    return
-                with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-                    rtf_content = f.read()
-                resume_text = rtf_to_text(rtf_content)
-            elif ext in ('.html', '.htm'):
-                import re
-                html_content = ""
-                for enc in ('utf-8', 'gbk', 'gb2312', 'latin-1'):
-                    try:
-                        with open(filepath, 'r', encoding=enc) as f:
-                            html_content = f.read()
-                        break
-                    except (UnicodeDecodeError, UnicodeError):
-                        continue
-                if not html_content:
-                    messagebox.show_failure(
-                        "读取简历",
-                        headline="未能读取 HTML 简历",
-                        message="无法使用常见编码读取这个文件。",
-                        detail=Path(filepath).name,
-                        notice="请确认文件内容完整后重试。",
-                        parent=parent or self.root,
-                    )
-                    return
-                # 去除 <script>/<style> 块，再剥离标签
-                html_content = re.sub(r'<(script|style)[^>]*>.*?</\1>', '', html_content, flags=re.S | re.I)
-                resume_text = re.sub(r'<[^>]+>', ' ', html_content)
-                resume_text = re.sub(r'\s+', ' ', resume_text).strip()
-                # 还原常见 HTML 实体
-                import html as _html_module
-                resume_text = _html_module.unescape(resume_text)
-            else:
-                messagebox.show_notice(
-                    "无法导入简历",
-                    headline="不支持这种文件格式",
-                    message="请选择 PDF、DOCX、TXT、MD、RTF 或 HTML 文件。",
-                    metrics=(("当前格式", ext or "无扩展名"),),
-                    detail=Path(filepath).name,
-                    parent=parent or self.root,
-                )
-                return
+            resume_text = parse_resume_text(filepath)
+        except ResumeParserDependencyError as exc:
+            messagebox.show_notice(
+                f"无法解析 {exc.format_name} 简历",
+                headline=f"当前环境缺少 {exc.format_name} 解析组件",
+                message=f"安装 {exc.package_name} 后可继续导入该文件。",
+                detail=f"安装命令：pip install {exc.package_name}",
+                parent=self.root,
+            )
+            return
+        except ResumeTextReadError as exc:
+            is_html = exc.format_name == "HTML"
+            messagebox.show_failure(
+                "读取简历",
+                headline="未能读取 HTML 简历" if is_html else "未能读取简历文本",
+                message="无法使用常见编码读取这个文件。",
+                detail=Path(filepath).name,
+                notice=(
+                    "请确认文件内容完整后重试。"
+                    if is_html
+                    else "请确认文件是有效的纯文本文件后重试。"
+                ),
+                parent=parent or self.root,
+            )
+            return
+        except UnsupportedResumeFormatError as exc:
+            messagebox.show_notice(
+                "无法导入简历",
+                headline="不支持这种文件格式",
+                message="请选择 PDF、DOCX、TXT、MD、RTF 或 HTML 文件。",
+                metrics=(("当前格式", exc.extension or "无扩展名"),),
+                detail=Path(filepath).name,
+                parent=parent or self.root,
+            )
+            return
+        except ResumeContentTooShortError as exc:
+            messagebox.show_notice(
+                "简历内容过少",
+                headline="提取到的文本不足以评估",
+                message="这个文件可能不是有效简历，或主要内容无法被当前解析器读取。",
+                metrics=(("提取文本", f"{exc.text_length} 字"),),
+                notice="可将文件转换为可复制文本的 PDF 或 DOCX 后重试。",
+                parent=parent or self.root,
+            )
+            return
         except Exception as e:
             messagebox.show_failure(
                 "解析简历",
@@ -14155,18 +14107,6 @@ class BossFilterGUI:
                 message="没有从所选文件中提取到可用内容。",
                 detail=str(e),
                 notice="请检查文件是否损坏，或转换为 PDF、DOCX 后重试。",
-                parent=parent or self.root,
-            )
-            return
-
-        resume_text = resume_text.strip()
-        if len(resume_text) < 50:
-            messagebox.show_notice(
-                "简历内容过少",
-                headline="提取到的文本不足以评估",
-                message="这个文件可能不是有效简历，或主要内容无法被当前解析器读取。",
-                metrics=(("提取文本", f"{len(resume_text)} 字"),),
-                notice="可将文件转换为可复制文本的 PDF 或 DOCX 后重试。",
                 parent=parent or self.root,
             )
             return

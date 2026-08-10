@@ -42,6 +42,7 @@ boss-resume-filter/
 ├── updater.py            # 自动更新模块（Gitee/GitHub 双源检查、下载替换、完整性校验、启动时自动检查）
 ├── icons.py              # 图标绘制模块（Pillow 矢量图标 + IconCache）
 ├── doc_parser.py         # 招聘需求文档解析器（JD → 必要条件 + 职位要求）
+├── resume_parser.py      # 本地简历文件解析与可预期错误分类模块
 ├── education_certificate.py # 毕业证书图片识别、字段校验与学信网页面填写
 ├── education_tool.py    # 独立学历证书核验助手入口（复用 gui_main 学历核验模式）
 ├── education_tool_config.py # 独立工具固定 AI 配置
@@ -166,6 +167,7 @@ boss-resume-filter/
 - `gui_stats_detail.py` 只构建首页/结果页统计候选人明细弹窗及列表交互；统计筛选口径、候选人读取、删除持久化、页面刷新和候选人业务动作必须由 `gui_main.py` 通过显式回调提供，不得导入存储、网络或 `gui_main`。
 - `gui_job_review.py` 只消费 `stats_presenter.py` 已生成的岗位复盘模型并构建工作台；候选人加载、反馈样本口径、复盘建议计算和岗位配置导航必须留在 `gui_main.py`/`stats_presenter.py`，通过显式回调接入，不得导入存储、网络或 `gui_main`。
 - `gui_run_page.py` 只负责运行控制页的分步 Tk 构建、表单状态联动和事件绑定；API Key 查询、浏览器检测、扫描启动/停止、进度数据和日志业务必须通过宿主回调留在 `gui_main.py`，不得导入存储、浏览器、网络或 `gui_main`。
+- `resume_parser.py` 只把本地 PDF、DOCX、TXT、MD、RTF 或 HTML 简历转为文本并抛出可预期的分类异常；不得导入 `tkinter`、`gui_main`、候选人存储或网络模块，不得修改候选人数据或受管简历引用。
 - 后续如新建 `gui_pages/`、`gui_workbenches/` 或 `gui_runtime/` 目录，必须先在本文档定义目录职责和依赖方向，再创建文件。
 
 ## 代码规范
