@@ -4481,6 +4481,73 @@ def test_followup_dialog_controller_cancels_uncontacted_correction_before_write(
     assert candidate["greet_sent"] is True
 
 
+def test_feedback_dialog_controller_promotes_suitable_review_candidate():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._update_candidate_feedback = Mock(return_value=True)
+    gui._sync_greet_queue_candidate_state = Mock()
+    gui._regenerate_excel = Mock()
+    gui.refresh_results = Mock()
+    on_saved = Mock()
+    candidate = {
+        "geek_id": "g1",
+        "job_name": "Java 工程师",
+        "match_score": 60,
+    }
+
+    result = gui._save_candidate_feedback_from_dialog(
+        candidate,
+        "合适",
+        ["技能匹配"],
+        "人工复核通过",
+        Mock(),
+        on_saved,
+    )
+
+    assert result.saved is True
+    gui._update_candidate_feedback.assert_called_once_with(
+        "g1",
+        "Java 工程师",
+        "合适",
+        ["技能匹配"],
+        "人工复核通过",
+    )
+    assert candidate["feedback_status"] == "合适"
+    assert candidate["feedback_reasons"] == ["技能匹配"]
+    assert candidate["review_passed_reasons"] == ["评分处于待定区间（60 分）"]
+    gui._sync_greet_queue_candidate_state.assert_called_once_with(candidate)
+    gui._regenerate_excel.assert_called_once_with()
+    gui.refresh_results.assert_called_once_with()
+    on_saved.assert_called_once_with()
+
+
+def test_feedback_dialog_controller_clears_contact_approval_on_rejection():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._update_candidate_feedback = Mock(return_value=True)
+    gui._sync_greet_queue_candidate_state = Mock()
+    gui._regenerate_excel = Mock()
+    gui.refresh_results = Mock()
+    candidate = {
+        "geek_id": "g1",
+        "job_name": "Java 工程师",
+        "match_score": 80,
+        "contact_approved_at": "20260729_100000",
+        "contact_approval_reason": "人工确认",
+    }
+
+    result = gui._save_candidate_feedback_from_dialog(
+        candidate,
+        "误推",
+        ["技能不匹配"],
+        "不再联系",
+        Mock(),
+    )
+
+    assert result.saved is True
+    assert "contact_approved_at" not in candidate
+    assert "contact_approval_reason" not in candidate
+    gui._sync_greet_queue_candidate_state.assert_called_once_with(candidate)
+
+
 def test_manual_contact_approval_is_persisted_for_only_matching_job():
     with tempfile.TemporaryDirectory() as tmp_dir:
         candidates_path = Path(tmp_dir) / "candidates.json"
@@ -7808,28 +7875,28 @@ def test_stats_page_review_entry_is_row_level_not_toolbar_button():
 
 def test_feedback_dialog_status_control_stays_inside_form_content():
     """反馈状态下拉框必须和标签在同一表单容器内，避免被 pack 到弹窗底部。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    feedback_block = source[source.index("def _mark_candidate_feedback"):]
-    feedback_block = feedback_block[:feedback_block.index("\n    def _format_candidate_detail")]
+    source = Path("gui_candidate_state_dialogs.py").read_text(encoding="utf-8")
+    feedback_block = source[source.index("def show_feedback_dialog"):]
 
-    assert "status_combo = ttk.Combobox(\n            content," in feedback_block
-    assert "status_combo.pack(anchor='w', fill='x'" in feedback_block
-    assert "note_text.pack(anchor='w', fill='x'" in feedback_block
-    assert 'text="结构化原因（可多选）",\n            font=(FONT_FAMILY, int(12 * self.font_scale))' in feedback_block
+    assert "status_combo = ttk.Combobox(\n        content," in feedback_block
+    assert "status_combo.pack(" in feedback_block
+    assert "note_text.pack(" in feedback_block
+    assert 'text="结构化原因（可多选）"' in feedback_block
+    assert "font=(font_family, int(12 * host.font_scale))" in feedback_block
     assert 'status in {"误推", "误杀"} and not reasons' in feedback_block
 
 
 def test_feedback_dialog_height_expands_to_keep_buttons_visible():
     """反馈弹窗必须服从实际内容请求高度，避免 1080p 缩放下裁掉底部按钮。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    feedback_block = source[source.index("def _mark_candidate_feedback"):]
-    feedback_block = feedback_block[:feedback_block.index("\n    def _format_candidate_detail")]
+    source = Path("gui_candidate_state_dialogs.py").read_text(encoding="utf-8")
+    feedback_block = source[source.index("def show_feedback_dialog"):]
 
-    assert "win.update_idletasks()" in feedback_block
-    assert "win.winfo_reqheight() + int(12 * scale)" in feedback_block
+    assert "window.update_idletasks()" in feedback_block
+    assert "window.winfo_reqheight() + int(12 * scale)" in feedback_block
     assert "dialog_height = max(" in feedback_block
-    assert "_place_window_centered(win, int(440 * scale), dialog_height" in feedback_block
-    assert "_place_window_centered(win, int(440 * scale), int(485 * scale)" not in feedback_block
+    assert "place_window_centered(" in feedback_block
+    assert "int(440 * scale),\n        dialog_height," in feedback_block
+    assert "int(440 * scale), int(485 * scale)" not in feedback_block
 
 
 def test_job_review_text_aggregates_structured_feedback_reasons():
@@ -9807,22 +9874,22 @@ def test_model_connectivity_summary_stays_inside_selection_dialog():
 
 def test_followup_and_feedback_validation_use_inline_errors():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    followup = Path("gui_candidate_state_dialogs.py").read_text(encoding="utf-8")
+    dialogs = Path("gui_candidate_state_dialogs.py").read_text(encoding="utf-8")
     followup_controller = source[
         source.index("def _save_candidate_followup_from_dialog"):
         source.index("\n    def _update_candidate_feedback")
     ]
-    feedback = source[
-        source.index("def _mark_candidate_feedback"):
+    feedback_controller = source[
+        source.index("def _save_candidate_feedback_from_dialog"):
         source.index("\n    def _format_candidate_detail")
     ]
 
-    assert "show_form_error(error_text, next_followup_entry)" in followup
-    assert 'show_form_error("请选择有效的跟进状态。", status_combo)' in followup
+    assert "show_form_error(error_text, next_followup_entry)" in dialogs
+    assert 'show_form_error("请选择有效的跟进状态。", status_combo)' in dialogs
     assert "messagebox.show_failure(" in followup_controller
-    assert 'show_form_error("请选择有效的反馈状态。", status_combo)' in feedback
-    assert "标记误推或误杀时，请至少选择一个原因。" in feedback
-    assert "messagebox.show_failure(" in feedback
+    assert 'show_form_error("请选择有效的反馈状态。", status_combo)' in dialogs
+    assert "标记误推或误杀时，请至少选择一个原因。" in dialogs
+    assert "messagebox.show_failure(" in feedback_controller
 
 
 def test_only_reversible_unblacklist_keeps_plain_yes_no_confirmation():

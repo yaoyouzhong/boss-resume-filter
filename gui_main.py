@@ -15192,6 +15192,70 @@ class BossFilterGUI:
             CANDIDATES_PATH,
         ))
 
+    def _save_candidate_feedback_from_dialog(
+        self,
+        candidate,
+        status,
+        reasons,
+        note,
+        window,
+        on_saved=None,
+    ):
+        """Persist validated candidate feedback and synchronize controller state."""
+        try:
+            updated = self._update_candidate_feedback(
+                candidate.get("geek_id"),
+                candidate.get("job_name", ""),
+                status,
+                reasons,
+                note,
+            )
+            if not updated:
+                messagebox.show_failure(
+                    "保存候选人反馈",
+                    headline="候选人反馈未保存",
+                    message="本地候选人记录已发生变化，未找到当前候选人。",
+                    notice="请关闭窗口并刷新候选人列表后重试。",
+                    parent=window,
+                )
+                return gui_candidate_state_dialogs.FeedbackSaveResult(False)
+            candidate["feedback_status"] = status
+            candidate["feedback_reasons"] = reasons
+            candidate["feedback_note"] = note
+            feedback_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+            candidate["feedback_updated_at"] = feedback_time
+            try:
+                score = int(candidate.get("match_score", 0) or 0)
+            except (TypeError, ValueError):
+                score = 0
+            if (
+                status == "合适"
+                and SCORE_THRESHOLD_PASS <= score < SCORE_THRESHOLD_RECOMMEND
+            ):
+                candidate["review_passed_at"] = feedback_time
+                candidate["review_passed_reasons"] = [
+                    f"评分处于待定区间（{score} 分）"
+                ]
+            if status in {"误推", "放弃"}:
+                candidate.pop("contact_approved_at", None)
+                candidate.pop("contact_approval_reason", None)
+            self._sync_greet_queue_candidate_state(candidate)
+            self._regenerate_excel()
+            self.refresh_results()
+            if on_saved:
+                on_saved()
+            return gui_candidate_state_dialogs.FeedbackSaveResult(True)
+        except Exception as exc:
+            messagebox.show_failure(
+                "保存候选人反馈",
+                headline="候选人反馈未保存",
+                message="保存过程中出现异常，本次修改没有完成。",
+                detail=str(exc),
+                notice="请检查数据文件是否可写后重试。",
+                parent=window,
+            )
+            return gui_candidate_state_dialogs.FeedbackSaveResult(False)
+
     def _mark_candidate_feedback(
         self,
         item,
@@ -15206,227 +15270,29 @@ class BossFilterGUI:
             messagebox.showerror("错误", "未找到候选人")
             return
 
-        _parent = parent or self.root
-        win = tk.Toplevel(_parent)
-        win.title("标记反馈")
-        win.transient(_parent)
-        win.grab_set()
-        win.withdraw()
-        win.configure(bg=self.colors['bg_main'])
+        dialog_parent = parent or self.root
 
-        scale = self.dpi_scale * self.zoom_factor
-        field_width = 30
-        pad = int(16 * scale)
-        frame = ttk.Frame(win, style='Page.TFrame', padding=pad)
-        frame.pack(fill="both", expand=True)
-        content = ttk.Frame(frame, style='Page.TFrame')
-        content.pack(anchor='w', fill="x", expand=False)
-
-        ttk.Label(
-            content,
-            text=f"{candidate.get('name', '未知')}｜{candidate.get('job_name', '未知')}",
-            font=(FONT_FAMILY, int(13 * self.font_scale)),
-            foreground=self.colors['primary'],
-            background=self.colors['bg_main']
-        ).pack(anchor='w', pady=(0, int(14 * scale)))
-
-        ttk.Label(
-            content,
-            text="反馈状态",
-            font=(FONT_FAMILY, int(12 * self.font_scale)),
-            style='Page.TLabel'
-        ).pack(anchor='w')
-
-        status_var = tk.StringVar(
-            value=(
-                candidate.get('feedback_status')
-                or default_status
-                or FEEDBACK_STATUS_OPTIONS[0]
-            )
-        )
-        status_combo = ttk.Combobox(
-            content,
-            textvariable=status_var,
-            values=FEEDBACK_STATUS_OPTIONS,
-            state='readonly',
-            font=(FONT_FAMILY, int(12 * self.font_scale)),
-            width=field_width
-        )
-        status_combo.pack(anchor='w', fill='x', pady=(int(5 * scale), int(10 * scale)))
-
-        ttk.Label(
-            content,
-            text="结构化原因（可多选）",
-            font=(FONT_FAMILY, int(12 * self.font_scale)),
-            style='Page.TLabel'
-        ).pack(anchor='w')
-
-        reasons_frame = ttk.Frame(content, style='Page.TFrame')
-        reasons_frame.pack(anchor='w', pady=(int(6 * scale), int(10 * scale)))
-        reason_columns = 3
-        for col in range(reason_columns):
-            reasons_frame.grid_columnconfigure(col, weight=0)
-        existing_reasons = set(self._feedback_reasons(candidate))
-        reason_vars = {}
-        reason_style = ttk.Style()
-        reason_style.configure(
-            "FeedbackReason.TCheckbutton",
-            font=(FONT_FAMILY, int(11 * self.font_scale)),
-        )
-        for idx, reason in enumerate(FEEDBACK_REASON_OPTIONS):
-            var = tk.BooleanVar(value=reason in existing_reasons)
-            reason_vars[reason] = var
-            cb = ttk.Checkbutton(
-                reasons_frame,
-                text=reason,
-                variable=var,
-                style="FeedbackReason.TCheckbutton",
-            )
-            cb.grid(
-                row=idx // reason_columns,
-                column=idx % reason_columns,
-                sticky='w',
-                padx=(0, int(10 * scale)),
-                pady=int(2 * scale),
+        def save_feedback(status, reasons, note, window):
+            return self._save_candidate_feedback_from_dialog(
+                candidate,
+                status,
+                reasons,
+                note,
+                window,
+                on_saved,
             )
 
-        ttk.Label(
-            content,
-            text="备注",
-            font=(FONT_FAMILY, int(12 * self.font_scale)),
-            style='Page.TLabel'
-        ).pack(anchor='w')
-
-        note_text = tk.Text(
-            content,
-            height=3,
-            width=field_width,
-            wrap='word',
-            font=(FONT_FAMILY, int(12 * self.font_scale)),
-            bg=self.colors['bg_card'],
-            fg=self.colors['text_primary'],
-            relief='solid',
-            bd=1
+        gui_candidate_state_dialogs.show_feedback_dialog(
+            self,
+            candidate,
+            dialog_parent,
+            font_family=FONT_FAMILY,
+            status_options=FEEDBACK_STATUS_OPTIONS,
+            reason_options=FEEDBACK_REASON_OPTIONS,
+            existing_reasons=self._feedback_reasons(candidate),
+            default_status=default_status,
+            on_save=save_feedback,
         )
-        note_text.pack(anchor='w', fill='x', expand=False, pady=(int(5 * scale), int(18 * scale)))
-        if candidate.get('feedback_note'):
-            note_text.insert('1.0', candidate.get('feedback_note', ''))
-
-        form_error_label = ttk.Label(
-            frame,
-            text=" ",
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors.get('danger_text', ui_theme.DANGER_TEXT),
-            background=self.colors['bg_main'],
-            justify="left",
-            wraplength=int(390 * scale),
-        )
-        btn_frame = ttk.Frame(frame, style='Page.TFrame')
-        btn_frame.pack(anchor='center')
-        form_error_label.pack(
-            anchor="w",
-            fill="x",
-            before=btn_frame,
-            pady=(0, int(8 * scale)),
-        )
-
-        def clear_form_error(_event=None):
-            form_error_label.configure(text=" ")
-
-        def show_form_error(message, focus_widget):
-            form_error_label.configure(text=message)
-            try:
-                focus_widget.focus_set()
-            except tk.TclError:
-                pass
-
-        status_combo.bind("<<ComboboxSelected>>", clear_form_error, add="+")
-        for child in reasons_frame.winfo_children():
-            child.configure(command=lambda: clear_form_error())
-
-        def close():
-            win.grab_release()
-            win.destroy()
-
-        def save_feedback():
-            clear_form_error()
-            status = status_var.get().strip()
-            reasons = [reason for reason, var in reason_vars.items() if var.get()]
-            note = note_text.get('1.0', 'end').strip()
-            if status not in FEEDBACK_STATUS_OPTIONS:
-                show_form_error("请选择有效的反馈状态。", status_combo)
-                return
-            if status in {"误推", "误杀"} and not reasons:
-                first_reason = next(iter(reasons_frame.winfo_children()), status_combo)
-                show_form_error(
-                    "标记误推或误杀时，请至少选择一个原因。",
-                    first_reason,
-                )
-                return
-            try:
-                updated = self._update_candidate_feedback(
-                    candidate.get('geek_id'),
-                    candidate.get('job_name', ''),
-                    status,
-                    reasons,
-                    note
-                )
-                if not updated:
-                    messagebox.show_failure(
-                        "保存候选人反馈",
-                        headline="候选人反馈未保存",
-                        message="本地候选人记录已发生变化，未找到当前候选人。",
-                        notice="请关闭窗口并刷新候选人列表后重试。",
-                        parent=win,
-                    )
-                    return
-                candidate['feedback_status'] = status
-                candidate['feedback_reasons'] = reasons
-                candidate['feedback_note'] = note
-                feedback_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-                candidate['feedback_updated_at'] = feedback_time
-                try:
-                    score = int(candidate.get('match_score', 0) or 0)
-                except (TypeError, ValueError):
-                    score = 0
-                if (
-                    status == "合适"
-                    and SCORE_THRESHOLD_PASS <= score < SCORE_THRESHOLD_RECOMMEND
-                ):
-                    candidate['review_passed_at'] = feedback_time
-                    candidate['review_passed_reasons'] = [
-                        f"评分处于待定区间（{score} 分）"
-                    ]
-                if status in {"误推", "放弃"}:
-                    candidate.pop('contact_approved_at', None)
-                    candidate.pop('contact_approval_reason', None)
-                self._sync_greet_queue_candidate_state(candidate)
-                self._regenerate_excel()
-                self.refresh_results()
-                if on_saved:
-                    on_saved()
-                close()
-            except Exception as exc:
-                messagebox.show_failure(
-                    "保存候选人反馈",
-                    headline="候选人反馈未保存",
-                    message="保存过程中出现异常，本次修改没有完成。",
-                    detail=str(exc),
-                    notice="请检查数据文件是否可写后重试。",
-                    parent=win,
-                )
-
-        ttk.Button(btn_frame, text="保存", command=save_feedback).pack(side='left', padx=(0, int(8 * self.dpi_scale * self.zoom_factor)))
-        ttk.Button(btn_frame, text="取消", command=close).pack(side='left')
-
-        win.protocol("WM_DELETE_WINDOW", close)
-        win.update_idletasks()
-        dialog_height = max(
-            int(485 * scale),
-            win.winfo_reqheight() + int(12 * scale),
-        )
-        _place_window_centered(win, int(440 * scale), dialog_height, parent=_parent)
-        win.deiconify()
 
     def _format_candidate_detail(self, candidate):
         """Format candidate detail through the pure presenter."""

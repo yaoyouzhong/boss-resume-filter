@@ -60,6 +60,28 @@ class FollowupDialogWidgets:
     cancel_button: ttk.Button
 
 
+@dataclass(frozen=True)
+class FeedbackSaveResult:
+    """Controller result consumed by the feedback form after validation."""
+
+    saved: bool
+
+
+@dataclass(frozen=True)
+class FeedbackDialogWidgets:
+    """Feedback form references used by focused behavior and Tk tests."""
+
+    window: tk.Toplevel
+    status_var: tk.StringVar
+    status_combo: ttk.Combobox
+    reason_vars: dict[str, tk.BooleanVar]
+    reason_checkbuttons: dict[str, ttk.Checkbutton]
+    note_text: tk.Text
+    error_label: ttk.Label
+    save_button: ttk.Button
+    cancel_button: ttk.Button
+
+
 def show_blacklist_reason_dialog(
     host: CandidateStateDialogHost,
     candidate: Mapping[str, Any],
@@ -486,6 +508,244 @@ def show_followup_dialog(
         next_followup_var=next_followup_var,
         next_followup_entry=next_followup_entry,
         quick_date_buttons=quick_date_buttons,
+        note_text=note_text,
+        error_label=form_error_label,
+        save_button=save_button,
+        cancel_button=cancel_button,
+    )
+
+
+def show_feedback_dialog(
+    host: CandidateStateDialogHost,
+    candidate: Mapping[str, Any],
+    parent: tk.Misc,
+    *,
+    font_family: str,
+    status_options: Sequence[str],
+    reason_options: Sequence[str],
+    existing_reasons: Sequence[str],
+    default_status: str | None,
+    on_save: Callable[
+        [str, list[str], str, tk.Toplevel],
+        FeedbackSaveResult,
+    ],
+) -> FeedbackDialogWidgets:
+    """Show the feedback form while delegating candidate mutation to the controller."""
+    scale = host.dpi_scale * host.zoom_factor
+    field_width = 30
+    window = tk.Toplevel(parent)
+    window.title("标记反馈")
+    window.transient(parent)
+    window.grab_set()
+    window.withdraw()
+    window.configure(bg=host.colors["bg_main"])
+
+    frame = ttk.Frame(
+        window,
+        style="Page.TFrame",
+        padding=int(16 * scale),
+    )
+    frame.pack(fill="both", expand=True)
+    content = ttk.Frame(frame, style="Page.TFrame")
+    content.pack(anchor="w", fill="x", expand=False)
+    ttk.Label(
+        content,
+        text=(
+            f"{candidate.get('name', '未知')}｜"
+            f"{candidate.get('job_name', '未知')}"
+        ),
+        font=(font_family, int(13 * host.font_scale)),
+        foreground=host.colors["primary"],
+        background=host.colors["bg_main"],
+    ).pack(anchor="w", pady=(0, int(14 * scale)))
+    ttk.Label(
+        content,
+        text="反馈状态",
+        font=(font_family, int(12 * host.font_scale)),
+        style="Page.TLabel",
+    ).pack(anchor="w")
+
+    status_var = tk.StringVar(
+        value=(
+            candidate.get("feedback_status")
+            or default_status
+            or status_options[0]
+        )
+    )
+    status_combo = ttk.Combobox(
+        content,
+        textvariable=status_var,
+        values=status_options,
+        state="readonly",
+        font=(font_family, int(12 * host.font_scale)),
+        width=field_width,
+    )
+    status_combo.pack(
+        anchor="w",
+        fill="x",
+        pady=(int(5 * scale), int(10 * scale)),
+    )
+    ttk.Label(
+        content,
+        text="结构化原因（可多选）",
+        font=(font_family, int(12 * host.font_scale)),
+        style="Page.TLabel",
+    ).pack(anchor="w")
+
+    reasons_frame = ttk.Frame(content, style="Page.TFrame")
+    reasons_frame.pack(
+        anchor="w",
+        pady=(int(6 * scale), int(10 * scale)),
+    )
+    reason_columns = 3
+    for column in range(reason_columns):
+        reasons_frame.grid_columnconfigure(column, weight=0)
+    selected_reasons = set(existing_reasons)
+    reason_vars: dict[str, tk.BooleanVar] = {}
+    reason_checkbuttons: dict[str, ttk.Checkbutton] = {}
+    reason_style = ttk.Style(window)
+    reason_style.configure(
+        "FeedbackReason.TCheckbutton",
+        font=(font_family, int(11 * host.font_scale)),
+    )
+
+    form_error_label = ttk.Label(
+        frame,
+        text=" ",
+        font=(font_family, int(10 * host.font_scale)),
+        foreground=host.colors.get("danger_text", ui_theme.DANGER_TEXT),
+        background=host.colors["bg_main"],
+        justify="left",
+        wraplength=int(390 * scale),
+    )
+
+    def clear_form_error(_event: tk.Event | None = None) -> None:
+        form_error_label.configure(text=" ")
+
+    def show_form_error(message: str, focus_widget: tk.Misc) -> None:
+        form_error_label.configure(text=message)
+        try:
+            focus_widget.focus_set()
+        except tk.TclError:
+            pass
+
+    for index, reason in enumerate(reason_options):
+        variable = tk.BooleanVar(value=reason in selected_reasons)
+        checkbutton = ttk.Checkbutton(
+            reasons_frame,
+            text=reason,
+            variable=variable,
+            style="FeedbackReason.TCheckbutton",
+            command=clear_form_error,
+        )
+        checkbutton.grid(
+            row=index // reason_columns,
+            column=index % reason_columns,
+            sticky="w",
+            padx=(0, int(10 * scale)),
+            pady=int(2 * scale),
+        )
+        reason_vars[reason] = variable
+        reason_checkbuttons[reason] = checkbutton
+
+    status_combo.bind("<<ComboboxSelected>>", clear_form_error, add="+")
+    ttk.Label(
+        content,
+        text="备注",
+        font=(font_family, int(12 * host.font_scale)),
+        style="Page.TLabel",
+    ).pack(anchor="w")
+    note_text = tk.Text(
+        content,
+        height=3,
+        width=field_width,
+        wrap="word",
+        font=(font_family, int(12 * host.font_scale)),
+        bg=host.colors["bg_card"],
+        fg=host.colors["text_primary"],
+        relief="solid",
+        bd=1,
+    )
+    note_text.pack(
+        anchor="w",
+        fill="x",
+        expand=False,
+        pady=(int(5 * scale), int(18 * scale)),
+    )
+    if candidate.get("feedback_note"):
+        note_text.insert("1.0", candidate.get("feedback_note", ""))
+
+    button_frame = ttk.Frame(frame, style="Page.TFrame")
+    button_frame.pack(anchor="center")
+    form_error_label.pack(
+        anchor="w",
+        fill="x",
+        before=button_frame,
+        pady=(0, int(8 * scale)),
+    )
+
+    def close() -> None:
+        try:
+            window.grab_release()
+        except tk.TclError:
+            pass
+        window.destroy()
+
+    def save_feedback() -> None:
+        clear_form_error()
+        status = status_var.get().strip()
+        reasons = [
+            reason
+            for reason, variable in reason_vars.items()
+            if variable.get()
+        ]
+        note = note_text.get("1.0", "end").strip()
+        if status not in status_options:
+            show_form_error("请选择有效的反馈状态。", status_combo)
+            return
+        if status in {"误推", "误杀"} and not reasons:
+            first_reason = next(
+                iter(reason_checkbuttons.values()),
+                status_combo,
+            )
+            show_form_error(
+                "标记误推或误杀时，请至少选择一个原因。",
+                first_reason,
+            )
+            return
+        result = on_save(status, reasons, note, window)
+        if result.saved:
+            close()
+
+    save_button = ttk.Button(
+        button_frame,
+        text="保存",
+        command=save_feedback,
+    )
+    save_button.pack(side="left", padx=(0, int(8 * scale)))
+    cancel_button = ttk.Button(button_frame, text="取消", command=close)
+    cancel_button.pack(side="left")
+
+    window.protocol("WM_DELETE_WINDOW", close)
+    window.update_idletasks()
+    dialog_height = max(
+        int(485 * scale),
+        window.winfo_reqheight() + int(12 * scale),
+    )
+    place_window_centered(
+        window,
+        int(440 * scale),
+        dialog_height,
+        parent=parent,
+    )
+    window.deiconify()
+
+    return FeedbackDialogWidgets(
+        window=window,
+        status_var=status_var,
+        status_combo=status_combo,
+        reason_vars=reason_vars,
+        reason_checkbuttons=reason_checkbuttons,
         note_text=note_text,
         error_label=form_error_label,
         save_button=save_button,
