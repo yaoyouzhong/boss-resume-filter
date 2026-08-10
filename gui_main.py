@@ -35,7 +35,12 @@ from browser_connection import (
     is_debug_port_open,
     probe_page_url,
 )
+from browser_controller import BrowserController, BrowserRuntime
+from candidate_controller import CandidateController, CandidatePersistence
 from candidate_cleanup import clear_candidates_in_place
+from data_maintenance_controller import DataMaintenanceController
+from education_controller import EducationController
+from settings_controller import SettingsController
 import candidate_presenter
 import candidate_diagnostics_presenter
 import contact_presenter
@@ -44,7 +49,6 @@ import gui_candidate_diagnostics
 import gui_candidate_menus
 import gui_candidate_review
 import gui_candidate_state_dialogs
-import gui_candidate_workbench
 import gui_contact_queue
 import gui_config_page
 import gui_data_maintenance_dialogs
@@ -57,7 +61,15 @@ import gui_settings_page
 import gui_model_catalog_dialog
 import gui_stats_page
 import gui_stats_detail
+import gui_style_setup
 from model_catalog import analyze_model_catalog, fetch_model_catalog
+from result_controller import (
+    ResultController,
+    ResultQuery,
+    candidate_query_match,
+    result_cache_key,
+    result_sort_value,
+)
 import run_presenter
 import stats_presenter
 import ui_theme
@@ -120,12 +132,8 @@ from ai_adapter import (
     has_endpoint_discovery,
     normalize_api_base_url,
 )
-from greeting_failure import diagnose_greeting_failure, format_greeting_failure_message
 from filtering import GENDER_VALUES
 from contact_queue import (
-    ACTIVE_STATUSES,
-    build_contact_queue_item,
-    candidate_identity as contact_queue_candidate_identity,
     count_pending_contact_queue,
     load_contact_queue,
     load_pending_contact_queue_count,
@@ -183,8 +191,14 @@ from storage import (
 from resume_store import (
     RESUME_STATE_FIELDS,
     audit_managed_resumes,
-    clear_candidate_resume_state,
 )
+from contact_controller import (
+    ContactController,
+    ContactNotice,
+    ContactRunCounters,
+    SendExceptionDecision,
+)
+from run_controller import RunController, RunTuning
 from resume_import_service import (
     ResumeCandidateNotFoundError,
     ResumeCopyError,
@@ -206,7 +220,6 @@ from ui_messagebox import messagebox
 from paths import (
     BASE_DIR,
     CONTACT_QUEUE_PATH,
-    get_base_dir,
     ensure_config_files,
     get_api_config_path,
 )
@@ -225,6 +238,59 @@ MAINTENANCE_TIME_PREFERENCE_KEYS = {
 }
 API_CONFIG_PATH = get_api_config_path()
 CHROME_DEBUG_PORT_FILE = BASE_DIR / ".chrome_debug_port"
+
+_SETTINGS_CONTROLLER = SettingsController()
+_DATA_MAINTENANCE_CONTROLLER = DataMaintenanceController()
+_EDUCATION_CONTROLLER = EducationController()
+_CONTACT_CONTROLLER = ContactController()
+_RUN_CONTROLLER = RunController()
+
+
+def _candidate_controller_for(host) -> CandidateController:
+    """Return the host's persistence controller without importing GUI state back."""
+    controller = getattr(host, "_candidate_controller", None)
+    if controller is None:
+        controller = CandidateController(
+            CANDIDATES_PATH,
+            BASE_DIR,
+            CandidatePersistence(
+                update_records=update_candidate_records,
+                mutate_all=mutate_candidates_all,
+                mutate_with_resume_cleanup=mutate_candidates_with_resume_cleanup,
+                remove_with_resume_cleanup=remove_candidates_all_with_resume_cleanup,
+                mark_greeted=mark_candidate_greeted,
+                mark_not_greeted=mark_candidate_not_greeted,
+            ),
+        )
+        host._candidate_controller = controller
+    return controller
+
+
+def _browser_controller_for(host) -> BrowserController:
+    """Return the host's Chrome lifecycle controller with explicit runtime deps."""
+    controller = getattr(host, "_browser_controller", None)
+    if controller is None:
+        controller = BrowserController(
+            BASE_DIR,
+            CHROME_DEBUG_PORT_FILE,
+            BrowserRuntime(
+                platform=sys.platform,
+                environ=os.environ,
+                exists=os.path.exists,
+                expandvars=os.path.expandvars,
+                expanduser=os.path.expanduser,
+                which=shutil.which,
+                socket_factory=socket.socket,
+                popen=subprocess.Popen,
+                run_process=subprocess.run,
+                kill_process=os.kill,
+                sleep=time.sleep,
+                port_open=is_debug_port_open,
+                connector=connect_browser_address,
+            ),
+        )
+        host._browser_controller = controller
+    return controller
 
 FEEDBACK_STATUS_OPTIONS = ["合适", "误推", "误杀", "放弃"]
 FEEDBACK_REASON_OPTIONS = [
@@ -900,6 +966,7 @@ class BossFilterGUI:
 
         # 运行状态
         self.is_running = False
+        self._pending_run_request = None
         self.log_queue = queue.Queue()
         self.progress_queue = queue.Queue()  # 进度条队列
         self.confirm_queue = queue.Queue()  # 岗位切换确认队列
@@ -1012,7 +1079,25 @@ class BossFilterGUI:
         self._highlighted_page_index = None
 
         # 设置样式
-        self.setup_styles()
+        gui_style_setup.setup_styles(self)
+
+        modal_font_size = max(9, self.font_log[1])
+        messagebox.set_ui_fonts(
+            headline=(FONT_FAMILY, max(10, self.font_log[1]), 'bold'),
+            message=(FONT_FAMILY, modal_font_size),
+            button=(FONT_FAMILY, modal_font_size),
+        )
+        structured_message_size = max(9, modal_font_size - 2)
+        messagebox.set_structured_ui_fonts(
+            headline=(FONT_FAMILY, structured_message_size + 2, 'bold'),
+            message=(FONT_FAMILY, structured_message_size),
+            meta=(FONT_FAMILY, max(9, structured_message_size - 1)),
+            button=(FONT_FAMILY, structured_message_size),
+        )
+        # 警告/错误弹窗自动带语义图标，提升可扫读性
+        messagebox.icon_kinds = frozenset({"warning", "error"})
+
+        # 设置 Combobox 下拉列表字体由 gui_style_setup 统一注册
 
         # 创建进度状态图标（依赖 self.colors，必须在 setup_styles 之后）
         self._create_status_icons()
@@ -1343,313 +1428,6 @@ class BossFilterGUI:
             self.root.focus_force()
         except tk.TclError:
             pass
-
-    def setup_styles(self):
-        """设置自定义样式"""
-        style = ttk.Style()
-
-        # 统一使用 clam：唯一允许完整定制背景/边框/hover 的主题，
-        # vista 下按钮等控件无法着色，导致主操作与普通按钮无视觉层级
-        try:
-            style.theme_use('clam')
-        except tk.TclError:
-            pass  # 使用默认主题
-
-        # 配色方案 - 统一来自 ui_theme 设计令牌
-        self.colors = ui_theme.build_palette()
-
-        # 设置右侧功能页字体。左侧边栏在 create_sidebar() 中单独计算，避免被这里牵动。
-        fs = self.dpi_scale * self.zoom_factor
-        page_fs = fs * 0.92 * self.font_boost
-        self.font_title = (FONT_FAMILY, int(28 * page_fs))
-        self.font_section = (FONT_FAMILY, int(16 * page_fs))
-        self.font_label = (FONT_FAMILY, int(13 * page_fs))  # 通用 UI 字体（表单标签、按钮、下拉框、副标题）
-        self.font_stat = (FONT_FAMILY, int(36 * page_fs))
-        self.font_stat_label = (FONT_FAMILY, int(15 * page_fs))
-        self.font_log = (FONT_FAMILY, int(12 * page_fs))
-        self.font_table = (FONT_FAMILY, int(12 * page_fs))  # 表格字体
-        modal_font_size = max(9, self.font_log[1])
-        messagebox.set_ui_fonts(
-            headline=(FONT_FAMILY, max(10, self.font_log[1]), 'bold'),
-            message=(FONT_FAMILY, modal_font_size),
-            button=(FONT_FAMILY, modal_font_size),
-        )
-        structured_message_size = max(9, modal_font_size - 2)
-        messagebox.set_structured_ui_fonts(
-            headline=(FONT_FAMILY, structured_message_size + 2, 'bold'),
-            message=(FONT_FAMILY, structured_message_size),
-            meta=(FONT_FAMILY, max(9, structured_message_size - 1)),
-            button=(FONT_FAMILY, structured_message_size),
-        )
-        # 警告/错误弹窗自动带语义图标，提升可扫读性
-        messagebox.icon_kinds = frozenset({"warning", "error"})
-
-        # 设置 Combobox 下拉列表字体（与 font_label 保持一致）
-        # 必须用元组格式 + priority 80，确保 Tk option database 正确解析并覆盖默认值
-        self.root.option_add('*TCombobox*Listbox.font', self.font_label, 80)
-
-        # 禁用所有 Combobox 的鼠标滚轮（防止误触改变选中值）
-        self.root.bind_class('TCombobox', '<MouseWheel>', lambda e: 'break')
-        self.root.bind_class('TCombobox', '<Button-4>', lambda e: 'break')
-        self.root.bind_class('TCombobox', '<Button-5>', lambda e: 'break')
-
-        # 配置样式
-        c = self.colors
-        style.configure('TFrame', background=c['bg_card'])
-        style.configure('Page.TFrame', background=c['bg_main'])
-        style.configure('TLabel', font=self.font_label, foreground=c['text_primary'],
-                        background=c['bg_card'])
-
-        # ---------------- 三级按钮体系（clam 下可完整着色） ----------------
-        # 次级（默认）：白底灰边，hover 浅灰
-        style.configure('TButton', font=self.font_label, padding=(15, 8),
-                        background=c['bg_card'], foreground=c['text_primary'],
-                        bordercolor=c.get('border_strong', ui_theme.BORDER_STRONG),
-                        focuscolor=c['primary'], lightcolor=c['bg_card'], darkcolor=c['bg_card'])
-        style.layout(
-            'TButton',
-            [
-                ('Button.border', {
-                    'sticky': 'nswe',
-                    'border': '1',
-                    'children': [
-                        ('Button.padding', {
-                            'sticky': 'nswe',
-                            'children': [('Button.label', {'sticky': 'nswe'})],
-                        }),
-                    ],
-                }),
-            ],
-        )
-        style.map('TButton',
-                  background=[('pressed', c['bg_hover']), ('active', c['bg_hover']),
-                              ('disabled', c['bg_input'])],
-                  foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
-                  bordercolor=[('focus', c['primary'])])
-        # Menubutton 的原生下拉指示区默认会从文字区域扣除宽度，导致文字
-        # 相对整个按钮视觉偏左。让箭头覆盖在右侧对称内边距中，文字继续
-        # 使用完整按钮宽度居中，同时保留原生下拉提示和交互。
-        style.layout(
-            'CenteredActions.TMenubutton',
-            [
-                ('Menubutton.button', {
-                    'sticky': 'nswe',
-                    'children': [
-                        ('Menubutton.padding', {
-                            'sticky': 'nswe',
-                            'children': [('Menubutton.label', {'sticky': ''})],
-                        }),
-                        ('Menubutton.dropdown', {'sticky': 'e'}),
-                    ],
-                }),
-            ],
-        )
-        style.configure(
-            'CenteredActions.TMenubutton',
-            font=self.font_label,
-            padding=(24, 8),
-            anchor='center',
-            justify='center',
-        )
-        # 主级（Accent）：实心品牌蓝白字，hover 深蓝，pressed 更深
-        style.configure('Accent.TButton', font=(FONT_FAMILY_SEMIBOLD, int(13 * page_fs)), padding=(20, 8),
-                        background=c['primary'], foreground='#FFFFFF',
-                        bordercolor=c['primary_dark'], focuscolor=c['primary_dark'],
-                        lightcolor=c['primary'], darkcolor=c['primary'])
-        style.map('Accent.TButton',
-                  background=[('pressed', c.get('primary_deep', ui_theme.PRIMARY_DEEP)),
-                              ('active', c['primary_dark']),
-                              ('disabled', c['bg_input'])],
-                  foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
-                  bordercolor=[('disabled', c['border'])])
-        # 工作台主动作：与普通按钮保持相同字号和内边距，仅用颜色区分主次。
-        style.configure('Workbench.Primary.TButton', font=self.font_label, padding=(15, 8),
-                        background=c['primary'], foreground='#FFFFFF',
-                        bordercolor=c['primary_dark'], focuscolor=c['primary_dark'],
-                        lightcolor=c['primary'], darkcolor=c['primary'])
-        style.map('Workbench.Primary.TButton',
-                  background=[('pressed', c.get('primary_deep', ui_theme.PRIMARY_DEEP)),
-                              ('active', c['primary_dark']),
-                              ('disabled', c['bg_input'])],
-                  foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
-                  bordercolor=[('disabled', c['border'])])
-        # 危险级（Danger）：实心红，用于删除/停止等需警示的动作
-        style.configure('Danger.TButton', font=self.font_label, padding=(15, 8),
-                        background=c['danger'], foreground='#FFFFFF',
-                        bordercolor=c.get('danger_text', ui_theme.DANGER_TEXT),
-                        lightcolor=c['danger'], darkcolor=c['danger'])
-        style.map('Danger.TButton',
-                  background=[('pressed', c.get('danger_deep', ui_theme.DANGER_DEEP)), ('active', c.get('danger_text', ui_theme.DANGER_TEXT)),
-                              ('disabled', c['bg_input'])],
-                  foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
-                  bordercolor=[('disabled', c['border'])])
-        # 运行控制的开始/停止按钮使用同一字体，仅保留颜色语义差异。
-        style.configure(
-            'RunControl.Danger.TButton',
-            font=(FONT_FAMILY_SEMIBOLD, int(13 * page_fs)),
-        )
-
-        style.configure('Card.TFrame', background=c['bg_card'], relief='solid', borderwidth=1)
-        style.configure('WelcomeCard.TFrame', background=self.colors['bg_card'],
-                        relief='flat', borderwidth=0)
-        style.configure('WelcomeInner.TFrame', background=self.colors['bg_card'])
-        style.configure('PageHeader.TFrame', background=self.colors['bg_card'],
-                        relief='flat', borderwidth=0)
-        style.configure('PageHeaderInner.TFrame', background=self.colors['bg_card'])
-        style.configure('Sidebar.TFrame', background=self.colors['bg_sidebar'])
-        sidebar_font_size = int(11 * self.font_scale)
-        style.configure('Sidebar.TLabel', font=(FONT_FAMILY, sidebar_font_size),
-                       foreground=self.colors['text_sidebar'], background=self.colors['bg_sidebar'])
-        style.configure('SidebarSelected.TLabel', font=(FONT_FAMILY, sidebar_font_size, 'bold'),
-                       foreground=self.colors['text_sidebar_active'], background=self.colors['bg_sidebar'])
-        style.configure('Header.TLabel', font=self.font_title, foreground=self.colors['text_primary'])
-        style.configure('Section.TLabel', font=self.font_section, foreground=self.colors['text_primary'])
-        style.configure('Stat.TLabel', font=self.font_stat, foreground=self.colors['primary'])
-        style.configure('StatLabel.TLabel', font=self.font_stat_label, foreground=self.colors['text_secondary'])
-        style.configure('Primary.TLabel', font=self.font_label, foreground=self.colors['primary'])
-        style.configure('Success.TLabel', font=self.font_label, foreground=self.colors['success'])
-        style.configure('Warning.TLabel', font=self.font_label, foreground=self.colors['warning'])
-        # 下拉菜单样式 - 设置行高确保文字垂直居中
-        combo_font_size = int(15 * self.font_scale)
-        style.configure('TCombobox', font=self.font_label)
-        style.configure('TCombobox', rowheight=int(combo_font_size * 1.8))
-        # macOS aqua 下 fieldbackground 只能通过 map 设置，configure 被原生渲染忽略
-        style.map(
-            'TCombobox',
-            fieldbackground=[
-                ('disabled', c['bg_input']),
-                ('readonly', c['bg_card']),
-                ('!disabled', c['bg_card']),
-            ],
-            foreground=[
-                ('disabled', c['text_muted']),
-                ('readonly', c['text_primary']),
-                ('!disabled', c['text_primary']),
-            ],
-            selectbackground=[
-                ('disabled', c['bg_input']),
-                ('readonly', c['bg_card']),
-                ('!focus', c['bg_card']),
-                ('focus', c['primary']),
-            ],
-            selectforeground=[
-                ('disabled', c['text_muted']),
-                ('readonly', c['text_primary']),
-                ('!focus', c['text_primary']),
-                ('focus', '#FFFFFF'),
-            ],
-        )
-        style.map('TSpinbox',
-                  fieldbackground=[('!disabled', self.colors['bg_card']),
-                                   ('disabled', self.colors['bg_input'])])
-        # 基础筛选的下拉框和 Spinbox 都带箭头区；按当前字体字符宽补偿，
-        # 使 width=6 的两类控件与 width=8 的薪资 Entry 保持相同像素宽度。
-        _filter_char_width = font.Font(font=self.font_label).measure("0")
-        style.configure(
-            'CompactFilter.TCombobox',
-            padding=(max(0, _filter_char_width - 6), 0),
-        )
-        style.configure(
-            'CompactFilter.TSpinbox',
-            padding=(max(0, _filter_char_width - 4), 0),
-        )
-        style.map('TEntry',
-                  fieldbackground=[('!disabled', self.colors['bg_card']),
-                                   ('disabled', self.colors['bg_input'])])
-        # 模型名称 Entry 没有 Combobox 的下拉箭头区，补足固定边框差值，
-        # 使同为 width=18 时两者的视觉外宽一致。
-        style.configure('SettingsModel.TEntry', padding=(8, 0))
-
-        # ---------------- 表格 / 表头 / 滚动条 / 输入控件（clam 扁平化） ----------------
-        style.configure('Treeview',
-                        background=c['bg_card'], fieldbackground=c['bg_card'],
-                        foreground=c['text_primary'],
-                        bordercolor=c['border'], lightcolor=c['border'], darkcolor=c['border'])
-        style.map('Treeview',
-                  background=[('selected', c.get('banner_info_bg', ui_theme.BANNER_INFO_BG))],
-                  foreground=[('selected', c['primary_dark'])])
-        style.configure('Treeview.Heading',
-                        background=c.get('bg_footer', ui_theme.BG_FOOTER),
-                        foreground=c['text_secondary'],
-                        bordercolor=c['border'], padding=(4, 3), relief='flat')
-        style.map('Treeview.Heading',
-                  background=[('active', c['bg_hover'])],
-                  foreground=[('active', c['text_primary'])])
-        for _sb in ('Vertical.TScrollbar', 'Horizontal.TScrollbar'):
-            style.configure(_sb,
-                            background=c['border'], troughcolor=c['bg_main'],
-                            bordercolor=c['bg_main'], arrowcolor=c['text_secondary'],
-                            lightcolor=c['border'], darkcolor=c['border'])
-            style.map(_sb, background=[('active', c.get('border_strong', ui_theme.BORDER_STRONG)),
-                                       ('pressed', c['text_secondary'])])
-        # 输入控件：白底灰边，聚焦时品牌蓝边
-        for _input in ('TEntry', 'TCombobox', 'TSpinbox'):
-            style.configure(_input,
-                            bordercolor=c.get('border_strong', ui_theme.BORDER_STRONG),
-                            lightcolor=c.get('border_strong', ui_theme.BORDER_STRONG),
-                            darkcolor=c.get('border_strong', ui_theme.BORDER_STRONG),
-                            focuscolor=c['primary'])
-            style.map(_input,
-                      bordercolor=[('focus', c['primary'])],
-                      lightcolor=[('focus', c['primary'])],
-                      darkcolor=[('focus', c['primary'])])
-        checkbox_size = max(24, int(round(24 * fs)))
-        checkbox_off = self.icons.get(
-            'checkbox_off', checkbox_size, c.get('border_strong', ui_theme.BORDER_STRONG)
-        )
-        checkbox_on = self.icons.get('checkbox_on', checkbox_size, c['primary'])
-        checkbox_disabled_off = self.icons.get(
-            'checkbox_off', checkbox_size, c['text_muted']
-        )
-        checkbox_disabled_on = self.icons.get(
-            'checkbox_on', checkbox_size, c['text_muted']
-        )
-        self._checkbox_style_images = (
-            checkbox_off,
-            checkbox_on,
-            checkbox_disabled_off,
-            checkbox_disabled_on,
-        )
-        checkbox_indicator = 'App.Checkbutton.indicator'
-        if checkbox_indicator not in style.element_names():
-            style.element_create(
-                checkbox_indicator,
-                'image',
-                checkbox_off,
-                ('disabled', 'selected', checkbox_disabled_on),
-                ('disabled', checkbox_disabled_off),
-                ('selected', checkbox_on),
-                sticky='w',
-            )
-        style.layout(
-            'TCheckbutton',
-            [
-                ('Checkbutton.padding', {
-                    'sticky': 'nswe',
-                    'children': [
-                        (checkbox_indicator, {'side': 'left', 'sticky': ''}),
-                        ('Checkbutton.label', {
-                            'side': 'left',
-                            'sticky': 'nswe',
-                        }),
-                    ],
-                }),
-            ],
-        )
-        style.configure(
-            'TCheckbutton',
-            background=c['bg_card'],
-            foreground=c['text_primary'],
-            padding=(2, 2),
-        )
-        style.configure('TRadiobutton', background=c['bg_card'], foreground=c['text_primary'])
-        style.configure('Horizontal.TProgressbar',
-                        troughcolor=c['bg_main'], background=c['primary'],
-                        bordercolor=c['bg_main'], lightcolor=c['primary'], darkcolor=c['primary'])
-        style.configure('TSeparator', background=c['border'])
-
-        style.configure('Custom.TLabelframe', font=self.font_label, background=self.colors['bg_card'])
-        style.configure('Custom.TLabelframe.Label', font=self.font_label, background=self.colors['bg_card'])
 
     def create_sidebar(self):
         """创建左侧边栏"""
@@ -2543,9 +2321,6 @@ class BossFilterGUI:
         yield
         yield from self._create_api_config_content_steps()
 
-    def _on_api_canvas_configure(self, event):
-        """调整可滚动框架宽度以匹配 Canvas"""
-        self.api_canvas.itemconfig(self.api_canvas_frame, width=event.width)
 
     @staticmethod
     def _delta_to_units(delta):
@@ -3089,10 +2864,6 @@ class BossFilterGUI:
         self.job_select_var.set(selected)
         return selected
 
-    def _create_api_config_content(self) -> None:
-        """同步创建系统设置内容。"""
-        for _step in self._create_api_config_content_steps():
-            pass
 
     def _create_api_config_content_steps(self) -> Iterator[None]:
         """创建系统设置页面内容。"""
@@ -3155,43 +2926,18 @@ class BossFilterGUI:
     @staticmethod
     def _format_backup_summary(result: dict) -> str:
         """Return a privacy-safe summary for backup and restore dialogs."""
-        return (
-            f"岗位 {int(result.get('job_count') or 0)} 个，"
-            f"候选人 {int(result.get('candidate_count') or 0)} 人，"
-            f"联系清单 {int(result.get('queue_count') or 0)} 项，"
-            f"简历副本 {int(result.get('resume_count') or 0)} 份"
-        )
+        return _DATA_MAINTENANCE_CONTROLLER.format_backup_summary(result)
 
     @staticmethod
     def _backup_summary_metrics(result: dict) -> tuple[tuple[str, str], ...]:
         """Return compact, privacy-safe metrics for backup result dialogs."""
-        return (
-            ("岗位", f"{int(result.get('job_count') or 0)} 个"),
-            ("候选人", f"{int(result.get('candidate_count') or 0)} 人"),
-            ("联系清单", f"{int(result.get('queue_count') or 0)} 项"),
-            ("简历副本", f"{int(result.get('resume_count') or 0)} 份"),
-        )
+        return _DATA_MAINTENANCE_CONTROLLER.backup_summary_metrics(result)
 
     @staticmethod
     def _format_maintenance_time(value) -> str:
         """Format one persisted local activity timestamp for compact UI notes."""
-        text = str(value or "").strip()
-        if not text:
-            return "暂无记录"
-        try:
-            timestamp = datetime.fromisoformat(text)
-        except (TypeError, ValueError):
-            return "暂无记录"
-        if timestamp.tzinfo is not None:
-            timestamp = timestamp.astimezone()
-        return timestamp.strftime("%Y-%m-%d %H:%M")
+        return _DATA_MAINTENANCE_CONTROLLER.format_time(value)
 
-    def _maintenance_time_value(self, activity: str):
-        key = MAINTENANCE_TIME_PREFERENCE_KEYS.get(activity)
-        if not key:
-            return None
-        preferences = getattr(self, "_run_preferences", {}) or {}
-        return preferences.get(key)
 
     def _remember_maintenance_success(
         self,
@@ -3200,15 +2946,11 @@ class BossFilterGUI:
         when: datetime | None = None,
     ) -> str:
         """Persist the latest successful local data-maintenance timestamp."""
-        key = MAINTENANCE_TIME_PREFERENCE_KEYS.get(activity)
-        if not key:
-            raise ValueError(f"未知的数据维护操作：{activity}")
-        timestamp = when or datetime.now().astimezone()
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.astimezone()
-        value = timestamp.isoformat(timespec="seconds")
-        preferences = dict(getattr(self, "_run_preferences", {}) or {})
-        preferences[key] = value
+        preferences, value = _DATA_MAINTENANCE_CONTROLLER.remember_success(
+            getattr(self, "_run_preferences", {}) or {},
+            activity,
+            when=when,
+        )
         self._run_preferences = preferences
         _save_run_preferences(preferences)
         return value
@@ -3222,23 +2964,13 @@ class BossFilterGUI:
         restore_summary: str = "",
     ) -> str:
         """Build the two-line backup/restore activity note."""
-        backup_value = (
-            self._maintenance_time_value("backup")
-            if backup_at is None
-            else backup_at
+        return _DATA_MAINTENANCE_CONTROLLER.backup_note(
+            getattr(self, "_run_preferences", {}) or {},
+            backup_at=backup_at,
+            restore_at=restore_at,
+            backup_summary=backup_summary,
+            restore_summary=restore_summary,
         )
-        restore_value = (
-            self._maintenance_time_value("restore")
-            if restore_at is None
-            else restore_at
-        )
-        backup_line = f"最近备份：{self._format_maintenance_time(backup_value)}"
-        restore_line = f"最近恢复：{self._format_maintenance_time(restore_value)}"
-        if backup_summary:
-            backup_line += f" · {backup_summary}"
-        if restore_summary:
-            restore_line += f" · {restore_summary}"
-        return f"{backup_line}\n{restore_line}"
 
     def _diagnostic_export_note_text(
         self,
@@ -3247,15 +2979,11 @@ class BossFilterGUI:
         summary: str = "",
     ) -> str:
         """Build the latest successful diagnostic-export note."""
-        value = (
-            self._maintenance_time_value("diagnostic_export")
-            if exported_at is None
-            else exported_at
+        return _DATA_MAINTENANCE_CONTROLLER.diagnostic_note(
+            getattr(self, "_run_preferences", {}) or {},
+            exported_at=exported_at,
+            summary=summary,
         )
-        line = f"最近导出：{self._format_maintenance_time(value)}"
-        if summary:
-            line += f" · {summary}"
-        return line
 
     def _open_export_location(self, file_path: str) -> None:
         """Open an exported file's folder and report file-manager failures."""
@@ -3272,11 +3000,13 @@ class BossFilterGUI:
 
     def _data_operation_busy(self) -> bool:
         """Prevent backup/restore from racing with active candidate writes."""
-        return bool(
-            getattr(self, "is_running", False)
-            or getattr(self, "greet_queue_running", False)
-            or getattr(self, "greet_queue_preparing", False)
-            or getattr(self, "_data_maintenance_running", False)
+        return _DATA_MAINTENANCE_CONTROLLER.operation_busy(
+            scan_running=bool(getattr(self, "is_running", False)),
+            contact_running=bool(getattr(self, "greet_queue_running", False)),
+            contact_preparing=bool(getattr(self, "greet_queue_preparing", False)),
+            maintenance_running=bool(
+                getattr(self, "_data_maintenance_running", False)
+            ),
         )
 
     def _set_data_backup_status(self, text: str) -> None:
@@ -3294,8 +3024,12 @@ class BossFilterGUI:
             )
             return
         try:
-            candidates = read_candidates_snapshot(CANDIDATES_PATH)
-            report = audit_managed_resumes(candidates, base_dir=BASE_DIR)
+            report = _DATA_MAINTENANCE_CONTROLLER.audit_resumes(
+                CANDIDATES_PATH,
+                BASE_DIR,
+                reader=read_candidates_snapshot,
+                auditor=audit_managed_resumes,
+            )
         except (OSError, TypeError, ValueError, RuntimeError) as exc:
             messagebox.show_failure(
                 "简历存储体检",
@@ -3360,10 +3094,16 @@ class BossFilterGUI:
 
         self._data_maintenance_running = True
         try:
-            repair, cleanup = repair_candidate_resume_storage(
+            repair_result = _DATA_MAINTENANCE_CONTROLLER.repair_resumes(
                 CANDIDATES_PATH,
-                base_dir=BASE_DIR,
+                BASE_DIR,
+                repairer=repair_candidate_resume_storage,
+                reader=read_candidates_snapshot,
+                auditor=audit_managed_resumes,
             )
+            repair = repair_result.repair
+            cleanup = repair_result.cleanup
+            remaining = repair_result.remaining
         except (OSError, TypeError, ValueError, RuntimeError) as exc:
             messagebox.show_failure(
                 "简历存储体检",
@@ -3386,23 +3126,6 @@ class BossFilterGUI:
             self.refresh_stats()
         if hasattr(self, "home_stats_labels"):
             self.refresh_home_stats()
-
-        try:
-            refreshed_candidates = read_candidates_snapshot(CANDIDATES_PATH)
-            remaining = audit_managed_resumes(
-                refreshed_candidates,
-                base_dir=BASE_DIR,
-            )
-        except (OSError, TypeError, ValueError, RuntimeError) as exc:
-            messagebox.show_failure(
-                "简历存储体检",
-                headline="修复已执行，复核未完成",
-                message="候选人数据已更新，但无法重新读取完整体检结果。",
-                detail=str(exc),
-                notice="请关闭占用文件的程序后重新运行体检。",
-                parent=self.root,
-            )
-            return
 
         incomplete = bool(cleanup.failure_count or remaining.issue_count)
         messagebox.show_result(
@@ -3454,7 +3177,11 @@ class BossFilterGUI:
         self._data_maintenance_running = True
         self._set_data_backup_status("正在生成并校验备份…")
         try:
-            result = create_backup_package(BASE_DIR, destination)
+            result = _DATA_MAINTENANCE_CONTROLLER.create_backup(
+                BASE_DIR,
+                destination,
+                creator=create_backup_package,
+            )
         except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
             self._set_data_backup_status("备份失败")
             messagebox.show_failure(
@@ -3504,7 +3231,10 @@ class BossFilterGUI:
         if not source:
             return
         try:
-            preview = inspect_backup(source)
+            preview = _DATA_MAINTENANCE_CONTROLLER.inspect_backup(
+                source,
+                inspector=inspect_backup,
+            )
         except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
             messagebox.show_failure(
                 "恢复数据备份",
@@ -3534,7 +3264,11 @@ class BossFilterGUI:
         self._data_maintenance_running = True
         self._set_data_backup_status("正在校验并恢复数据…")
         try:
-            result = restore_backup(BASE_DIR, source)
+            result = _DATA_MAINTENANCE_CONTROLLER.restore_backup(
+                BASE_DIR,
+                source,
+                restorer=restore_backup,
+            )
         except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
             self._set_data_backup_status("恢复失败，当前数据已保留或自动回退")
             messagebox.show_failure(
@@ -3683,11 +3417,12 @@ class BossFilterGUI:
         if status_var is not None:
             status_var.set("正在收集、脱敏并复核…")
         try:
-            result = create_diagnostic_package(
+            result = _DATA_MAINTENANCE_CONTROLLER.create_diagnostic(
                 BASE_DIR,
                 destination,
                 app_version=__version__,
                 runtime_context=self._diagnostic_runtime_context(),
+                creator=create_diagnostic_package,
             )
         except (
             DiagnosticPrivacyError,
@@ -3856,13 +3591,7 @@ class BossFilterGUI:
         """按完整连接身份比较模型，避免同名模型误匹配。"""
         if not model_config or not model_ref:
             return False
-        config_base_url = str(model_config.get("base_url", "")).strip().rstrip("/")
-        ref_base_url = str(model_ref.get("base_url", "")).strip().rstrip("/")
-        return (
-            model_config.get("model", "") == model_ref.get("model", "")
-            and model_config.get("api_provider", "") == model_ref.get("api_provider", "")
-            and config_base_url == ref_base_url
-        )
+        return _SETTINGS_CONTROLLER.model_ref_matches(model_config, model_ref)
 
     def _model_choice_label(self, model_config, include_url=False):
         provider_key = model_config.get("api_provider", "")
@@ -3908,11 +3637,7 @@ class BossFilterGUI:
         """将模型完整连接身份规整为可复用的状态缓存键。"""
         if not model_ref:
             return None
-        return (
-            str(model_ref.get("api_provider", "")).strip(),
-            str(model_ref.get("base_url", "")).strip().rstrip("/"),
-            str(model_ref.get("model", "")).strip(),
-        )
+        return _SETTINGS_CONTROLLER.model_ref_key(model_ref)
 
     def _assigned_model_test_target_label(self, role, model_ref=None):
         """返回用途模型测试提示中使用的可辨识名称。"""
@@ -4386,41 +4111,23 @@ class BossFilterGUI:
         if not paths:
             return
         from education_certificate import is_pdf_path, validate_document_path
-        existing_paths = {
-            str(Path(item["path"]).resolve()).lower()
-            for item in self.education_items.values()
-        }
-        added_ids = []
-        invalid_files = []
-        for raw_path in paths:
-            try:
-                path = validate_document_path(raw_path)
-            except ValueError:
-                invalid_files.append(Path(raw_path).name)
-                continue
-            normalized = str(path.resolve()).lower()
-            if normalized in existing_paths:
-                continue
-            existing_paths.add(normalized)
-            self.education_item_counter += 1
-            item_id = f"education_{self.education_item_counter}"
-            self.education_items[item_id] = {
-                "path": str(path),
-                "is_pdf": is_pdf_path(path),
-                "name": "",
-                "certificate_number": "",
-                "school": "",
-                "major": "",
-                "auto_rotation": 0,
-                "status": "待识别",
-                "detail": "",
-                "warnings": "",
-            }
+        batch = _EDUCATION_CONTROLLER.prepare_import(
+            paths,
+            self.education_items,
+            self.education_item_counter,
+            validator=validate_document_path,
+            is_pdf=is_pdf_path,
+        )
+        self.education_item_counter = batch.next_counter
+        self.education_items.update(batch.items)
+        added_ids = list(batch.items)
+        invalid_files = list(batch.invalid_files)
+        for item_id, item in batch.items.items():
+            path = Path(item["path"])
             self.education_queue_tree.insert(
                 "", "end", iid=item_id,
                 values=(path.name, "", "", "", "", "待识别"),
             )
-            added_ids.append(item_id)
 
         self._refresh_education_queue_summary()
         if added_ids:
@@ -4771,10 +4478,7 @@ class BossFilterGUI:
 
     def _get_education_api_config(self) -> dict:
         """获取学历核验使用的 API 配置。优先 education_model_ref，回退默认 AI 模型。"""
-        edu_ref = (self.api_config or {}).get("education_model_ref")
-        if edu_ref and edu_ref.get("model"):
-            return dict(edu_ref)
-        return dict(self.api_config or {})
+        return _EDUCATION_CONTROLLER.resolve_api_config(self.api_config or {})
 
     def _recognize_education_image(self):
         """最多三路并发识别当前选中的毕业证书。"""
@@ -4830,86 +4534,42 @@ class BossFilterGUI:
         self._refresh_education_queue_summary()
 
         def worker():
-            results = {}
-            try:
-                from concurrent.futures import ThreadPoolExecutor, as_completed
-                from education_certificate import (
-                    recognize_certificate_image,
-                    recognize_certificate_pdf,
-                )
-                config = vision_config
-                api_key = self._get_education_api_key(config)
-                workers = min(3, len(item_ids))
+            from education_certificate import (
+                recognize_certificate_image,
+                recognize_certificate_pdf,
+            )
 
-                def recognize_one(item_id):
-                    item = self.education_items[item_id]
-                    path = item["path"]
-                    if item.get("is_pdf"):
-                        return recognize_certificate_pdf(path, config, api_key or "")
-                    return recognize_certificate_image(path, config, api_key or "")
-
-                with ThreadPoolExecutor(max_workers=workers) as executor:
-                    futures = {
-                        executor.submit(recognize_one, item_id): item_id
-                        for item_id in item_ids
-                        if item_id in self.education_items
-                    }
-                    for future in as_completed(futures):
-                        item_id = futures[future]
-                        try:
-                            results[item_id] = (future.result(), "")
-                        except Exception as error:
-                            results[item_id] = (None, str(error))
-            except Exception as error:
-                error_text = str(error)
-                for item_id in item_ids:
-                    results.setdefault(item_id, (None, error_text))
+            results = _EDUCATION_CONTROLLER.recognize_documents(
+                self.education_items,
+                item_ids,
+                vision_config,
+                self._get_education_api_key(vision_config) or "",
+                recognize_image=recognize_certificate_image,
+                recognize_pdf=recognize_certificate_pdf,
+            )
 
             def show_results():
-                for item_id, (result, error_text) in results.items():
-                    queue_item = self.education_items.get(item_id)
-                    if not queue_item:
-                        continue
-                    if result is not None:
-                        # 识别成功判定：模型置信度 > 0 且至少识别出姓名或证书编号；
-                        # 否则视为识别失败（如"未检测到任何图片"、字段全空、confidence=0），
-                        # 避免失败结果被误标为"已识别"
-                        if result.confidence > 0 and (result.name or result.certificate_number):
-                            queue_item["name"] = result.name
-                            queue_item["certificate_number"] = result.certificate_number
-                            queue_item["school"] = result.school
-                            queue_item["major"] = result.major
-                            queue_item["auto_rotation"] = result.rotation
-                            queue_item["status"] = "已识别"
-                            queue_item["detail"] = (
-                                f"识别完成 · 置信度 {result.confidence}% · {result.model}"
-                            )
-                            queue_item["warnings"] = "；".join(result.warnings)
-                        else:
-                            # LLM 正常返回但识别失败：保留 warnings（含模型给出的失败原因）
-                            queue_item["status"] = "识别失败"
-                            queue_item["detail"] = "识别失败"
-                            warnings_text = "；".join(result.warnings)
-                            if not warnings_text:
-                                warnings_text = f"置信度 {result.confidence}%，未识别出姓名或证书编号"
-                            queue_item["warnings"] = warnings_text
-                    else:
-                        queue_item["status"] = "识别失败"
-                        queue_item["detail"] = "识别失败"
-                        queue_item["warnings"] = error_text
+                updated_ids = _EDUCATION_CONTROLLER.apply_recognition_results(
+                    self.education_items,
+                    results,
+                )
+                for item_id in updated_ids:
                     self._update_education_queue_row(item_id)
                 current = self.education_items.get(self.education_current_id)
                 if current and self.education_current_id in results:
                     self.education_name_var.set(current.get("name", ""))
-                    self.education_number_var.set(current.get("certificate_number", ""))
+                    self.education_number_var.set(
+                        current.get("certificate_number", "")
+                    )
                     self.education_status_var.set(current.get("detail", ""))
-                    self.education_warning_var.set(current.get("warnings", ""))
+                    self.education_warning_var.set(
+                        current.get("warnings", "")
+                    )
                     self._render_education_preview()
                 self.education_recognition_running = False
                 self._refresh_education_queue_summary()
 
             self.run_on_ui(show_results)
-
         threading.Thread(target=worker, daemon=True).start()
 
     def _fill_chsi_page(self):
@@ -4921,22 +4581,14 @@ class BossFilterGUI:
             return
 
         from education_certificate import validate_chsi_fields
-        prepared: list[tuple[str, str, str]] = []
-        for item_id in item_ids:
-            item = self.education_items.get(item_id)
-            if not item:
-                continue
-            try:
-                name, certificate_number = validate_chsi_fields(
-                    item.get("name", ""), item.get("certificate_number", ""),
-                )
-            except ValueError as error:
-                item["status"] = "校验失败"
-                item["detail"] = str(error)
-                item["warnings"] = ""
-                self._update_education_queue_row(item_id)
-                continue
-            prepared.append((item_id, name, certificate_number))
+        preparation = _EDUCATION_CONTROLLER.prepare_chsi(
+            self.education_items,
+            item_ids,
+            validator=validate_chsi_fields,
+        )
+        prepared = list(preparation.prepared)
+        for item_id in preparation.invalid_ids:
+            self._update_education_queue_row(item_id)
 
         if not prepared:
             messagebox.showwarning(
@@ -5111,126 +4763,53 @@ class BossFilterGUI:
         on_progress: "Callable[[str, str], None] | None" = None,
         max_attempts: int = 3,
     ) -> tuple[bool, str]:
-        """填写表单并最多三次识别、提交新的验证码。
-
-        on_progress(detail, status): 每个阶段完成时回调，用于实时更新 GUI 状态。
-
-        返回 (success, status):
-        - (True, "已提交查询"): 查询成功，等待扫码
-        - (False, "识别失败"): 验证码识别错误，可重试
-        - (False, "待人工验证"): 识别过程失败，需人工输入
-        """
+        """Fill the CHSI form and delegate bounded captcha retries."""
         from education_certificate import fill_chsi_query_page, navigate_to_chsi
-        import time
 
-        _emit = on_progress or (lambda *_: None)
-        attempts = max(1, int(max_attempts))
-        last_status = "待人工验证"
-        for attempt in range(1, attempts + 1):
-            try:
-                if attempt > 1:
-                    _emit(
-                        f"正在重试验证码（{attempt}/{attempts}）...",
-                        "正在获取新的验证码",
-                    )
-                # 每次重新进入查询页，确保验证码已刷新且表单状态可预测。
-                navigate_to_chsi(page)
-                _emit("正在填写表单...", "正在填写姓名和证书编号")
-                with self._education_browser_lock:
-                    fill_chsi_query_page(
-                        page,
-                        name,
-                        certificate_number,
-                        skip_navigation=True,
-                    )
-                success, last_status = self._attempt_captcha_solve(
-                    page,
-                    on_progress=on_progress,
-                )
-                if success:
-                    return True, last_status
-            except Exception as error:
-                print(f"[验证码识别] 第 {attempt}/{attempts} 次失败：{error}")
-                last_status = "待人工验证"
-            if attempt < attempts:
-                time.sleep(1)
-        return False, last_status
-
+        result = _EDUCATION_CONTROLLER.fill_and_solve_captcha(
+            page,
+            name,
+            certificate_number,
+            navigate=navigate_to_chsi,
+            fill_query=fill_chsi_query_page,
+            attempt=self._attempt_captcha_solve,
+            browser_lock=self._education_browser_lock,
+            on_progress=on_progress,
+            max_attempts=max_attempts,
+            sleep=time.sleep,
+        )
+        return result.successful, result.status
     def _attempt_captcha_solve(
         self, page, *, on_progress: "Callable[[str, str], None] | None" = None,
     ) -> tuple[bool, str]:
-        """截取验证码图片、调用模型识别并自动填入+查询。
-
-        on_progress(detail, status): 每个阶段完成时回调。
-
-        返回 (success, status):
-        - (True, "已提交查询"): 查询成功
-        - (False, "识别失败"): 验证码错误
-        - (False, "待人工验证"): 识别过程失败
-        """
+        """Capture, recognize, and submit one captcha through the controller."""
         from education_certificate import (
             CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE,
-            capture_captcha_image, click_chsi_query_button,
-            fill_captcha_answer, recognize_captcha,
+            capture_captcha_image,
+            check_query_result,
+            click_chsi_query_button,
+            fill_captcha_answer,
+            recognize_captcha,
             resolve_vision_api_config,
         )
-        _emit = on_progress or (lambda *_: None)
-        data_url = None
-        vision_config = None
-        api_key = ""
-        try:
-            # 阶段 1：截取验证码图片（需要浏览器锁）
-            _emit("正在识别验证码...", "正在截取验证码图片")
-            with self._education_browser_lock:
-                config = self._get_education_api_config()
-                vision_config = resolve_vision_api_config(config)
-                api_key = self._get_education_api_key(config)
-                data_url = capture_captcha_image(page)
-        except Exception as e:
-            print(f"[验证码识别] 截取验证码图片失败：{e}")
-            return False, "待人工验证"
 
-        # 阶段 2：AI 识别（释放浏览器锁，允许其他 tab 操作）
-        _emit("正在识别验证码...", "AI 模型识别中")
-        try:
-            captcha_type, answer, confidence = recognize_captcha(
-                data_url, vision_config, api_key,
-            )
-        except Exception as e:
-            print(f"[验证码识别] AI 识别失败：{e}")
-            return False, "待人工验证"
-
-        if captcha_type == "unknown" or not answer:
-            return False, "待人工验证"
-        if confidence < CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE:
-            print(
-                f"[验证码识别] 置信度 {confidence} 低于自动提交门槛 "
-                f"{CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE}，本次不提交并继续重试"
-            )
-            return False, "待人工验证"
-
-        # 阶段 3：填入答案 + 点击查询（重新获取浏览器锁）
-        _emit("正在提交查询...", "验证码已识别，正在提交")
-        try:
-            with self._education_browser_lock:
-                filled = fill_captcha_answer(page, answer)
-                if not filled:
-                    return False, "待人工验证"
-                import time
-                time.sleep(0.5)
-                click_chsi_query_button(page)
-            # 点击后立即释放锁、立即推状态；check_query_result 的等待放到锁外
-            # （各 worker 操作独立 tab，check 期间无需持有锁）
-            _emit("已提交查询", "正在等待页面响应...")
-            from education_certificate import check_query_result
-            success, message = check_query_result(page)
-            if not success:
-                return False, "识别失败"
-            return True, "已提交查询"
-        except Exception as e:
-            print(f"[验证码识别] 填入/查询失败：{e}")
-            return False, "待人工验证"
-
+        config = self._get_education_api_config()
+        result = _EDUCATION_CONTROLLER.attempt_captcha(
+            page,
+            config=config,
+            api_key=self._get_education_api_key(config),
+            browser_lock=self._education_browser_lock,
+            min_confidence=CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE,
+            capture_image=capture_captcha_image,
+            recognize=recognize_captcha,
+            fill_answer=fill_captcha_answer,
+            click_query=click_chsi_query_button,
+            check_result=check_query_result,
+            resolve_vision_config=resolve_vision_api_config,
+            on_progress=on_progress,
+            sleep=time.sleep,
+        )
+        return result.successful, result.status
     def _solve_captcha(self):
         """手动点击"重新识别验证码"按钮的入口，支持多选批量重试失败项。"""
         self._set_captcha_btn_state("disabled")
@@ -5331,164 +4910,40 @@ class BossFilterGUI:
 
     @staticmethod
     def _is_browser_page_alive(page) -> bool:
-        """确认 DrissionPage 页面对象仍能执行命令。"""
-        if page is None:
-            return False
-        try:
-            page.run_js("return 1")
-            return True
-        except Exception:
-            return False
+        """Confirm that a browser page can still execute commands."""
+        return BrowserController.is_page_alive(page)
 
     def _try_reconnect_browser(self) -> bool:
-        """Reconnect to the existing debug Chrome without forcing navigation."""
+        """Reconnect through the browser lifecycle controller."""
         if self._is_browser_page_alive(self.browser_page):
             self.browser_connected = True
             return True
-
-        addresses = []
-        current_address = str(
-            getattr(self, "browser_address", "") or ""
-        ).strip()
-        if current_address:
-            addresses.append(current_address)
-        try:
-            saved_port = CHROME_DEBUG_PORT_FILE.read_text(
-                encoding="utf-8"
-            ).strip()
-            if saved_port.isdigit():
-                addresses.append(f"127.0.0.1:{saved_port}")
-        except OSError:
-            pass
-        addresses.append("127.0.0.1:9222")
-
-        for address in dict.fromkeys(addresses):
-            if not is_debug_port_open(address, timeout=0.5):
-                continue
-            connection = connect_browser_address(
-                address,
-                timeout=4,
-                prefer_boss_tab=True,
-                validate_page=True,
-            )
-            if connection.timed_out:
-                self.browser_page = None
-                self.browser_connected = False
-                return False
-            if not self._is_browser_page_alive(connection.page):
-                continue
-            self.browser_page = connection.page
-            self.browser_address = connection.address or address
-            self.browser_connected = True
-            return True
-
-        self.browser_page = None
-        self.browser_connected = False
-        return False
+        state = _browser_controller_for(self).reconnect(
+            getattr(self, "browser_address", ""),
+        )
+        self.browser_page = state.page
+        self.browser_connected = state.connected
+        if state.address:
+            self.browser_address = state.address
+        return state.connected
 
     def _launch_boss_browser(self) -> bool:
-        """Start the app-managed Chrome profile on the BOSS recommendation page."""
-        if sys.platform == 'darwin':
-            candidates = [
-                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-                os.path.expanduser(
-                    '~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-                ),
-            ]
-        elif sys.platform == 'win32':
-            candidates = [
-                os.path.expandvars(
-                    r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe'
-                ),
-                r'C:\Program Files\Google\Chrome\Application\chrome.exe',
-                r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
-            ]
-        else:
-            candidates = [
-                shutil.which('google-chrome'),
-                shutil.which('google-chrome-stable'),
-                shutil.which('chromium'),
-            ]
-        chrome_path = next(
-            (path for path in candidates if path and os.path.exists(path)),
-            None,
+        """Start the managed Chrome profile on the recommendation page."""
+        target_url = "https://www.zhipin.com/web/chat/recommend"
+        state = _browser_controller_for(self).launch_managed_chrome(
+            target_url,
+            recommend_matcher=self._is_boss_recommend_url,
+            should_stop=lambda: bool(
+                getattr(self, "stop_event", None)
+                and self.stop_event.is_set()
+            ),
         )
-        if not chrome_path:
-            self._greet_queue_browser_error = "未找到 Chrome 浏览器，请安装后重试。"
-            return False
-
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as port_socket:
-                port_socket.bind(('127.0.0.1', 0))
-                debug_port = int(port_socket.getsockname()[1])
-
-            profile_dir = BASE_DIR / '.chrome_profile'
-            profile_dir.mkdir(parents=True, exist_ok=True)
-            subprocess.Popen(
-                [
-                    chrome_path,
-                    f'--remote-debugging-port={debug_port}',
-                    f'--user-data-dir={profile_dir}',
-                    '--no-first-run',
-                    '--no-default-browser-check',
-                    'https://www.zhipin.com/web/chat/recommend',
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                show_window=True,
-            )
-            try:
-                CHROME_DEBUG_PORT_FILE.write_text(str(debug_port), encoding='utf-8')
-            except OSError:
-                pass
-        except (OSError, ValueError) as exc:
-            self._greet_queue_browser_error = f"Chrome 启动失败：{str(exc)[:80]}"
-            return False
-
-        self.browser_address = f'127.0.0.1:{debug_port}'
-        stop_event = getattr(self, 'stop_event', None)
-        for _ in range(40):
-            if stop_event is not None and stop_event.is_set():
-                self._greet_queue_browser_error = "发送已停止。"
-                return False
-            time.sleep(0.5)
-            try:
-                with socket.create_connection(
-                    ('127.0.0.1', debug_port), timeout=0.5
-                ):
-                    break
-            except OSError:
-                continue
-        else:
-            self._greet_queue_browser_error = (
-                "Chrome 启动超时，请关闭应用专用 Chrome 后重试。"
-            )
-            return False
-
-        if not self._try_reconnect_browser():
-            self._greet_queue_browser_error = (
-                "Chrome 已启动，但程序无法连接页面，请稍后再次发送。"
-            )
-            return False
-
-        recommend_url = 'https://www.zhipin.com/web/chat/recommend'
-        try:
-            current_url = str(getattr(self.browser_page, 'url', '') or '')
-            if not self._is_boss_recommend_url(current_url):
-                self.browser_page.get(recommend_url)
-            for _ in range(10):
-                current_url = str(getattr(self.browser_page, 'url', '') or '')
-                if "zhipin.com" in current_url.lower():
-                    return True
-                time.sleep(0.5)
-        except Exception as exc:
-            self._greet_queue_browser_error = (
-                f"Chrome 已启动，但推荐牛人页面打开失败：{str(exc)[:80]}"
-            )
-            return False
-        self._greet_queue_browser_error = "Chrome 已启动，但推荐牛人页面未能打开。"
-        return False
-
+        self.browser_page = state.page
+        self.browser_connected = state.connected
+        if state.address:
+            self.browser_address = state.address
+        self._greet_queue_browser_error = state.error
+        return state.connected
     def _get_education_api_key(self, config: dict) -> str:
         """按运行模式取得学历核验专用 API Key。"""
         if self._education_api_key_provider is not None:
@@ -5760,13 +5215,6 @@ class BossFilterGUI:
 
     _REASON_SUGGESTIONS = stats_presenter.REASON_SUGGESTIONS
 
-    @staticmethod
-    def _build_job_review_suggestions(status_counts, reason_counts, feedback_count):
-        return stats_presenter.build_job_review_suggestions(
-            status_counts,
-            reason_counts,
-            feedback_count,
-        )
 
     def _show_text_dialog(
         self,
@@ -6680,45 +6128,12 @@ class BossFilterGUI:
 
     def _default_api_config(self):
         """返回默认 API 配置"""
-        return {
-            "api_provider": "deepseek",
-            "api_key": "",
-            "base_url": "https://api.deepseek.com",
-            "model": "deepseek-chat",
-            "saved_models": [],
-            "providers": {},
-            "fetched_models": {},
-            "llm_read_timeout": None,
-        }
+        return _SETTINGS_CONTROLLER.default_api_config()
 
     def _sanitize_config_for_save(self, config):
         """移除所有 api_key 字段（顶层 + saved_models 内嵌），返回可安全写入磁盘的副本"""
-        clean = {k: v for k, v in config.items() if k != "api_key"}
-        if "saved_models" in clean:
-            clean["saved_models"] = [
-                {k: v for k, v in m.items() if k not in ("api_key", "api_key_ref")}
-                for m in clean["saved_models"]
-            ]
-        return clean
+        return _SETTINGS_CONTROLLER.sanitize_for_save(config)
 
-    def _is_education_model_item(self, item_id: str) -> bool:
-        """判断 Treeview 中的模型项是否为当前指定的学历核验模型"""
-        if not hasattr(self, 'api_config') or not self.api_config:
-            return False
-        edu_ref = self.api_config.get("education_model_ref")
-        if not edu_ref:
-            return False
-        values = self.model_list_tree.item(item_id, 'values')
-        if not values or len(values) < 4:
-            return False
-        name = values[0]
-        provider_display = values[1]
-        provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
-        return self._model_ref_matches({
-            "model": name,
-            "api_provider": provider_key,
-            "base_url": values[3],
-        }, edu_ref)
 
     def _on_default_model_selected(self, event=None):
         """将用途选择器中的模型设为默认 AI 模型。"""
@@ -6792,31 +6207,6 @@ class BossFilterGUI:
             self._set_assigned_model_test_state(target_role, "error")
         messagebox.showwarning("模型未保存", "当前模型不在已保存模型列表中，请先保存模型配置。")
 
-    def _set_education_model(self):
-        """将选中模型设为学历核验专用模型"""
-        selection = self.model_list_tree.selection()
-        if not selection:
-            messagebox.showwarning("警告", "请先选择一个模型")
-            return
-        item = self.model_list_tree.item(selection[0])
-        values = item['values']
-        if not values or len(values) < 2:
-            return
-        name = values[0]
-        provider_display = values[1]
-        selected_base_url = values[3] if len(values) >= 4 else ""
-        provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
-        # 从 saved_models 中查找完整配置
-        model_config = None
-        for m in getattr(self, 'saved_models', []):
-            if self._model_ref_matches(m, {
-                "model": name, "api_provider": provider_key, "base_url": selected_base_url,
-            }):
-                model_config = m
-                break
-        if not model_config or not hasattr(self, 'api_config') or not self.api_config:
-            return
-        self._set_education_model_ref(model_config)
 
     def _unset_education_model(self):
         """取消学历核验专用模型，回退默认 AI 模型"""
@@ -7000,39 +6390,6 @@ class BossFilterGUI:
                 ),
             )
 
-    def use_selected_model(self):
-        """使用选中的模型 - 从系统钥匙串读取加密的 API Key（按服务商管理）"""
-        selection = self.model_list_tree.selection()
-        if not selection:
-            self._update_api_status(
-                text="⚠ 请先在已保存模型列表中选择一个模型",
-                foreground=self.colors['warning'],
-            )
-            return
-
-        # 获取选中的模型信息
-        item = self.model_list_tree.item(selection[0])
-        model_name = item['values'][0]
-        provider_display = item['values'][1]
-        selected_base_url = item['values'][3] if len(item.get('values', ())) > 3 else ""
-        # 将显示名称转换为内部键
-        provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
-
-        # 查找对应的配置
-        model_config = None
-        for saved in self.saved_models:
-            if self._model_ref_matches(saved, {
-                "model": model_name,
-                "api_provider": provider_key,
-                "base_url": selected_base_url,
-            }):
-                model_config = saved
-                break
-
-        if model_config:
-            self._activate_saved_model(model_config, announce=True)
-        else:
-            messagebox.showerror("错误", f"未找到模型 '{model_name}' 的配置信息")
 
     def _activate_saved_model(self, model_config, announce=True):
         """将已保存模型设为默认 AI 模型。"""
@@ -7366,80 +6723,21 @@ class BossFilterGUI:
                 raise RuntimeError("API Key 未能写入系统凭据存储，请检查系统凭据服务后重试")
             self._remember_api_key(provider, base_url, api_key)
 
-            # 顶层当前活动模型：
-            # - 首次配置或当前默认模型尚未入库时，使用本次保存的第一个模型。
-            # - 已有明确默认模型时，保存只维护模型库；默认用途由上方下拉框显式选择。
-            edu_ref = (self.api_config or {}).get("education_model_ref")
-            existing_saved_models = list(getattr(self, 'saved_models', []) or [])
-            current_ref = {
-                "api_provider": (self.api_config or {}).get("api_provider", ""),
-                "base_url": (self.api_config or {}).get("base_url", ""),
-                "model": (self.api_config or {}).get("model", ""),
-            }
-            current_api_key = str((self.api_config or {}).get("api_key") or "")
-            has_saved_current = any(
-                self._model_ref_matches(model_config, current_ref)
-                for model_config in existing_saved_models
+            outcome = _SETTINGS_CONTROLLER.prepare_saved_models(
+                self.api_config or {},
+                getattr(self, "saved_models", []) or [],
+                provider=provider,
+                base_url=base_url,
+                model_name=model_name,
+                pending_models=pending,
+                api_key=api_key,
+                llm_read_timeout=(
+                    self.llm_read_timeout_var.get()
+                    if hasattr(self, "llm_read_timeout_var")
+                    else 60
+                ),
             )
-            should_set_default = not has_saved_current
-            if should_set_default:
-                top_provider, top_base_url = provider, base_url
-                top_model = model_name or (pending[0] if pending else "")
-            else:
-                top_provider = (self.api_config or {}).get("api_provider", provider)
-                top_base_url = (self.api_config or {}).get("base_url", base_url)
-                top_model = current_ref.get("model", "")
-            saved_key_identity = self._api_key_cache_identity(provider, base_url)
-            top_key_identity = self._api_key_cache_identity(top_provider, top_base_url)
-            top_api_key = api_key if top_key_identity == saved_key_identity else current_api_key
-
-            self.api_config = {
-                "api_provider": top_provider,
-                "api_key": top_api_key,
-                "base_url": top_base_url,
-                "model": top_model,
-                "saved_models": existing_saved_models,
-                "providers": (self.api_config or {}).get("providers", {}),
-                "fetched_models": (self.api_config or {}).get("fetched_models", {}),
-                "llm_read_timeout": self.llm_read_timeout_var.get() if hasattr(self, 'llm_read_timeout_var') else 60,
-            }
-            if edu_ref:
-                self.api_config["education_model_ref"] = edu_ref
-
-            # 待批量添加的模型集合
-            # - 多选：pending 含全部选中模型（输入框不参与，多选不改输入框）
-            # - 单选/手输：pending 为空，处理输入框的当前模型名
-            # 同一服务商 + Base URL 共享 API Key，仅 model 名不同
-            if not pending:
-                pending = [model_name]
-
-            added_count = 0
-            updated_count = 0
-            for model_name_to_add in pending:
-                model_exists = False
-                for m in self.api_config["saved_models"]:
-                    if self._model_ref_matches(m, {
-                        "api_provider": provider,
-                        "base_url": base_url,
-                        "model": model_name_to_add,
-                    }):
-                        # 更新已存在模型的配置，保留 capability 字段
-                        m["api_provider"] = provider
-                        m["base_url"] = base_url
-                        model_exists = True
-                        break
-                if not model_exists:
-                    # 添加新模型
-                    self.api_config["saved_models"].append({
-                        "api_provider": provider,
-                        "base_url": base_url,
-                        "model": model_name_to_add
-                    })
-                    added_count += 1
-                else:
-                    updated_count += 1
-
-            # 批量保存意图已消费，清空暂存
+            self.api_config = outcome.api_config
             self._pending_models_to_add = []
 
             with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as f:
@@ -7455,11 +6753,12 @@ class BossFilterGUI:
             # 更新当前模型显示
             self.update_current_model_display()
 
-            if len(pending) > 1:
-                summary = f"已保存 {len(pending)} 个模型到列表（新增 {added_count}，更新 {updated_count}）"
-            else:
-                summary = f"模型 {provider}/{pending[0]} 已保存到已保存模型列表"
-            default_summary = "本次保存的模型已设为默认 AI 模型" if should_set_default else "默认 AI 模型保持不变"
+            summary = outcome.summary
+            default_summary = (
+                "本次保存的模型已设为默认 AI 模型"
+                if outcome.default_changed
+                else "默认 AI 模型保持不变"
+            )
             self._update_api_status(
                 text=f"✓ {summary}；{default_summary}",
                 foreground=self.colors['success'],
@@ -7485,79 +6784,15 @@ class BossFilterGUI:
     def on_api_provider_changed(self, event):
         """API 服务商改变时更新默认配置"""
         display_name = self.api_provider_var.get()
-        # 将显示名称转换为内部键（兼容旧配置）
         provider = self.DISPLAY_TO_KEY.get(display_name, display_name)
-
-        # 主流服务商默认配置（各服务商当前最新主力模型）
-        provider_defaults = {
-            "qwen": {
-                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                "model": "qwen-plus"
-            },
-            "deepseek": {
-                "base_url": "https://api.deepseek.com",
-                "model": "deepseek-v4-pro"
-            },
-            "kimi": {
-                "base_url": "https://api.moonshot.ai/v1",
-                "model": "kimi-k2.6"
-            },
-            "zhipu": {
-                "base_url": "https://open.bigmodel.cn/api/paas/v4",
-                "model": "glm-5.1"
-            },
-            "minimax": {
-                "base_url": "https://api.minimaxi.com/v1",
-                "model": "MiniMax-M3"
-            },
-            "xiaomi": {
-                "base_url": "https://api.xiaomimimo.com/v1",
-                "model": "mimo-v2.5-pro"
-            },
-            "stepfun": {
-                "base_url": "https://api.stepfun.com/v1",
-                "model": "step-3.7-flash"
-            },
-            "openai": {
-                "base_url": "https://api.openai.com/v1",
-                "model": "GPT-5.5"
-            },
-            "anthropic": {
-                "base_url": "https://api.anthropic.com/v1",
-                "model": "claude-sonnet4.8"
-            },
-            "custom": {
-                "base_url": "",
-                "model": ""
-            }
-        }
-
-        # 优先从已保存模型中读取该服务商最近使用的配置
-        current_provider = self.api_config.get("api_provider", "") if hasattr(self, 'api_config') and self.api_config else ""
-        saved_models = getattr(self, 'saved_models', [])
-        resolved_base_url = ""
-
-        if current_provider == provider:
-            # 正在使用这个服务商，显示当前使用的模型配置
-            resolved_base_url = self.api_config.get("base_url", "")
-            self.api_base_url_var.set(resolved_base_url)
-            self.api_model_var.set(self.api_config.get("model", ""))
-        else:
-            # 不是当前服务商，从已保存模型中找该服务商最近使用的配置
-            provider_saved = [m for m in saved_models if m.get("api_provider") == provider]
-            if provider_saved:
-                last_config = provider_saved[-1]
-                resolved_base_url = last_config.get("base_url", "")
-                self.api_base_url_var.set(resolved_base_url)
-                self.api_model_var.set(last_config.get("model", ""))
-            elif provider in provider_defaults:
-                config = provider_defaults[provider]
-                resolved_base_url = config["base_url"]
-                self.api_base_url_var.set(resolved_base_url)
-                self.api_model_var.set(config["model"])
-
-        # 切换服务商时，从 keyring 读取该服务商的 API Key，没有则清空
-        saved_key = self._get_api_key_cached(provider, resolved_base_url)
+        selection = _SETTINGS_CONTROLLER.resolve_provider_selection(
+            provider,
+            getattr(self, "api_config", {}) or {},
+            getattr(self, "saved_models", []) or [],
+        )
+        self.api_base_url_var.set(selection.base_url)
+        self.api_model_var.set(selection.model)
+        saved_key = self._get_api_key_cached(provider, selection.base_url)
         self.api_key_var.set(saved_key if saved_key else "")
 
     _model_dialog = None  # 防止重复打开模型列表对话框
@@ -7565,7 +6800,6 @@ class BossFilterGUI:
     def fetch_model_list(self):
         """获取服务商的模型列表 - 使用当前输入的 API Key 和 Base URL"""
         import requests
-        import json
 
         # 防止重复打开对话框
         if self._model_dialog is not None:
@@ -7607,264 +6841,198 @@ class BossFilterGUI:
         self._update_api_status(text=status_text, foreground=self.colors['warning'])
 
         def fetch_thread():
-            nonlocal base_url
-            try:
-                detected_service_name = ""
-                catalog_response = fetch_model_catalog(
-                    provider,
-                    api_key,
-                    base_url,
+            outcome = _SETTINGS_CONTROLLER.fetch_catalog(
+                provider=provider,
+                api_key=api_key,
+                base_url=base_url,
+                fetched_models=dict(
+                    (self.api_config or {}).get("fetched_models", {})
+                ),
+                configured_base_url=str(
+                    (self.api_config or {}).get("base_url", "")
+                ),
+                fetcher=fetch_model_catalog,
+                analyzer=analyze_model_catalog,
+                timeout_errors=(requests.exceptions.Timeout,),
+                connection_errors=(requests.exceptions.ConnectionError,),
+            )
+            self.run_on_ui(
+                lambda outcome=outcome: self._apply_model_catalog_outcome(
+                    outcome
                 )
-                resolution_status = catalog_response.resolution_status
-                response_status = catalog_response.http_status
-                response_text = catalog_response.response_text
-                data = catalog_response.payload
-                if resolution_status in ("confirmed", "catalog") and data:
-                    base_url = catalog_response.base_url
-                    detected_service_name = catalog_response.service_name
-
-                    def _apply_resolution():
-                        self.api_base_url_var.set(base_url)
-                        if catalog_response.endpoint_confirmed:
-                            self._verified_api_endpoint = (provider, api_key, base_url)
-
-                    self.root.after(0, _apply_resolution)
-
-                if response_status == 200:
-
-                    analysis = analyze_model_catalog(
-                        data,
-                        fetched_models=self.api_config.get("fetched_models", {}),
-                        provider=provider,
-                        base_url=base_url,
-                        configured_base_url=(self.api_config or {}).get("base_url", ""),
-                    )
-
-                    if analysis is not None:
-                        models = list(analysis.models)
-                        filtered_count = analysis.filtered_count
-                        new_models = analysis.new_models
-                        removed_models = analysis.removed_models
-                        catalog_key = analysis.catalog_key
-
-                        # 更新已获取模型列表并持久化
-                        if "fetched_models" not in self.api_config:
-                            self.api_config["fetched_models"] = {}
-                        self.api_config["fetched_models"][catalog_key] = models
-                        try:
-                            with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as _f:
-                                json.dump(self._sanitize_config_for_save(self.api_config), _f, ensure_ascii=False, indent=4)
-                            self._mark_api_config_ui_current()
-                        except Exception:
-                            pass  # 持久化失败不影响主流程
-
-                        # 创建选择对话框
-                        def show_model_dialog():
-                            gui_model_catalog_dialog.show_model_catalog_dialog(
-                                self,
-                                provider=provider,
-                                models=models,
-                                filtered_count=filtered_count,
-                                new_models=new_models,
-                                removed_models=removed_models,
-                                font_family=FONT_FAMILY,
-                                show_model_detail=_show_model_detail,
-                            )
-
-                        _new_count = len(new_models)
-                        _removed_count = len(removed_models)
-                        _total_count = len(models)
-
-                        def _show_model_detail(detail_type):
-                            """点击状态栏数字时显示详细列表"""
-                            if detail_type == 'new' and new_models:
-                                self._show_text_dialog(
-                                    f"{provider} 新增模型",
-                                    "\n".join(f"• {m}" for m in sorted(new_models)),
-                                    width=640,
-                                    height=440,
-                                )
-                            elif detail_type == 'removed' and removed_models:
-                                self._show_text_dialog(
-                                    f"{provider} 下线模型",
-                                    "\n".join(f"• {m}" for m in sorted(removed_models))
-                                    + "\n\n如正在使用这些模型，请尽快切换。",
-                                    width=640,
-                                    height=440,
-                                )
-
-                        def _update_status():
-                            # 清理之前的可点击标签
-                            for lbl in self._status_clickable_labels:
-                                lbl.destroy()
-                            self._status_clickable_labels.clear()
-
-                            # 基础信息
-                            channel_text = f"已识别 {detected_service_name}，" if detected_service_name else ""
-                            verification_text = "；API Key 待测试连接" if resolution_status == "catalog" else ""
-                            base_text = f"✓ {channel_text}找到 {_total_count} 个模型{verification_text}"
-                            if _new_count == 0 and _removed_count == 0:
-                                # 无变更，只显示基础信息
-                                self._update_api_status(
-                                    text=base_text,
-                                    foreground=self.colors['success']
-                                )
-                            else:
-                                # 有变更，先清理旧标签，再分段显示
-                                for lbl in self._status_clickable_labels:
-                                    lbl.destroy()
-                                self._status_clickable_labels.clear()
-                                self.api_status_label.config(
-                                    text=base_text + "（",
-                                    foreground=self.colors['success']
-                                )
-
-                                # 新增数量（可点击）
-                                if _new_count > 0:
-                                    lbl_new = ttk.Label(self.api_status_frame, text=f"{_new_count} 个新增",
-                                                       font=(FONT_FAMILY, int(11 * self.font_scale)),
-                                                       foreground=self.colors['success'],
-                                                       cursor="hand2")
-                                    lbl_new.pack(side="left")
-                                    lbl_new.bind("<Button-1>", lambda e: _show_model_detail('new'))
-                                    self._status_clickable_labels.append(lbl_new)
-
-                                # 分隔符
-                                if _new_count > 0 and _removed_count > 0:
-                                    lbl_sep = ttk.Label(self.api_status_frame, text="，",
-                                                       font=(FONT_FAMILY, int(11 * self.font_scale)),
-                                                       foreground=self.colors['success'])
-                                    lbl_sep.pack(side="left")
-                                    self._status_clickable_labels.append(lbl_sep)
-
-                                # 下线数量（可点击）
-                                if _removed_count > 0:
-                                    lbl_removed = ttk.Label(self.api_status_frame, text=f"{_removed_count} 个下线",
-                                                           font=(FONT_FAMILY, int(11 * self.font_scale)),
-                                                           foreground=self.colors['warning'],
-                                                           cursor="hand2")
-                                    lbl_removed.pack(side="left")
-                                    lbl_removed.bind("<Button-1>", lambda e: _show_model_detail('removed'))
-                                    self._status_clickable_labels.append(lbl_removed)
-
-                                # 右括号
-                                lbl_close = ttk.Label(self.api_status_frame, text="）",
-                                                     font=(FONT_FAMILY, int(11 * self.font_scale)),
-                                                     foreground=self.colors['success'])
-                                lbl_close.pack(side="left")
-                                self._status_clickable_labels.append(lbl_close)
-
-                        self.root.after(0, _update_status)
-                        self.root.after(100, show_model_dialog)
-                    else:
-                        self.root.after(0, lambda: self._update_api_status(
-                            text="⚠ 未找到模型列表",
-                            foreground=self.colors['warning']
-                        ))
-                        self.root.after(0, lambda: messagebox.show_notice(
-                            "未找到模型",
-                            headline="API 没有返回可用模型列表",
-                            message="可以手动输入模型名称后继续保存。",
-                            detail=json.dumps(data, ensure_ascii=False)[:500],
-                            parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                        ))
-                elif not resolution_status and response_status == 401:
-                    self.root.after(0, lambda: self._update_api_status(
-                        text="✗ 认证失败",
-                        foreground=self.colors['danger']
-                    ))
-                    self.root.after(0, lambda: messagebox.show_failure(
-                        "认证失败",
-                        headline="API Key 无效或已过期",
-                        message="请检查 API Key 后重新获取模型列表。",
-                        parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                    ))
-                elif not resolution_status and response_status == 404:
-                    self.root.after(0, lambda: self._update_api_status(
-                        text="✗ 接口不存在",
-                        foreground=self.colors['danger']
-                    ))
-                    self.root.after(0, lambda: messagebox.show_notice(
-                        "接口不支持",
-                        headline="服务商不支持自动获取模型列表",
-                        message="请手动输入模型名称，或参考服务商文档。",
-                        metrics=(("HTTP 状态码", "404"),),
-                        parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                    ))
-                else:
-                    is_temporary = resolution_status in ("probable", "unavailable")
-                    status_color = self.colors['warning'] if is_temporary else self.colors['danger']
-                    status_prefix = "!" if is_temporary else "✗"
-                    self.root.after(0, lambda: self._update_api_status(
-                        text=f"{status_prefix} 请求失败 ({response_status or '未确认'})",
-                        foreground=status_color,
-                    ))
-                    def _show_request_failure(
-                        status=response_status,
-                        response=response_text,
-                        temporary=is_temporary,
-                    ):
-                        title = (
-                            "自动识别暂未完成"
-                            if temporary else
-                            ("自动识别失败" if has_endpoint_discovery(provider) else "请求失败")
-                        )
-                        if temporary:
-                            messagebox.show_notice(
-                                title,
-                                headline="暂时无法自动识别服务商模型",
-                                message="可以稍后重试，或先手动输入模型名称。",
-                                metrics=(("HTTP 状态码", str(status or "未确认")),),
-                                detail=str(response)[:300],
-                                parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                            )
-                        else:
-                            messagebox.show_failure(
-                                title,
-                                headline="模型列表获取失败",
-                                message="请检查服务地址和网络后重试。",
-                                detail=str(response)[:300],
-                                parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                            )
-                    self.root.after(0, _show_request_failure)
-
-            except requests.exceptions.Timeout:
-                self.root.after(0, lambda: self._update_api_status(
-                    text="⏱ 请求超时",
-                    foreground=self.colors['warning']
-                ))
-                self.root.after(0, lambda: messagebox.show_notice(
-                    "请求超时",
-                    headline="获取模型列表超时",
-                    message="请检查网络、代理或服务商是否支持模型列表接口。",
-                    parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                ))
-            except requests.exceptions.ConnectionError as e:
-                self.root.after(0, lambda: self._update_api_status(
-                    text="✗ 连接失败",
-                    foreground=self.colors['danger']
-                ))
-                self.root.after(0, lambda m=str(e)[:200]: messagebox.show_failure(
-                    "连接失败",
-                    headline="无法连接到 API 服务器",
-                    message="请检查 Base URL、网络或代理设置。",
-                    detail=m,
-                    parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                ))
-            except Exception as e:
-                self.root.after(0, lambda: self._update_api_status(
-                    text="✗ 请求失败",
-                    foreground=self.colors['danger']
-                ))
-                self.root.after(0, lambda m=str(e)[:200]: messagebox.show_failure(
-                    "请求失败",
-                    headline="获取模型列表时发生错误",
-                    message="模型列表没有更新。",
-                    detail=m,
-                    parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                ))
-
+            )
         threading.Thread(target=fetch_thread, daemon=True).start()
+
+    def _apply_model_catalog_outcome(self, outcome):
+        """Render one plain model-catalog result on the Tk thread."""
+        parent = getattr(self, "api_config_page", None) or self.root
+        if outcome.status == "success":
+            analysis = outcome.analysis
+            models = list(analysis.models)
+            self.api_base_url_var.set(outcome.base_url)
+            if outcome.endpoint_confirmed:
+                self._verified_api_endpoint = (
+                    outcome.provider,
+                    self.api_key_var.get().strip(),
+                    outcome.base_url,
+                )
+            self.api_config.setdefault("fetched_models", {})[
+                analysis.catalog_key
+            ] = models
+            self._save_api_config_to_file()
+            self._mark_api_config_ui_current()
+            new_count = len(analysis.new_models)
+            removed_count = len(analysis.removed_models)
+            channel = (
+                f"已识别 {outcome.service_name}，"
+                if outcome.service_name
+                else ""
+            )
+            verification = (
+                "；API Key 待测试连接"
+                if outcome.resolution_status == "catalog"
+                else ""
+            )
+            status = f"✓ {channel}找到 {len(models)} 个模型{verification}"
+            if new_count or removed_count:
+                status += f"（{new_count} 个新增，{removed_count} 个下线）"
+            self._update_api_status(
+                text=status,
+                foreground=self.colors["success"],
+            )
+
+            def show_detail(detail_type):
+                values = (
+                    analysis.new_models
+                    if detail_type == "new"
+                    else analysis.removed_models
+                )
+                if not values:
+                    return
+                title = (
+                    f"{outcome.provider} 新增模型"
+                    if detail_type == "new"
+                    else f"{outcome.provider} 下线模型"
+                )
+                suffix = (
+                    ""
+                    if detail_type == "new"
+                    else "\n\n如正在使用这些模型，请尽快切换。"
+                )
+                self._show_text_dialog(
+                    title,
+                    "\n".join(f"• {model}" for model in sorted(values)) + suffix,
+                    width=640,
+                    height=440,
+                )
+
+            gui_model_catalog_dialog.show_model_catalog_dialog(
+                self,
+                provider=outcome.provider,
+                models=models,
+                filtered_count=analysis.filtered_count,
+                new_models=analysis.new_models,
+                removed_models=analysis.removed_models,
+                font_family=FONT_FAMILY,
+                show_model_detail=show_detail,
+            )
+            return
+
+        if outcome.status == "empty":
+            self._update_api_status(
+                text="⚠ 未找到模型列表",
+                foreground=self.colors["warning"],
+            )
+            messagebox.show_notice(
+                "未找到模型",
+                headline="API 没有返回可用模型列表",
+                message="可以手动输入模型名称后继续保存。",
+                detail=json.dumps(outcome.payload, ensure_ascii=False)[:500],
+                parent=parent,
+            )
+            return
+        if outcome.status == "auth_error":
+            self._update_api_status(
+                text="✗ 认证失败",
+                foreground=self.colors["danger"],
+            )
+            messagebox.show_failure(
+                "认证失败",
+                headline="API Key 无效或已过期",
+                message="请检查 API Key 后重新获取模型列表。",
+                parent=parent,
+            )
+            return
+        if outcome.status == "unsupported":
+            self._update_api_status(
+                text="✗ 接口不存在",
+                foreground=self.colors["danger"],
+            )
+            messagebox.show_notice(
+                "接口不支持",
+                headline="服务商不支持自动获取模型列表",
+                message="请手动输入模型名称，或参考服务商文档。",
+                metrics=(("HTTP 状态码", "404"),),
+                parent=parent,
+            )
+            return
+        if outcome.status == "timeout":
+            self._update_api_status(
+                text="⏱ 请求超时",
+                foreground=self.colors["warning"],
+            )
+            messagebox.show_notice(
+                "请求超时",
+                headline="获取模型列表超时",
+                message="请检查网络、代理或服务商是否支持模型列表接口。",
+                parent=parent,
+            )
+            return
+        if outcome.status == "connection_error":
+            self._update_api_status(
+                text="✗ 连接失败",
+                foreground=self.colors["danger"],
+            )
+            messagebox.show_failure(
+                "连接失败",
+                headline="无法连接到 API 服务器",
+                message="请检查 Base URL、网络或代理设置。",
+                detail=outcome.error,
+                parent=parent,
+            )
+            return
+
+        temporary = outcome.status == "temporary"
+        self._update_api_status(
+            text=(
+                f"! 请求失败 ({outcome.http_status or '未确认'})"
+                if temporary
+                else "✗ 请求失败"
+            ),
+            foreground=(
+                self.colors["warning"]
+                if temporary
+                else self.colors["danger"]
+            ),
+        )
+        detail = (outcome.error or outcome.response_text)[:300]
+        if temporary:
+            messagebox.show_notice(
+                "自动识别暂未完成",
+                headline="暂时无法自动识别服务商模型",
+                message="可以稍后重试，或先手动输入模型名称。",
+                metrics=(("HTTP 状态码", str(outcome.http_status or "未确认")),),
+                detail=detail,
+                parent=parent,
+            )
+        else:
+            messagebox.show_failure(
+                "请求失败",
+                headline="模型列表获取失败",
+                message="请检查服务地址和网络后重试。",
+                detail=detail,
+                parent=parent,
+            )
 
     def _show_api_key_while_pressed(self, event=None):
         """按住眼睛图标时临时显示 API Key。"""
@@ -10336,13 +9504,11 @@ class BossFilterGUI:
 
     def _should_defer_browser_navigation_warning(self, silent: bool) -> bool:
         """自动轮询首次读到非推荐页时暂缓告警，过滤页面刷新产生的瞬时 URL。"""
-        self._browser_non_target_checks = getattr(self, '_browser_non_target_checks', 0) + 1
-        return silent and self._browser_non_target_checks < 2
+        return _browser_controller_for(self).should_defer_navigation(silent)
 
     def _should_defer_browser_connection_failure(self, silent: bool) -> bool:
         """自动轮询首次连接失败时暂缓报错，给页面连接一次自恢复机会。"""
-        self._browser_connection_failures = getattr(self, '_browser_connection_failures', 0) + 1
-        return silent and self._browser_connection_failures < 2
+        return _browser_controller_for(self).should_defer_connection_failure(silent)
 
     @staticmethod
     def _boss_access_cooldown_state():
@@ -10434,9 +9600,9 @@ class BossFilterGUI:
                             current_url,
                             recommend_matcher=self._is_boss_recommend_url,
                         )
-                        self._browser_connection_failures = 0
+                        _browser_controller_for(self).reset_connection_failures()
                         if url_state == "recommend":
-                            self._browser_non_target_checks = 0
+                            _browser_controller_for(self).reset_navigation_failures()
                             self.browser_connected = True
                             self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
                             if prev_help != "已连接到 BOSS 直聘推荐牛人页面":
@@ -10455,167 +9621,49 @@ class BossFilterGUI:
                         self.browser_connected = False
                         self._selectors_auto_checked = False  # 页面失效，下次连接重新检查选择器
 
-                # 没有可用连接，检查 Chrome 调试端口
-                # 优先读取上次持久化的端口号
-                addr = getattr(self, 'browser_address', None)
-                if not addr:
-                    try:
-                        saved_port = CHROME_DEBUG_PORT_FILE.read_text(encoding='utf-8').strip()
-                        if saved_port.isdigit():
-                            addr = f'127.0.0.1:{saved_port}'
-                    except OSError:
-                        pass
-                if not addr:
-                    addr = '127.0.0.1:9222'
+                # 没有可用连接，按显式地址、持久化端口、默认端口顺序检查。
+                addr = _browser_controller_for(self).address_candidates(
+                    getattr(self, "browser_address", ""),
+                )[0]
                 _host, port = addr.rsplit(':', 1)
                 port_open = is_debug_port_open(addr, timeout=1)
 
                 if not port_open:
-                    prev_state = self._browser_status_text
                     self.browser_connected = False
-                    self.set_browser_ui("● 未连接", self.colors['danger'], start_state="disabled")
-
-                    # 自动启动 Chrome（仅在手动点击时）
-                    if not silent:
-                        self.set_browser_ui(help_text="正在启动 Chrome 浏览器...")
-                        self.append_log("正在启动 Chrome 浏览器...")
-
-                        # 找到 Chrome 可执行文件
-                        if sys.platform == 'darwin':
-                            candidates = [
-                                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-                                os.path.expanduser('~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'),
-                            ]
-                        else:
-                            candidates = [
-                                os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe'),
-                                r'C:\Program Files\Google\Chrome\Application\chrome.exe',
-                                r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
-                            ]
-                        chrome_path = next((p for p in candidates if os.path.exists(p)), None)
-                        if not chrome_path:
-                            self.set_browser_ui(help_text="未找到 Chrome 浏览器，请安装后重试")
-                            self.append_log("✗ 未找到 Chrome 浏览器")
-                            return
-
-                        # 自动选一个空闲端口，避免 9222 被占用
-                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        s.bind(('127.0.0.1', 0))
-                        debug_port = s.getsockname()[1]
-                        s.close()
-
-                        # 清理 Chrome 锁文件，保留登录态（SingletonLock/Socket/Cookie
-                        # 是上次异常退出残留的，删掉即可，不影响 cookies）
-                        profile_dir = BASE_DIR / '.chrome_profile'
-                        profile_dir.mkdir(parents=True, exist_ok=True)
-                        for lock_file in ['SingletonLock', 'SingletonSocket', 'SingletonCookie']:
-                            lock_path = profile_dir / lock_file
-                            if lock_path.exists():
-                                try:
-                                    lock_path.unlink()
-                                except Exception:
-                                    pass
-
-                        # 用 subprocess 直接启动 Chrome（不依赖 DrissionPage 的启动逻辑）
-                        self.append_log(f"正在启动 Chrome（调试端口 {debug_port}）...")
-                        subprocess.Popen(
-                            [
-                                chrome_path,
-                                f'--remote-debugging-port={debug_port}',
-                                f'--user-data-dir={profile_dir}',
-                                '--no-first-run',
-                                '--no-default-browser-check',
-                            ],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            show_window=True,
+                    self.set_browser_ui(
+                        "● 未连接",
+                        self.colors["danger"],
+                        start_state="disabled",
+                    )
+                    if silent:
+                        self.set_browser_ui(
+                            help_text="未检测到 Chrome，请确保浏览器已启动"
                         )
-
-                        # 持久化端口号，下次启动时可复用
-                        try:
-                            CHROME_DEBUG_PORT_FILE.write_text(str(debug_port), encoding='utf-8')
-                        except OSError:
-                            pass
-
-                        # 轮询等待端口就绪
-                        port_ready = False
-                        for i in range(30):
-                            time.sleep(1)
-                            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                            s.settimeout(0.5)
-                            if s.connect_ex(('127.0.0.1', debug_port)) == 0:
-                                s.close()
-                                port_ready = True
-                                break
-                            s.close()
-                            if i == 0:
-                                self.append_log("⏳ 等待 Chrome 就绪...")
-                            elif i % 5 == 4:
-                                self.append_log(f"⏳ 等待 Chrome 就绪... ({i+1}/30)")
-
-                        if not port_ready:
-                            self.set_browser_ui("● 未连接", self.colors['danger'], "Chrome 启动超时，请关闭所有 Chrome 窗口后重试")
-                            self.append_log("✗ Chrome 启动超时，调试端口未开启")
-                            return
-
-                        # 端口已开，用 DrissionPage 连接
-                        time.sleep(2)
-                        try:
-                            from DrissionPage import ChromiumPage, ChromiumOptions
-                            co = ChromiumOptions()
-                            co.set_address(f'127.0.0.1:{debug_port}')
-
-                            # 整个连接+导航放入线程超时保护，防止 Chrome 被杀后 DrissionPage 阻塞
-                            startup_result = [None]
-                            startup_exception = [None]
-
-                            def _connect_and_navigate():
-                                try:
-                                    p = ChromiumPage(co)
-                                    u = p.url
-                                    if not self._is_boss_recommend_url(u):
-                                        p.get('https://www.zhipin.com/web/chat/recommend')
-                                        time.sleep(2)
-                                        u = p.url
-                                    startup_result[0] = (p, u)
-                                except Exception as e:
-                                    startup_exception[0] = e
-
-                            st = threading.Thread(target=_connect_and_navigate, daemon=True)
-                            st.start()
-                            st.join(timeout=6)
-                            if st.is_alive():
-                                raise TimeoutError("Chrome 连接超时")
-                            if startup_exception[0] is not None:
-                                raise startup_exception[0]
-
-                            page, current_url = startup_result[0]
-                            if self._is_boss_recommend_url(current_url):
-                                self.browser_connected = True
-                                self.browser_page = page
-                                self.browser_address = page.address
-                                self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
-                                self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
-                            else:
-                                self.browser_connected = True
-                                self.browser_page = page
-                                self.browser_address = page.address
-                                self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
-                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
-                        except Exception as e:
-                            self.browser_connected = False
-                            self.browser_page = None
-                            self._selectors_auto_checked = False
-                            self.set_browser_ui("● 未连接", self.colors['danger'], "Chrome 已启动，但页面连接失败", "disabled")
-                            error_text = str(e).splitlines()[0] if str(e) else type(e).__name__
-                            self.append_log(f"✗ Chrome 已启动，但页面连接失败：{error_text}")
                         return
-                    else:
-                        self.set_browser_ui(help_text="未检测到 Chrome，请确保浏览器已启动")
-                        if not silent and prev_state != "● 未连接":
-                            self.append_log("✗ 未检测到 Chrome 调试端口")
-                    return
 
+                    self.set_browser_ui(help_text="正在启动 Chrome 浏览器...")
+                    self.append_log("正在启动 Chrome 浏览器...")
+                    if self._launch_boss_browser():
+                        self.set_browser_ui(
+                            "● 已连接",
+                            self.colors["success"],
+                            "已连接到 BOSS 直聘推荐牛人页面",
+                            "normal",
+                        )
+                        self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
+                    else:
+                        error = (
+                            getattr(self, "_greet_queue_browser_error", "")
+                            or "Chrome 启动或页面连接失败"
+                        )
+                        self.set_browser_ui(
+                            "● 未连接",
+                            self.colors["danger"],
+                            error,
+                            "disabled",
+                        )
+                        self.append_log(f"✗ {error}")
+                    return
                 try:
                     connection = connect_browser_address(addr, timeout=3)
                     if connection.error is not None:
@@ -10626,7 +9674,7 @@ class BossFilterGUI:
                         current_url,
                         recommend_matcher=self._is_boss_recommend_url,
                     )
-                    self._browser_connection_failures = 0
+                    _browser_controller_for(self).reset_connection_failures()
 
                     # Chrome 进程还在但窗口已关闭时，page.url 可能是 about:blank
                     # 直接在现有进程里导航到 BOSS 直聘，不杀进程不重启
@@ -10666,7 +9714,7 @@ class BossFilterGUI:
                         return
 
                     if url_state == "recommend":
-                        self._browser_non_target_checks = 0
+                        _browser_controller_for(self).reset_navigation_failures()
                         prev_connected = self.browser_connected
                         self.browser_connected = True
                         self.browser_page = page
@@ -10712,40 +9760,14 @@ class BossFilterGUI:
                     # 手动点击时，尝试杀掉彻底挂掉的调试 Chrome 进程并重启
                     if not silent:
                         self.append_log("⚠ 正在尝试清理残留的调试 Chrome 进程...")
-                        killed = False
-                        try:
-                            port_num = int(port)
-                            if sys.platform == 'darwin' or sys.platform.startswith('linux'):
-                                # 找到包含 remote-debugging-port=PORT 的 Chrome 进程 PID
-                                result = subprocess.run(
-                                    ['pgrep', '-f', f'remote-debugging-port={port_num}'],
-                                    capture_output=True, text=True, timeout=3
-                                )
-                                pids = result.stdout.strip().split('\n')
-                                for pid in pids:
-                                    if pid.isdigit():
-                                        try:
-                                            os.kill(int(pid), 15)  # SIGTERM
-                                            killed = True
-                                        except ProcessLookupError:
-                                            pass
-                            elif sys.platform == 'win32':
-                                # Windows: 用 wmic 找到包含调试端口的 Chrome 进程
-                                result = subprocess.run(
-                                    ['wmic', 'process', 'where',
-                                     f"CommandLine like '%remote-debugging-port={port_num}%'",
-                                     'get', 'ProcessId'],
-                                    capture_output=True, text=True, timeout=5
-                                )
-                                for line in result.stdout.strip().split('\n'):
-                                    pid = line.strip()
-                                    if pid.isdigit():
-                                        subprocess.run(['taskkill', '/PID', pid],
-                                                     timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                                        killed = True
-                        except Exception as kill_err:
-                            self.append_log(f"清理残留进程失败：{kill_err}")
-
+                        cleanup = _browser_controller_for(
+                            self
+                        ).terminate_debug_processes(int(port))
+                        killed = cleanup.killed
+                        if cleanup.error:
+                            self.append_log(
+                                f"清理残留进程失败：{cleanup.error}"
+                            )
                         if killed:
                             time.sleep(1)
                             self.append_log("✓ 已清理残留的调试 Chrome 进程，2秒后自动重新启动...")
@@ -10905,7 +9927,9 @@ class BossFilterGUI:
         try:
             # 处理进度队列
             while True:
-                progress_data = self.progress_queue.get_nowait()
+                progress_data = _RUN_CONTROLLER.progress_payload(
+                    self.progress_queue.get_nowait()
+                )
                 current = progress_data.get('current', 0)
                 total = progress_data.get('total', 100)
                 percentage = min(100, int((current / total) * 100)) if total > 0 else 0
@@ -10964,63 +9988,98 @@ class BossFilterGUI:
 
         self.root.after(200, self.update_progress)
 
-    def _bind_run_canvas_width(self, canvas_frame):
-        """绑定 run_canvas 内部窗口宽度，使其跟随 canvas 宽度"""
-        window_id = getattr(self, '_run_canvas_window_id', None)
-        if window_id is None:
-            return
-        def on_resize(event):
-            self.run_canvas.itemconfig(window_id, width=event.width)
-        canvas_frame.bind("<Configure>", on_resize)
 
     @staticmethod
     def _parse_salary_exp(summary, structured=None):
-        """从候选人摘要中轻量解析薪资和工作年限。
+        """Keep the historical GUI entry point as a presenter delegate."""
+        return candidate_presenter.parse_salary_experience(summary, structured)
 
-        Args:
-            summary: 候选人摘要文本
-            structured: 结构化字段字典（优先使用）
 
-        Returns:
-            (salary: str, exp: str) — 如 ("15-20K", "5年")
-        """
-        salary = ''
-        exp = ''
+    def _capture_run_request(self):
+        """Snapshot every Tk-owned run value before starting the worker thread."""
+        def value(name, default):
+            variable = getattr(self, name, None)
+            if variable is None:
+                return default
+            try:
+                return variable.get()
+            except (AttributeError, tk.TclError):
+                return default
 
-        # 优先使用 API 结构化字段
-        if structured:
-            if structured.get('salary_min') is not None:
-                s_min = structured['salary_min']
-                s_max = structured.get('salary_max')
-                if s_max and s_max != s_min:
-                    salary = f"{s_min}-{s_max}K"
-                else:
-                    salary = f"{s_min}K"
-            if structured.get('exp_years') is not None:
-                exp = f"{structured['exp_years']}年"
+        contact_policy = value("contact_after_scan_var", "仅保存筛选结果")
+        selected_job = value("job_select_var", "全部岗位")
+        if selected_job != "全部岗位":
+            self._remember_run_job_selection(selected_job)
 
-        # 未解析到的字段用文本解析兜底
-        if not salary or not exp:
-            from filtering import _parse_candidate_salary_range, parse_experience_years
-            if not salary:
-                salary_min, salary_max = _parse_candidate_salary_range(summary or '')
-                if salary_min is not None:
-                    if salary_max is not None and salary_max != salary_min:
-                        salary = f"{salary_min}-{salary_max}K"
-                    else:
-                        salary = f"{salary_min}K"
-                elif '面议' in (summary or ''):
-                    salary = '面议'
-            if not exp:
-                exp_raw = parse_experience_years(summary or '')
-                exp = f"{exp_raw}年" if exp_raw is not None else ''
+        ai_requested = bool(value("ai_eval_var", False))
+        api_config = getattr(self, "api_config", {})
+        read_timeout = value(
+            "llm_read_timeout_var",
+            api_config.get("llm_read_timeout", 120),
+        )
+        if ai_requested and api_config.get("llm_read_timeout") != read_timeout:
+            api_config["llm_read_timeout"] = read_timeout
+            try:
+                with open(
+                    get_api_config_path(for_write=True),
+                    "w",
+                    encoding="utf-8",
+                ) as config_file:
+                    json.dump(
+                        self._sanitize_config_for_save(api_config),
+                        config_file,
+                        ensure_ascii=False,
+                        indent=4,
+                    )
+            except Exception:
+                pass
 
-        return salary, exp
+        api_key = None
+        setup_logs = []
+        if ai_requested:
+            try:
+                api_key = self._get_api_key_cached(
+                    api_config.get("api_provider", ""),
+                    api_config.get("base_url", ""),
+                )
+            except Exception as exc:
+                setup_logs.append(f"加载 API 配置失败：{exc}，跳过 AI 评估")
 
-    @staticmethod
-    def _center_window_on_screen(window, width, height):
-        """将子窗口相对于屏幕居中（不依赖父窗口位置）"""
-        _place_window_centered(window, width, height)
+        tuning = RunTuning(
+            API_CANDIDATE_LIMIT_DEFAULT,
+            GREET_CONTEXT_CAPTURE_LIMIT,
+            DOM_SCROLL_DELAY_CENTER,
+            DOM_SCROLL_DELAY_SPREAD,
+            DOM_SCROLL_BATCH_MIN,
+            DOM_SCROLL_BATCH_MAX,
+            DOM_SCROLL_BATCH_PAUSE_CENTER,
+            DOM_SCROLL_BATCH_PAUSE_SPREAD,
+        )
+        return _RUN_CONTROLLER.prepare_request(
+            version=__version__,
+            rounds=value("rounds_var", MAX_ROUNDS_DEFAULT),
+            contact_policy=contact_policy,
+            selected_job=selected_job,
+            api_direct_enabled=value("api_direct_enabled_var", True),
+            api_direct_pages=value(
+                "api_direct_pages_var",
+                max(1, (API_CANDIDATE_LIMIT_DEFAULT + 19) // 20),
+            ),
+            greet_context_capture_enabled=value(
+                "greet_context_capture_enabled_var",
+                True,
+            ),
+            greet_context_capture_limit=value(
+                "greet_context_capture_limit_var",
+                GREET_CONTEXT_CAPTURE_LIMIT,
+            ),
+            ai_eval_enabled=ai_requested,
+            ai_api_config=dict(api_config),
+            ai_api_key=api_key,
+            llm_read_timeout=read_timeout,
+            tuning=tuning,
+            setup_logs=setup_logs,
+        )
 
     def start_run(self):
         """开始运行"""
@@ -11074,6 +10133,7 @@ class BossFilterGUI:
             self.start_btn.config(state="normal")
             return
 
+        self._pending_run_request = self._capture_run_request()
         self.is_running = True
         self.stop_event.clear()
         self._apply_lamp_status(self.status_label, "● 运行中...", self.colors['warning'])
@@ -11138,351 +10198,176 @@ class BossFilterGUI:
         return result[0]
 
     def run_worker(self):
-        """运行工作线程"""
-        import sys
-        from datetime import datetime
+        """Run one prepared scan session without reading Tk state from this thread."""
+        from bossmaster import run_smart_scan
 
-        old_stdout = sys.stdout
-        final_progress = {'desc': ''}
-        scanned_candidates = []
-        contact_policy_text = self.contact_after_scan_var.get()
-        try:
-            class LogRedirector:
-                def __init__(self, callback):
-                    self.callback = callback
-                    self.buffer = ""
-
-                def write(self, text):
-                    self.buffer += text
-                    while '\n' in self.buffer:
-                        line, self.buffer = self.buffer.split('\n', 1)
-                        if line.strip():
-                            self.callback(f"[{datetime.now().strftime('%H:%M:%S')}] {line}")
-
-                def flush(self):
-                    if self.buffer.strip():
-                        self.callback(f"[{datetime.now().strftime('%H:%M:%S')}] {self.buffer}")
-                    self.buffer = ""
-
-            log_redirector = LogRedirector(self.append_run_log)
-            sys.stdout = log_redirector
-
-            rounds = int(self.rounds_var.get())
-            default_api_pages = max(1, (API_CANDIDATE_LIMIT_DEFAULT + 19) // 20)
-            api_direct_enabled = (
-                bool(self.api_direct_enabled_var.get())
-                if hasattr(self, 'api_direct_enabled_var') else True
+        request = self._pending_run_request
+        if request is None:
+            self.is_running = False
+            self.append_run_log("运行出错：未取得启动参数快照")
+            self.run_on_ui(
+                lambda: self._apply_lamp_status(
+                    self.status_label,
+                    "● 运行出错",
+                    self.colors["danger"],
+                )
             )
-            api_direct_pages = self._coerce_int_setting(
-                self.api_direct_pages_var.get() if hasattr(self, 'api_direct_pages_var') else default_api_pages,
-                default_api_pages,
-                1,
-                20,
-            )
-            effective_max_candidates = api_direct_pages * 20 if api_direct_enabled else 0
-            greet_context_capture_enabled = (
-                bool(self.greet_context_capture_enabled_var.get())
-                if hasattr(self, 'greet_context_capture_enabled_var') else True
-            )
-            greet_context_capture_limit = self._coerce_int_setting(
-                (
-                    self.greet_context_capture_limit_var.get()
-                    if hasattr(self, 'greet_context_capture_limit_var')
-                    else GREET_CONTEXT_CAPTURE_LIMIT
-                ),
-                GREET_CONTEXT_CAPTURE_LIMIT,
-                1,
-                100,
-            )
-            greet_level = (
-                "strong"
-                if contact_policy_text == "将强烈推荐加入联系清单"
-                else "normal"
-            )
+            return
 
-            from bossmaster import load_job_config, ChromiumPage, time, run_smart_scan
-            import argparse
+        def confirm_callback(current_idx, total, next_job_name):
+            event = threading.Event()
+            event.result = False
+            self.confirm_queue.put({
+                "event": event,
+                "current_idx": current_idx,
+                "total": total,
+                "next_job_name": next_job_name,
+            })
+            while not event.is_set():
+                if self.stop_event.is_set():
+                    event.result = False
+                    break
+                event.wait(timeout=0.5)
+            return event.result
 
-            self.append_run_log(f">>> BOSS 直聘候选人智能提取工具 v{__version__} [图形界面模式]")
+        def captcha_callback(detail):
+            result = [False]
+            done = threading.Event()
 
-            # 获取选择的岗位
-            selected_job = self.job_select_var.get()
-            job_arg = None if selected_job == "全部岗位" else selected_job
-            if job_arg:
-                self._remember_run_job_selection(job_arg)
-
-            # 构造命令行参数
-            ai_eval_enabled = self.ai_eval_var.get()
-            dom_delay_min = DOM_SCROLL_DELAY_CENTER - DOM_SCROLL_DELAY_SPREAD / 2
-            dom_delay_max = DOM_SCROLL_DELAY_CENTER + DOM_SCROLL_DELAY_SPREAD / 2
-            dom_pause_min = DOM_SCROLL_BATCH_PAUSE_CENTER - DOM_SCROLL_BATCH_PAUSE_SPREAD / 2
-            dom_pause_max = DOM_SCROLL_BATCH_PAUSE_CENTER + DOM_SCROLL_BATCH_PAUSE_SPREAD / 2
-            self._append_run_settings_snapshot([
-                ("滚动轮次", rounds),
-                ("DOM滚动间隔", f"{dom_delay_min:g}-{dom_delay_max:g} 秒"),
-                ("DOM长暂停", f"每 {DOM_SCROLL_BATCH_MIN}-{DOM_SCROLL_BATCH_MAX} 轮暂停 {dom_pause_min:g}-{dom_pause_max:g} 秒"),
-                ("筛选完成后", contact_policy_text),
-                ("选择岗位", selected_job),
-                ("扫描增强", "自动补全候选人详情" if api_direct_enabled else "关闭"),
-                ("最多读取页数", api_direct_pages if api_direct_enabled else "未启用"),
-                ("后续联系", "扫描后准备联系信息" if greet_context_capture_enabled else "关闭"),
-                ("最多准备人数", greet_context_capture_limit if greet_context_capture_enabled else "未启用"),
-                ("AI 辅助评估", "启用" if ai_eval_enabled else "关闭"),
-                ("AI 模型", self.api_config.get("model", "") if ai_eval_enabled else "未启用"),
-                (
-                    "AI 响应超时",
-                    f"{self.llm_read_timeout_var.get()} 秒"
-                    if ai_eval_enabled and hasattr(self, 'llm_read_timeout_var')
-                    else "未启用",
-                ),
-                ("打招呼等级", greet_level),
-                ("提取链路", "先读取页面已有信息；再滚动确认可见候选人；必要时按设置补全候选人详情"),
-            ])
-            ai_api_config = None
-            ai_api_key = None
-            if ai_eval_enabled:
-                try:
-                    # 同步运行页超时设置到 api_config
-                    _timeout_changed = False
-                    if hasattr(self, 'llm_read_timeout_var'):
-                        _new_rt = self.llm_read_timeout_var.get()
-                        if self.api_config.get("llm_read_timeout") != _new_rt:
-                            self.api_config["llm_read_timeout"] = _new_rt
-                            _timeout_changed = True
-                    # 超时值变更时持久化到 api_config.json
-                    if _timeout_changed:
-                        try:
-                            with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as _f:
-                                json.dump(self._sanitize_config_for_save(self.api_config), _f, ensure_ascii=False, indent=4)
-                        except Exception:
-                            pass
-                    ai_api_config = self.api_config
-                    ai_api_key = self._get_api_key_cached(
-                        self.api_config.get('api_provider', ''),
-                        self.api_config.get('base_url', ''),
-                    )
-                    if not ai_api_key:
-                        self.append_run_log("AI 评估需要 API Key，但未配置，将跳过")
-                        ai_eval_enabled = False
-                    else:
-                        model_name = self.api_config.get('model', 'unknown')
-                        self.append_run_log(f"AI 辅助评估已启用（模型：{model_name}）")
-                except Exception as e:
-                    self.append_run_log(f"加载 API 配置失败：{e}，跳过 AI 评估")
-                    ai_eval_enabled = False
-
-            args = argparse.Namespace(
-                clear=False,
-                job=job_arg,
-                greet=False,
-                re_greet=False,
-                greet_level=greet_level,
-                greet_names=None,
-                list_candidates=False,
-                rounds=rounds,
-                max_candidates=effective_max_candidates,
-                dom_only=False,
-                listener_first=not api_direct_enabled,
-                verbose=False,
-                ai_eval=ai_eval_enabled,
-                api_config=ai_api_config,
-                api_key=ai_api_key,
-                greet_context_capture=greet_context_capture_enabled,
-                greet_context_limit=greet_context_capture_limit,
-            )
-
-            if job_arg:
-                self.append_run_log(f"[初次扫描模式] 指定岗位：{job_arg}")
-            else:
-                self.append_run_log("[初次扫描模式] 处理全部岗位")
-            self.append_run_log("开始扫描候选人...")
-
-            # 进度回调 — 将 bossmaster 的进度报告送入队列
-            def on_progress(percentage, description):
-                if percentage >= 100 and str(description).startswith('['):
-                    final_progress['desc'] = description
-                self.progress_queue.put({
-                    'current': percentage,
-                    'total': 100,
-                    'desc': description,
-                })
-
-            def confirm_callback(current_idx, total, next_job_name):
-                """岗位切换确认 — 阻塞工作线程直到用户在 GUI 中确认"""
-                event = threading.Event()
-                event.result = False
-                self.confirm_queue.put({
-                    'event': event,
-                    'current_idx': current_idx,
-                    'total': total,
-                    'next_job_name': next_job_name,
-                })
-                # 轮询等待，支持 stop_event 中断
-                while not event.is_set():
-                    if self.stop_event.is_set():
-                        event.result = False
-                        break
-                    event.wait(timeout=0.5)
-                return event.result
-
-            def captcha_callback(detail):
-                """验证码弹窗通知 — 阻塞工作线程直到用户在 GUI 中响应
-
-                返回:
-                    True: 用户选择继续等待验证完成
-                    False: 用户选择跳过验证等待（中止当前操作）
-                """
-                result = [False]
-                done = threading.Event()
-
-                def show_dialog():
-                    answer = messagebox.ask_confirmation(
-                        "检测到安全验证弹窗",
-                        headline="需要在浏览器中完成人工验证",
-                        message="程序已暂停后续访问，请先处理 BOSS 安全验证。",
-                        detail=str(detail),
-                        notice="继续等待不会自动绕过验证；停止将结束当前操作。",
-                        yes_label="继续等待验证",
-                        no_label="停止当前操作",
-                        parent=self.root,
-                    )
-                    result[0] = answer
-                    done.set()
-
-                self.root.after(0, show_dialog)
-                # 轮询等待，支持 stop_event 中断
-                while not done.is_set():
-                    if self.stop_event.is_set():
-                        result[0] = False
-                        done.set()
-                        break
-                    done.wait(timeout=0.5)
-                return result[0]
-
-            def notice_callback(title, message):
-                self.root.after(0, lambda: messagebox.showinfo(title, message, parent=self.root))
-
-            def blocking_notice_callback(title, message):
-                """阻塞式通知弹窗 — 等待用户点击确定后返回"""
-                done = threading.Event()
-
-                def show_dialog():
-                    messagebox.showinfo(title, message, parent=self.root)
-                    done.set()
-
-                self.root.after(0, show_dialog)
-                while not done.is_set():
-                    if self.stop_event.is_set():
-                        done.set()
-                        break
-                    done.wait(timeout=0.5)
-
-            def job_match_callback(expected_job_name, actual_job_name):
-                """岗位不一致确认 — 用户明确选择后工作线程才继续。"""
-                return self._confirm_job_name_mismatch(
-                    expected_job_name,
-                    actual_job_name,
-                    context="run",
+            def show_dialog():
+                result[0] = messagebox.ask_confirmation(
+                    "检测到安全验证弹窗",
+                    headline="需要在浏览器中完成人工验证",
+                    message="程序已暂停后续访问，请先处理 BOSS 安全验证。",
+                    detail=str(detail),
+                    notice="继续等待不会自动绕过验证；停止将结束当前操作。",
+                    yes_label="继续等待验证",
+                    no_label="停止当前操作",
                     parent=self.root,
                 )
+                done.set()
 
-            def job_config_callback(text, has_error):
-                """运行前岗位配置体检 — 在 UI 线程展示并等待用户决定。"""
-                if not self._should_prompt_run_job_config(text, has_error):
-                    self.append_run_log("岗位配置未变化，沿用本次启动中已确认的体检提醒")
-                    return True
-                event = threading.Event()
-                result = [False]
+            self.run_on_ui(show_dialog)
+            while not done.is_set():
+                if self.stop_event.is_set():
+                    result[0] = False
+                    done.set()
+                    break
+                done.wait(timeout=0.5)
+            return result[0]
 
-                def show_dialog():
-                    result[0] = self._show_job_config_diagnostics_dialog(
-                        text, has_error=has_error, context="run"
-                    )
-                    event.set()
-
-                self.run_on_ui(show_dialog)
-                while not event.is_set():
-                    if self.stop_event.is_set():
-                        break
-                    event.wait(timeout=0.5)
-                self._remember_run_job_config_warning(text, has_error, result[0])
-                return result[0]
-
-            # 调用 run_smart_scan 并传入参数和进度回调
-            scanned_candidates = run_smart_scan(
-                args,
-                progress_callback=on_progress,
-                confirm_callback=confirm_callback,
-                stop_event=self.stop_event,
-                existing_page=self.browser_page,
-                captcha_callback=captcha_callback,
-                notice_callback=notice_callback,
-                blocking_notice_callback=blocking_notice_callback,
-                job_match_callback=job_match_callback,
-                job_config_callback=job_config_callback,
-            ) or []
-
-        except KeyboardInterrupt:
-            if not final_progress['desc']:
-                final_progress['desc'] = "[已停止] 用户取消岗位切换"
-            self.append_run_log("用户取消岗位切换，已停止")
-        except Exception as e:
-            final_progress['desc'] = f"[出错] {str(e)[:30]}"
-            self.append_run_log(f"运行出错：{e}")
-            import traceback
-            self.append_run_log(traceback.format_exc())
-        finally:
-            sys.stdout = old_stdout
-            self.is_running = False
-            final_desc = final_progress['desc'] or "[出错] 未取得最终运行状态"
-            terminal_log = self._format_terminal_log_text(final_desc)
-            self.append_run_log(f"[{datetime.now().strftime('%H:%M:%S')}] {terminal_log}")
-
-            if final_desc.startswith("[完成]"):
-                status_text, status_color = "● 已完成", self.colors['success']
-            elif final_desc.startswith(("[达到轮次上限]", "[可能未扫完]")):
-                status_text, status_color = "● 本轮处理完成", self.colors['success']
-            elif final_desc.startswith("[扫描中断]"):
-                status_text, status_color = "● 扫描中断", self.colors['warning']
-            elif final_desc.startswith("[已停止]"):
-                status_text, status_color = "● 已停止", self.colors['danger']
-            else:
-                status_text, status_color = "● 运行出错", self.colors['danger']
-            progress_text = self._format_terminal_progress_text(final_desc)
-            should_build_contact_list = bool(
-                contact_policy_text != "仅保存筛选结果"
-                and scanned_candidates
-                and final_desc.startswith((
-                    "[完成]",
-                    "[达到轮次上限]",
-                    "[可能未扫完]",
-                ))
+        def notice_callback(title, message):
+            self.run_on_ui(
+                lambda: messagebox.showinfo(title, message, parent=self.root)
             )
 
-            def finish_ui():
-                self._apply_lamp_status(self.status_label, status_text, status_color)
-                self.start_btn.config(state="normal")
-                self.stop_btn.config(state="disabled")
-                self.progress_var.set(100)
-                self.progress_label.config(
-                    text=f"100%  {progress_text}", image='', compound='text'
+        def blocking_notice_callback(title, message):
+            done = threading.Event()
+
+            def show_dialog():
+                messagebox.showinfo(title, message, parent=self.root)
+                done.set()
+
+            self.run_on_ui(show_dialog)
+            while not done.is_set():
+                if self.stop_event.is_set():
+                    done.set()
+                    break
+                done.wait(timeout=0.5)
+
+        def job_match_callback(expected_job_name, actual_job_name):
+            return self._confirm_job_name_mismatch(
+                expected_job_name,
+                actual_job_name,
+                context="run",
+                parent=self.root,
+            )
+
+        def job_config_callback(text, has_error):
+            if not self._should_prompt_run_job_config(text, has_error):
+                self.append_run_log(
+                    "岗位配置未变化，沿用本次启动中已确认的体检提醒"
                 )
-                summary_desc = self._replace_run_summary_contact_queue_count(final_desc, 0)
-                self._set_run_summary(summary_desc)
-                self.root.after(100, self.refresh_results)
-                if should_build_contact_list:
-                    added_count = self._add_scan_candidates_to_contact_queue(
-                        scanned_candidates,
-                        contact_policy_text,
-                    )
-                    summary_desc = self._replace_run_summary_contact_queue_count(
-                        final_desc,
-                        added_count,
-                    )
-                    self._set_run_summary(summary_desc)
+                return True
+            event = threading.Event()
+            result = [False]
 
-            self.run_on_ui(finish_ui)
+            def show_dialog():
+                result[0] = self._show_job_config_diagnostics_dialog(
+                    text,
+                    has_error=has_error,
+                    context="run",
+                )
+                event.set()
 
+            self.run_on_ui(show_dialog)
+            while not event.is_set():
+                if self.stop_event.is_set():
+                    break
+                event.wait(timeout=0.5)
+            self._remember_run_job_config_warning(text, has_error, result[0])
+            return result[0]
+
+        outcome = _RUN_CONTROLLER.execute(
+            request,
+            scan=run_smart_scan,
+            log=self.append_run_log,
+            settings_sink=self._append_run_settings_snapshot,
+            progress_sink=self.progress_queue.put,
+            stop_event=self.stop_event,
+            existing_page=self.browser_page,
+            confirm_callback=confirm_callback,
+            captcha_callback=captcha_callback,
+            notice_callback=notice_callback,
+            blocking_notice_callback=blocking_notice_callback,
+            job_match_callback=job_match_callback,
+            job_config_callback=job_config_callback,
+        )
+        terminal = _RUN_CONTROLLER.terminal_event(
+            outcome,
+            request.contact_policy,
+        )
+        self.is_running = False
+        self._pending_run_request = None
+        self.append_run_log(
+            f"[{datetime.now().strftime('%H:%M:%S')}] {terminal.terminal_log}"
+        )
+        self.run_on_ui(
+            lambda: self._apply_run_terminal_event(terminal, outcome, request)
+        )
+
+    def _apply_run_terminal_event(self, terminal, outcome, request):
+        """Render one plain terminal event on the Tk main thread."""
+        self._apply_lamp_status(
+            self.status_label,
+            terminal.status_text,
+            self.colors[terminal.status_tone],
+        )
+        self.start_btn.config(state="normal")
+        self.stop_btn.config(state="disabled")
+        self.progress_var.set(100)
+        self.progress_label.config(
+            text=f"100%  {terminal.progress_text}",
+            image="",
+            compound="text",
+        )
+        summary_desc = self._replace_run_summary_contact_queue_count(
+            terminal.final_desc,
+            0,
+        )
+        self._set_run_summary(summary_desc)
+        self.root.after(100, self.refresh_results)
+        if terminal.should_build_contact_list:
+            added_count = self._add_scan_candidates_to_contact_queue(
+                outcome.scanned_candidates,
+                request.contact_policy,
+            )
+            self._set_run_summary(
+                self._replace_run_summary_contact_queue_count(
+                    terminal.final_desc,
+                    added_count,
+                )
+            )
     def on_closing(self):
         """窗口关闭处理 - 安全等待工作线程结束"""
         active_scan = self.is_running
@@ -11538,237 +10423,90 @@ class BossFilterGUI:
 
     def refresh_results(self, force=False):
         """刷新结果 - 增强版：支持表头排序、颜色标记和岗位+日期过滤"""
-        # 如果结果页面尚未创建，直接返回
         if not hasattr(self, 'result_tree') or self.result_tree is None:
             return
 
-        # 数据未变 + 过滤条件未变 → 跳过 Treeview 重建，避免页面切换卡顿
         current_job = self.result_job_var.get() if hasattr(self, 'result_job_var') else ""
         current_dates = self._get_result_date_filter() if hasattr(self, 'result_date_start_entry') else (None, None)
         show_blacklist = self.result_show_blacklist_var.get() if hasattr(self, 'result_show_blacklist_var') else False
         result_view = self.result_view_var.get() if hasattr(self, 'result_view_var') else "全部记录"
-        if CANDIDATES_PATH.exists():
-            stat = CANDIDATES_PATH.stat()
-            fingerprint = (stat.st_mtime, stat.st_size)
-            if (
-                not force
-                and fingerprint == self._result_tree_fingerprint
-                and current_job == self._result_last_job
-                and current_dates == self._result_last_dates
-                and show_blacklist == self._result_last_show_blacklist
-                and result_view == getattr(self, '_result_last_view', result_view)
-            ):
-                return
-            self._result_tree_fingerprint = fingerprint
-            self._result_last_job = current_job
-            self._result_last_dates = current_dates
-            self._result_last_show_blacklist = show_blacklist
-            self._result_last_view = result_view
-        elif self._result_tree_fingerprint is not None:
-            self._result_tree_fingerprint = None
+        query = ResultQuery(
+            selected_job=current_job,
+            date_start=current_dates[0],
+            date_end=current_dates[1],
+            show_blacklist=show_blacklist,
+            result_view=result_view,
+            evaluating_ids=frozenset(getattr(self, '_ai_evaluating_ids', set())),
+            evaluation_results=getattr(self, '_ai_eval_results', {}) or {},
+        )
+        cache_key = result_cache_key(CANDIDATES_PATH, query)
+        previous_key = getattr(self, '_result_controller_cache_key', None)
+        if previous_key is None:
+            previous_key = (
+                getattr(self, '_result_tree_fingerprint', None),
+                getattr(self, '_result_last_job', None),
+                *(getattr(self, '_result_last_dates', (None, None)) or (None, None)),
+                getattr(self, '_result_last_show_blacklist', False),
+                getattr(self, '_result_last_view', result_view),
+            )
+        if not force and cache_key == previous_key:
+            return
+        self._result_controller_cache_key = cache_key
+        self._result_tree_fingerprint = cache_key[0]
+        self._result_last_job = current_job
+        self._result_last_dates = current_dates
+        self._result_last_show_blacklist = show_blacklist
+        self._result_last_view = result_view
 
         try:
-            if CANDIDATES_PATH.exists():
-                persisted_candidates = load_candidates_all(CANDIDATES_PATH)
-                # 编辑操作始终持有完整数据集，页面过滤只能影响展示范围。
-                self.all_candidates = persisted_candidates
-                candidates = persisted_candidates
-                if not show_blacklist:
-                    candidates = [c for c in candidates if not c.get('blacklisted')]
+            controller = getattr(self, '_result_controller', None)
+            if controller is None:
+                controller = ResultController(load_candidates_all)
+                self._result_controller = controller
+            state = controller.load(CANDIDATES_PATH, query)
+            self.all_candidates = list(state.all_candidates)
+            self.result_tree_data = list(state.view_candidates)
+            for geek_id in state.expired_evaluation_ids:
+                getattr(self, '_ai_eval_results', {}).pop(geek_id, None)
 
-                # 岗位过滤
-                selected_job = self.result_job_var.get()
-                if selected_job != "全部岗位":
-                    candidates = [
-                        c for c in candidates
-                        if normalize_job_name(c.get('job_name')) == normalize_job_name(selected_job)
-                    ]
-
-                # 日期过滤按首次发现时间统计；旧数据回退 batch_timestamp。
-                date_start, date_end = current_dates
-                if date_start or date_end:
-                    def _in_date_range(c):
-                        ts = c.get('first_seen_at') or c.get('batch_timestamp', '')
-                        if not ts or len(ts) < 8:
-                            return False
-                        d = ts[:8]
-                        if date_start and d < date_start:
-                            return False
-                        if date_end and d > date_end:
-                            return False
-                        return True
-                    candidates = [c for c in candidates if _in_date_range(c)]
-
-                # 统计卡片固定使用当前岗位和日期范围，结果范围只过滤下方表格。
-                metric_candidates = list(candidates)
-                candidates = _filter_candidates_by_result_view(metric_candidates, result_view)
-
-                # 计算新的指标
-                strong_list = [
-                    c for c in metric_candidates
-                    if derive_candidate_decision(c).screening_result == '强烈推荐'
-                ]
-                strong_total = len(strong_list)
-                strong_greeted = sum(1 for c in strong_list if c.get('greet_sent', False))
-
-                recommended_list = [
-                    c for c in metric_candidates
-                    if derive_candidate_decision(c).screening_result == '推荐'
-                ]
-                recommended_total = len(recommended_list)
-                recommended_greeted = sum(1 for c in recommended_list if c.get('greet_sent', False))
-
-                pending_list = [
-                    c for c in metric_candidates
-                    if derive_candidate_decision(c).screening_result == '待定'
-                ]
-                pending_total = len(pending_list)
-                pending_greeted = sum(1 for c in pending_list if c.get('greet_sent', False))
-
-                # 已打招呼：全部通过筛选候选人中已完成沟通的人
-                greeted_total = sum(
-                    1 for c in metric_candidates
-                    if derive_candidate_decision(c).screening_result
-                    in {'强烈推荐', '推荐', '待定'}
-                    and c.get('greet_sent', False)
-                )
-
-                # 更新统计卡片
-                self.result_stats_vars['strong'].set(str(strong_total))
-                self.result_stats_vars['recommended'].set(str(recommended_total))
-                self.result_stats_vars['pending'].set(str(pending_total))
-                self.result_stats_vars['greeted'].set(str(greeted_total))
-                # 更新已打招呼数
-                self.result_stats_greeted['strong'].set(f"{strong_greeted} 已打招呼")
-                self.result_stats_greeted['recommended'].set(f"{recommended_greeted} 已打招呼")
-                self.result_stats_greeted['pending'].set(f"{pending_greeted} 已打招呼")
+            metrics = state.metrics
+            if hasattr(self, 'result_stats_vars'):
+                self.result_stats_vars['strong'].set(str(metrics.strong))
+                self.result_stats_vars['recommended'].set(str(metrics.recommended))
+                self.result_stats_vars['pending'].set(str(metrics.pending))
+                self.result_stats_vars['greeted'].set(str(metrics.greeted))
+            if hasattr(self, 'result_stats_greeted'):
+                self.result_stats_greeted['strong'].set(f"{metrics.strong_greeted} 已打招呼")
+                self.result_stats_greeted['recommended'].set(f"{metrics.recommended_greeted} 已打招呼")
+                self.result_stats_greeted['pending'].set(f"{metrics.pending_greeted} 已打招呼")
                 self.result_stats_greeted['greeted'].set("通过筛选中")
 
-                cached_items = getattr(self, '_tree_original_order', None)
-                tree_items = (
-                    list(cached_items)
-                    if cached_items is not None
-                    else list(self.result_tree.get_children())
+            cached_items = getattr(self, '_tree_original_order', None)
+            tree_items = list(cached_items) if cached_items is not None else list(self.result_tree.get_children())
+            for item in tree_items:
+                if self.result_tree.exists(item):
+                    self.result_tree.delete(item)
+            self._tree_original_order = None
+            self._item_to_candidate = {}
+
+            self.result_tree.tag_configure('strong_recommend', background=self.colors['bg_tree_tag_high'])
+            self.result_tree.tag_configure('recommend', background=self.colors['bg_tree_tag_mid'])
+            self.result_tree.tag_configure('pending', background=self.colors['bg_tree_tag_low'])
+            self.result_tree.tag_configure('blacklisted', background=self.colors['bg_tree_tag_low'], foreground=self.colors.get('danger_text', ui_theme.DANGER_TEXT))
+            self.result_tree.tag_configure('rejected', background=self.colors['bg_tree_tag_low'], foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
+            for row in state.rows:
+                item_id = self.result_tree.insert(
+                    "", "end", values=row.values, tags=(row.tag,)
                 )
-                for item in tree_items:
-                    if self.result_tree.exists(item):
-                        self.result_tree.delete(item)
-                self._tree_original_order = None
-                self._item_to_candidate: dict[str, dict] = {}
+                self._item_to_candidate[item_id] = row.candidate
 
-                sorted_candidates = sorted(candidates, key=lambda x: x.get('match_score', 0), reverse=True)
-
-                # 配置颜色标记 tag
-                self.result_tree.tag_configure('strong_recommend', background=self.colors['bg_tree_tag_high'])
-                self.result_tree.tag_configure('recommend', background=self.colors['bg_tree_tag_mid'])
-                self.result_tree.tag_configure('pending', background=self.colors['bg_tree_tag_low'])
-                self.result_tree.tag_configure('blacklisted', background=self.colors['bg_tree_tag_low'], foreground=self.colors.get('danger_text', ui_theme.DANGER_TEXT))
-                self.result_tree.tag_configure('rejected', background=self.colors['bg_tree_tag_low'], foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
-
-                visible_count = 0
-                for c in sorted_candidates:
-                    score = c.get('match_score', 0)
-                    geek_id = str(c.get('geek_id', ''))
-
-                    # 评估中或已完成 AI 评估的候选人，即使分数低于55分也显示
-                    is_evaluating = geek_id in self._ai_evaluating_ids
-                    is_just_evaluated = geek_id in self._ai_eval_results
-                    is_ai_evaluated = bool(c.get('llm_evaluated'))
-                    has_ai_failure = bool(c.get('llm_error'))
-                    should_keep_low_score = (
-                        is_evaluating or is_just_evaluated or is_ai_evaluated or has_ai_failure
-                    )
-
-                    is_rejected = c.get('qualification_status') == 'rejected'
-                    if score < SCORE_THRESHOLD_PASS and not should_keep_low_score and not is_rejected:
-                        continue  # 低于通过分且没有 AI 评估上下文，不显示
-
-                    level = derive_candidate_decision(c).screening_result
-                    status = self._format_candidate_status(c)
-
-                    # 根据推荐等级设置颜色标记
-                    if c.get('blacklisted'):
-                        tag = 'blacklisted'
-                    elif is_rejected:
-                        tag = 'rejected'
-                    elif score >= SCORE_THRESHOLD_STRONG:
-                        tag = 'strong_recommend'
-                    elif score >= SCORE_THRESHOLD_RECOMMEND:
-                        tag = 'recommend'
-                    else:
-                        tag = 'pending'
-
-                    # 从 summary 中解析工作年限和薪资
-                    salary, exp = self._parse_salary_exp(c.get('summary', ''), c.get('structured'))
-
-                    # AI 评估调整值：有简历时显示简历评估（替代一次评估），否则显示一次评估
-                    ai_adj = c.get('llm_adjustment')
-                    resume_adj = c.get('resume_eval_adjustment')
-
-                    if resume_adj is not None:
-                        ai_text = f"+{resume_adj}" if resume_adj > 0 else str(resume_adj)
-                    elif ai_adj is not None and c.get('llm_evaluated'):
-                        ai_text = f"+{ai_adj}" if ai_adj > 0 else str(ai_adj)
-                    elif c.get('llm_error'):
-                        ai_text = "失败"
-                    else:
-                        ai_text = "—"
-
-                    edu, age, job_status, school, company = self._extract_extra_fields(c)
-                    c['_extra_fields'] = (edu, age, job_status, school, company)
-                    item_id = self.result_tree.insert("", "end", values=(
-                        c.get('name', ''),
-                        self._candidate_gender_display(c),
-                        exp,
-                        salary,
-                        c.get('skill_match_ratio', ''),
-                        score,
-                        ai_text,
-                        level,
-                        status,
-                        age,
-                        edu,
-                        job_status,
-                        school,
-                        company,
-                    ), tags=(tag,))
-                    self._item_to_candidate[item_id] = c
-                    visible_count += 1
-
-                # 存储原始数据用于排序和详情展示
-                self.result_tree_data = sorted_candidates
-                if hasattr(self, 'result_count_var'):
-                    self.result_count_var.set(f"{visible_count} / 共 {len(candidates)} 人")
-                self._toggle_result_empty_state(visible_count == 0)
-                self._tree_original_order = None  # 搜索排序缓存失效，下次搜索时重建
-                self._update_result_review_button_state()
-            else:
-                # 数据文件不存在：清空表格与统计卡片，展示空态引导
-                cached_items = getattr(self, '_tree_original_order', None)
-                tree_items = (
-                    list(cached_items)
-                    if cached_items is not None
-                    else list(self.result_tree.get_children())
+            if hasattr(self, 'result_count_var'):
+                self.result_count_var.set(
+                    f"{state.visible_count} / 共 {state.total_count} 人"
                 )
-                for item in tree_items:
-                    if self.result_tree.exists(item):
-                        self.result_tree.delete(item)
-                self._tree_original_order = None
-                self._item_to_candidate = {}
-                self.result_tree_data = []
-                self.all_candidates = []
-                if hasattr(self, 'result_count_var'):
-                    self.result_count_var.set("0 / 共 0 人")
-                if hasattr(self, 'result_stats_vars'):
-                    for stat_var in self.result_stats_vars.values():
-                        stat_var.set('0')
-                if hasattr(self, 'result_stats_greeted'):
-                    for key in ('strong', 'recommended', 'pending'):
-                        if key in self.result_stats_greeted:
-                            self.result_stats_greeted[key].set('0 已打招呼')
-                    if 'greeted' in self.result_stats_greeted:
-                        self.result_stats_greeted['greeted'].set('通过筛选中')
-                self._toggle_result_empty_state(True)
+            self._toggle_result_empty_state(state.visible_count == 0)
+            self._tree_original_order = None
+            self._update_result_review_button_state()
         except Exception as e:
             self.append_log(f"加载结果失败：{e}")
 
@@ -11866,27 +10604,9 @@ class BossFilterGUI:
             scope = f"{scope} / {date_scope}"
         return candidates, scope
 
-    def _create_candidate_workbench_header(self, parent, title, subtitle, scope):
-        """Create the shared title and scope block used by candidate workbenches."""
-        return gui_candidate_workbench.create_header(
-            self,
-            parent,
-            title,
-            subtitle,
-            scope,
-        )
 
-    def _create_candidate_workbench_metrics(self, parent, metrics):
-        """Create a compact segmented metric strip and return its value variables."""
-        return gui_candidate_workbench.create_metrics(self, parent, metrics)
 
-    def _candidate_workbench_navigation_style(self, scale):
-        """Configure the shared hierarchy style used by candidate workbenches."""
-        return gui_candidate_workbench.navigation_style(self, scale, UI_CONFIG)
 
-    def _apply_candidate_workbench_navigation_tags(self, tree):
-        """Apply identical root and child typography to a workbench hierarchy."""
-        gui_candidate_workbench.apply_navigation_tags(self, tree)
 
     def _show_daily_candidate_actions_dialog(self, scope, items):
         """Show the daily candidate action queue through its dedicated Tk module."""
@@ -12178,27 +10898,8 @@ class BossFilterGUI:
 
     @staticmethod
     def _result_tree_sort_value(col: str, value) -> tuple[bool, float | str]:
-        """Return a typed sort value for one result-table cell."""
-        text = str(value or '').strip()
-        if not text or text in {'—', '-'}:
-            return False, 0.0
-
-        numeric_columns = {'exp', 'salary', 'skills', 'score', 'ai_eval', 'age'}
-        if col not in numeric_columns:
-            return True, text.casefold()
-
-        if col in {'exp', 'salary'}:
-            numbers = [float(number) for number in re.findall(r'\d+(?:\.\d+)?', text)]
-            if not numbers:
-                return False, 0.0
-            if len(numbers) >= 2:
-                return True, (numbers[0] + numbers[1]) / 2
-            return True, numbers[0]
-
-        match = re.search(r'[-+]?\d+(?:\.\d+)?', text)
-        if match is None:
-            return False, 0.0
-        return True, float(match.group())
+        """Keep the historical GUI entry point as a controller delegate."""
+        return result_sort_value(col, value)
 
     def _filter_result_tree(self):
         """根据搜索框内容实时过滤 Treeview 行（不匹配的行隐藏）。
@@ -12244,57 +10945,13 @@ class BossFilterGUI:
                 self.result_count_var.set(f"{len(all_items)} / 共 {total} 人")
             return
 
-        # 解析数字比较查询（>=60 / >60 / =60 / 60）
-        num_op, num_val = None, None
-        m = re.fullmatch(r'(>=|>|=)?\s*(\d{1,3})', query)
-        if m:
-            num_op = m.group(1) or '>='
-            num_val = int(m.group(2))
-
-        # 匹配判断：返回匹配类型用于优先级排序
-        def _match_type(cand: dict) -> str | None:
-            if not cand:
-                return None
-            name = str(cand.get('name', '')).lower()
-            gender = self._candidate_gender_display(cand).lower()
-            score_str = str(cand.get('match_score', '')).lower()
-            level = str(cand.get('recommend_level', '')).lower()
-            status = " ".join(filter(None, (
-                str(cand.get('_display_status') or cand.get('followup_status', '')),
-                str(cand.get('_full_status', '')),
-            ))).lower()
-            if query == name:
-                return 'exact_name'
-            if query in name:
-                return 'partial_name'
-            if query in gender:
-                return 'gender'
-            if query in level:
-                return 'level'
-            if query in status:
-                return 'status'
-            # 数字查询：匹配分比较（默认 ≥）
-            if num_val is not None:
-                try:
-                    s_num = int(score_str) if score_str else 0
-                except (ValueError, TypeError):
-                    s_num = 0
-                if num_op == '>=' and s_num >= num_val:
-                    return 'score'
-                if num_op == '>' and s_num > num_val:
-                    return 'score'
-                if num_op == '=' and s_num == num_val:
-                    return 'score'
-                return None
-            return None
-
         _priority = {
             'exact_name': 0, 'partial_name': 1, 'gender': 2,
             'score': 3, 'level': 4, 'status': 5,
         }
         matched_with_type: list[tuple[str, str]] = []
         for item_id in all_items:
-            mt = _match_type(item_map.get(item_id, {}))
+            mt = candidate_query_match(item_map.get(item_id, {}), query)
             if mt:
                 matched_with_type.append((item_id, mt))
 
@@ -13008,42 +11665,14 @@ class BossFilterGUI:
         return None
 
     def _extract_extra_fields(self, candidate):
-        """提取最大化结果表使用的学历、年龄、状态、学校和公司字段。"""
-        structured = candidate.get('structured') or {}
-        edu = structured.get('degree', '')
-        age = structured.get('age', '')
-        job_status = structured.get('job_status', '')
-        api_profile = candidate.get('_api_profile') or {}
-        school = self._latest_history_value(
-            api_profile.get('educations'), 'school',
-            candidate.get('summary', ''), '教育经历：',
-        )
-        company = self._latest_history_value(
-            api_profile.get('works'), 'company',
-            candidate.get('summary', ''), '工作经历：',
-        )
-        # 有缺失时使用本地轻量正则兜底，避免仅为列表展示导入完整自动化模块。
-        if not edu or not age or not job_status:
-            info = self._extract_summary_display_fields(candidate.get('summary', ''))
-            if not edu:
-                edu = info.get('education', '')
-            if not age:
-                age = info.get('age', '')
-            if not job_status:
-                job_status = info.get('job_status', '')
-        if age:
-            age = f"{age}岁"
-        return edu, age, job_status, school, company
+        """Keep the historical GUI entry point as a presenter delegate."""
+        return candidate_presenter.extract_candidate_extra_fields(candidate)
 
     @staticmethod
     def _candidate_gender_display(candidate):
         """Return normalized candidate gender from current or legacy records."""
         return candidate_presenter.candidate_gender_display(candidate)
 
-    @staticmethod
-    def _extract_summary_display_fields(summary):
-        """从摘要提取结果表需要的学历、年龄和求职状态。"""
-        return candidate_presenter.extract_summary_display_fields(summary)
 
     @staticmethod
     def _latest_history_value(entries, field, summary, summary_prefix):
@@ -13056,81 +11685,20 @@ class BossFilterGUI:
         )
 
     def _format_candidate_status(self, candidate):
-        """生成简短状态文本，并将完整状态和复核原因保存供 tooltip 使用。"""
-        def _store_status(display, details=None):
-            candidate['_display_status'] = display
-            candidate['_full_status'] = details or display
-            return display
-
-        # AI评估中状态（使用全局集合，refresh_results 后仍有效）
-        geek_id = str(candidate.get('geek_id', ''))
-        if geek_id in getattr(self, '_ai_evaluating_ids', set()):
-            return _store_status("AI评估中...")
-
-        # AI评估结果状态（显示约3秒后自动恢复）
-        ai_eval_results = getattr(self, '_ai_eval_results', {})
-        if geek_id in ai_eval_results:
-            result = ai_eval_results[geek_id]
-            # 检查是否在3秒内
-            if time.time() - result.get('timestamp', 0) < 3:
-                if result['status'] == 'success':
-                    return _store_status(f"✓ {result['message']}")
-                else:
-                    return _store_status(f"✗ {result['message']}")
-            else:
-                # 超过3秒，清除结果
-                del ai_eval_results[geek_id]
-
-        decision = derive_candidate_decision(candidate)
-        status_parts = [decision.communication_status]
-        tooltip_text = ""
-        if decision.review_status == "pending":
-            status_parts.append("待复核")
-            tooltip_text = (
-                "复核原因："
-                + "；".join(decision.review_reasons or ("请人工确认",))
+        """Keep the historical GUI entry point as a presenter delegate."""
+        status = candidate_presenter.format_candidate_status(
+            candidate,
+            evaluating_ids=frozenset(getattr(self, '_ai_evaluating_ids', set())),
+            evaluation_results=getattr(self, '_ai_eval_results', {}) or {},
+        )
+        candidate['_display_status'] = status.display
+        candidate['_full_status'] = status.detail
+        if status.expired_evaluation_id:
+            getattr(self, '_ai_eval_results', {}).pop(
+                status.expired_evaluation_id,
+                None,
             )
-        elif decision.review_status == "passed":
-            status_parts.append("复核通过")
-            passed_reasons = [
-                str(reason).strip()
-                for reason in (candidate.get('review_passed_reasons') or [])
-                if str(reason).strip()
-            ]
-            reason_text = (
-                f"复核事项：{'；'.join(passed_reasons)}\n"
-                if passed_reasons else ""
-            )
-            tooltip_text = (
-                f"{reason_text}人工复核结论已通过；原评分和推荐指数不变。"
-                "是否可联系仍以当前沟通、反馈和屏蔽状态为准。"
-            )
-        elif decision.review_status == "cancelled":
-            status_parts.append("复核已结束")
-            tooltip_text = (
-                "候选人已因放弃、不合适或屏蔽结束处理；"
-                "如需恢复，请先调整对应的反馈、跟进或屏蔽状态。"
-            )
-        elif candidate.get('review_rejected_at'):
-            status_parts.append("复核未通过")
-            rejected_reasons = [
-                str(reason).strip()
-                for reason in (candidate.get('review_rejected_reasons') or [])
-                if str(reason).strip()
-            ]
-            tooltip_text = (
-                "复核结论：不通过"
-                + (f"\n复核事项：{'；'.join(rejected_reasons)}" if rejected_reasons else "")
-            )
-        elif decision.result_view == "淘汰记录":
-            rejection_reason = decision.primary_review_reason or "淘汰记录"
-            status_parts.append(rejection_reason)
-        if candidate.get('feedback_status'):
-            status_parts.append(candidate.get('feedback_status'))
-        if candidate.get('blacklisted'):
-            status_parts.append("已屏蔽")
-        display = "｜".join(status_parts)
-        return _store_status(display, tooltip_text or display)
+        return status.display
 
     @staticmethod
     def _get_greet_confirmation_hint(candidate):
@@ -13155,28 +11723,11 @@ class BossFilterGUI:
         )
 
     def _update_candidate_blacklist(self, geek_id, reason, timestamp=None):
-        """按 geek_id 标记候选人黑名单，跨岗位生效。"""
-        if not CANDIDATES_PATH.exists():
-            return 0
-        blacklisted_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        def apply_blacklist(candidate):
-            candidate['blacklisted'] = True
-            candidate['blacklist_reason'] = reason.strip()
-            candidate['blacklisted_at'] = blacklisted_at
-            if candidate.get('followup_status') not in {"不合适", "已归档"}:
-                apply_followup_state(
-                    candidate,
-                    "不合适",
-                    candidate.get('followup_note', ''),
-                    timestamp=blacklisted_at,
-                )
-
-        return update_candidate_records(
-            lambda candidate: str(candidate.get('geek_id')) == str(geek_id),
-            apply_blacklist,
-            CANDIDATES_PATH,
-            update_all=True,
+        """Keep the historical GUI entry point as a controller delegate."""
+        return _candidate_controller_for(self).blacklist(
+            geek_id,
+            reason,
+            timestamp=timestamp,
         )
 
     def _import_resume(self, item, candidate=None, parent=None, tree=None, tree_item=None):
@@ -13202,9 +11753,15 @@ class BossFilterGUI:
         if not filepath:
             return
 
-        # 2. 解析文件
+        # 2. 由候选人控制器解析并原子替换受管简历引用。
         try:
-            resume_text = parse_resume_text(filepath)
+            import_outcome = _candidate_controller_for(self).import_resume(
+                candidate,
+                filepath,
+                parser=parse_resume_text,
+                persister=persist_candidate_resume,
+            )
+            resume_text = import_outcome.resume_text
         except ResumeParserDependencyError as exc:
             messagebox.show_notice(
                 f"无法解析 {exc.format_name} 简历",
@@ -13249,28 +11806,6 @@ class BossFilterGUI:
                 parent=parent or self.root,
             )
             return
-        except Exception as e:
-            messagebox.show_failure(
-                "解析简历",
-                headline="简历文件解析失败",
-                message="没有从所选文件中提取到可用内容。",
-                detail=str(e),
-                notice="请检查文件是否损坏，或转换为 PDF、DOCX 后重试。",
-                parent=parent or self.root,
-            )
-            return
-
-        # 3. 由持久化服务原子替换受管简历引用。
-        resume_identity = self._candidate_identity_key(candidate)
-        imported_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        try:
-            persistence = persist_candidate_resume(
-                filepath,
-                identity=resume_identity,
-                candidates_path=CANDIDATES_PATH,
-                base_dir=BASE_DIR,
-                imported_at=imported_at,
-            )
         except ResumeCopyError as exc:
             messagebox.show_failure(
                 "保存简历",
@@ -13305,10 +11840,17 @@ class BossFilterGUI:
                 parent=parent or self.root,
             )
             return
-
-        candidate.clear()
-        candidate.update(persistence.candidate)
-        if persistence.cleanup.failure_count:
+        except Exception as e:
+            messagebox.show_failure(
+                "解析简历",
+                headline="简历文件解析失败",
+                message="没有从所选文件中提取到可用内容。",
+                detail=str(e),
+                notice="请检查文件是否损坏，或转换为 PDF、DOCX 后重试。",
+                parent=parent or self.root,
+            )
+            return
+        if import_outcome.cleanup.failure_count:
             self.append_log(
                 "[简历导入] 新简历已保存，但旧受管副本清理失败，"
                 "可运行简历存储体检重试"
@@ -13381,41 +11923,26 @@ class BossFilterGUI:
                         messagebox.showwarning("API Key 缺失",
                             "未找到 API Key，请先在「模型配置」页配置。",
                             parent=_parent)
-                    _parent.after(0, _no_key)
+                    self.run_on_ui(_no_key)
                     return
 
-                self.append_log(f"[简历评估] 正在评估 {name}...")
-                result = evaluate_with_resume(
-                    candidate, resume_text, job_requirement,
-                    api_config, api_key, hard_conditions=hard_conditions,
+                self.run_on_ui(
+                    lambda: self.append_log(f"[简历评估] 正在评估 {name}...")
                 )
+                controller = _candidate_controller_for(self)
+                result = controller.evaluate_resume(
+                    candidate,
+                    resume_text,
+                    job_requirement,
+                    api_config,
+                    api_key,
+                    hard_conditions,
+                    evaluator=evaluate_with_resume,
+                )
+                if result.success:
+                    controller.persist_resume_evaluation(candidate)
 
                 def _on_done():
-                    if result.success:
-                        resume_fields = (
-                            'resume_eval_adjustment',
-                            'resume_eval_reason',
-                            'resume_eval_model',
-                            'resume_eval_at',
-                            'resume_eval_dimension_scores',
-                            'rule_score',
-                            'match_score',
-                            'recommend_level',
-                            'score_breakdown',
-                        )
-
-                        def save_resume_evaluation(persisted):
-                            for field in resume_fields:
-                                if field in candidate:
-                                    persisted[field] = candidate[field]
-
-                        update_candidate_records(
-                            lambda persisted: (
-                                self._candidate_identity_key(persisted) == resume_identity
-                            ),
-                            save_resume_evaluation,
-                            CANDIDATES_PATH,
-                        )
                     self.refresh_results()
                     self.refresh_home_stats()
                     if result.success:
@@ -13445,7 +11972,7 @@ class BossFilterGUI:
                             parent=_parent,
                         )
 
-                _parent.after(0, _on_done)
+                self.run_on_ui(_on_done)
 
             except Exception as exc:
                 def _on_error(error=exc):
@@ -13464,13 +11991,13 @@ class BossFilterGUI:
                         notice="请检查模型配置或网络连接后重试。",
                         parent=_parent,
                     )
-                _parent.after(0, _on_error)
+                self.run_on_ui(_on_error)
 
         threading.Thread(target=_eval_worker, daemon=True).start()
 
     def _revert_resume_eval(self, item, candidate=None, parent=None):
         """撤销简历评估：清空简历数据和二次评估结果，回退分数。"""
-        from llm_eval import _recalc_recommend_level
+        from llm_eval import _recalc_recommend_level, _resolve_rule_score
 
         candidate = self._resolve_candidate(item, candidate)
         if not candidate:
@@ -13491,40 +12018,13 @@ class BossFilterGUI:
         if not confirm:
             return
 
-        from llm_eval import _resolve_rule_score
-        identity = self._candidate_identity_key(candidate)
-        updated_snapshot = {}
-        reverted_score = [candidate.get('match_score', 0)]
-
-        def revert_resume(persisted):
-            rule_score = _resolve_rule_score(persisted)
-            llm_adj = persisted.get('llm_adjustment', 0) or 0
-            reverted_score[0] = max(0, min(100, rule_score + llm_adj))
-            for field in RESUME_STATE_FIELDS:
-                persisted.pop(field, None)
-            persisted['rule_score'] = rule_score
-            persisted['match_score'] = reverted_score[0]
-            persisted['recommend_level'] = _recalc_recommend_level(reverted_score[0])
-            breakdown = persisted.get('score_breakdown')
-            if isinstance(breakdown, dict):
-                breakdown.pop('resume_adjustment', None)
-                breakdown['total'] = reverted_score[0]
-            updated_snapshot.update(persisted)
-
-        def persist_revert(candidates):
-            for persisted in candidates:
-                if self._candidate_identity_key(persisted) != identity:
-                    continue
-                revert_resume(persisted)
-                return 1
-            return 0
-
-        updated, cleanup = mutate_candidates_with_resume_cleanup(
-            persist_revert,
-            CANDIDATES_PATH,
-            base_dir=BASE_DIR,
+        outcome = _candidate_controller_for(self).revert_resume_evaluation(
+            candidate,
+            resolve_rule_score=_resolve_rule_score,
+            recalc_recommend_level=_recalc_recommend_level,
+            resume_state_fields=RESUME_STATE_FIELDS,
         )
-        if not updated:
+        if not outcome.updated:
             messagebox.showerror(
                 "撤销失败",
                 "候选人记录已变化，请刷新后重试。",
@@ -13532,18 +12032,16 @@ class BossFilterGUI:
             )
             return
 
-        candidate.clear()
-        candidate.update(updated_snapshot)
-        if cleanup.unmanaged_reference_count:
+        if outcome.cleanup.unmanaged_reference_count:
             self.append_log("[撤销评估] 已清除记录，但未删除受管目录外的简历文件")
-        if cleanup.failure_count:
+        if outcome.cleanup.failure_count:
             self.append_log(
                 "[撤销评估] 受管简历副本删除失败，可运行简历存储体检重试"
             )
 
         self.refresh_results()
         self.refresh_home_stats()
-        self.append_log(f"[撤销评估] {name}: 分数回退到 {reverted_score[0]}")
+        self.append_log(f"[撤销评估] {name}: 分数回退到 {outcome.score}")
 
     # ===== 一键AI评估功能 =====
 
@@ -13950,42 +12448,7 @@ class BossFilterGUI:
 
     def _save_ai_eval_results(self, candidates):
         """把 AI 评估字段合并到最新候选人快照。"""
-        # AI 评估结果属于具体岗位；同一候选人在多个岗位中的评分不能互相覆盖。
-        eval_map = {
-            self._candidate_identity_key(candidate): candidate
-            for candidate in candidates
-            if self._candidate_identity_key(candidate)[0]
-        }
-        def merge_ai_results(all_candidates):
-            updated = 0
-            for persisted in all_candidates:
-                identity = self._candidate_identity_key(persisted)
-                if identity not in eval_map:
-                    continue
-                eval_result = eval_map[identity]
-                persisted.update({
-                    'llm_evaluated': eval_result.get('llm_evaluated'),
-                    'llm_adjustment': eval_result.get('llm_adjustment'),
-                    'llm_reason': eval_result.get('llm_reason'),
-                    'llm_model': eval_result.get('llm_model'),
-                    'llm_error': eval_result.get('llm_error'),
-                    'match_score': eval_result.get('match_score'),
-                    'recommend_level': eval_result.get('recommend_level'),
-                    'rule_score': eval_result.get('rule_score'),
-                    'score_breakdown': eval_result.get('score_breakdown'),
-                    'llm_hard_condition_verdict': eval_result.get('llm_hard_condition_verdict'),
-                    'llm_hard_condition_findings': eval_result.get('llm_hard_condition_findings'),
-                    'llm_dimension_scores': eval_result.get('llm_dimension_scores'),
-                    'qualification_status': eval_result.get('qualification_status'),
-                    'qualification_reasons': eval_result.get('qualification_reasons'),
-                    'qualification_evidence': eval_result.get('qualification_evidence'),
-                    'manual_review_required': eval_result.get('manual_review_required'),
-                    'auto_greet_blocked_reason': eval_result.get('auto_greet_blocked_reason'),
-                })
-                updated += 1
-            return updated
-
-        mutate_candidates_all(merge_ai_results, CANDIDATES_PATH)
+        eval_map = _candidate_controller_for(self).save_ai_evaluations(candidates)
 
         # 更新内存数据
         if hasattr(self, 'all_candidates'):
@@ -14036,24 +12499,8 @@ class BossFilterGUI:
         self._open_blacklist_reason_dialog(candidate, parent or self.root, save_blacklist)
 
     def _update_candidate_unblacklist(self, geek_id):
-        """按 geek_id 移除候选人黑名单，跨岗位生效。"""
-        if not CANDIDATES_PATH.exists():
-            return 0
-
-        def clear_blacklist(candidate):
-            candidate.pop('blacklisted', None)
-            candidate.pop('blacklist_reason', None)
-            candidate.pop('blacklisted_at', None)
-
-        return update_candidate_records(
-            lambda candidate: (
-                str(candidate.get('geek_id')) == str(geek_id)
-                and bool(candidate.get('blacklisted'))
-            ),
-            clear_blacklist,
-            CANDIDATES_PATH,
-            update_all=True,
-        )
+        """Keep the historical GUI entry point as a controller delegate."""
+        return _candidate_controller_for(self).unblacklist(geek_id)
 
     def _unblacklist_candidate(self, item, candidate=None, parent=None, on_saved=None):
         """把选中候选人移出黑名单。"""
@@ -14093,36 +12540,15 @@ class BossFilterGUI:
         next_followup_at=None,
         timestamp=None,
     ):
-        """更新候选人的跟进状态。"""
-        if not CANDIDATES_PATH.exists():
-            return False
-        followup_time = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        def apply_status(candidate):
-            if status == "未沟通":
-                mark_candidate_not_greeted(candidate, followup_time)
-            elif (
-                status in CONTACTED_FOLLOWUP_STATUSES
-                and not candidate.get('greet_sent')
-            ):
-                mark_candidate_greeted(candidate, "manual_status", followup_time)
-            apply_followup_state(
-                candidate,
-                status,
-                note,
-                timestamp=followup_time,
-                next_followup_at=next_followup_at,
-            )
-
-        return bool(update_candidate_records(
-            lambda candidate: (
-                candidate.get('geek_id') == geek_id
-                and normalize_job_name(candidate.get('job_name'))
-                == normalize_job_name(job_name)
-            ),
-            apply_status,
-            CANDIDATES_PATH,
-        ))
+        """Keep the historical GUI entry point as a controller delegate."""
+        return _candidate_controller_for(self).update_followup(
+            geek_id,
+            job_name,
+            status,
+            note,
+            next_followup_at,
+            timestamp,
+        )
 
     def _quick_update_candidate_followup(
         self,
@@ -14197,43 +12623,14 @@ class BossFilterGUI:
         review_passed_reasons=None,
         timestamp=None,
     ):
-        """按候选人和岗位完成复核，记录通过结论及可选联系批准。"""
-        if not geek_id or not CANDIDATES_PATH.exists():
-            return 0
-        approved_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        def complete_review(candidates):
-            updated = 0
-            for candidate in candidates:
-                if (
-                    str(candidate.get('geek_id')) == str(geek_id)
-                    and normalize_job_name(candidate.get('job_name'))
-                    == normalize_job_name(job_name)
-                    and (
-                        candidate.get('manual_review_required')
-                        or candidate.get('qualification_status') == 'manual_review'
-                    )
-                ):
-                    passed_reasons = list(
-                        review_passed_reasons
-                        or derive_candidate_decision(candidate).review_reasons
-                        or ["人工复核"]
-                    )
-                    candidate['manual_review_required'] = False
-                    candidate['qualification_status'] = 'qualified'
-                    candidate['qualification_reasons'] = []
-                    candidate.pop('auto_greet_blocked_reason', None)
-                    candidate['review_passed_at'] = approved_at
-                    candidate['review_passed_reasons'] = passed_reasons
-                    candidate.pop('review_rejected_at', None)
-                    candidate.pop('review_rejected_reasons', None)
-                    if contact_approval_reason:
-                        candidate['contact_approved_at'] = approved_at
-                        candidate['contact_approval_reason'] = contact_approval_reason
-                    updated += 1
-            return updated
-
-        return mutate_candidates_all(complete_review, CANDIDATES_PATH)
+        """Keep the historical GUI entry point as a controller delegate."""
+        return _candidate_controller_for(self).complete_review(
+            geek_id,
+            job_name,
+            contact_approval_reason=contact_approval_reason,
+            review_passed_reasons=review_passed_reasons,
+            timestamp=timestamp,
+        )
 
     def _reject_candidate_review(
         self,
@@ -14242,42 +12639,13 @@ class BossFilterGUI:
         review_rejected_reasons=None,
         timestamp=None,
     ):
-        """Persist one explicit human decision that the candidate did not pass review."""
-        if not geek_id or not CANDIDATES_PATH.exists():
-            return 0
-        rejected_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-        normalized_job = normalize_job_name(job_name)
-
-        def reject_review(candidates):
-            for candidate in candidates:
-                if (
-                    str(candidate.get('geek_id') or '') != str(geek_id)
-                    or normalize_job_name(candidate.get('job_name')) != normalized_job
-                ):
-                    continue
-                decision = derive_candidate_decision(candidate)
-                if decision.review_status != "pending":
-                    continue
-                rejected_reasons = list(
-                    review_rejected_reasons
-                    or decision.review_reasons
-                    or ["人工复核不通过"]
-                )
-                candidate['manual_review_required'] = False
-                candidate['qualification_status'] = 'rejected'
-                candidate['qualification_reasons'] = rejected_reasons
-                candidate['review_rejected_at'] = rejected_at
-                candidate['review_rejected_reasons'] = rejected_reasons
-                candidate['recommend_level'] = '未通过'
-                candidate.pop('review_passed_at', None)
-                candidate.pop('review_passed_reasons', None)
-                candidate.pop('contact_approved_at', None)
-                candidate.pop('contact_approval_reason', None)
-                candidate.pop('auto_greet_blocked_reason', None)
-                return 1
-            return 0
-
-        return mutate_candidates_all(reject_review, CANDIDATES_PATH)
+        """Keep the historical GUI entry point as a controller delegate."""
+        return _candidate_controller_for(self).reject_review(
+            geek_id,
+            job_name,
+            review_rejected_reasons=review_rejected_reasons,
+            timestamp=timestamp,
+        )
 
     def _update_candidate_contact_approval(
         self,
@@ -14286,32 +12654,13 @@ class BossFilterGUI:
         reason,
         timestamp=None,
     ):
-        """Persist one explicit approval to contact a pending candidate."""
-        if not geek_id or not CANDIDATES_PATH.exists():
-            return False
-        approved_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-        normalized_job = normalize_job_name(job_name)
-
-        def approve_contact(candidate):
-            review_reasons = list(
-                derive_candidate_decision(candidate).review_reasons
-                or [f"评分处于待定区间（{candidate.get('match_score', 0)} 分）"]
-            )
-            candidate['contact_approved_at'] = approved_at
-            candidate['contact_approval_reason'] = str(reason or '').strip()
-            candidate['review_passed_at'] = approved_at
-            candidate['review_passed_reasons'] = review_reasons
-            candidate.pop('review_rejected_at', None)
-            candidate.pop('review_rejected_reasons', None)
-
-        return bool(update_candidate_records(
-            lambda candidate: (
-                str(candidate.get('geek_id') or '') == str(geek_id)
-                and normalize_job_name(candidate.get('job_name')) == normalized_job
-            ),
-            approve_contact,
-            CANDIDATES_PATH,
-        ))
+        """Keep the historical GUI entry point as a controller delegate."""
+        return _candidate_controller_for(self).approve_contact(
+            geek_id,
+            job_name,
+            reason,
+            timestamp=timestamp,
+        )
 
     def _approve_candidate_contact_and_queue(
         self,
@@ -14722,41 +13071,14 @@ class BossFilterGUI:
         )
 
     def _update_candidate_feedback(self, geek_id, job_name, status, reasons, note):
-        """更新候选人的人工反馈。"""
-        if not CANDIDATES_PATH.exists():
-            return False
-        feedback_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        def apply_feedback(candidate):
-            candidate['feedback_status'] = status
-            candidate['feedback_reasons'] = reasons
-            candidate['feedback_note'] = note.strip()
-            candidate['feedback_updated_at'] = feedback_time
-            try:
-                score = int(candidate.get('match_score', 0) or 0)
-            except (TypeError, ValueError):
-                score = 0
-            if (
-                status == "合适"
-                and SCORE_THRESHOLD_PASS <= score < SCORE_THRESHOLD_RECOMMEND
-            ):
-                candidate['review_passed_at'] = feedback_time
-                candidate['review_passed_reasons'] = [
-                    f"评分处于待定区间（{score} 分）"
-                ]
-            if status in {"误推", "放弃"}:
-                candidate.pop('contact_approved_at', None)
-                candidate.pop('contact_approval_reason', None)
-
-        return bool(update_candidate_records(
-            lambda candidate: (
-                candidate.get('geek_id') == geek_id
-                and normalize_job_name(candidate.get('job_name'))
-                == normalize_job_name(job_name)
-            ),
-            apply_feedback,
-            CANDIDATES_PATH,
-        ))
+        """Keep the historical GUI entry point as a controller delegate."""
+        return _candidate_controller_for(self).update_feedback(
+            geek_id,
+            job_name,
+            status,
+            reasons,
+            note,
+        )
 
     def _save_candidate_feedback_from_dialog(
         self,
@@ -14882,52 +13204,37 @@ class BossFilterGUI:
 
     @staticmethod
     def _greet_queue_key(candidate):
-        return contact_queue_candidate_identity(candidate)
+        return _CONTACT_CONTROLLER.identity(candidate)
 
     def _greet_queue_item_for_candidate(self, candidate, *, active_only=False):
         """Return the candidate's current queue item, optionally only if active."""
         self._ensure_greet_queue_loaded()
-        key = self._greet_queue_key(candidate)
-        return next(
-            (
-                item for item in self.greet_queue_items
-                if (
-                    item.get('key') == key
-                    and (
-                        not active_only
-                        or (item.get('status') or "待发送") in ACTIVE_STATUSES
-                    )
-                )
-            ),
-            None,
+        return _CONTACT_CONTROLLER.item_for(
+            self.greet_queue_items,
+            candidate,
+            active_only=active_only,
         )
 
     def _ensure_greet_queue_loaded(self):
         """Lazily restore active queue intent against the latest candidate data."""
         if self._greet_queue_loaded:
             return
-        try:
-            candidates = load_candidates_all(CANDIDATES_PATH)
-            self.greet_queue_items = load_contact_queue(candidates, CONTACT_QUEUE_PATH)
-            if self.greet_queue_items:
-                self.append_log(f"[联系候选人] 已恢复 {len(self.greet_queue_items)} 个未完成任务")
-        except Exception as exc:
-            self.greet_queue_items = []
-            self.append_log(f"[联系候选人] 恢复联系清单失败：{exc}")
-        self._greet_queue_loaded = True
-        changed = False
-        for item in self.greet_queue_items:
-            if item.get('status') == "待核实":
-                continue
-            status, message = self._revalidate_greet_queue_candidate(
-                item.get('candidate') or {}
+        outcome = _CONTACT_CONTROLLER.load_and_revalidate(
+            CANDIDATES_PATH,
+            CONTACT_QUEUE_PATH,
+            load_candidates=load_candidates_all,
+            load_queue=load_contact_queue,
+            revalidate=self._revalidate_greet_queue_candidate,
+        )
+        self.greet_queue_items = list(outcome.items)
+        if outcome.error:
+            self.append_log(f"[联系候选人] 恢复联系清单失败：{outcome.error}")
+        elif outcome.restored_count:
+            self.append_log(
+                f"[联系候选人] 已恢复 {outcome.restored_count} 个未完成任务"
             )
-            if status != "待发送":
-                item['status'] = status
-                item['message'] = message
-                item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
-                changed = True
-        if changed:
+        self._greet_queue_loaded = True
+        if outcome.changed:
             self._persist_greet_queue()
         else:
             self._refresh_contact_queue_badge()
@@ -14944,7 +13251,7 @@ class BossFilterGUI:
             return
         try:
             save_contact_queue(self.greet_queue_items, CONTACT_QUEUE_PATH)
-            self._refresh_contact_queue_badge()
+            self.run_on_ui(self._refresh_contact_queue_badge)
         except Exception as exc:
             self.append_log(f"[联系候选人] 保存联系清单失败：{exc}")
 
@@ -14952,40 +13259,14 @@ class BossFilterGUI:
         """Immediately apply a candidate state change to its active queue row."""
         if not getattr(self, '_greet_queue_loaded', False):
             return
-        key = self._greet_queue_key(candidate)
-        geek_id = str(candidate.get('geek_id') or '')
-        items = [
-            row for row in getattr(self, 'greet_queue_items', [])
-            if (row.get('status') or "待发送") in ACTIVE_STATUSES
-            and (
-                row.get('key') == key
-                or (
-                    candidate.get('blacklisted')
-                    and geek_id
-                    and str((row.get('candidate') or {}).get('geek_id') or '') == geek_id
-                )
-            )
-        ]
-        if not items:
+        updated = _CONTACT_CONTROLLER.sync_candidate(
+            getattr(self, "greet_queue_items", []),
+            candidate,
+            revalidate=self._revalidate_greet_queue_candidate,
+            now=datetime.now().strftime("%Y%m%d_%H%M%S"),
+        )
+        if not updated:
             return
-        updated_at = datetime.now().strftime("%Y%m%d_%H%M%S")
-        for item in items:
-            item_candidate = candidate
-            if item.get('key') != key:
-                item_candidate = dict(item.get('candidate') or {})
-                item_candidate.update({
-                    'blacklisted': True,
-                    'blacklist_reason': candidate.get('blacklist_reason', ''),
-                    'blacklisted_at': candidate.get('blacklisted_at', updated_at),
-                    'followup_status': "不合适",
-                    'followup_updated_at': updated_at,
-                })
-                item_candidate.pop('next_followup_at', None)
-            status, message = self._revalidate_greet_queue_candidate(item_candidate)
-            item['candidate'] = item_candidate
-            item['status'] = status
-            item['message'] = message
-            item['updated_at'] = updated_at
         self._persist_greet_queue()
         window = getattr(self, 'greet_queue_window', None)
         if window is not None:
@@ -15007,13 +13288,9 @@ class BossFilterGUI:
     def _greet_queue_readiness_tooltip(candidate):
         return contact_presenter.greet_queue_readiness_tooltip(candidate)
 
-    @staticmethod
-    def _greet_queue_method_label(candidate):
-        """Compatibility alias for existing callers and older queue tests."""
-        return contact_presenter.greet_queue_method_label(candidate)
 
     def _build_greet_queue_item(self, candidate, source="manual"):
-        return build_contact_queue_item(candidate, source=source)
+        return _CONTACT_CONTROLLER.build_item(candidate, source=source)
 
     @staticmethod
     def _greet_queue_skip_reason(candidate):
@@ -15042,20 +13319,15 @@ class BossFilterGUI:
     def _add_candidates_to_greet_queue(self, candidates, parent=None, source="manual", open_dialog=True):
         self._ensure_greet_queue_loaded()
         _parent = parent or self.root
-        existing_keys = {item.get('key') for item in self.greet_queue_items}
-        added = 0
-        skipped_reasons = {}
-        for candidate in candidates:
-            key = self._greet_queue_key(candidate)
-            skip_reason = self._greet_queue_skip_reason(candidate)
-            if not skip_reason and key in existing_keys:
-                skip_reason = "已在队列"
-            if skip_reason:
-                skipped_reasons[skip_reason] = skipped_reasons.get(skip_reason, 0) + 1
-                continue
-            self.greet_queue_items.append(self._build_greet_queue_item(candidate, source=source))
-            existing_keys.add(key)
-            added += 1
+        outcome = _CONTACT_CONTROLLER.add_candidates(
+            self.greet_queue_items,
+            candidates,
+            source=source,
+            skip_reason=self._greet_queue_skip_reason,
+            build_item=self._build_greet_queue_item,
+        )
+        added = outcome.added_count
+        skipped_reasons = outcome.skipped_reasons
         if open_dialog:
             self._show_greet_queue_dialog(parent=_parent)
         if added:
@@ -15339,14 +13611,9 @@ class BossFilterGUI:
         return contact_presenter.greet_queue_selection_text(selected)
 
     def _set_greet_queue_item_state(self, item, status, message=""):
-        item['status'] = status
-        item['message'] = message
-        item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
+        _CONTACT_CONTROLLER.set_item_state(item, status, message)
         self._persist_greet_queue()
-        try:
-            self.root.after(0, self._refresh_greet_queue_dialog)
-        except tk.TclError:
-            pass
+        self.run_on_ui(self._refresh_greet_queue_dialog)
 
     def _update_greet_queue_action_states(self):
         selected = self._selected_greet_queue_items()
@@ -15457,20 +13724,16 @@ class BossFilterGUI:
                 parent=self.greet_queue_window or self.root,
             )
             return
-        remove_ids = {item.get('queue_id') for item in selected}
-        self.greet_queue_items = [item for item in self.greet_queue_items if item.get('queue_id') not in remove_ids]
+        self.greet_queue_items = _CONTACT_CONTROLLER.remove_items(
+            self.greet_queue_items,
+            selected,
+        )
         self._persist_greet_queue()
         self._refresh_greet_queue_dialog()
 
     def _retry_failed_greet_queue_items(self):
         selected = self._selected_greet_queue_items()
-        changed = 0
-        for item in selected:
-            if item.get('status') == "发送失败":
-                item['status'] = "待发送"
-                item['message'] = "等待重试"
-                item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
-                changed += 1
+        changed = _CONTACT_CONTROLLER.retry_failed(selected)
         if changed:
             self._persist_greet_queue()
             self._refresh_greet_queue_dialog()
@@ -15498,35 +13761,22 @@ class BossFilterGUI:
         ):
             return
 
-        resolved = 0
-        for item in selected:
-            candidate = item.get('candidate') or {}
-            try:
-                ok = resolve_candidate_greeting_confirmation(
-                    candidate,
-                    sent=sent,
-                    path=CANDIDATES_PATH,
-                )
-            except Exception as exc:
-                ok = False
-                self.append_log(f"[联系候选人] 核实 {candidate.get('name', '')} 失败：{exc}")
-            if not ok:
-                item['message'] = "未能保存核实结果"
-                continue
-            resolved += 1
-            if sent:
-                item['status'] = "已发送"
-                item['message'] = "已由用户在 BOSS 沟通列表确认"
-            else:
-                item['status'] = "待发送"
-                item['message'] = "已确认未发送，可以重新发送"
-            item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
+        outcome = _CONTACT_CONTROLLER.resolve_pending(
+            selected,
+            sent=sent,
+            candidates_path=CANDIDATES_PATH,
+            resolver=resolve_candidate_greeting_confirmation,
+        )
+        for name, error in outcome.failures:
+            self.append_log(f"[联系候选人] 核实 {name} 失败：{error}")
 
         self._persist_greet_queue()
         self._refresh_greet_queue_dialog()
         self.refresh_results(force=True)
         self.refresh_home_stats()
-        self.append_log(f"[联系候选人] 已完成 {resolved} 人发送结果核实")
+        self.append_log(
+            f"[联系候选人] 已完成 {outcome.resolved_count} 人发送结果核实"
+        )
 
     def _pause_greet_queue(self):
         if not self.greet_queue_running:
@@ -15574,8 +13824,10 @@ class BossFilterGUI:
             messagebox.showinfo("联系候选人", "候选人扫描正在运行，请等待扫描完成后再发送。", parent=self.greet_queue_window or self.root)
             return
         selected = self._selected_greet_queue_items()
-        source_items = selected if selected else self.greet_queue_items
-        pending = [item for item in source_items if item.get('status') == "待发送"]
+        pending = _CONTACT_CONTROLLER.pending_items(
+            self.greet_queue_items,
+            selected,
+        )
         if not pending:
             message = "选中的候选人当前不可联系" if selected else "没有待联系候选人"
             messagebox.showinfo(
@@ -15619,10 +13871,7 @@ class BossFilterGUI:
 
     def _set_greet_queue_prepare_status(self, text):
         self.greet_queue_prepare_text = text
-        try:
-            self.root.after(0, self._update_greet_queue_action_states)
-        except (tk.TclError, RuntimeError):
-            pass
+        self.run_on_ui(self._update_greet_queue_action_states)
 
     def _prepare_greet_queue_start(self, pending):
         """Wait for Chrome, BOSS login and the recommendation page before confirm."""
@@ -15721,15 +13970,11 @@ class BossFilterGUI:
                 self.append_operation_log(f"[联系候选人] 发送前检查未完成：{error}")
             if connection_lock_acquired:
                 self._browser_connection_lock.release()
-            try:
-                self.root.after(
-                    0,
-                    lambda items=pending, message=error: self._finish_greet_queue_preparation(
-                        items, message
-                    ),
+            self.run_on_ui(
+                lambda items=pending, message=error: self._finish_greet_queue_preparation(
+                    items, message
                 )
-            except (tk.TclError, RuntimeError):
-                pass
+            )
 
     def _finish_greet_queue_preparation(self, pending, error=""):
         """Show send confirmation only after the browser preflight completes."""
@@ -15786,7 +14031,7 @@ class BossFilterGUI:
                 result[0] = answer
                 done.set()
 
-            self.root.after(0, show_dialog)
+            self.run_on_ui(show_dialog)
             while not done.is_set():
                 if self.stop_event.is_set():
                     result[0] = False
@@ -16076,19 +14321,108 @@ class BossFilterGUI:
         queue_snapshot = list(
             self.greet_queue_items if pending is None else pending
         )
-        success_count = 0
-        fail_count = 0
-        pending_count = 0
-        skipped_count = 0
-        page_waiting_count = 0
-        page_waiting_jobs = Counter()
+        counters = ContactRunCounters()
         job_mismatch_decisions = {}
-        consecutive_uncertain = 0
         run_error = ""
-        active_item = None
+        active_item = [None]
         self.append_operation_log(
             f"[联系候选人] 开始发送：待处理 {len(queue_snapshot)} 人"
         )
+
+        def commit_state():
+            self._persist_greet_queue()
+            self.run_on_ui(self._refresh_greet_queue_dialog)
+
+        def ensure_page_ready(candidate):
+            return self._ensure_greet_queue_candidate_page_ready(
+                candidate,
+                parent,
+                job_mismatch_decisions,
+            )
+
+        def send_candidate(candidate):
+            context = candidate.get("greet_context") or {}
+            if self._has_direct_send_context(candidate):
+                success, message = send_greeting_with_context(
+                    self.browser_page,
+                    context,
+                    stop_event=self.stop_event,
+                    captcha_callback=captcha_callback,
+                )
+                method = "queue_context"
+                if success is False and ("缺少" in message or "字段" in message):
+                    page_ready, page_message = ensure_page_ready(candidate)
+                    if page_ready:
+                        success, message = send_greeting_on_list_page(
+                            self.browser_page,
+                            candidate.get("geek_id"),
+                            stop_event=self.stop_event,
+                            captcha_callback=captcha_callback,
+                        )
+                        method = "queue_list"
+                    else:
+                        success, message = False, page_message
+                return success, message, method
+            success, message = send_greeting_on_list_page(
+                self.browser_page,
+                candidate.get("geek_id"),
+                stop_event=self.stop_event,
+                captcha_callback=captcha_callback,
+            )
+            return success, message, "queue_list"
+
+        def classify_send_exception(exc):
+            if not isinstance(exc, ApiRiskBlocked):
+                return None
+            guard_state = get_boss_access_block_state()
+            remaining = max(
+                1,
+                int(guard_state.get("remaining_seconds", 0) + 0.999),
+            )
+            signal = (
+                f"HTTP {exc.status}"
+                if isinstance(exc.status, int)
+                else str(exc.status)
+            )
+            message = (
+                f"BOSS 访问保护已触发：{signal}，{exc.reason}。"
+                f"剩余冷却约 {remaining} 秒"
+            )
+            return SendExceptionDecision(
+                "发送失败",
+                message,
+                (
+                    f"[访问保护] 联系候选人时 BOSS 返回 {signal}：{exc.reason}。"
+                    f"已停止后续发送，冷却约 {remaining} 秒。"
+                ),
+                ContactNotice(
+                    "warning",
+                    "BOSS 访问保护",
+                    "后续发送已停止",
+                    message,
+                ),
+            )
+
+        def refresh_candidate_views():
+            self.run_on_ui(self.refresh_results)
+            self.run_on_ui(self.refresh_home_stats)
+
+        def show_notice(notice):
+            if notice.level == "warning":
+                messagebox.showwarning(
+                    notice.title,
+                    notice.message,
+                    parent=parent,
+                )
+                return
+            messagebox.show_notice(
+                notice.title,
+                headline=notice.headline,
+                message=notice.message,
+                detail=notice.detail,
+                parent=parent,
+            )
+
         try:
             connection_lock_acquired = self._browser_connection_lock.acquire(timeout=8)
             if not connection_lock_acquired:
@@ -16098,256 +14432,46 @@ class BossFilterGUI:
             if not self._ensure_greet_queue_browser(parent, queue_snapshot):
                 run_error = getattr(
                     self,
-                    '_greet_queue_browser_error',
+                    "_greet_queue_browser_error",
                     "浏览器未准备好，请检查 Chrome 和 BOSS 登录状态。",
                 )
                 return
 
             captcha_callback = self._make_greet_queue_captcha_callback(parent)
-
-            for item_index, item in enumerate(queue_snapshot):
-                active_item = item
-                if self.stop_event.is_set():
-                    self.append_operation_log("[联系候选人] 用户停止操作")
-                    break
-                while self.greet_queue_paused and not self.stop_event.is_set():
-                    time.sleep(0.2)
-                if item not in self.greet_queue_items:
-                    continue
-                if item.get('status') != "待发送":
-                    continue
-
-                candidate, reload_error = self._reload_greet_queue_candidate(item)
-                if candidate is None:
-                    skipped_count += 1
-                    self._set_greet_queue_item_state(item, "已跳过", reload_error)
-                    original_name = (item.get('candidate') or {}).get('name', '')
-                    self.append_operation_log(
-                        f"[联系候选人] {original_name or '未知候选人'} 已跳过："
-                        f"{reload_error}"
-                    )
-                    continue
-                name = candidate.get('name', '')
-                revalidated_status, revalidated_message = self._revalidate_greet_queue_candidate(candidate)
-                if revalidated_status != "待发送":
-                    self._set_greet_queue_item_state(
-                        item,
-                        revalidated_status,
-                        revalidated_message,
-                    )
-                    if revalidated_status == "待核实":
-                        pending_count += 1
-                    elif revalidated_status == "已跳过":
-                        skipped_count += 1
-                    self.append_operation_log(
-                        f"[联系候选人] {name} {revalidated_status}："
-                        f"{revalidated_message}"
-                    )
-                    continue
-
-                if not self._has_direct_send_context(candidate):
-                    page_ready, page_message = self._ensure_greet_queue_candidate_page_ready(
-                        candidate, parent, job_mismatch_decisions
-                    )
-                    if not page_ready:
-                        page_waiting_count += 1
-                        page_waiting_jobs[
-                            str(candidate.get('job_name') or '未指定岗位').strip()
-                        ] += 1
-                        item['message'] = page_message
-                        item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        self._persist_greet_queue()
-                        self.root.after(0, self._refresh_greet_queue_dialog)
-                        self.append_operation_log(
-                            f"[联系候选人] {name} 暂未发送：{page_message}"
-                        )
-                        continue
-
-                candidate, reload_error = self._reload_greet_queue_candidate(item)
-                if candidate is None:
-                    skipped_count += 1
-                    self._set_greet_queue_item_state(item, "已跳过", reload_error)
-                    original_name = (item.get('candidate') or {}).get('name', '')
-                    self.append_operation_log(
-                        f"[联系候选人] {original_name or '未知候选人'} 已跳过："
-                        f"{reload_error}"
-                    )
-                    continue
-                name = candidate.get('name', '')
-                revalidated_status, revalidated_message = self._revalidate_greet_queue_candidate(candidate)
-                if revalidated_status != "待发送":
-                    self._set_greet_queue_item_state(
-                        item,
-                        revalidated_status,
-                        revalidated_message,
-                    )
-                    if revalidated_status == "待核实":
-                        pending_count += 1
-                    elif revalidated_status == "已跳过":
-                        skipped_count += 1
-                    self.append_operation_log(
-                        f"[联系候选人] {name} {revalidated_status}："
-                        f"{revalidated_message}"
-                    )
-                    continue
-
-                if not self._has_direct_send_context(candidate):
-                    page_ready, page_message = self._ensure_greet_queue_candidate_page_ready(
-                        candidate, parent, job_mismatch_decisions
-                    )
-                    if not page_ready:
-                        page_waiting_count += 1
-                        page_waiting_jobs[
-                            str(candidate.get('job_name') or '未指定岗位').strip()
-                        ] += 1
-                        item['message'] = page_message
-                        item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        self._persist_greet_queue()
-                        self.root.after(0, self._refresh_greet_queue_dialog)
-                        self.append_operation_log(
-                            f"[联系候选人] {name} 暂未发送：{page_message}"
-                        )
-                        continue
-
-                self._set_greet_queue_item_state(item, "发送中", "")
-                self.append_operation_log(f"[联系候选人] 正在向 {name} 打招呼...")
-
-                context = candidate.get('greet_context') or {}
-                try:
-                    if self._has_direct_send_context(candidate):
-                        success, msg = send_greeting_with_context(
-                            self.browser_page,
-                            context,
-                            stop_event=self.stop_event,
-                            captcha_callback=captcha_callback,
-                        )
-                        method = "queue_context"
-                        if success is False and ("缺少" in msg or "字段" in msg):
-                            page_ready, page_message = self._ensure_greet_queue_candidate_page_ready(
-                                candidate, parent, job_mismatch_decisions
-                            )
-                            if page_ready:
-                                success, msg = send_greeting_on_list_page(
-                                    self.browser_page,
-                                    candidate.get('geek_id'),
-                                    stop_event=self.stop_event,
-                                    captcha_callback=captcha_callback,
-                                )
-                                method = "queue_list"
-                            else:
-                                success, msg = False, page_message
-                    else:
-                        success, msg = send_greeting_on_list_page(
-                            self.browser_page,
-                            candidate.get('geek_id'),
-                            stop_event=self.stop_event,
-                            captcha_callback=captcha_callback,
-                        )
-                        method = "queue_list"
-                except ApiRiskBlocked as exc:
-                    item['attempts'] = item.get('attempts', 0) + 1
-                    fail_count += 1
-                    guard_state = get_boss_access_block_state()
-                    remaining = max(
-                        1,
-                        int(guard_state.get("remaining_seconds", 0) + 0.999),
-                    )
-                    signal = (
-                        f"HTTP {exc.status}"
-                        if isinstance(exc.status, int)
-                        else str(exc.status)
-                    )
-                    risk_message = (
-                        f"BOSS 访问保护已触发：{signal}，{exc.reason}。"
-                        f"剩余冷却约 {remaining} 秒"
-                    )
-                    self._set_greet_queue_item_state(item, "发送失败", risk_message)
-                    self.append_operation_log(
-                        f"[访问保护] 联系候选人时 BOSS 返回 {signal}：{exc.reason}。"
-                        f"已停止后续发送，冷却约 {remaining} 秒。"
-                    )
-                    self.root.after(0, lambda message=risk_message: messagebox.showwarning(
-                        "BOSS 访问保护",
+            outcome = _CONTACT_CONTROLLER.run_queue(
+                self.greet_queue_items,
+                queue_snapshot,
+                stop_requested=self.stop_event.is_set,
+                is_paused=lambda: self.greet_queue_paused,
+                reload_candidate=self._reload_greet_queue_candidate,
+                revalidate=self._revalidate_greet_queue_candidate,
+                has_direct_context=self._has_direct_send_context,
+                ensure_page_ready=ensure_page_ready,
+                send_candidate=send_candidate,
+                classify_send_exception=classify_send_exception,
+                persist_pending=lambda candidate, message: (
+                    persist_candidate_greeting_pending(
+                        candidate,
                         message,
-                        parent=parent,
-                    ))
-                    break
-
-                item['attempts'] = item.get('attempts', 0) + 1
-                self._persist_greet_queue()
-                if success is None:
-                    persist_candidate_greeting_pending(candidate, msg, CANDIDATES_PATH)
-                    pending_count += 1
-                    consecutive_uncertain += 1
-                    pending_message = format_greeting_failure_message(msg)
-                    self._set_greet_queue_item_state(item, "待核实", pending_message)
-                    self.append_operation_log(
-                        f"[联系候选人] {name} 待核实：{pending_message}"
+                        CANDIDATES_PATH,
                     )
-                    if consecutive_uncertain >= GREET_UNCERTAIN_LIMIT:
-                        self.append_operation_log(
-                            "[联系候选人] 连续发送结果待核实，已暂停，请人工核实"
-                        )
-                        self.greet_queue_paused = True
-                        break
-                elif success:
-                    persisted = self._update_greet_status(candidate, method)
-                    consecutive_uncertain = 0
-                    if persisted:
-                        success_count += 1
-                        self._set_greet_queue_item_state(item, "已发送", msg)
-                        self.append_operation_log(
-                            f"[联系候选人] {name} 发送成功"
-                        )
-                        self.root.after(0, self.refresh_results)
-                        self.root.after(0, self.refresh_home_stats)
-                    else:
-                        pending_count += 1
-                        pending_message = "BOSS 已返回发送成功，但本地状态保存失败，请先核实"
-                        self._set_greet_queue_item_state(item, "待核实", pending_message)
-                        self.append_operation_log(
-                            f"[联系候选人] {name} 待核实：{pending_message}"
-                        )
-                else:
-                    fail_count += 1
-                    consecutive_uncertain = 0
-                    fail_message = format_greeting_failure_message(msg)
-                    diagnosis = diagnose_greeting_failure(msg)
-                    self._set_greet_queue_item_state(item, "发送失败", fail_message)
-                    self.append_operation_log(
-                        f"[联系候选人] {name} 发送失败：{fail_message}"
-                    )
-                    if re.search(r"\bHTTP\s+4\d\d\b", str(msg), re.IGNORECASE):
-                        self.append_operation_log(
-                            f"[BOSS接口] 联系候选人返回 4xx：{name}，{fail_message}"
-                        )
-                    if diagnosis.terminal:
-                        self.append_operation_log(
-                            f"[联系候选人] {diagnosis.title}，已停止后续发送"
-                        )
-                        self.root.after(
-                            0,
-                            lambda diag=diagnosis, raw_message=msg: (
-                                messagebox.show_notice(
-                                    diag.title,
-                                    headline="后续发送已停止",
-                                    message=diag.action,
-                                    detail=f"原始信息：{raw_message}",
-                                    parent=parent,
-                                )
-                            ),
-                        )
-                        break
-
-                if self.stop_event.is_set():
-                    break
-                has_later_pending = any(
-                    later_item in self.greet_queue_items
-                    and later_item.get('status') == "待发送"
-                    for later_item in queue_snapshot[item_index + 1:]
+                ),
+                persist_success=self._update_greet_status,
+                commit_state=commit_state,
+                refresh_results=refresh_candidate_views,
+                log=self.append_operation_log,
+                uncertain_limit=GREET_UNCERTAIN_LIMIT,
+                set_active_item=lambda item: active_item.__setitem__(0, item),
+                sleep=time.sleep,
+                delay_seconds=lambda: random.uniform(2, 4),
+            )
+            counters = outcome.counters
+            if outcome.pause_requested:
+                self.greet_queue_paused = True
+            if outcome.notice is not None:
+                self.run_on_ui(
+                    lambda notice=outcome.notice: show_notice(notice)
                 )
-                if has_later_pending:
-                    time.sleep(random.uniform(2, 4))
         except ApiRiskBlocked as exc:
             guard_state = get_boss_access_block_state()
             remaining = max(
@@ -16363,20 +14487,22 @@ class BossFilterGUI:
                 f"BOSS 访问保护已触发：{signal}，{exc.reason}。"
                 f"剩余冷却约 {remaining} 秒"
             )
-            if active_item and active_item.get("status") == "待发送":
-                active_item["message"] = run_error
-                active_item["updated_at"] = datetime.now().strftime("%Y%m%d_%H%M%S")
+            current_item = active_item[0]
+            if current_item and current_item.get("status") == "待发送":
+                current_item["message"] = run_error
+                current_item["updated_at"] = datetime.now().strftime(
+                    "%Y%m%d_%H%M%S"
+                )
             self.append_operation_log(
                 f"[访问保护] 联系候选人准备阶段 BOSS 返回 {signal}：{exc.reason}。"
                 f"已停止后续发送，冷却约 {remaining} 秒。"
             )
-            self.root.after(
-                0,
+            self.run_on_ui(
                 lambda message=run_error: messagebox.showwarning(
                     "BOSS 访问保护",
                     message,
                     parent=parent,
-                ),
+                )
             )
         except Exception as exc:
             safe_error = self._sanitize_runtime_log_message(exc)
@@ -16385,55 +14511,39 @@ class BossFilterGUI:
         finally:
             self.greet_queue_running = False
             self.greet_queue_paused = False
-            for item in self.greet_queue_items:
-                if item.get('status') == "发送中":
-                    candidate = item.get('candidate') or {}
-                    pending_message = "发送流程意外中断，请先到 BOSS 沟通列表核实"
-                    item['status'] = "待核实"
-                    item['message'] = pending_message
-                    item['updated_at'] = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    try:
-                        persist_candidate_greeting_pending(
-                            candidate,
-                            pending_message,
-                            CANDIDATES_PATH,
-                        )
-                    except Exception as exc:
-                        self.append_operation_log(
-                            "[联系候选人] 中断后的待核实状态未能写入候选人记录："
-                            f"{self._sanitize_runtime_log_message(exc)}"
-                        )
-                    pending_count += 1
+            recovered, failures = _CONTACT_CONTROLLER.finalize_interrupted(
+                self.greet_queue_items,
+                persist_pending=lambda candidate, message: (
+                    persist_candidate_greeting_pending(
+                        candidate,
+                        message,
+                        CANDIDATES_PATH,
+                    )
+                ),
+            )
+            counters.pending += recovered
+            for _name, failure in failures:
+                self.append_operation_log(
+                    "[联系候选人] 中断后的待核实状态未能写入候选人记录："
+                    f"{self._sanitize_runtime_log_message(failure)}"
+                )
             if connection_lock_acquired:
                 self._browser_connection_lock.release()
             self._persist_greet_queue()
-            try:
-                self.root.after(0, self._refresh_greet_queue_dialog)
-            except (tk.TclError, RuntimeError):
-                pass
+            self.run_on_ui(self._refresh_greet_queue_dialog)
             self.append_operation_log(
-                f"[联系候选人] 完成：成功 {success_count} 人，失败 {fail_count} 人，"
-                f"待核实 {pending_count} 人，待切换岗位页 {page_waiting_count} 人，"
-                f"已跳过 {skipped_count} 人"
+                f"[联系候选人] 完成：成功 {counters.success} 人，"
+                f"失败 {counters.failed} 人，待核实 {counters.pending} 人，"
+                f"待切换岗位页 {counters.page_waiting} 人，"
+                f"已跳过 {counters.skipped} 人"
             )
-            feedback = {
-                "success": success_count,
-                "failed": fail_count,
-                "pending": pending_count,
-                "page_waiting": page_waiting_count,
-                "page_waiting_jobs": dict(page_waiting_jobs),
-                "skipped": skipped_count,
-                "stopped": self.stop_event.is_set(),
-                "error": run_error,
-            }
-            try:
-                self.root.after(
-                    0,
-                    lambda result=feedback: self._show_greet_queue_run_result(result),
-                )
-            except (tk.TclError, RuntimeError):
-                pass
-
+            feedback = counters.feedback(
+                stopped=self.stop_event.is_set(),
+                error=run_error,
+            )
+            self.run_on_ui(
+                lambda result=feedback: self._show_greet_queue_run_result(result)
+            )
     @staticmethod
     def _build_greet_queue_run_feedback(result):
         return contact_presenter.build_greet_queue_run_feedback(result)
@@ -16458,10 +14568,7 @@ class BossFilterGUI:
     @staticmethod
     def _candidate_identity_key(candidate):
         """Return the persisted candidate identity used by result-page actions."""
-        return (
-            str(candidate.get('geek_id') or ''),
-            normalize_job_name(candidate.get('job_name')),
-        )
+        return CandidateController.identity(candidate)
 
     @staticmethod
     def _format_display_datetime(value, missing="未知"):
@@ -16667,8 +14774,6 @@ class BossFilterGUI:
             return
         self.greet_queue_window.destroy()
 
-    def _create_review_text_area(self, parent):
-        return gui_candidate_review.create_review_text_area(self, parent)
 
     def _show_candidate_review_view(self, view_name):
         """Switch the review content immediately and refresh the flat selected state."""
@@ -17039,20 +15144,7 @@ class BossFilterGUI:
         except Exception as e:
             messagebox.showerror("错误", f"打开查看与复核失败：{e}")
 
-    def _greet_single_candidate(self, item, candidate=None, parent=None, tree=None, tree_item=None):
-        """Compatibility entry that routes every GUI contact action through the contact list."""
-        _parent = parent or self.root
-        if candidate is None and item is not None:
-            candidate = self._find_candidate_by_tree_item(item)
-        if not candidate:
-            messagebox.showwarning("联系候选人", "未找到候选人信息。", parent=_parent)
-            return
-        self._add_candidates_to_greet_queue([candidate], parent=_parent)
 
-    def _greet_selected_candidates(self, selection, filtered_ref, tree, parent=None):
-        """Compatibility entry that adds multi-selected candidates to the contact list."""
-        candidates = self._collect_selected_candidates_for_queue(selection, filtered_ref, tree)
-        self._add_candidates_to_greet_queue(candidates, parent=parent or self.root)
 
 
     def _update_greet_status(self, candidate, method) -> bool:
@@ -17076,11 +15168,7 @@ class BossFilterGUI:
 
     def _remove_candidate_records(self, predicate) -> int:
         """Remove records and reclaim only managed resumes no longer referenced."""
-        removed, cleanup = remove_candidates_all_with_resume_cleanup(
-            predicate,
-            CANDIDATES_PATH,
-            base_dir=BASE_DIR,
-        )
+        removed, cleanup = _candidate_controller_for(self).remove_records(predicate)
         if cleanup.failure_count:
             messagebox.showwarning(
                 "简历副本未完全清理",
@@ -17246,12 +15334,6 @@ class BossFilterGUI:
         except Exception as e:
             messagebox.showerror("错误", f"导出失败：{e}")
 
-    def open_json(self):
-        """打开 JSON 文件"""
-        if CANDIDATES_PATH.exists():
-            os.startfile(str(CANDIDATES_PATH))
-        else:
-            messagebox.showwarning("警告", "文件不存在")
 
     def _clear_candidates_from_dialog(
         self,
@@ -17262,51 +15344,34 @@ class BossFilterGUI:
         """Apply a confirmed candidate-data cleanup request."""
         try:
             backup_path = CANDIDATES_PATH.with_suffix(".json.bak")
-            cleanup_outcome = None
-
-            def clear_snapshot(candidates):
-                nonlocal cleanup_outcome
-                cleanup_outcome = clear_candidates_in_place(
-                    candidates,
-                    scope=choice,
-                    selected_job=selected_job,
-                    keep_greeted=keep_greeted,
-                )
-                return cleanup_outcome.removed_count
-
-            _result, resume_cleanup = mutate_candidates_with_resume_cleanup(
-                clear_snapshot,
-                CANDIDATES_PATH,
+            cleanup = _DATA_MAINTENANCE_CONTROLLER.clear_candidates(
+                scope=choice,
+                selected_job=selected_job,
+                keep_greeted=keep_greeted,
+                candidates_path=CANDIDATES_PATH,
                 base_dir=BASE_DIR,
+                mutate_with_resume_cleanup=mutate_candidates_with_resume_cleanup,
+                clear_in_place=clear_candidates_in_place,
             )
-            if cleanup_outcome is None:
-                raise RuntimeError("候选人清理事务未返回结果")
-            removed = cleanup_outcome.removed_count
-            kept_count = cleanup_outcome.greeted_kept_count
-            blacklist_kept_count = cleanup_outcome.blacklist_kept_count
+            removed = cleanup.removed_count
+            kept_count = cleanup.greeted_kept_count
+            blacklist_kept_count = cleanup.blacklist_kept_count
+            resume_cleanup = cleanup.resume_cleanup
             if removed:
                 self.append_log(
                     f"已备份候选人数据到 {backup_path.name}"
                 )
 
-            if choice == "current":
-                log_message = (
-                    f"已清空岗位「{selected_job}」的 {removed} 条候选人数据"
-                )
-                result_message = f"已清空 {removed} 条候选人数据"
-            else:
-                log_message = f"已清空全部 {removed} 条候选人数据"
-                result_message = f"已清空全部 {removed} 条候选人数据"
-            if kept_count > 0:
-                log_message += f"，保留 {kept_count} 条已打招呼记录"
+            log_message = cleanup.message(choice, selected_job)
+            result_message = (
+                f"已清空 {removed} 条候选人数据"
+                if choice == "current"
+                else f"已清空全部 {removed} 条候选人数据"
+            )
+            if kept_count:
                 result_message += f"，保留 {kept_count} 条已打招呼记录"
-            if blacklist_kept_count > 0:
-                log_message += (
-                    f"，保留 {blacklist_kept_count} 条黑名单记录"
-                )
-                result_message += (
-                    f"，保留 {blacklist_kept_count} 条黑名单记录"
-                )
+            if blacklist_kept_count:
+                result_message += f"，保留 {blacklist_kept_count} 条黑名单记录"
             self.append_log(log_message)
             messagebox.show_result(
                 "清空候选人",
@@ -17368,22 +15433,10 @@ class BossFilterGUI:
         greeted_count = 0
         try:
             candidates = load_candidates_all(CANDIDATES_PATH)
-            if is_all_jobs:
-                greeted_count = sum(
-                    1 for candidate in candidates
-                    if candidate.get("greet_sent")
-                )
-            else:
-                job_name = normalize_job_name(selected_job)
-                greeted_count = sum(
-                    1
-                    for candidate in candidates
-                    if (
-                        candidate.get("greet_sent")
-                        and normalize_job_name(candidate.get("job_name"))
-                        == job_name
-                    )
-                )
+            greeted_count = _DATA_MAINTENANCE_CONTROLLER.count_greeted(
+                candidates,
+                selected_job,
+            )
         except (OSError, RuntimeError):
             pass
 
@@ -17403,34 +15456,6 @@ class BossFilterGUI:
             ),
         )
 
-    def show_help(self):
-        """显示帮助"""
-        help_text = """BOSS 简历筛选器 - 使用说明
-
-1. 岗位配置：
-   - 选择或新建岗位
-   - 配置经验、学历、技能要求
-   - 保存配置
-
-2. 运行控制：
-    - 设置 DOM 滚动轮次（深度扫描可提高到 20-100）
-   - 选择打招呼等级
-   - 点击"开始运行"
-
-3. 筛选结果：
-   - 查看候选人列表
-   - 导出 Excel 文件
-
-注意事项：
-- 需要 Chrome 浏览器
-- 程序启动后需手动导航到 BOSS 直聘推荐页面
-- 定期备份 candidates_all.json 文件"""
-        self._show_text_dialog(
-            "使用说明",
-            help_text,
-            width=640,
-            height=460,
-        )
 
     def show_about(self):
         """显示关于弹窗"""

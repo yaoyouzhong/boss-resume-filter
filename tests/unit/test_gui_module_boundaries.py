@@ -4,11 +4,16 @@ from unittest.mock import Mock, patch
 
 import api_connectivity
 import browser_connection
+import browser_controller
+import candidate_controller
 import candidate_diagnostics_presenter
 import candidate_cleanup
 import candidate_presenter
 import changelog_renderer
+import contact_controller
 import contact_presenter
+import data_maintenance_controller
+import education_controller
 import gui_dialogs
 import gui_candidate_actions
 import gui_candidate_diagnostics
@@ -28,10 +33,14 @@ import gui_run_page
 import gui_settings_page
 import gui_stats_detail
 import gui_stats_page
+import gui_style_setup
 import model_catalog
 import resume_parser
 import resume_import_service
+import result_controller
+import run_controller
 import run_presenter
+import settings_controller
 import stats_presenter
 import ui_windowing
 import updater
@@ -110,16 +119,38 @@ def test_resume_import_controller_delegates_parsing_and_persistence_boundaries()
     block = source[source.index("def _import_resume"):]
     block = block[:block.index("\n    def _revert_resume_eval")]
 
-    assert "parse_resume_text(filepath)" in block
-    assert "persist_candidate_resume(" in block
+    assert "_candidate_controller_for(self).import_resume(" in block
+    assert "parser=parse_resume_text" in block
+    assert "persister=persist_candidate_resume" in block
+    assert "parse_resume_text(filepath)" not in block
+    assert "persist_candidate_resume(" not in block
     assert "store_resume_copy(" not in block
     assert "mutate_candidates_with_resume_cleanup(" not in block
-    assert "evaluate_with_resume(" in block
+    assert "evaluator=evaluate_with_resume" in block
     assert "pdfminer.high_level" not in block
     assert "docx.Document" not in block
     assert "striprtf.striprtf" not in block
     assert "re.sub(" not in block
     assert "open(filepath" not in block
+
+
+def test_resume_revert_delegates_mutation_to_candidate_controller():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _revert_resume_eval"):]
+    block = block[:block.index("\n    # ===== 一键AI评估功能 =====")]
+
+    assert "_candidate_controller_for(self).revert_resume_evaluation(" in block
+    assert "mutate_candidates_with_resume_cleanup(" not in block
+    assert "persisted.pop(" not in block
+
+
+def test_resume_worker_routes_all_ui_updates_through_ui_queue():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _eval_worker():"):]
+    block = block[:block.index("threading.Thread(target=_eval_worker")]
+
+    assert "self.run_on_ui(" in block
+    assert "_parent.after(" not in block
 
 
 def test_resume_import_service_excludes_gui_parser_and_network_dependencies():
@@ -161,6 +192,132 @@ def test_browser_connection_service_excludes_gui_storage_and_scan_dependencies()
     assert callable(browser_connection.probe_page_url)
     assert callable(browser_connection.is_debug_port_open)
     assert callable(browser_connection.connect_browser_address)
+
+
+def test_browser_controller_excludes_tk_gui_storage_and_business_workflows():
+    forbidden = {
+        "bossmaster",
+        "candidate_workflow",
+        "contact_queue",
+        "gui_main",
+        "storage",
+        "tkinter",
+    }
+    assert not (_top_level_imports("browser_controller") & forbidden)
+    assert callable(browser_controller.BrowserController)
+    assert callable(browser_controller.BrowserRuntime)
+
+
+def test_contact_controller_excludes_tk_gui_storage_browser_and_network_dependencies():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "tkinter",
+        "urllib",
+    }
+    assert not (_top_level_imports("contact_controller") & forbidden)
+    assert callable(contact_controller.ContactController)
+    assert callable(contact_controller.ContactRunCounters)
+
+
+def test_contact_worker_delegates_state_machine_and_queues_all_tk_updates():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _run_greet_queue_worker"):]
+    block = block[:block.index("\n    @staticmethod\n    def _build_greet_queue_run_feedback")]
+
+    assert "_CONTACT_CONTROLLER.run_queue(" in block
+    assert "_CONTACT_CONTROLLER.finalize_interrupted(" in block
+    assert "self.run_on_ui(" in block
+    assert "self.root.after(" not in block
+
+
+def test_run_controller_excludes_tk_gui_storage_browser_and_network_dependencies():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "contact_queue",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "tkinter",
+        "urllib",
+    }
+    assert not (_top_level_imports("run_controller") & forbidden)
+    assert callable(run_controller.RunController)
+    assert callable(run_controller.RunRequest)
+    assert callable(run_controller.RunProgressEvent)
+    assert callable(run_controller.RunTerminalEvent)
+
+
+def test_run_worker_consumes_snapshot_and_routes_tk_work_to_ui_queue():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    worker = source[source.index("def run_worker"):]
+    worker = worker[:worker.index("\n    def _apply_run_terminal_event")]
+
+    assert "request = self._pending_run_request" in worker
+    assert "_RUN_CONTROLLER.execute(" in worker
+    assert "_RUN_CONTROLLER.terminal_event(" in worker
+    assert "self.run_on_ui(" in worker
+    assert ".get()" not in worker
+    assert "self.root.after(" not in worker
+
+
+def test_result_controller_excludes_tk_gui_and_storage_dependencies():
+    forbidden = {
+        "bossmaster",
+        "gui_main",
+        "storage",
+        "tkinter",
+    }
+    assert not (_top_level_imports("result_controller") & forbidden)
+    assert callable(result_controller.prepare_result_view)
+    assert callable(result_controller.candidate_query_match)
+    assert callable(result_controller.result_sort_value)
+
+
+def test_candidate_controller_excludes_tk_gui_and_storage_dependencies():
+    forbidden = {
+        "bossmaster",
+        "gui_main",
+        "storage",
+        "tkinter",
+    }
+    assert not (_top_level_imports("candidate_controller") & forbidden)
+    assert callable(candidate_controller.CandidateController)
+    assert callable(candidate_controller.CandidatePersistence)
+
+
+def test_settings_data_and_education_controllers_exclude_gui_and_tk():
+    common_forbidden = {"bossmaster", "gui_main", "storage", "tkinter"}
+    assert not (_top_level_imports("settings_controller") & (
+        common_forbidden | {"security", "requests"}
+    ))
+    assert not (_top_level_imports("data_maintenance_controller") & common_forbidden)
+    assert not (_top_level_imports("education_controller") & common_forbidden)
+    assert callable(settings_controller.SettingsController)
+    assert callable(data_maintenance_controller.DataMaintenanceController)
+    assert callable(education_controller.EducationController)
+
+
+def test_checkpoint_two_gui_methods_delegate_business_orchestration():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    assert "_SETTINGS_CONTROLLER.prepare_saved_models(" in source
+    assert "_SETTINGS_CONTROLLER.fetch_catalog(" in source
+    assert "_DATA_MAINTENANCE_CONTROLLER.clear_candidates(" in source
+    assert "_EDUCATION_CONTROLLER.recognize_documents(" in source
+    assert "_EDUCATION_CONTROLLER.attempt_captcha(" in source
+
+    fetch_block = source[source.index("def fetch_model_list"):]
+    fetch_block = fetch_block[:fetch_block.index("\n    def _apply_model_catalog_outcome")]
+    assert "self.run_on_ui(" in fetch_block
+    assert "self.root.after(" not in fetch_block
 
 
 def test_candidate_cleanup_does_not_import_gui_storage_or_network_modules():
@@ -209,6 +366,26 @@ def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():
         "gui_stats_page",
     ):
         assert not (_top_level_imports(module_name) & forbidden)
+
+
+def test_gui_style_setup_owns_only_global_tk_style_registration():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "contact_queue",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("gui_style_setup") & forbidden)
+    assert callable(gui_style_setup.setup_styles)
+
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    assert "gui_style_setup.setup_styles(self)" in source
+    assert "def setup_styles(self)" not in source
 
 
 def test_gui_compatibility_methods_delegate_to_presenters():
@@ -670,15 +847,17 @@ def test_api_connectivity_controllers_delegate_network_probes():
 
 def test_browser_controllers_delegate_bounded_connection_probes():
     source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    controller_source = (ROOT / "browser_controller.py").read_text(encoding="utf-8")
     reconnect = source[source.index("def _try_reconnect_browser"):]
     reconnect = reconnect[:reconnect.index("\n    def _launch_boss_browser")]
     check = source[source.index("def check_browser_connection"):]
     check = check[:check.index("\n    def _start_browser_auto_check")]
 
-    assert "is_debug_port_open(address, timeout=0.5)" in reconnect
-    assert "connect_browser_address(" in reconnect
-    assert "prefer_boss_tab=True" in reconnect
-    assert "validate_page=True" in reconnect
+    assert "_browser_controller_for(self).reconnect(" in reconnect
+    assert "self._runtime.port_open(address, timeout=0.5)" in controller_source
+    assert "self._runtime.connector(" in controller_source
+    assert "prefer_boss_tab=prefer_boss_tab" in controller_source
+    assert "validate_page=validate_page" in controller_source
     assert "from DrissionPage" not in reconnect
 
     assert "probe_page_url(" in check
@@ -686,9 +865,37 @@ def test_browser_controllers_delegate_bounded_connection_probes():
     assert "is_debug_port_open(addr, timeout=1)" in check
     assert "connect_browser_address(addr, timeout=3)" in check
     assert "except ImportError:\n                    raise" in check
-    assert "subprocess.Popen(" in check
+    assert "self._launch_boss_browser()" in check
+    assert "self._runtime.popen(" in controller_source
     assert "_reactivate_and_navigate(" in check
     assert "self.set_browser_ui(" in check
+
+
+def test_result_page_controller_owns_data_scope_metrics_and_row_decisions():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    refresh = source[source.index("def refresh_results"):]
+    refresh = refresh[:refresh.index("\n    def _refresh_results_and_reset_sort")]
+
+    assert "ResultQuery(" in refresh
+    assert "ResultController(load_candidates_all)" in refresh
+    assert "controller.load(CANDIDATES_PATH, query)" in refresh
+    assert "state.metrics" in refresh
+    assert "state.rows" in refresh
+    assert "derive_candidate_decision(" not in refresh
+    assert "normalize_job_name(" not in refresh
+    assert "_parse_salary_exp(" not in refresh
+
+
+def test_candidate_persistence_compatibility_methods_delegate_to_controller():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    assert "_candidate_controller_for(self).blacklist(" in source
+    assert "_candidate_controller_for(self).unblacklist(" in source
+    assert "_candidate_controller_for(self).update_followup(" in source
+    assert "_candidate_controller_for(self).complete_review(" in source
+    assert "_candidate_controller_for(self).reject_review(" in source
+    assert "_candidate_controller_for(self).approve_contact(" in source
+    assert "_candidate_controller_for(self).update_feedback(" in source
+    assert "_candidate_controller_for(self).save_ai_evaluations(" in source
 
 
 def test_model_catalog_dialog_does_not_import_controller_storage_or_http_clients():
@@ -711,8 +918,9 @@ def test_model_catalog_service_is_ui_free_and_main_uses_both_extracted_parts():
     source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
     block = source[source.index("def fetch_model_list"):]
     block = block[:block.index("\n    def _show_api_key_while_pressed")]
-    assert "catalog_response = fetch_model_catalog(" in block
-    assert "analysis = analyze_model_catalog(" in block
+    assert "_SETTINGS_CONTROLLER.fetch_catalog(" in block
+    assert "fetcher=fetch_model_catalog" in block
+    assert "analyzer=analyze_model_catalog" in block
     assert "gui_model_catalog_dialog.show_model_catalog_dialog(" in block
     assert "requests.get(" not in block
     assert "tk.Listbox(" not in block
@@ -893,15 +1101,17 @@ def test_candidate_blacklist_dialog_compatibility_method_is_a_thin_delegate():
     assert "ttk.Button" not in block
 
 
-def test_candidate_blacklist_persistence_remains_in_main_controller():
+def test_candidate_blacklist_persistence_delegates_to_candidate_controller():
     builder = (ROOT / "gui_candidate_state_dialogs.py").read_text(encoding="utf-8")
     source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
     assert "def _update_candidate_blacklist" not in builder
     assert "def _update_candidate_blacklist" in source
-    assert "update_candidate_records(" in source[
+    block = source[
         source.index("def _update_candidate_blacklist"):
         source.index("\n    def _import_resume")
     ]
+    assert "_candidate_controller_for(self).blacklist(" in block
+    assert "update_candidate_records(" not in block
 
 
 def test_candidate_followup_dialog_exposes_form_and_save_result_contracts():
@@ -1145,7 +1355,7 @@ def test_clear_candidates_dialog_exposes_choices_and_controller_callback():
 def test_clear_candidates_compatibility_method_is_a_thin_delegate():
     source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
     block = source[source.index("def clear_candidates"):]
-    block = block[:block.index("\n    def show_help")]
+    block = block[:block.index("\n    def show_about")]
 
     assert "gui_data_maintenance_dialogs.show_clear_candidates_dialog(" in block
     assert "load_candidates_all(CANDIDATES_PATH)" in block
@@ -1154,7 +1364,7 @@ def test_clear_candidates_compatibility_method_is_a_thin_delegate():
     assert "mutate_candidates_with_resume_cleanup" not in block
 
 
-def test_clear_candidates_persistence_remains_in_main_controller():
+def test_clear_candidates_persistence_delegates_to_data_controller():
     source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
     builder = (ROOT / "gui_data_maintenance_dialogs.py").read_text(
         encoding="utf-8"
@@ -1162,8 +1372,9 @@ def test_clear_candidates_persistence_remains_in_main_controller():
     controller = source[source.index("def _clear_candidates_from_dialog"):]
     controller = controller[:controller.index("\n    def clear_candidates")]
 
-    assert "mutate_candidates_with_resume_cleanup(" in controller
-    assert "clear_candidates_in_place(" in controller
+    assert "_DATA_MAINTENANCE_CONTROLLER.clear_candidates(" in controller
+    assert "mutate_with_resume_cleanup=mutate_candidates_with_resume_cleanup" in controller
+    assert "clear_in_place=clear_candidates_in_place" in controller
     assert "self._regenerate_excel()" in controller
     assert "self.refresh_results()" in controller
     assert "mutate_candidates_with_resume_cleanup(" not in builder
@@ -1215,16 +1426,25 @@ def test_candidate_review_view_helpers_preserve_selection_and_toggle_behavior():
     show_view.assert_called_once_with("detail")
 
 
-def test_candidate_workbench_compatibility_methods_delegate_to_shared_primitives():
+def test_candidate_workbench_builders_use_shared_primitives_without_gui_wrappers():
     source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
-    block = source[source.index("def _create_candidate_workbench_header"):]
-    block = block[:block.index("\n    def _show_daily_candidate_actions_dialog")]
+    builders = "\n".join(
+        (ROOT / module_name).read_text(encoding="utf-8")
+        for module_name in (
+            "gui_candidate_actions.py",
+            "gui_candidate_diagnostics.py",
+            "gui_contact_queue.py",
+        )
+    )
 
-    assert "gui_candidate_workbench.create_header(" in block
-    assert "gui_candidate_workbench.create_metrics(" in block
-    assert "gui_candidate_workbench.navigation_style(" in block
-    assert "gui_candidate_workbench.apply_navigation_tags(" in block
-    assert "ttk.Frame(" not in block
+    assert "def _create_candidate_workbench_header" not in source
+    assert "def _create_candidate_workbench_metrics" not in source
+    assert "def _candidate_workbench_navigation_style" not in source
+    assert "def _apply_candidate_workbench_navigation_tags" not in source
+    assert "gui_candidate_workbench.create_header(" in builders
+    assert "gui_candidate_workbench.create_metrics(" in builders
+    assert "gui_candidate_workbench.navigation_style(" in builders
+    assert "gui_candidate_workbench.apply_navigation_tags(" in builders
 
 
 def test_contact_queue_builder_exposes_explicit_callbacks_and_widget_bundle():

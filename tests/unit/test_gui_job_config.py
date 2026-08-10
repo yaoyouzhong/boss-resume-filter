@@ -10,7 +10,7 @@ import time
 import types
 from datetime import date, datetime
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, call, patch
+from unittest.mock import Mock, call, patch
 
 import gui_main
 import icons
@@ -520,11 +520,9 @@ def test_job_config_basic_filters_use_compact_grouped_rows_and_keep_alignment():
 
 
 def test_compact_filter_spinbox_matches_combobox_pixel_width_contract():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    styles_block = source[source.index("def setup_styles"):]
-    styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
+    styles_block = Path("gui_style_setup.py").read_text(encoding="utf-8")
 
-    assert '_filter_char_width = font.Font(font=self.font_label).measure("0")' in styles_block
+    assert '_filter_char_width = font.Font(font=host.font_label).measure("0")' in styles_block
     assert "'CompactFilter.TCombobox'" in styles_block
     assert "padding=(max(0, _filter_char_width - 6), 0)" in styles_block
     assert "'CompactFilter.TSpinbox'" in styles_block
@@ -1820,12 +1818,10 @@ def test_result_page_keeps_workflow_actions_visible_and_groups_utilities():
 
 
 def test_system_settings_model_name_matches_provider_control_width():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
     settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
     settings_block = settings_source[settings_source.index("# 模型接入配置"):]
     settings_block = settings_block[:settings_block.index("# 第三行：API Key")]
-    styles_block = source[source.index("def setup_styles"):]
-    styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
+    styles_block = Path("gui_style_setup.py").read_text(encoding="utf-8")
 
     assert "self.api_provider_combo = ttk.Combobox" in settings_block
     assert "width=18, font=self.font_label" in settings_block
@@ -1839,8 +1835,7 @@ def test_more_action_menubuttons_share_centered_overlay_arrow_style():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     config_source = Path("gui_config_page.py").read_text(encoding="utf-8")
     result_source = Path("gui_result_page.py").read_text(encoding="utf-8")
-    setup_block = source[source.index("def setup_styles"):]
-    setup_block = setup_block[:setup_block.index("\n    def _create_status_icons")]
+    setup_block = Path("gui_style_setup.py").read_text(encoding="utf-8")
 
     assert "style.layout(" in setup_block
     assert "'CenteredActions.TMenubutton'" in setup_block
@@ -1867,11 +1862,9 @@ def test_more_action_menubuttons_share_centered_overlay_arrow_style():
 
 
 def test_combobox_style_keeps_readonly_text_visible_and_clears_inactive_highlight():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    setup_block = source[source.index("def setup_styles"):]
-    setup_block = setup_block[:setup_block.index("\n    def create_sidebar")]
-    combo_map = setup_block[setup_block.index("style.map(\n            'TCombobox'"):]
-    combo_map = combo_map[:combo_map.index("\n        style.map('TSpinbox'")]
+    setup_block = Path("gui_style_setup.py").read_text(encoding="utf-8")
+    combo_map = setup_block[setup_block.index("style.map(\n        'TCombobox'"):]
+    combo_map = combo_map[:combo_map.index("\n    style.map('TSpinbox'")]
 
     assert "('readonly', c['text_primary'])" in combo_map
     assert "('readonly', c['bg_card'])" in combo_map
@@ -1880,19 +1873,17 @@ def test_combobox_style_keeps_readonly_text_visible_and_clears_inactive_highligh
 
 
 def test_checkbutton_style_uses_large_checkmark_indicator_but_ai_keeps_switch():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
     run_source = Path("gui_run_page.py").read_text(encoding="utf-8")
-    setup_block = source[source.index("def setup_styles"):]
-    setup_block = setup_block[:setup_block.index("\n    def create_sidebar")]
+    setup_block = Path("gui_style_setup.py").read_text(encoding="utf-8")
     run_block = run_source[run_source.index("# AI 辅助评估开关"):]
     run_block = run_block[:run_block.index("\n    yield")]
 
     assert "checkbox_size = max(24, int(round(24 * fs)))" in setup_block
     assert "checkbox_indicator = 'App.Checkbutton.indicator'" in setup_block
     assert "('selected', checkbox_on)" in setup_block
-    assert "style.layout(\n            'TCheckbutton'" in setup_block
-    check_layout = setup_block[setup_block.index("style.layout(\n            'TCheckbutton'"):]
-    check_layout = check_layout[:check_layout.index("\n        style.configure(")]
+    assert "style.layout(\n        'TCheckbutton'" in setup_block
+    check_layout = setup_block[setup_block.index("style.layout(\n        'TCheckbutton'"):]
+    check_layout = check_layout[:check_layout.index("\n    style.configure(")]
     assert "Checkbutton.focus" not in check_layout
     assert "('Checkbutton.label', {" in check_layout
     assert "enabled_variable=host.ai_eval_available_var" in run_block
@@ -1975,11 +1966,9 @@ def test_ai_eval_status_enables_switch_only_with_complete_model_config():
 
 
 def test_button_style_removes_inner_focus_ring_and_keeps_outer_focus_border():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    setup_block = source[source.index("def setup_styles"):]
-    setup_block = setup_block[:setup_block.index("\n    def create_sidebar")]
-    button_layout = setup_block[setup_block.index("style.layout(\n            'TButton'"):]
-    button_layout = button_layout[:button_layout.index("\n        style.map('TButton'")]
+    setup_block = Path("gui_style_setup.py").read_text(encoding="utf-8")
+    button_layout = setup_block[setup_block.index("style.layout(\n        'TButton'"):]
+    button_layout = button_layout[:button_layout.index("\n    style.map('TButton'")]
 
     assert "Button.focus" not in button_layout
     assert "('Button.border', {" in button_layout
@@ -3514,17 +3503,20 @@ def test_save_api_config_stops_when_system_credential_write_fails():
 
 def test_save_api_config_sets_default_when_current_model_is_not_saved():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    controller = Path("settings_controller.py").read_text(encoding="utf-8")
     save_block = source[source.index("def save_api_config"):]
     save_block = save_block[:save_block.index("\n    def fetch_model_list")]
 
-    assert "has_saved_current = any(" in save_block
-    assert "should_set_default = not has_saved_current" in save_block
-    assert 'default_summary = "本次保存的模型已设为默认 AI 模型" if should_set_default else "默认 AI 模型保持不变"' in save_block
+    assert "_SETTINGS_CONTROLLER.prepare_saved_models(" in save_block
+    assert "has_saved_current = any(" in controller
+    assert "default_changed = not has_saved_current" in controller
+    assert "outcome.default_changed" in save_block
 
 
 def test_model_discovery_keeps_custom_base_url_explicit_and_scopes_catalog_cache():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     catalog_source = Path("model_catalog.py").read_text(encoding="utf-8")
+    controller_source = Path("settings_controller.py").read_text(encoding="utf-8")
     settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
     fetch_block = source[source.index("def fetch_model_list"):]
     fetch_block = fetch_block[:fetch_block.index("\n    def _show_api_key_while_pressed")]
@@ -3532,8 +3524,9 @@ def test_model_discovery_keeps_custom_base_url_explicit_and_scopes_catalog_cache
     assert 'self.api_base_url_var = tk.StringVar()' in settings_source
     assert 'text=" 自动识别并获取模型"' in settings_source
     assert 'if not base_url and not has_endpoint_discovery(provider):' in fetch_block
-    assert 'catalog_response = fetch_model_catalog(' in fetch_block
-    assert 'analysis = analyze_model_catalog(' in fetch_block
+    assert '_SETTINGS_CONTROLLER.fetch_catalog(' in fetch_block
+    assert 'response = fetcher(provider, api_key, base_url)' in controller_source
+    assert 'analysis = analyzer(' in controller_source
     assert '自定义/中转地址只请求用户明确输入的 URL' in catalog_source
     assert 'resolution = discover_endpoint(' in catalog_source
     assert 'catalog_key = model_catalog_cache_key(provider, base_url)' in catalog_source
@@ -3572,6 +3565,8 @@ def test_fetch_model_list_routes_catalog_result_to_extracted_dialog():
     gui._update_api_status = Mock()
     gui._sanitize_config_for_save = lambda config: config
     gui._mark_api_config_ui_current = Mock()
+    gui._save_api_config_to_file = Mock()
+    gui.run_on_ui = lambda callback: gui.root.queued.append(callback)
     gui._status_clickable_labels = []
     gui.api_config = {
         "base_url": code_url,
@@ -3616,13 +3611,11 @@ def test_fetch_model_list_routes_catalog_result_to_extracted_dialog():
 
 
 def test_education_captcha_low_confidence_is_not_auto_submitted():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    solve_block = source[source.index("def _attempt_captcha_solve"):]
-    solve_block = solve_block[:solve_block.index("\n    def _solve_captcha")]
+    source = Path("education_controller.py").read_text(encoding="utf-8")
+    solve_block = source[source.index("def attempt_captcha"):]
 
-    assert "CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE" in solve_block
-    assert "confidence < CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE" in solve_block
-    assert 'return False, "待人工验证"' in solve_block
+    assert "confidence < min_confidence" in solve_block
+    assert 'CaptchaResult(False, "待人工验证")' in solve_block
 
 
 def test_education_captcha_retries_three_times_before_manual_fallback():
@@ -3654,15 +3647,16 @@ def test_education_captcha_retries_three_times_before_manual_fallback():
     assert any("3/3" in status for status, _detail in progress)
 
 
-def test_use_selected_model_matches_provider_and_base_url_not_model_name_only():
+def test_activate_saved_model_uses_the_full_selected_connection_identity():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    use_block = source[source.index("def use_selected_model"):]
+    use_block = source[source.index("def _activate_saved_model"):]
     use_block = use_block[:use_block.index("\n    def test_saved_model_connectivity")]
 
-    assert 'selected_base_url = item[\'values\'][3]' in use_block
-    assert '"api_provider": provider_key' in use_block
-    assert '"base_url": selected_base_url' in use_block
-    assert 'if saved.get("model") == model_name:' not in use_block
+    assert 'provider_key = model_config.get("api_provider", "")' in use_block
+    assert 'base_url = model_config.get("base_url", "")' in use_block
+    assert 'model_name = model_config.get("model", "")' in use_block
+    assert 'self.api_config["api_provider"] = provider_key' in use_block
+    assert 'self.api_config["base_url"] = base_url' in use_block
 
 
 def test_latest_history_value_uses_latest_end_date_not_list_order():
@@ -5567,12 +5561,16 @@ def test_clear_candidates_controller_keeps_greeted_blacklisted_and_other_jobs():
 
 def test_greet_queue_add_filters_before_enqueue():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    controller_source = Path("contact_controller.py").read_text(encoding="utf-8")
     add_block = source[source.index("def _add_candidates_to_greet_queue"):]
     add_block = add_block[:add_block.index("\n    @staticmethod\n    def _format_greet_queue_skip_summary")]
+    controller_block = controller_source[controller_source.index("    def add_candidates("):]
+    controller_block = controller_block[:controller_block.index("\n    @staticmethod\n    def set_item_state")]
 
-    assert "self._greet_queue_skip_reason(candidate)" in add_block
-    assert 'skip_reason = "已在队列"' in add_block
-    assert "self._build_greet_queue_item(candidate" in add_block
+    assert "_CONTACT_CONTROLLER.add_candidates(" in add_block
+    assert "reason = skip_reason(candidate)" in controller_block
+    assert 'reason = "已在队列"' in controller_block
+    assert "items.append(build_item(candidate, source=source))" in controller_block
     assert "没有可加入联系清单的候选人" in add_block
     assert "self._show_text_dialog(" in add_block
     assert "messagebox.showinfo" not in add_block
@@ -5947,14 +5945,17 @@ def test_job_name_mismatch_confirmation_explains_names_may_differ():
     assert confirm.call_args.kwargs["yes_label"] == "确认对应，继续"
 
 
-def test_legacy_gui_contact_methods_only_add_to_contact_list():
+def test_gui_contact_entry_points_only_add_to_contact_list():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    block = source[source.index("def _greet_single_candidate"):]
-    block = block[:block.index("\n    def _update_greet_status")]
+    result_builder = Path("gui_result_page.py").read_text(encoding="utf-8")
 
-    assert block.count("self._add_candidates_to_greet_queue(") == 2
-    assert "send_greeting_with_context" not in block
-    assert "send_greeting_on_list_page" not in block
+    assert "def _greet_single_candidate" not in source
+    assert "def _greet_selected_candidates" not in source
+    assert "add_to_queue=lambda selected" in source
+    assert "add_queue=lambda:" in source
+    assert "command=host._open_greet_queue_from_result" in result_builder
+    assert "send_greeting_with_context" not in result_builder
+    assert "send_greeting_on_list_page" not in result_builder
 
 
 def test_greet_queue_skip_summary_is_user_readable():
@@ -6053,6 +6054,7 @@ def test_contact_queue_group_hints_explain_the_selected_status_action():
 
 def test_contact_queue_persists_intent_and_revalidates_before_each_send():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    controller_source = Path("contact_controller.py").read_text(encoding="utf-8")
     load_block = source[source.index("def _ensure_greet_queue_loaded"):]
     load_block = load_block[:load_block.index("\n    @staticmethod\n    def _has_direct_send_context")]
     worker_block = source[source.index("def _run_greet_queue_worker"):]
@@ -6060,20 +6062,25 @@ def test_contact_queue_persists_intent_and_revalidates_before_each_send():
     resolve_block = source[source.index("def _resolve_selected_greet_queue_pending"):]
     resolve_block = resolve_block[:resolve_block.index("\n    def _pause_greet_queue")]
 
-    assert "load_contact_queue(candidates, CONTACT_QUEUE_PATH)" in load_block
+    assert "_CONTACT_CONTROLLER.load_and_revalidate(" in load_block
+    assert "load_candidates=load_candidates_all" in load_block
+    assert "load_queue=load_contact_queue" in load_block
     assert "save_contact_queue(self.greet_queue_items, CONTACT_QUEUE_PATH)" in load_block
-    assert worker_block.index("self._reload_greet_queue_candidate(item)") < worker_block.index(
-        "self._revalidate_greet_queue_candidate(candidate)"
+    run_block = controller_source[controller_source.index("    def run_queue("):]
+    run_block = run_block[:run_block.index("\n    @classmethod\n    def finalize_interrupted")]
+    assert "_CONTACT_CONTROLLER.run_queue(" in worker_block
+    assert run_block.index("candidate, reload_error = reload_candidate(item)") < run_block.index(
+        "status, message = revalidate(candidate)"
     )
-    assert worker_block.index("self._revalidate_greet_queue_candidate(candidate)") < worker_block.index(
-        'self._set_greet_queue_item_state(item, "发送中", "")'
+    assert run_block.index("status, message = revalidate(candidate)") < run_block.index(
+        'cls.set_item_state(item, "发送中", "")'
     )
-    assert worker_block.count("self._reload_greet_queue_candidate(item)") == 2
-    assert worker_block.count("self._ensure_greet_queue_candidate_page_ready(") >= 2
+    assert run_block.count("candidate = load_ready_candidate(item)") == 2
+    assert run_block.count("page_ready, page_message = ensure_page_ready(candidate)") == 2
     assert "job_mismatch_decisions = {}" in worker_block
-    assert "resolve_candidate_greeting_confirmation(" in resolve_block
-    assert 'item[\'status\'] = "已发送"' in resolve_block
-    assert 'item[\'status\'] = "待发送"' in resolve_block
+    assert "resolver=resolve_candidate_greeting_confirmation" in resolve_block
+    assert "_CONTACT_CONTROLLER.resolve_pending(" in resolve_block
+    assert '"已发送" if sent else "待发送"' in controller_source
 
 
 def test_pending_verification_cannot_be_discarded_without_resolution():
@@ -6101,6 +6108,7 @@ def _contact_worker_gui(candidate):
     gui.greet_queue_items = [item]
     gui.greet_queue_window = None
     gui.root = Mock()
+    gui.run_on_ui = lambda callback: gui.root.after(0, callback)
     gui.browser_page = object()
     gui.stop_event = threading.Event()
     gui.greet_queue_running = True
@@ -6402,29 +6410,21 @@ def test_browser_reconnect_delegates_debug_port_and_bounded_connection():
     gui.browser_page = None
     gui.browser_address = "127.0.0.1:9333"
     gui.browser_connected = False
-    gui._is_browser_page_alive = Mock(side_effect=[False, True])
-    page = object()
-    result = types.SimpleNamespace(
+    gui._is_browser_page_alive = Mock(return_value=False)
+    page = Mock()
+    state = types.SimpleNamespace(
+        connected=True,
         page=page,
         address="127.0.0.1:9333",
-        error=None,
-        timed_out=False,
+        error="",
     )
-    port_file = Mock()
-    port_file.read_text.side_effect = OSError("missing")
+    controller = Mock()
+    controller.reconnect.return_value = state
 
-    with patch("gui_main.CHROME_DEBUG_PORT_FILE", port_file), \
-            patch("gui_main.is_debug_port_open", return_value=True) as port_open, \
-            patch("gui_main.connect_browser_address", return_value=result) as connect:
+    with patch("gui_main._browser_controller_for", return_value=controller):
         assert gui._try_reconnect_browser() is True
 
-    port_open.assert_called_once_with("127.0.0.1:9333", timeout=0.5)
-    connect.assert_called_once_with(
-        "127.0.0.1:9333",
-        timeout=4,
-        prefer_boss_tab=True,
-        validate_page=True,
-    )
+    controller.reconnect.assert_called_once_with("127.0.0.1:9333")
     assert gui.browser_page is page
     assert gui.browser_address == "127.0.0.1:9333"
     assert gui.browser_connected is True
@@ -6436,21 +6436,19 @@ def test_browser_reconnect_timeout_fails_closed_without_trying_other_ports():
     gui.browser_address = "127.0.0.1:9333"
     gui.browser_connected = True
     gui._is_browser_page_alive = Mock(return_value=False)
-    result = types.SimpleNamespace(
+    state = types.SimpleNamespace(
+        connected=False,
         page=None,
         address="127.0.0.1:9333",
-        error=TimeoutError("connect timeout"),
-        timed_out=True,
+        error="connect timeout",
     )
-    port_file = Mock()
-    port_file.read_text.side_effect = OSError("missing")
+    controller = Mock()
+    controller.reconnect.return_value = state
 
-    with patch("gui_main.CHROME_DEBUG_PORT_FILE", port_file), \
-            patch("gui_main.is_debug_port_open", return_value=True), \
-            patch("gui_main.connect_browser_address", return_value=result) as connect:
+    with patch("gui_main._browser_controller_for", return_value=controller):
         assert gui._try_reconnect_browser() is False
 
-    connect.assert_called_once()
+    controller.reconnect.assert_called_once_with("127.0.0.1:9333")
     assert gui.browser_page is None
     assert gui.browser_connected is False
 
@@ -6471,29 +6469,25 @@ def test_contact_browser_reconnect_launches_recommend_page_when_chrome_is_absent
 
 def test_launch_boss_browser_uses_managed_profile_and_recommend_url():
     gui = BossFilterGUI.__new__(BossFilterGUI)
-    gui.stop_event = threading.Event()
-    gui.browser_page = Mock(url='https://www.zhipin.com/web/chat/recommend')
-    gui._try_reconnect_browser = Mock(return_value=True)
-    port_socket = MagicMock()
-    port_socket.__enter__.return_value.getsockname.return_value = ('127.0.0.1', 45678)
-    connection = MagicMock()
+    page = Mock(url='https://www.zhipin.com/web/chat/recommend')
+    state = types.SimpleNamespace(
+        connected=True,
+        page=page,
+        address="127.0.0.1:45678",
+        error="",
+    )
+    controller = Mock()
+    controller.launch_managed_chrome.return_value = state
 
-    with patch("gui_main.sys.platform", "win32"), \
-            patch("gui_main.os.path.exists", return_value=True), \
-            patch("gui_main.socket.socket", return_value=port_socket), \
-            patch("gui_main.socket.create_connection", return_value=connection), \
-            patch("gui_main.subprocess.Popen") as popen, \
-            patch("pathlib.Path.mkdir"), \
-            patch("pathlib.Path.write_text"), \
-            patch("gui_main.time.sleep", return_value=None):
+    with patch("gui_main._browser_controller_for", return_value=controller):
         assert gui._launch_boss_browser() is True
 
-    command = popen.call_args.args[0]
-    assert '--remote-debugging-port=45678' in command
-    assert any(arg.startswith('--user-data-dir=') for arg in command)
-    assert 'https://www.zhipin.com/web/chat/recommend' in command
+    controller.launch_managed_chrome.assert_called_once()
+    assert controller.launch_managed_chrome.call_args.args[0] == (
+        "https://www.zhipin.com/web/chat/recommend"
+    )
     assert gui.browser_address == '127.0.0.1:45678'
-    gui._try_reconnect_browser.assert_called_once_with()
+    assert gui.browser_page is page
 
 
 def test_greet_queue_run_feedback_covers_success_and_visible_errors():
@@ -6576,21 +6570,20 @@ def test_candidate_state_diagnostics_uses_group_summary_and_compact_candidate_ro
 
 
 def test_candidate_workbench_primary_buttons_keep_standard_button_typography():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
     daily_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
     state_block = Path("gui_candidate_diagnostics.py").read_text(encoding="utf-8")
-    style_block = source[source.index("style.configure('Workbench.Primary.TButton'"):]
+    style_source = Path("gui_style_setup.py").read_text(encoding="utf-8")
+    style_block = style_source[style_source.index("style.configure('Workbench.Primary.TButton'"):]
     style_block = style_block[:style_block.index("# 危险级")]
     queue_block = Path("gui_contact_queue.py").read_text(encoding="utf-8")
 
-    assert "font=self.font_label, padding=(15, 8)" in style_block
+    assert "font=host.font_label, padding=(15, 8)" in style_block
     assert 'style="Workbench.Primary.TButton"' in daily_block
     assert 'style="Workbench.Primary.TButton"' in state_block
     assert 'style="Workbench.Primary.TButton"' in queue_block
 
 
 def test_candidate_workbench_hierarchies_share_navigation_style_and_neutral_details():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
     daily_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
     state_block = Path("gui_candidate_diagnostics.py").read_text(encoding="utf-8")
     queue_block = Path("gui_contact_queue.py").read_text(encoding="utf-8")
@@ -6608,7 +6601,6 @@ def test_candidate_workbench_hierarchies_share_navigation_style_and_neutral_deta
 
 
 def test_candidate_workflow_dialog_subtitles_use_neutral_text_color():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
     daily_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
     state_block = Path("gui_candidate_diagnostics.py").read_text(encoding="utf-8")
     queue_block = Path("gui_contact_queue.py").read_text(encoding="utf-8")
@@ -7208,6 +7200,7 @@ def test_browser_preflight_waits_for_login_before_showing_confirmation():
     pending = [{"status": "待发送", "candidate": {"geek_id": "g1"}}]
     gui.greet_queue_window = None
     gui.root = Mock()
+    gui.run_on_ui = lambda callback: gui.root.after(0, callback)
     gui.browser_page = Mock()
     gui.stop_event = threading.Event()
     gui._browser_connection_lock = threading.Lock()
@@ -7238,6 +7231,7 @@ def test_browser_preflight_navigates_existing_chrome_to_recommend_page():
     pending = [{"status": "待发送", "candidate": {"geek_id": "g1"}}]
     gui.greet_queue_window = None
     gui.root = Mock()
+    gui.run_on_ui = lambda callback: gui.root.after(0, callback)
     gui.browser_page = Mock()
     gui.stop_event = threading.Event()
     gui._browser_connection_lock = threading.Lock()
@@ -7265,6 +7259,7 @@ def test_browser_preflight_cooldown_performs_no_browser_action():
     pending = [{"status": "待发送", "candidate": {"geek_id": "g1"}}]
     gui.greet_queue_window = None
     gui.root = Mock()
+    gui.run_on_ui = lambda callback: gui.root.after(0, callback)
     gui.browser_page = Mock()
     gui.stop_event = threading.Event()
     gui._browser_connection_lock = threading.Lock()
@@ -7319,6 +7314,7 @@ def test_browser_reconnect_rechecks_cooldown_before_launch():
 
 def test_gui_run_builds_contact_list_without_direct_sending():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    controller_source = Path("run_controller.py").read_text(encoding="utf-8")
     run_page_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     worker_block = source[source.index("def run_worker"):]
     worker_block = worker_block[:worker_block.index("\n        # 启动后台线程")]
@@ -7326,8 +7322,8 @@ def test_gui_run_builds_contact_list_without_direct_sending():
     assert 'value="仅保存筛选结果"' in run_page_block
     assert '"将强烈推荐加入联系清单"' in run_page_block
     assert '"将推荐及以上加入联系清单"' in run_page_block
-    assert "greet=False" in worker_block
-    assert "scanned_candidates = run_smart_scan(" in worker_block
+    assert "greet=False" in controller_source
+    assert "scanned_candidates = scan(" in controller_source
     assert "self._add_scan_candidates_to_contact_queue(" in worker_block
     assert "def greet_confirm_callback(message):" not in worker_block
     assert "job_config_callback=job_config_callback" in worker_block
@@ -7343,6 +7339,7 @@ def test_run_page_describes_actual_ai_score_adjustment_range():
 
 def test_run_page_exposes_user_friendly_advanced_scan_settings():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    controller_source = Path("run_controller.py").read_text(encoding="utf-8")
     run_page_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     worker_block = source[source.index("def run_worker"):]
     worker_block = worker_block[:worker_block.index("\n    def on_closing")]
@@ -7371,7 +7368,7 @@ def test_run_page_exposes_user_friendly_advanced_scan_settings():
     assert "textvariable=host.greet_context_capture_limit_var" in run_page_block
     assert "读取越多越慢" not in run_page_block
     assert "准备人数越多耗时越长" not in run_page_block
-    assert "api_direct_pages * 20" in worker_block
+    assert "self.api_direct_pages * 20" in controller_source
 
     ai_row_index = run_page_block.index("# AI 辅助评估开关")
     advanced_index = run_page_block.index("# 高级运行设置：位于 AI 评估行下方")
@@ -7412,10 +7409,10 @@ def test_run_page_exposes_user_friendly_advanced_scan_settings():
     assert "host.greet_context_risk_label" in advanced_block
     assert '"访问量和耗时会明显增加"' in advanced_block
     assert advanced_block.count('"继续调高会增加触发风控的风险"') == 2
-    assert "listener_first=not api_direct_enabled" in worker_block
-    assert "greet_context_capture=greet_context_capture_enabled" in worker_block
-    assert "greet_context_limit=greet_context_capture_limit" in worker_block
-    assert '"提取链路"' in worker_block
+    assert "listener_first=not self.api_direct_enabled" in controller_source
+    assert "greet_context_capture=self.greet_context_capture_enabled" in controller_source
+    assert "greet_context_limit=self.greet_context_capture_limit" in controller_source
+    assert '"提取链路"' in controller_source
     assert 'self.append_run_log(f"扫描增强：' not in worker_block
     assert 'self.append_run_log(f"后续联系：' not in worker_block
 
@@ -7838,26 +7835,31 @@ def test_silent_browser_poll_does_not_log_missing_debug_port():
     check_block = source[source.index("def check_browser_connection"):]
     check_block = check_block[:check_block.index("\n    def _start_browser_auto_check")]
 
-    assert 'if not silent and prev_state != "● 未连接":' in check_block
+    missing_port = check_block[check_block.index("if not port_open:"):]
+    missing_port = missing_port[:missing_port.index("\n                try:")]
+    silent_branch = missing_port[missing_port.index("if silent:"):]
+    silent_branch = silent_branch[:silent_branch.index("\n\n                    self.set_browser_ui")]
+    assert "append_log" not in silent_branch
 
 
 def test_run_worker_preserves_scan_completion_state():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    controller_source = Path("run_controller.py").read_text(encoding="utf-8")
     run_block = source[source.index("def run_worker"):]
     run_block = run_block[:run_block.index("\n    def on_closing")]
     create_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     start_block = source[source.index("def start_run"):]
     start_block = start_block[:start_block.index("\n    def stop_run")]
 
-    assert 'final_desc.startswith(("[达到轮次上限]", "[可能未扫完]"))' in run_block
-    assert 'final_desc.startswith("[扫描中断]")' in run_block
-    assert "str(description).startswith('[')" in run_block
+    assert 'final_desc.startswith(("[达到轮次上限]", "[可能未扫完]"))' in controller_source
+    assert 'final_desc.startswith("[扫描中断]")' in controller_source
+    assert 'desc.startswith("[")' in controller_source
     assert "job_match_callback=job_match_callback" in run_block
     assert "job_config_callback=job_config_callback" in run_block
     assert 'context="run"' in run_block
-    assert 'self.progress_var.set(100)' in run_block
-    assert 'self._replace_run_summary_contact_queue_count(final_desc, 0)' in run_block
-    assert 'self._set_run_summary(summary_desc)' in run_block
+    assert 'self.progress_var.set(100)' in source
+    assert 'self._replace_run_summary_contact_queue_count(' in source
+    assert 'self._set_run_summary(summary_desc)' in source
     assert 'self._reset_run_summary()' in start_block
     assert 'host.run_summary_text_label' in create_block
     assert '本轮结果摘要' in create_block
@@ -7876,14 +7878,12 @@ def test_run_control_buttons_keep_icons_visible_while_disabled():
 
 
 def test_run_control_uses_compact_rounds_input_and_matching_button_fonts():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    styles_block = source[source.index("def setup_styles"):]
-    styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
+    styles_block = Path("gui_style_setup.py").read_text(encoding="utf-8")
     create_block = Path("gui_run_page.py").read_text(encoding="utf-8")
 
     assert "increment=10,\n        textvariable=host.rounds_var,\n        width=8" in create_block
     assert "'RunControl.Danger.TButton'" in styles_block
-    assert "font=(FONT_FAMILY_SEMIBOLD, int(13 * page_fs))" in styles_block
+    assert "font=(ui_theme.FONT_FAMILY_SEMIBOLD, int(13 * page_fs))" in styles_block
     assert "style='Accent.TButton'" in create_block
     assert "style='RunControl.Danger.TButton'" in create_block
 
@@ -7938,12 +7938,10 @@ def test_inline_form_notes_use_flat_copy_without_outer_parentheses():
 
 
 def test_run_log_and_shared_dialogs_use_the_larger_font():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    styles_block = source[source.index("def setup_styles"):]
-    styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
+    styles_block = Path("gui_style_setup.py").read_text(encoding="utf-8")
     create_block = Path("gui_run_page.py").read_text(encoding="utf-8")
 
-    assert "self.font_log = (FONT_FAMILY, int(12 * page_fs))" in styles_block
+    assert "host.font_log = (ui_theme.FONT_FAMILY, int(12 * page_fs))" in styles_block
     assert "font_run_log" not in styles_block
     assert "font=host.font_log" in create_block
 
@@ -8104,10 +8102,12 @@ def test_terminal_log_keeps_one_status_line_without_repeating_summary():
     )
 
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    controller_source = Path("run_controller.py").read_text(encoding="utf-8")
     run_block = source[source.index("def run_worker"):]
     run_block = run_block[:run_block.index("\n    def on_closing")]
-    assert "terminal_log = self._format_terminal_log_text(final_desc)" in run_block
-    assert "LogRedirector(self.append_run_log)" in run_block
+    assert "terminal = _RUN_CONTROLLER.terminal_event(" in run_block
+    assert "terminal.terminal_log" in run_block
+    assert "TimestampedLogRedirector(log)" in controller_source
     assert "self.append_log(" not in run_block
 
 
@@ -8535,19 +8535,15 @@ def test_education_import_uses_multi_file_dialog():
 
 
 def test_education_queue_supports_multi_select_batch_recognition_and_context_menu():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
     create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
-    recognize_block = source[
-        source.index("def _recognize_education_image"):
-        source.index("def _fill_chsi_page")
-    ]
+    recognize_block = Path("education_controller.py").read_text(encoding="utf-8")
 
     assert 'selectmode="extended"' in create_block
     assert 'text=" 识别证书"' in create_block
     assert 'label="识别证书"' in create_block
     assert 'label="删除证书"' in create_block
     assert "ThreadPoolExecutor(max_workers=workers)" in recognize_block
-    assert "workers = min(3, len(item_ids))" in recognize_block
+    assert "workers = min(max(1, max_workers), max(1, len(selected)))" in recognize_block
 
 
 def test_education_selected_ids_preserve_multi_selection():
@@ -8908,6 +8904,7 @@ def test_education_import_button_text_is_certificate():
 
 def test_education_import_dialog_supports_pdf():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    controller = Path("education_controller.py").read_text(encoding="utf-8")
     select_block = source[
         source.index("def _select_education_images"):
         source.index("def _refresh_education_queue_summary")
@@ -8919,22 +8916,18 @@ def test_education_import_dialog_supports_pdf():
     assert "validate_document_path" in select_block
     assert "is_pdf_path" in select_block
     # item 字典存 is_pdf 标记
-    assert '"is_pdf": is_pdf_path(path)' in select_block
+    assert '"is_pdf": is_pdf(path)' in controller
 
 
 def test_education_worker_branches_pdf_and_image():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    worker_block = source[
-        source.index("def _recognize_education_image"):
-        source.index("def _fill_chsi_page")
-    ]
+    worker_block = Path("education_controller.py").read_text(encoding="utf-8")
 
     # 同时导入两个识别函数
-    assert "recognize_certificate_pdf" in worker_block
-    assert "recognize_certificate_image" in worker_block
+    assert "recognize_pdf" in worker_block
+    assert "recognize_image" in worker_block
     # 按 is_pdf 分支
     assert 'item.get("is_pdf")' in worker_block
-    assert "recognize_certificate_pdf(path" in worker_block
+    assert "return recognize_pdf(path" in worker_block
 
 
 def test_education_render_shows_text_placeholder_for_pdf():
@@ -8976,7 +8969,7 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
     parent = Mock()
     tree = Mock()
     callbacks = []
-    parent.after.side_effect = lambda _delay, callback: callbacks.append(callback)
+    gui.run_on_ui = lambda callback: callbacks.append(callback)
 
     def run_thread(*_args, **kwargs):
         return types.SimpleNamespace(start=kwargs["target"])
@@ -9013,8 +9006,9 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
                 tree_item="row-1",
             )
 
-            assert len(callbacks) == 1
-            callbacks[0]()
+            assert len(callbacks) == 2
+            for callback in callbacks:
+                callback()
 
     assert gui.append_log.call_args_list[-1].args == (
         "[简历评估] ✗ 张三 异常：模型故障",
