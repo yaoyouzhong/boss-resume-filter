@@ -3514,17 +3514,20 @@ def test_save_api_config_stops_when_system_credential_write_fails():
 
 def test_save_api_config_sets_default_when_current_model_is_not_saved():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    controller = Path("settings_controller.py").read_text(encoding="utf-8")
     save_block = source[source.index("def save_api_config"):]
     save_block = save_block[:save_block.index("\n    def fetch_model_list")]
 
-    assert "has_saved_current = any(" in save_block
-    assert "should_set_default = not has_saved_current" in save_block
-    assert 'default_summary = "本次保存的模型已设为默认 AI 模型" if should_set_default else "默认 AI 模型保持不变"' in save_block
+    assert "_SETTINGS_CONTROLLER.prepare_saved_models(" in save_block
+    assert "has_saved_current = any(" in controller
+    assert "default_changed = not has_saved_current" in controller
+    assert "outcome.default_changed" in save_block
 
 
 def test_model_discovery_keeps_custom_base_url_explicit_and_scopes_catalog_cache():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     catalog_source = Path("model_catalog.py").read_text(encoding="utf-8")
+    controller_source = Path("settings_controller.py").read_text(encoding="utf-8")
     settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
     fetch_block = source[source.index("def fetch_model_list"):]
     fetch_block = fetch_block[:fetch_block.index("\n    def _show_api_key_while_pressed")]
@@ -3532,8 +3535,9 @@ def test_model_discovery_keeps_custom_base_url_explicit_and_scopes_catalog_cache
     assert 'self.api_base_url_var = tk.StringVar()' in settings_source
     assert 'text=" 自动识别并获取模型"' in settings_source
     assert 'if not base_url and not has_endpoint_discovery(provider):' in fetch_block
-    assert 'catalog_response = fetch_model_catalog(' in fetch_block
-    assert 'analysis = analyze_model_catalog(' in fetch_block
+    assert '_SETTINGS_CONTROLLER.fetch_catalog(' in fetch_block
+    assert 'response = fetcher(provider, api_key, base_url)' in controller_source
+    assert 'analysis = analyzer(' in controller_source
     assert '自定义/中转地址只请求用户明确输入的 URL' in catalog_source
     assert 'resolution = discover_endpoint(' in catalog_source
     assert 'catalog_key = model_catalog_cache_key(provider, base_url)' in catalog_source
@@ -3572,6 +3576,8 @@ def test_fetch_model_list_routes_catalog_result_to_extracted_dialog():
     gui._update_api_status = Mock()
     gui._sanitize_config_for_save = lambda config: config
     gui._mark_api_config_ui_current = Mock()
+    gui._save_api_config_to_file = Mock()
+    gui.run_on_ui = lambda callback: gui.root.queued.append(callback)
     gui._status_clickable_labels = []
     gui.api_config = {
         "base_url": code_url,
@@ -3616,13 +3622,11 @@ def test_fetch_model_list_routes_catalog_result_to_extracted_dialog():
 
 
 def test_education_captcha_low_confidence_is_not_auto_submitted():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    solve_block = source[source.index("def _attempt_captcha_solve"):]
-    solve_block = solve_block[:solve_block.index("\n    def _solve_captcha")]
+    source = Path("education_controller.py").read_text(encoding="utf-8")
+    solve_block = source[source.index("def attempt_captcha"):]
 
-    assert "CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE" in solve_block
-    assert "confidence < CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE" in solve_block
-    assert 'return False, "待人工验证"' in solve_block
+    assert "confidence < min_confidence" in solve_block
+    assert 'CaptchaResult(False, "待人工验证")' in solve_block
 
 
 def test_education_captcha_retries_three_times_before_manual_fallback():
@@ -8537,17 +8541,14 @@ def test_education_import_uses_multi_file_dialog():
 def test_education_queue_supports_multi_select_batch_recognition_and_context_menu():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
-    recognize_block = source[
-        source.index("def _recognize_education_image"):
-        source.index("def _fill_chsi_page")
-    ]
+    recognize_block = Path("education_controller.py").read_text(encoding="utf-8")
 
     assert 'selectmode="extended"' in create_block
     assert 'text=" 识别证书"' in create_block
     assert 'label="识别证书"' in create_block
     assert 'label="删除证书"' in create_block
     assert "ThreadPoolExecutor(max_workers=workers)" in recognize_block
-    assert "workers = min(3, len(item_ids))" in recognize_block
+    assert "workers = min(max(1, max_workers), max(1, len(selected)))" in recognize_block
 
 
 def test_education_selected_ids_preserve_multi_selection():
@@ -8908,6 +8909,7 @@ def test_education_import_button_text_is_certificate():
 
 def test_education_import_dialog_supports_pdf():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    controller = Path("education_controller.py").read_text(encoding="utf-8")
     select_block = source[
         source.index("def _select_education_images"):
         source.index("def _refresh_education_queue_summary")
@@ -8919,22 +8921,18 @@ def test_education_import_dialog_supports_pdf():
     assert "validate_document_path" in select_block
     assert "is_pdf_path" in select_block
     # item 字典存 is_pdf 标记
-    assert '"is_pdf": is_pdf_path(path)' in select_block
+    assert '"is_pdf": is_pdf(path)' in controller
 
 
 def test_education_worker_branches_pdf_and_image():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    worker_block = source[
-        source.index("def _recognize_education_image"):
-        source.index("def _fill_chsi_page")
-    ]
+    worker_block = Path("education_controller.py").read_text(encoding="utf-8")
 
     # 同时导入两个识别函数
-    assert "recognize_certificate_pdf" in worker_block
-    assert "recognize_certificate_image" in worker_block
+    assert "recognize_pdf" in worker_block
+    assert "recognize_image" in worker_block
     # 按 is_pdf 分支
     assert 'item.get("is_pdf")' in worker_block
-    assert "recognize_certificate_pdf(path" in worker_block
+    assert "return recognize_pdf(path" in worker_block
 
 
 def test_education_render_shows_text_placeholder_for_pdf():

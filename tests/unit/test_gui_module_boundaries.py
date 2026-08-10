@@ -10,6 +10,8 @@ import candidate_cleanup
 import candidate_presenter
 import changelog_renderer
 import contact_presenter
+import data_maintenance_controller
+import education_controller
 import gui_dialogs
 import gui_candidate_actions
 import gui_candidate_diagnostics
@@ -34,6 +36,7 @@ import resume_parser
 import resume_import_service
 import result_controller
 import run_presenter
+import settings_controller
 import stats_presenter
 import ui_windowing
 import updater
@@ -210,6 +213,32 @@ def test_candidate_controller_excludes_tk_gui_and_storage_dependencies():
     assert not (_top_level_imports("candidate_controller") & forbidden)
     assert callable(candidate_controller.CandidateController)
     assert callable(candidate_controller.CandidatePersistence)
+
+
+def test_settings_data_and_education_controllers_exclude_gui_and_tk():
+    common_forbidden = {"bossmaster", "gui_main", "storage", "tkinter"}
+    assert not (_top_level_imports("settings_controller") & (
+        common_forbidden | {"security", "requests"}
+    ))
+    assert not (_top_level_imports("data_maintenance_controller") & common_forbidden)
+    assert not (_top_level_imports("education_controller") & common_forbidden)
+    assert callable(settings_controller.SettingsController)
+    assert callable(data_maintenance_controller.DataMaintenanceController)
+    assert callable(education_controller.EducationController)
+
+
+def test_checkpoint_two_gui_methods_delegate_business_orchestration():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    assert "_SETTINGS_CONTROLLER.prepare_saved_models(" in source
+    assert "_SETTINGS_CONTROLLER.fetch_catalog(" in source
+    assert "_DATA_MAINTENANCE_CONTROLLER.clear_candidates(" in source
+    assert "_EDUCATION_CONTROLLER.recognize_documents(" in source
+    assert "_EDUCATION_CONTROLLER.attempt_captcha(" in source
+
+    fetch_block = source[source.index("def fetch_model_list"):]
+    fetch_block = fetch_block[:fetch_block.index("\n    def _apply_model_catalog_outcome")]
+    assert "self.run_on_ui(" in fetch_block
+    assert "self.root.after(" not in fetch_block
 
 
 def test_candidate_cleanup_does_not_import_gui_storage_or_network_modules():
@@ -787,8 +816,9 @@ def test_model_catalog_service_is_ui_free_and_main_uses_both_extracted_parts():
     source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
     block = source[source.index("def fetch_model_list"):]
     block = block[:block.index("\n    def _show_api_key_while_pressed")]
-    assert "catalog_response = fetch_model_catalog(" in block
-    assert "analysis = analyze_model_catalog(" in block
+    assert "_SETTINGS_CONTROLLER.fetch_catalog(" in block
+    assert "fetcher=fetch_model_catalog" in block
+    assert "analyzer=analyze_model_catalog" in block
     assert "gui_model_catalog_dialog.show_model_catalog_dialog(" in block
     assert "requests.get(" not in block
     assert "tk.Listbox(" not in block
@@ -1232,7 +1262,7 @@ def test_clear_candidates_compatibility_method_is_a_thin_delegate():
     assert "mutate_candidates_with_resume_cleanup" not in block
 
 
-def test_clear_candidates_persistence_remains_in_main_controller():
+def test_clear_candidates_persistence_delegates_to_data_controller():
     source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
     builder = (ROOT / "gui_data_maintenance_dialogs.py").read_text(
         encoding="utf-8"
@@ -1240,8 +1270,9 @@ def test_clear_candidates_persistence_remains_in_main_controller():
     controller = source[source.index("def _clear_candidates_from_dialog"):]
     controller = controller[:controller.index("\n    def clear_candidates")]
 
-    assert "mutate_candidates_with_resume_cleanup(" in controller
-    assert "clear_candidates_in_place(" in controller
+    assert "_DATA_MAINTENANCE_CONTROLLER.clear_candidates(" in controller
+    assert "mutate_with_resume_cleanup=mutate_candidates_with_resume_cleanup" in controller
+    assert "clear_in_place=clear_candidates_in_place" in controller
     assert "self._regenerate_excel()" in controller
     assert "self.refresh_results()" in controller
     assert "mutate_candidates_with_resume_cleanup(" not in builder

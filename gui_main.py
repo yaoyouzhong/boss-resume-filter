@@ -37,6 +37,9 @@ from browser_connection import (
 )
 from candidate_controller import CandidateController, CandidatePersistence
 from candidate_cleanup import clear_candidates_in_place
+from data_maintenance_controller import DataMaintenanceController
+from education_controller import EducationController
+from settings_controller import SettingsController
 import candidate_presenter
 import candidate_diagnostics_presenter
 import contact_presenter
@@ -233,6 +236,10 @@ MAINTENANCE_TIME_PREFERENCE_KEYS = {
 }
 API_CONFIG_PATH = get_api_config_path()
 CHROME_DEBUG_PORT_FILE = BASE_DIR / ".chrome_debug_port"
+
+_SETTINGS_CONTROLLER = SettingsController()
+_DATA_MAINTENANCE_CONTROLLER = DataMaintenanceController()
+_EDUCATION_CONTROLLER = EducationController()
 
 
 def _candidate_controller_for(host) -> CandidateController:
@@ -3183,36 +3190,17 @@ class BossFilterGUI:
     @staticmethod
     def _format_backup_summary(result: dict) -> str:
         """Return a privacy-safe summary for backup and restore dialogs."""
-        return (
-            f"岗位 {int(result.get('job_count') or 0)} 个，"
-            f"候选人 {int(result.get('candidate_count') or 0)} 人，"
-            f"联系清单 {int(result.get('queue_count') or 0)} 项，"
-            f"简历副本 {int(result.get('resume_count') or 0)} 份"
-        )
+        return _DATA_MAINTENANCE_CONTROLLER.format_backup_summary(result)
 
     @staticmethod
     def _backup_summary_metrics(result: dict) -> tuple[tuple[str, str], ...]:
         """Return compact, privacy-safe metrics for backup result dialogs."""
-        return (
-            ("岗位", f"{int(result.get('job_count') or 0)} 个"),
-            ("候选人", f"{int(result.get('candidate_count') or 0)} 人"),
-            ("联系清单", f"{int(result.get('queue_count') or 0)} 项"),
-            ("简历副本", f"{int(result.get('resume_count') or 0)} 份"),
-        )
+        return _DATA_MAINTENANCE_CONTROLLER.backup_summary_metrics(result)
 
     @staticmethod
     def _format_maintenance_time(value) -> str:
         """Format one persisted local activity timestamp for compact UI notes."""
-        text = str(value or "").strip()
-        if not text:
-            return "暂无记录"
-        try:
-            timestamp = datetime.fromisoformat(text)
-        except (TypeError, ValueError):
-            return "暂无记录"
-        if timestamp.tzinfo is not None:
-            timestamp = timestamp.astimezone()
-        return timestamp.strftime("%Y-%m-%d %H:%M")
+        return _DATA_MAINTENANCE_CONTROLLER.format_time(value)
 
     def _maintenance_time_value(self, activity: str):
         key = MAINTENANCE_TIME_PREFERENCE_KEYS.get(activity)
@@ -3228,15 +3216,11 @@ class BossFilterGUI:
         when: datetime | None = None,
     ) -> str:
         """Persist the latest successful local data-maintenance timestamp."""
-        key = MAINTENANCE_TIME_PREFERENCE_KEYS.get(activity)
-        if not key:
-            raise ValueError(f"未知的数据维护操作：{activity}")
-        timestamp = when or datetime.now().astimezone()
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.astimezone()
-        value = timestamp.isoformat(timespec="seconds")
-        preferences = dict(getattr(self, "_run_preferences", {}) or {})
-        preferences[key] = value
+        preferences, value = _DATA_MAINTENANCE_CONTROLLER.remember_success(
+            getattr(self, "_run_preferences", {}) or {},
+            activity,
+            when=when,
+        )
         self._run_preferences = preferences
         _save_run_preferences(preferences)
         return value
@@ -3250,23 +3234,13 @@ class BossFilterGUI:
         restore_summary: str = "",
     ) -> str:
         """Build the two-line backup/restore activity note."""
-        backup_value = (
-            self._maintenance_time_value("backup")
-            if backup_at is None
-            else backup_at
+        return _DATA_MAINTENANCE_CONTROLLER.backup_note(
+            getattr(self, "_run_preferences", {}) or {},
+            backup_at=backup_at,
+            restore_at=restore_at,
+            backup_summary=backup_summary,
+            restore_summary=restore_summary,
         )
-        restore_value = (
-            self._maintenance_time_value("restore")
-            if restore_at is None
-            else restore_at
-        )
-        backup_line = f"最近备份：{self._format_maintenance_time(backup_value)}"
-        restore_line = f"最近恢复：{self._format_maintenance_time(restore_value)}"
-        if backup_summary:
-            backup_line += f" · {backup_summary}"
-        if restore_summary:
-            restore_line += f" · {restore_summary}"
-        return f"{backup_line}\n{restore_line}"
 
     def _diagnostic_export_note_text(
         self,
@@ -3275,15 +3249,11 @@ class BossFilterGUI:
         summary: str = "",
     ) -> str:
         """Build the latest successful diagnostic-export note."""
-        value = (
-            self._maintenance_time_value("diagnostic_export")
-            if exported_at is None
-            else exported_at
+        return _DATA_MAINTENANCE_CONTROLLER.diagnostic_note(
+            getattr(self, "_run_preferences", {}) or {},
+            exported_at=exported_at,
+            summary=summary,
         )
-        line = f"最近导出：{self._format_maintenance_time(value)}"
-        if summary:
-            line += f" · {summary}"
-        return line
 
     def _open_export_location(self, file_path: str) -> None:
         """Open an exported file's folder and report file-manager failures."""
@@ -3300,11 +3270,13 @@ class BossFilterGUI:
 
     def _data_operation_busy(self) -> bool:
         """Prevent backup/restore from racing with active candidate writes."""
-        return bool(
-            getattr(self, "is_running", False)
-            or getattr(self, "greet_queue_running", False)
-            or getattr(self, "greet_queue_preparing", False)
-            or getattr(self, "_data_maintenance_running", False)
+        return _DATA_MAINTENANCE_CONTROLLER.operation_busy(
+            scan_running=bool(getattr(self, "is_running", False)),
+            contact_running=bool(getattr(self, "greet_queue_running", False)),
+            contact_preparing=bool(getattr(self, "greet_queue_preparing", False)),
+            maintenance_running=bool(
+                getattr(self, "_data_maintenance_running", False)
+            ),
         )
 
     def _set_data_backup_status(self, text: str) -> None:
@@ -3322,8 +3294,12 @@ class BossFilterGUI:
             )
             return
         try:
-            candidates = read_candidates_snapshot(CANDIDATES_PATH)
-            report = audit_managed_resumes(candidates, base_dir=BASE_DIR)
+            report = _DATA_MAINTENANCE_CONTROLLER.audit_resumes(
+                CANDIDATES_PATH,
+                BASE_DIR,
+                reader=read_candidates_snapshot,
+                auditor=audit_managed_resumes,
+            )
         except (OSError, TypeError, ValueError, RuntimeError) as exc:
             messagebox.show_failure(
                 "简历存储体检",
@@ -3388,10 +3364,16 @@ class BossFilterGUI:
 
         self._data_maintenance_running = True
         try:
-            repair, cleanup = repair_candidate_resume_storage(
+            repair_result = _DATA_MAINTENANCE_CONTROLLER.repair_resumes(
                 CANDIDATES_PATH,
-                base_dir=BASE_DIR,
+                BASE_DIR,
+                repairer=repair_candidate_resume_storage,
+                reader=read_candidates_snapshot,
+                auditor=audit_managed_resumes,
             )
+            repair = repair_result.repair
+            cleanup = repair_result.cleanup
+            remaining = repair_result.remaining
         except (OSError, TypeError, ValueError, RuntimeError) as exc:
             messagebox.show_failure(
                 "简历存储体检",
@@ -3414,23 +3396,6 @@ class BossFilterGUI:
             self.refresh_stats()
         if hasattr(self, "home_stats_labels"):
             self.refresh_home_stats()
-
-        try:
-            refreshed_candidates = read_candidates_snapshot(CANDIDATES_PATH)
-            remaining = audit_managed_resumes(
-                refreshed_candidates,
-                base_dir=BASE_DIR,
-            )
-        except (OSError, TypeError, ValueError, RuntimeError) as exc:
-            messagebox.show_failure(
-                "简历存储体检",
-                headline="修复已执行，复核未完成",
-                message="候选人数据已更新，但无法重新读取完整体检结果。",
-                detail=str(exc),
-                notice="请关闭占用文件的程序后重新运行体检。",
-                parent=self.root,
-            )
-            return
 
         incomplete = bool(cleanup.failure_count or remaining.issue_count)
         messagebox.show_result(
@@ -3482,7 +3447,11 @@ class BossFilterGUI:
         self._data_maintenance_running = True
         self._set_data_backup_status("正在生成并校验备份…")
         try:
-            result = create_backup_package(BASE_DIR, destination)
+            result = _DATA_MAINTENANCE_CONTROLLER.create_backup(
+                BASE_DIR,
+                destination,
+                creator=create_backup_package,
+            )
         except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
             self._set_data_backup_status("备份失败")
             messagebox.show_failure(
@@ -3532,7 +3501,10 @@ class BossFilterGUI:
         if not source:
             return
         try:
-            preview = inspect_backup(source)
+            preview = _DATA_MAINTENANCE_CONTROLLER.inspect_backup(
+                source,
+                inspector=inspect_backup,
+            )
         except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
             messagebox.show_failure(
                 "恢复数据备份",
@@ -3562,7 +3534,11 @@ class BossFilterGUI:
         self._data_maintenance_running = True
         self._set_data_backup_status("正在校验并恢复数据…")
         try:
-            result = restore_backup(BASE_DIR, source)
+            result = _DATA_MAINTENANCE_CONTROLLER.restore_backup(
+                BASE_DIR,
+                source,
+                restorer=restore_backup,
+            )
         except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
             self._set_data_backup_status("恢复失败，当前数据已保留或自动回退")
             messagebox.show_failure(
@@ -3711,11 +3687,12 @@ class BossFilterGUI:
         if status_var is not None:
             status_var.set("正在收集、脱敏并复核…")
         try:
-            result = create_diagnostic_package(
+            result = _DATA_MAINTENANCE_CONTROLLER.create_diagnostic(
                 BASE_DIR,
                 destination,
                 app_version=__version__,
                 runtime_context=self._diagnostic_runtime_context(),
+                creator=create_diagnostic_package,
             )
         except (
             DiagnosticPrivacyError,
@@ -3884,13 +3861,7 @@ class BossFilterGUI:
         """按完整连接身份比较模型，避免同名模型误匹配。"""
         if not model_config or not model_ref:
             return False
-        config_base_url = str(model_config.get("base_url", "")).strip().rstrip("/")
-        ref_base_url = str(model_ref.get("base_url", "")).strip().rstrip("/")
-        return (
-            model_config.get("model", "") == model_ref.get("model", "")
-            and model_config.get("api_provider", "") == model_ref.get("api_provider", "")
-            and config_base_url == ref_base_url
-        )
+        return _SETTINGS_CONTROLLER.model_ref_matches(model_config, model_ref)
 
     def _model_choice_label(self, model_config, include_url=False):
         provider_key = model_config.get("api_provider", "")
@@ -3936,11 +3907,7 @@ class BossFilterGUI:
         """将模型完整连接身份规整为可复用的状态缓存键。"""
         if not model_ref:
             return None
-        return (
-            str(model_ref.get("api_provider", "")).strip(),
-            str(model_ref.get("base_url", "")).strip().rstrip("/"),
-            str(model_ref.get("model", "")).strip(),
-        )
+        return _SETTINGS_CONTROLLER.model_ref_key(model_ref)
 
     def _assigned_model_test_target_label(self, role, model_ref=None):
         """返回用途模型测试提示中使用的可辨识名称。"""
@@ -4414,41 +4381,23 @@ class BossFilterGUI:
         if not paths:
             return
         from education_certificate import is_pdf_path, validate_document_path
-        existing_paths = {
-            str(Path(item["path"]).resolve()).lower()
-            for item in self.education_items.values()
-        }
-        added_ids = []
-        invalid_files = []
-        for raw_path in paths:
-            try:
-                path = validate_document_path(raw_path)
-            except ValueError:
-                invalid_files.append(Path(raw_path).name)
-                continue
-            normalized = str(path.resolve()).lower()
-            if normalized in existing_paths:
-                continue
-            existing_paths.add(normalized)
-            self.education_item_counter += 1
-            item_id = f"education_{self.education_item_counter}"
-            self.education_items[item_id] = {
-                "path": str(path),
-                "is_pdf": is_pdf_path(path),
-                "name": "",
-                "certificate_number": "",
-                "school": "",
-                "major": "",
-                "auto_rotation": 0,
-                "status": "待识别",
-                "detail": "",
-                "warnings": "",
-            }
+        batch = _EDUCATION_CONTROLLER.prepare_import(
+            paths,
+            self.education_items,
+            self.education_item_counter,
+            validator=validate_document_path,
+            is_pdf=is_pdf_path,
+        )
+        self.education_item_counter = batch.next_counter
+        self.education_items.update(batch.items)
+        added_ids = list(batch.items)
+        invalid_files = list(batch.invalid_files)
+        for item_id, item in batch.items.items():
+            path = Path(item["path"])
             self.education_queue_tree.insert(
                 "", "end", iid=item_id,
                 values=(path.name, "", "", "", "", "待识别"),
             )
-            added_ids.append(item_id)
 
         self._refresh_education_queue_summary()
         if added_ids:
@@ -4799,10 +4748,7 @@ class BossFilterGUI:
 
     def _get_education_api_config(self) -> dict:
         """获取学历核验使用的 API 配置。优先 education_model_ref，回退默认 AI 模型。"""
-        edu_ref = (self.api_config or {}).get("education_model_ref")
-        if edu_ref and edu_ref.get("model"):
-            return dict(edu_ref)
-        return dict(self.api_config or {})
+        return _EDUCATION_CONTROLLER.resolve_api_config(self.api_config or {})
 
     def _recognize_education_image(self):
         """最多三路并发识别当前选中的毕业证书。"""
@@ -4858,86 +4804,42 @@ class BossFilterGUI:
         self._refresh_education_queue_summary()
 
         def worker():
-            results = {}
-            try:
-                from concurrent.futures import ThreadPoolExecutor, as_completed
-                from education_certificate import (
-                    recognize_certificate_image,
-                    recognize_certificate_pdf,
-                )
-                config = vision_config
-                api_key = self._get_education_api_key(config)
-                workers = min(3, len(item_ids))
+            from education_certificate import (
+                recognize_certificate_image,
+                recognize_certificate_pdf,
+            )
 
-                def recognize_one(item_id):
-                    item = self.education_items[item_id]
-                    path = item["path"]
-                    if item.get("is_pdf"):
-                        return recognize_certificate_pdf(path, config, api_key or "")
-                    return recognize_certificate_image(path, config, api_key or "")
-
-                with ThreadPoolExecutor(max_workers=workers) as executor:
-                    futures = {
-                        executor.submit(recognize_one, item_id): item_id
-                        for item_id in item_ids
-                        if item_id in self.education_items
-                    }
-                    for future in as_completed(futures):
-                        item_id = futures[future]
-                        try:
-                            results[item_id] = (future.result(), "")
-                        except Exception as error:
-                            results[item_id] = (None, str(error))
-            except Exception as error:
-                error_text = str(error)
-                for item_id in item_ids:
-                    results.setdefault(item_id, (None, error_text))
+            results = _EDUCATION_CONTROLLER.recognize_documents(
+                self.education_items,
+                item_ids,
+                vision_config,
+                self._get_education_api_key(vision_config) or "",
+                recognize_image=recognize_certificate_image,
+                recognize_pdf=recognize_certificate_pdf,
+            )
 
             def show_results():
-                for item_id, (result, error_text) in results.items():
-                    queue_item = self.education_items.get(item_id)
-                    if not queue_item:
-                        continue
-                    if result is not None:
-                        # 识别成功判定：模型置信度 > 0 且至少识别出姓名或证书编号；
-                        # 否则视为识别失败（如"未检测到任何图片"、字段全空、confidence=0），
-                        # 避免失败结果被误标为"已识别"
-                        if result.confidence > 0 and (result.name or result.certificate_number):
-                            queue_item["name"] = result.name
-                            queue_item["certificate_number"] = result.certificate_number
-                            queue_item["school"] = result.school
-                            queue_item["major"] = result.major
-                            queue_item["auto_rotation"] = result.rotation
-                            queue_item["status"] = "已识别"
-                            queue_item["detail"] = (
-                                f"识别完成 · 置信度 {result.confidence}% · {result.model}"
-                            )
-                            queue_item["warnings"] = "；".join(result.warnings)
-                        else:
-                            # LLM 正常返回但识别失败：保留 warnings（含模型给出的失败原因）
-                            queue_item["status"] = "识别失败"
-                            queue_item["detail"] = "识别失败"
-                            warnings_text = "；".join(result.warnings)
-                            if not warnings_text:
-                                warnings_text = f"置信度 {result.confidence}%，未识别出姓名或证书编号"
-                            queue_item["warnings"] = warnings_text
-                    else:
-                        queue_item["status"] = "识别失败"
-                        queue_item["detail"] = "识别失败"
-                        queue_item["warnings"] = error_text
+                updated_ids = _EDUCATION_CONTROLLER.apply_recognition_results(
+                    self.education_items,
+                    results,
+                )
+                for item_id in updated_ids:
                     self._update_education_queue_row(item_id)
                 current = self.education_items.get(self.education_current_id)
                 if current and self.education_current_id in results:
                     self.education_name_var.set(current.get("name", ""))
-                    self.education_number_var.set(current.get("certificate_number", ""))
+                    self.education_number_var.set(
+                        current.get("certificate_number", "")
+                    )
                     self.education_status_var.set(current.get("detail", ""))
-                    self.education_warning_var.set(current.get("warnings", ""))
+                    self.education_warning_var.set(
+                        current.get("warnings", "")
+                    )
                     self._render_education_preview()
                 self.education_recognition_running = False
                 self._refresh_education_queue_summary()
 
             self.run_on_ui(show_results)
-
         threading.Thread(target=worker, daemon=True).start()
 
     def _fill_chsi_page(self):
@@ -4949,22 +4851,14 @@ class BossFilterGUI:
             return
 
         from education_certificate import validate_chsi_fields
-        prepared: list[tuple[str, str, str]] = []
-        for item_id in item_ids:
-            item = self.education_items.get(item_id)
-            if not item:
-                continue
-            try:
-                name, certificate_number = validate_chsi_fields(
-                    item.get("name", ""), item.get("certificate_number", ""),
-                )
-            except ValueError as error:
-                item["status"] = "校验失败"
-                item["detail"] = str(error)
-                item["warnings"] = ""
-                self._update_education_queue_row(item_id)
-                continue
-            prepared.append((item_id, name, certificate_number))
+        preparation = _EDUCATION_CONTROLLER.prepare_chsi(
+            self.education_items,
+            item_ids,
+            validator=validate_chsi_fields,
+        )
+        prepared = list(preparation.prepared)
+        for item_id in preparation.invalid_ids:
+            self._update_education_queue_row(item_id)
 
         if not prepared:
             messagebox.showwarning(
@@ -5139,126 +5033,53 @@ class BossFilterGUI:
         on_progress: "Callable[[str, str], None] | None" = None,
         max_attempts: int = 3,
     ) -> tuple[bool, str]:
-        """填写表单并最多三次识别、提交新的验证码。
-
-        on_progress(detail, status): 每个阶段完成时回调，用于实时更新 GUI 状态。
-
-        返回 (success, status):
-        - (True, "已提交查询"): 查询成功，等待扫码
-        - (False, "识别失败"): 验证码识别错误，可重试
-        - (False, "待人工验证"): 识别过程失败，需人工输入
-        """
+        """Fill the CHSI form and delegate bounded captcha retries."""
         from education_certificate import fill_chsi_query_page, navigate_to_chsi
-        import time
 
-        _emit = on_progress or (lambda *_: None)
-        attempts = max(1, int(max_attempts))
-        last_status = "待人工验证"
-        for attempt in range(1, attempts + 1):
-            try:
-                if attempt > 1:
-                    _emit(
-                        f"正在重试验证码（{attempt}/{attempts}）...",
-                        "正在获取新的验证码",
-                    )
-                # 每次重新进入查询页，确保验证码已刷新且表单状态可预测。
-                navigate_to_chsi(page)
-                _emit("正在填写表单...", "正在填写姓名和证书编号")
-                with self._education_browser_lock:
-                    fill_chsi_query_page(
-                        page,
-                        name,
-                        certificate_number,
-                        skip_navigation=True,
-                    )
-                success, last_status = self._attempt_captcha_solve(
-                    page,
-                    on_progress=on_progress,
-                )
-                if success:
-                    return True, last_status
-            except Exception as error:
-                print(f"[验证码识别] 第 {attempt}/{attempts} 次失败：{error}")
-                last_status = "待人工验证"
-            if attempt < attempts:
-                time.sleep(1)
-        return False, last_status
-
+        result = _EDUCATION_CONTROLLER.fill_and_solve_captcha(
+            page,
+            name,
+            certificate_number,
+            navigate=navigate_to_chsi,
+            fill_query=fill_chsi_query_page,
+            attempt=self._attempt_captcha_solve,
+            browser_lock=self._education_browser_lock,
+            on_progress=on_progress,
+            max_attempts=max_attempts,
+            sleep=time.sleep,
+        )
+        return result.successful, result.status
     def _attempt_captcha_solve(
         self, page, *, on_progress: "Callable[[str, str], None] | None" = None,
     ) -> tuple[bool, str]:
-        """截取验证码图片、调用模型识别并自动填入+查询。
-
-        on_progress(detail, status): 每个阶段完成时回调。
-
-        返回 (success, status):
-        - (True, "已提交查询"): 查询成功
-        - (False, "识别失败"): 验证码错误
-        - (False, "待人工验证"): 识别过程失败
-        """
+        """Capture, recognize, and submit one captcha through the controller."""
         from education_certificate import (
             CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE,
-            capture_captcha_image, click_chsi_query_button,
-            fill_captcha_answer, recognize_captcha,
+            capture_captcha_image,
+            check_query_result,
+            click_chsi_query_button,
+            fill_captcha_answer,
+            recognize_captcha,
             resolve_vision_api_config,
         )
-        _emit = on_progress or (lambda *_: None)
-        data_url = None
-        vision_config = None
-        api_key = ""
-        try:
-            # 阶段 1：截取验证码图片（需要浏览器锁）
-            _emit("正在识别验证码...", "正在截取验证码图片")
-            with self._education_browser_lock:
-                config = self._get_education_api_config()
-                vision_config = resolve_vision_api_config(config)
-                api_key = self._get_education_api_key(config)
-                data_url = capture_captcha_image(page)
-        except Exception as e:
-            print(f"[验证码识别] 截取验证码图片失败：{e}")
-            return False, "待人工验证"
 
-        # 阶段 2：AI 识别（释放浏览器锁，允许其他 tab 操作）
-        _emit("正在识别验证码...", "AI 模型识别中")
-        try:
-            captcha_type, answer, confidence = recognize_captcha(
-                data_url, vision_config, api_key,
-            )
-        except Exception as e:
-            print(f"[验证码识别] AI 识别失败：{e}")
-            return False, "待人工验证"
-
-        if captcha_type == "unknown" or not answer:
-            return False, "待人工验证"
-        if confidence < CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE:
-            print(
-                f"[验证码识别] 置信度 {confidence} 低于自动提交门槛 "
-                f"{CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE}，本次不提交并继续重试"
-            )
-            return False, "待人工验证"
-
-        # 阶段 3：填入答案 + 点击查询（重新获取浏览器锁）
-        _emit("正在提交查询...", "验证码已识别，正在提交")
-        try:
-            with self._education_browser_lock:
-                filled = fill_captcha_answer(page, answer)
-                if not filled:
-                    return False, "待人工验证"
-                import time
-                time.sleep(0.5)
-                click_chsi_query_button(page)
-            # 点击后立即释放锁、立即推状态；check_query_result 的等待放到锁外
-            # （各 worker 操作独立 tab，check 期间无需持有锁）
-            _emit("已提交查询", "正在等待页面响应...")
-            from education_certificate import check_query_result
-            success, message = check_query_result(page)
-            if not success:
-                return False, "识别失败"
-            return True, "已提交查询"
-        except Exception as e:
-            print(f"[验证码识别] 填入/查询失败：{e}")
-            return False, "待人工验证"
-
+        config = self._get_education_api_config()
+        result = _EDUCATION_CONTROLLER.attempt_captcha(
+            page,
+            config=config,
+            api_key=self._get_education_api_key(config),
+            browser_lock=self._education_browser_lock,
+            min_confidence=CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE,
+            capture_image=capture_captcha_image,
+            recognize=recognize_captcha,
+            fill_answer=fill_captcha_answer,
+            click_query=click_chsi_query_button,
+            check_result=check_query_result,
+            resolve_vision_config=resolve_vision_api_config,
+            on_progress=on_progress,
+            sleep=time.sleep,
+        )
+        return result.successful, result.status
     def _solve_captcha(self):
         """手动点击"重新识别验证码"按钮的入口，支持多选批量重试失败项。"""
         self._set_captcha_btn_state("disabled")
@@ -6708,26 +6529,11 @@ class BossFilterGUI:
 
     def _default_api_config(self):
         """返回默认 API 配置"""
-        return {
-            "api_provider": "deepseek",
-            "api_key": "",
-            "base_url": "https://api.deepseek.com",
-            "model": "deepseek-chat",
-            "saved_models": [],
-            "providers": {},
-            "fetched_models": {},
-            "llm_read_timeout": None,
-        }
+        return _SETTINGS_CONTROLLER.default_api_config()
 
     def _sanitize_config_for_save(self, config):
         """移除所有 api_key 字段（顶层 + saved_models 内嵌），返回可安全写入磁盘的副本"""
-        clean = {k: v for k, v in config.items() if k != "api_key"}
-        if "saved_models" in clean:
-            clean["saved_models"] = [
-                {k: v for k, v in m.items() if k not in ("api_key", "api_key_ref")}
-                for m in clean["saved_models"]
-            ]
-        return clean
+        return _SETTINGS_CONTROLLER.sanitize_for_save(config)
 
     def _is_education_model_item(self, item_id: str) -> bool:
         """判断 Treeview 中的模型项是否为当前指定的学历核验模型"""
@@ -7394,80 +7200,21 @@ class BossFilterGUI:
                 raise RuntimeError("API Key 未能写入系统凭据存储，请检查系统凭据服务后重试")
             self._remember_api_key(provider, base_url, api_key)
 
-            # 顶层当前活动模型：
-            # - 首次配置或当前默认模型尚未入库时，使用本次保存的第一个模型。
-            # - 已有明确默认模型时，保存只维护模型库；默认用途由上方下拉框显式选择。
-            edu_ref = (self.api_config or {}).get("education_model_ref")
-            existing_saved_models = list(getattr(self, 'saved_models', []) or [])
-            current_ref = {
-                "api_provider": (self.api_config or {}).get("api_provider", ""),
-                "base_url": (self.api_config or {}).get("base_url", ""),
-                "model": (self.api_config or {}).get("model", ""),
-            }
-            current_api_key = str((self.api_config or {}).get("api_key") or "")
-            has_saved_current = any(
-                self._model_ref_matches(model_config, current_ref)
-                for model_config in existing_saved_models
+            outcome = _SETTINGS_CONTROLLER.prepare_saved_models(
+                self.api_config or {},
+                getattr(self, "saved_models", []) or [],
+                provider=provider,
+                base_url=base_url,
+                model_name=model_name,
+                pending_models=pending,
+                api_key=api_key,
+                llm_read_timeout=(
+                    self.llm_read_timeout_var.get()
+                    if hasattr(self, "llm_read_timeout_var")
+                    else 60
+                ),
             )
-            should_set_default = not has_saved_current
-            if should_set_default:
-                top_provider, top_base_url = provider, base_url
-                top_model = model_name or (pending[0] if pending else "")
-            else:
-                top_provider = (self.api_config or {}).get("api_provider", provider)
-                top_base_url = (self.api_config or {}).get("base_url", base_url)
-                top_model = current_ref.get("model", "")
-            saved_key_identity = self._api_key_cache_identity(provider, base_url)
-            top_key_identity = self._api_key_cache_identity(top_provider, top_base_url)
-            top_api_key = api_key if top_key_identity == saved_key_identity else current_api_key
-
-            self.api_config = {
-                "api_provider": top_provider,
-                "api_key": top_api_key,
-                "base_url": top_base_url,
-                "model": top_model,
-                "saved_models": existing_saved_models,
-                "providers": (self.api_config or {}).get("providers", {}),
-                "fetched_models": (self.api_config or {}).get("fetched_models", {}),
-                "llm_read_timeout": self.llm_read_timeout_var.get() if hasattr(self, 'llm_read_timeout_var') else 60,
-            }
-            if edu_ref:
-                self.api_config["education_model_ref"] = edu_ref
-
-            # 待批量添加的模型集合
-            # - 多选：pending 含全部选中模型（输入框不参与，多选不改输入框）
-            # - 单选/手输：pending 为空，处理输入框的当前模型名
-            # 同一服务商 + Base URL 共享 API Key，仅 model 名不同
-            if not pending:
-                pending = [model_name]
-
-            added_count = 0
-            updated_count = 0
-            for model_name_to_add in pending:
-                model_exists = False
-                for m in self.api_config["saved_models"]:
-                    if self._model_ref_matches(m, {
-                        "api_provider": provider,
-                        "base_url": base_url,
-                        "model": model_name_to_add,
-                    }):
-                        # 更新已存在模型的配置，保留 capability 字段
-                        m["api_provider"] = provider
-                        m["base_url"] = base_url
-                        model_exists = True
-                        break
-                if not model_exists:
-                    # 添加新模型
-                    self.api_config["saved_models"].append({
-                        "api_provider": provider,
-                        "base_url": base_url,
-                        "model": model_name_to_add
-                    })
-                    added_count += 1
-                else:
-                    updated_count += 1
-
-            # 批量保存意图已消费，清空暂存
+            self.api_config = outcome.api_config
             self._pending_models_to_add = []
 
             with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as f:
@@ -7483,11 +7230,12 @@ class BossFilterGUI:
             # 更新当前模型显示
             self.update_current_model_display()
 
-            if len(pending) > 1:
-                summary = f"已保存 {len(pending)} 个模型到列表（新增 {added_count}，更新 {updated_count}）"
-            else:
-                summary = f"模型 {provider}/{pending[0]} 已保存到已保存模型列表"
-            default_summary = "本次保存的模型已设为默认 AI 模型" if should_set_default else "默认 AI 模型保持不变"
+            summary = outcome.summary
+            default_summary = (
+                "本次保存的模型已设为默认 AI 模型"
+                if outcome.default_changed
+                else "默认 AI 模型保持不变"
+            )
             self._update_api_status(
                 text=f"✓ {summary}；{default_summary}",
                 foreground=self.colors['success'],
@@ -7513,79 +7261,15 @@ class BossFilterGUI:
     def on_api_provider_changed(self, event):
         """API 服务商改变时更新默认配置"""
         display_name = self.api_provider_var.get()
-        # 将显示名称转换为内部键（兼容旧配置）
         provider = self.DISPLAY_TO_KEY.get(display_name, display_name)
-
-        # 主流服务商默认配置（各服务商当前最新主力模型）
-        provider_defaults = {
-            "qwen": {
-                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                "model": "qwen-plus"
-            },
-            "deepseek": {
-                "base_url": "https://api.deepseek.com",
-                "model": "deepseek-v4-pro"
-            },
-            "kimi": {
-                "base_url": "https://api.moonshot.ai/v1",
-                "model": "kimi-k2.6"
-            },
-            "zhipu": {
-                "base_url": "https://open.bigmodel.cn/api/paas/v4",
-                "model": "glm-5.1"
-            },
-            "minimax": {
-                "base_url": "https://api.minimaxi.com/v1",
-                "model": "MiniMax-M3"
-            },
-            "xiaomi": {
-                "base_url": "https://api.xiaomimimo.com/v1",
-                "model": "mimo-v2.5-pro"
-            },
-            "stepfun": {
-                "base_url": "https://api.stepfun.com/v1",
-                "model": "step-3.7-flash"
-            },
-            "openai": {
-                "base_url": "https://api.openai.com/v1",
-                "model": "GPT-5.5"
-            },
-            "anthropic": {
-                "base_url": "https://api.anthropic.com/v1",
-                "model": "claude-sonnet4.8"
-            },
-            "custom": {
-                "base_url": "",
-                "model": ""
-            }
-        }
-
-        # 优先从已保存模型中读取该服务商最近使用的配置
-        current_provider = self.api_config.get("api_provider", "") if hasattr(self, 'api_config') and self.api_config else ""
-        saved_models = getattr(self, 'saved_models', [])
-        resolved_base_url = ""
-
-        if current_provider == provider:
-            # 正在使用这个服务商，显示当前使用的模型配置
-            resolved_base_url = self.api_config.get("base_url", "")
-            self.api_base_url_var.set(resolved_base_url)
-            self.api_model_var.set(self.api_config.get("model", ""))
-        else:
-            # 不是当前服务商，从已保存模型中找该服务商最近使用的配置
-            provider_saved = [m for m in saved_models if m.get("api_provider") == provider]
-            if provider_saved:
-                last_config = provider_saved[-1]
-                resolved_base_url = last_config.get("base_url", "")
-                self.api_base_url_var.set(resolved_base_url)
-                self.api_model_var.set(last_config.get("model", ""))
-            elif provider in provider_defaults:
-                config = provider_defaults[provider]
-                resolved_base_url = config["base_url"]
-                self.api_base_url_var.set(resolved_base_url)
-                self.api_model_var.set(config["model"])
-
-        # 切换服务商时，从 keyring 读取该服务商的 API Key，没有则清空
-        saved_key = self._get_api_key_cached(provider, resolved_base_url)
+        selection = _SETTINGS_CONTROLLER.resolve_provider_selection(
+            provider,
+            getattr(self, "api_config", {}) or {},
+            getattr(self, "saved_models", []) or [],
+        )
+        self.api_base_url_var.set(selection.base_url)
+        self.api_model_var.set(selection.model)
+        saved_key = self._get_api_key_cached(provider, selection.base_url)
         self.api_key_var.set(saved_key if saved_key else "")
 
     _model_dialog = None  # 防止重复打开模型列表对话框
@@ -7635,264 +7319,198 @@ class BossFilterGUI:
         self._update_api_status(text=status_text, foreground=self.colors['warning'])
 
         def fetch_thread():
-            nonlocal base_url
-            try:
-                detected_service_name = ""
-                catalog_response = fetch_model_catalog(
-                    provider,
-                    api_key,
-                    base_url,
+            outcome = _SETTINGS_CONTROLLER.fetch_catalog(
+                provider=provider,
+                api_key=api_key,
+                base_url=base_url,
+                fetched_models=dict(
+                    (self.api_config or {}).get("fetched_models", {})
+                ),
+                configured_base_url=str(
+                    (self.api_config or {}).get("base_url", "")
+                ),
+                fetcher=fetch_model_catalog,
+                analyzer=analyze_model_catalog,
+                timeout_errors=(requests.exceptions.Timeout,),
+                connection_errors=(requests.exceptions.ConnectionError,),
+            )
+            self.run_on_ui(
+                lambda outcome=outcome: self._apply_model_catalog_outcome(
+                    outcome
                 )
-                resolution_status = catalog_response.resolution_status
-                response_status = catalog_response.http_status
-                response_text = catalog_response.response_text
-                data = catalog_response.payload
-                if resolution_status in ("confirmed", "catalog") and data:
-                    base_url = catalog_response.base_url
-                    detected_service_name = catalog_response.service_name
-
-                    def _apply_resolution():
-                        self.api_base_url_var.set(base_url)
-                        if catalog_response.endpoint_confirmed:
-                            self._verified_api_endpoint = (provider, api_key, base_url)
-
-                    self.root.after(0, _apply_resolution)
-
-                if response_status == 200:
-
-                    analysis = analyze_model_catalog(
-                        data,
-                        fetched_models=self.api_config.get("fetched_models", {}),
-                        provider=provider,
-                        base_url=base_url,
-                        configured_base_url=(self.api_config or {}).get("base_url", ""),
-                    )
-
-                    if analysis is not None:
-                        models = list(analysis.models)
-                        filtered_count = analysis.filtered_count
-                        new_models = analysis.new_models
-                        removed_models = analysis.removed_models
-                        catalog_key = analysis.catalog_key
-
-                        # 更新已获取模型列表并持久化
-                        if "fetched_models" not in self.api_config:
-                            self.api_config["fetched_models"] = {}
-                        self.api_config["fetched_models"][catalog_key] = models
-                        try:
-                            with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as _f:
-                                json.dump(self._sanitize_config_for_save(self.api_config), _f, ensure_ascii=False, indent=4)
-                            self._mark_api_config_ui_current()
-                        except Exception:
-                            pass  # 持久化失败不影响主流程
-
-                        # 创建选择对话框
-                        def show_model_dialog():
-                            gui_model_catalog_dialog.show_model_catalog_dialog(
-                                self,
-                                provider=provider,
-                                models=models,
-                                filtered_count=filtered_count,
-                                new_models=new_models,
-                                removed_models=removed_models,
-                                font_family=FONT_FAMILY,
-                                show_model_detail=_show_model_detail,
-                            )
-
-                        _new_count = len(new_models)
-                        _removed_count = len(removed_models)
-                        _total_count = len(models)
-
-                        def _show_model_detail(detail_type):
-                            """点击状态栏数字时显示详细列表"""
-                            if detail_type == 'new' and new_models:
-                                self._show_text_dialog(
-                                    f"{provider} 新增模型",
-                                    "\n".join(f"• {m}" for m in sorted(new_models)),
-                                    width=640,
-                                    height=440,
-                                )
-                            elif detail_type == 'removed' and removed_models:
-                                self._show_text_dialog(
-                                    f"{provider} 下线模型",
-                                    "\n".join(f"• {m}" for m in sorted(removed_models))
-                                    + "\n\n如正在使用这些模型，请尽快切换。",
-                                    width=640,
-                                    height=440,
-                                )
-
-                        def _update_status():
-                            # 清理之前的可点击标签
-                            for lbl in self._status_clickable_labels:
-                                lbl.destroy()
-                            self._status_clickable_labels.clear()
-
-                            # 基础信息
-                            channel_text = f"已识别 {detected_service_name}，" if detected_service_name else ""
-                            verification_text = "；API Key 待测试连接" if resolution_status == "catalog" else ""
-                            base_text = f"✓ {channel_text}找到 {_total_count} 个模型{verification_text}"
-                            if _new_count == 0 and _removed_count == 0:
-                                # 无变更，只显示基础信息
-                                self._update_api_status(
-                                    text=base_text,
-                                    foreground=self.colors['success']
-                                )
-                            else:
-                                # 有变更，先清理旧标签，再分段显示
-                                for lbl in self._status_clickable_labels:
-                                    lbl.destroy()
-                                self._status_clickable_labels.clear()
-                                self.api_status_label.config(
-                                    text=base_text + "（",
-                                    foreground=self.colors['success']
-                                )
-
-                                # 新增数量（可点击）
-                                if _new_count > 0:
-                                    lbl_new = ttk.Label(self.api_status_frame, text=f"{_new_count} 个新增",
-                                                       font=(FONT_FAMILY, int(11 * self.font_scale)),
-                                                       foreground=self.colors['success'],
-                                                       cursor="hand2")
-                                    lbl_new.pack(side="left")
-                                    lbl_new.bind("<Button-1>", lambda e: _show_model_detail('new'))
-                                    self._status_clickable_labels.append(lbl_new)
-
-                                # 分隔符
-                                if _new_count > 0 and _removed_count > 0:
-                                    lbl_sep = ttk.Label(self.api_status_frame, text="，",
-                                                       font=(FONT_FAMILY, int(11 * self.font_scale)),
-                                                       foreground=self.colors['success'])
-                                    lbl_sep.pack(side="left")
-                                    self._status_clickable_labels.append(lbl_sep)
-
-                                # 下线数量（可点击）
-                                if _removed_count > 0:
-                                    lbl_removed = ttk.Label(self.api_status_frame, text=f"{_removed_count} 个下线",
-                                                           font=(FONT_FAMILY, int(11 * self.font_scale)),
-                                                           foreground=self.colors['warning'],
-                                                           cursor="hand2")
-                                    lbl_removed.pack(side="left")
-                                    lbl_removed.bind("<Button-1>", lambda e: _show_model_detail('removed'))
-                                    self._status_clickable_labels.append(lbl_removed)
-
-                                # 右括号
-                                lbl_close = ttk.Label(self.api_status_frame, text="）",
-                                                     font=(FONT_FAMILY, int(11 * self.font_scale)),
-                                                     foreground=self.colors['success'])
-                                lbl_close.pack(side="left")
-                                self._status_clickable_labels.append(lbl_close)
-
-                        self.root.after(0, _update_status)
-                        self.root.after(100, show_model_dialog)
-                    else:
-                        self.root.after(0, lambda: self._update_api_status(
-                            text="⚠ 未找到模型列表",
-                            foreground=self.colors['warning']
-                        ))
-                        self.root.after(0, lambda: messagebox.show_notice(
-                            "未找到模型",
-                            headline="API 没有返回可用模型列表",
-                            message="可以手动输入模型名称后继续保存。",
-                            detail=json.dumps(data, ensure_ascii=False)[:500],
-                            parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                        ))
-                elif not resolution_status and response_status == 401:
-                    self.root.after(0, lambda: self._update_api_status(
-                        text="✗ 认证失败",
-                        foreground=self.colors['danger']
-                    ))
-                    self.root.after(0, lambda: messagebox.show_failure(
-                        "认证失败",
-                        headline="API Key 无效或已过期",
-                        message="请检查 API Key 后重新获取模型列表。",
-                        parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                    ))
-                elif not resolution_status and response_status == 404:
-                    self.root.after(0, lambda: self._update_api_status(
-                        text="✗ 接口不存在",
-                        foreground=self.colors['danger']
-                    ))
-                    self.root.after(0, lambda: messagebox.show_notice(
-                        "接口不支持",
-                        headline="服务商不支持自动获取模型列表",
-                        message="请手动输入模型名称，或参考服务商文档。",
-                        metrics=(("HTTP 状态码", "404"),),
-                        parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                    ))
-                else:
-                    is_temporary = resolution_status in ("probable", "unavailable")
-                    status_color = self.colors['warning'] if is_temporary else self.colors['danger']
-                    status_prefix = "!" if is_temporary else "✗"
-                    self.root.after(0, lambda: self._update_api_status(
-                        text=f"{status_prefix} 请求失败 ({response_status or '未确认'})",
-                        foreground=status_color,
-                    ))
-                    def _show_request_failure(
-                        status=response_status,
-                        response=response_text,
-                        temporary=is_temporary,
-                    ):
-                        title = (
-                            "自动识别暂未完成"
-                            if temporary else
-                            ("自动识别失败" if has_endpoint_discovery(provider) else "请求失败")
-                        )
-                        if temporary:
-                            messagebox.show_notice(
-                                title,
-                                headline="暂时无法自动识别服务商模型",
-                                message="可以稍后重试，或先手动输入模型名称。",
-                                metrics=(("HTTP 状态码", str(status or "未确认")),),
-                                detail=str(response)[:300],
-                                parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                            )
-                        else:
-                            messagebox.show_failure(
-                                title,
-                                headline="模型列表获取失败",
-                                message="请检查服务地址和网络后重试。",
-                                detail=str(response)[:300],
-                                parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                            )
-                    self.root.after(0, _show_request_failure)
-
-            except requests.exceptions.Timeout:
-                self.root.after(0, lambda: self._update_api_status(
-                    text="⏱ 请求超时",
-                    foreground=self.colors['warning']
-                ))
-                self.root.after(0, lambda: messagebox.show_notice(
-                    "请求超时",
-                    headline="获取模型列表超时",
-                    message="请检查网络、代理或服务商是否支持模型列表接口。",
-                    parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                ))
-            except requests.exceptions.ConnectionError as e:
-                self.root.after(0, lambda: self._update_api_status(
-                    text="✗ 连接失败",
-                    foreground=self.colors['danger']
-                ))
-                self.root.after(0, lambda m=str(e)[:200]: messagebox.show_failure(
-                    "连接失败",
-                    headline="无法连接到 API 服务器",
-                    message="请检查 Base URL、网络或代理设置。",
-                    detail=m,
-                    parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                ))
-            except Exception as e:
-                self.root.after(0, lambda: self._update_api_status(
-                    text="✗ 请求失败",
-                    foreground=self.colors['danger']
-                ))
-                self.root.after(0, lambda m=str(e)[:200]: messagebox.show_failure(
-                    "请求失败",
-                    headline="获取模型列表时发生错误",
-                    message="模型列表没有更新。",
-                    detail=m,
-                    parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                ))
-
+            )
         threading.Thread(target=fetch_thread, daemon=True).start()
+
+    def _apply_model_catalog_outcome(self, outcome):
+        """Render one plain model-catalog result on the Tk thread."""
+        parent = getattr(self, "api_config_page", None) or self.root
+        if outcome.status == "success":
+            analysis = outcome.analysis
+            models = list(analysis.models)
+            self.api_base_url_var.set(outcome.base_url)
+            if outcome.endpoint_confirmed:
+                self._verified_api_endpoint = (
+                    outcome.provider,
+                    self.api_key_var.get().strip(),
+                    outcome.base_url,
+                )
+            self.api_config.setdefault("fetched_models", {})[
+                analysis.catalog_key
+            ] = models
+            self._save_api_config_to_file()
+            self._mark_api_config_ui_current()
+            new_count = len(analysis.new_models)
+            removed_count = len(analysis.removed_models)
+            channel = (
+                f"已识别 {outcome.service_name}，"
+                if outcome.service_name
+                else ""
+            )
+            verification = (
+                "；API Key 待测试连接"
+                if outcome.resolution_status == "catalog"
+                else ""
+            )
+            status = f"✓ {channel}找到 {len(models)} 个模型{verification}"
+            if new_count or removed_count:
+                status += f"（{new_count} 个新增，{removed_count} 个下线）"
+            self._update_api_status(
+                text=status,
+                foreground=self.colors["success"],
+            )
+
+            def show_detail(detail_type):
+                values = (
+                    analysis.new_models
+                    if detail_type == "new"
+                    else analysis.removed_models
+                )
+                if not values:
+                    return
+                title = (
+                    f"{outcome.provider} 新增模型"
+                    if detail_type == "new"
+                    else f"{outcome.provider} 下线模型"
+                )
+                suffix = (
+                    ""
+                    if detail_type == "new"
+                    else "\n\n如正在使用这些模型，请尽快切换。"
+                )
+                self._show_text_dialog(
+                    title,
+                    "\n".join(f"• {model}" for model in sorted(values)) + suffix,
+                    width=640,
+                    height=440,
+                )
+
+            gui_model_catalog_dialog.show_model_catalog_dialog(
+                self,
+                provider=outcome.provider,
+                models=models,
+                filtered_count=analysis.filtered_count,
+                new_models=analysis.new_models,
+                removed_models=analysis.removed_models,
+                font_family=FONT_FAMILY,
+                show_model_detail=show_detail,
+            )
+            return
+
+        if outcome.status == "empty":
+            self._update_api_status(
+                text="⚠ 未找到模型列表",
+                foreground=self.colors["warning"],
+            )
+            messagebox.show_notice(
+                "未找到模型",
+                headline="API 没有返回可用模型列表",
+                message="可以手动输入模型名称后继续保存。",
+                detail=json.dumps(outcome.payload, ensure_ascii=False)[:500],
+                parent=parent,
+            )
+            return
+        if outcome.status == "auth_error":
+            self._update_api_status(
+                text="✗ 认证失败",
+                foreground=self.colors["danger"],
+            )
+            messagebox.show_failure(
+                "认证失败",
+                headline="API Key 无效或已过期",
+                message="请检查 API Key 后重新获取模型列表。",
+                parent=parent,
+            )
+            return
+        if outcome.status == "unsupported":
+            self._update_api_status(
+                text="✗ 接口不存在",
+                foreground=self.colors["danger"],
+            )
+            messagebox.show_notice(
+                "接口不支持",
+                headline="服务商不支持自动获取模型列表",
+                message="请手动输入模型名称，或参考服务商文档。",
+                metrics=(("HTTP 状态码", "404"),),
+                parent=parent,
+            )
+            return
+        if outcome.status == "timeout":
+            self._update_api_status(
+                text="⏱ 请求超时",
+                foreground=self.colors["warning"],
+            )
+            messagebox.show_notice(
+                "请求超时",
+                headline="获取模型列表超时",
+                message="请检查网络、代理或服务商是否支持模型列表接口。",
+                parent=parent,
+            )
+            return
+        if outcome.status == "connection_error":
+            self._update_api_status(
+                text="✗ 连接失败",
+                foreground=self.colors["danger"],
+            )
+            messagebox.show_failure(
+                "连接失败",
+                headline="无法连接到 API 服务器",
+                message="请检查 Base URL、网络或代理设置。",
+                detail=outcome.error,
+                parent=parent,
+            )
+            return
+
+        temporary = outcome.status == "temporary"
+        self._update_api_status(
+            text=(
+                f"! 请求失败 ({outcome.http_status or '未确认'})"
+                if temporary
+                else "✗ 请求失败"
+            ),
+            foreground=(
+                self.colors["warning"]
+                if temporary
+                else self.colors["danger"]
+            ),
+        )
+        detail = (outcome.error or outcome.response_text)[:300]
+        if temporary:
+            messagebox.show_notice(
+                "自动识别暂未完成",
+                headline="暂时无法自动识别服务商模型",
+                message="可以稍后重试，或先手动输入模型名称。",
+                metrics=(("HTTP 状态码", str(outcome.http_status or "未确认")),),
+                detail=detail,
+                parent=parent,
+            )
+        else:
+            messagebox.show_failure(
+                "请求失败",
+                headline="模型列表获取失败",
+                message="请检查服务地址和网络后重试。",
+                detail=detail,
+                parent=parent,
+            )
 
     def _show_api_key_while_pressed(self, event=None):
         """按住眼睛图标时临时显示 API Key。"""
@@ -16703,51 +16321,34 @@ class BossFilterGUI:
         """Apply a confirmed candidate-data cleanup request."""
         try:
             backup_path = CANDIDATES_PATH.with_suffix(".json.bak")
-            cleanup_outcome = None
-
-            def clear_snapshot(candidates):
-                nonlocal cleanup_outcome
-                cleanup_outcome = clear_candidates_in_place(
-                    candidates,
-                    scope=choice,
-                    selected_job=selected_job,
-                    keep_greeted=keep_greeted,
-                )
-                return cleanup_outcome.removed_count
-
-            _result, resume_cleanup = mutate_candidates_with_resume_cleanup(
-                clear_snapshot,
-                CANDIDATES_PATH,
+            cleanup = _DATA_MAINTENANCE_CONTROLLER.clear_candidates(
+                scope=choice,
+                selected_job=selected_job,
+                keep_greeted=keep_greeted,
+                candidates_path=CANDIDATES_PATH,
                 base_dir=BASE_DIR,
+                mutate_with_resume_cleanup=mutate_candidates_with_resume_cleanup,
+                clear_in_place=clear_candidates_in_place,
             )
-            if cleanup_outcome is None:
-                raise RuntimeError("候选人清理事务未返回结果")
-            removed = cleanup_outcome.removed_count
-            kept_count = cleanup_outcome.greeted_kept_count
-            blacklist_kept_count = cleanup_outcome.blacklist_kept_count
+            removed = cleanup.removed_count
+            kept_count = cleanup.greeted_kept_count
+            blacklist_kept_count = cleanup.blacklist_kept_count
+            resume_cleanup = cleanup.resume_cleanup
             if removed:
                 self.append_log(
                     f"已备份候选人数据到 {backup_path.name}"
                 )
 
-            if choice == "current":
-                log_message = (
-                    f"已清空岗位「{selected_job}」的 {removed} 条候选人数据"
-                )
-                result_message = f"已清空 {removed} 条候选人数据"
-            else:
-                log_message = f"已清空全部 {removed} 条候选人数据"
-                result_message = f"已清空全部 {removed} 条候选人数据"
-            if kept_count > 0:
-                log_message += f"，保留 {kept_count} 条已打招呼记录"
+            log_message = cleanup.message(choice, selected_job)
+            result_message = (
+                f"已清空 {removed} 条候选人数据"
+                if choice == "current"
+                else f"已清空全部 {removed} 条候选人数据"
+            )
+            if kept_count:
                 result_message += f"，保留 {kept_count} 条已打招呼记录"
-            if blacklist_kept_count > 0:
-                log_message += (
-                    f"，保留 {blacklist_kept_count} 条黑名单记录"
-                )
-                result_message += (
-                    f"，保留 {blacklist_kept_count} 条黑名单记录"
-                )
+            if blacklist_kept_count:
+                result_message += f"，保留 {blacklist_kept_count} 条黑名单记录"
             self.append_log(log_message)
             messagebox.show_result(
                 "清空候选人",
@@ -16809,22 +16410,10 @@ class BossFilterGUI:
         greeted_count = 0
         try:
             candidates = load_candidates_all(CANDIDATES_PATH)
-            if is_all_jobs:
-                greeted_count = sum(
-                    1 for candidate in candidates
-                    if candidate.get("greet_sent")
-                )
-            else:
-                job_name = normalize_job_name(selected_job)
-                greeted_count = sum(
-                    1
-                    for candidate in candidates
-                    if (
-                        candidate.get("greet_sent")
-                        and normalize_job_name(candidate.get("job_name"))
-                        == job_name
-                    )
-                )
+            greeted_count = _DATA_MAINTENANCE_CONTROLLER.count_greeted(
+                candidates,
+                selected_job,
+            )
         except (OSError, RuntimeError):
             pass
 
