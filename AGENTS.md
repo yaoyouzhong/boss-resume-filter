@@ -13,6 +13,7 @@ boss-resume-filter/
 ├── job_config_diagnostics.py # 岗位配置保存前体检模块
 ├── candidate_state_diagnostics.py # 候选人状态一致性体检模块
 ├── candidate_workflow.py # 候选人决策分类、复核规则、待办与下一步动作模块
+├── candidate_cleanup.py # 候选人按岗位清理与保留策略的纯集合转换模块
 ├── greeting_failure.py   # 打招呼失败原因归类模块
 ├── release_user_audit.py # 用户视角发布审计模块
 ├── storage.py            # 候选人数据持久化模块（去重、原子写入、备份恢复）
@@ -39,6 +40,7 @@ boss-resume-filter/
 ├── gui_candidate_workbench.py # 候选人工作台共用标题、指标条与导航树 UI 原语
 ├── gui_candidate_state_dialogs.py # 候选人屏蔽、跟进与人工反馈表单弹窗模块
 ├── gui_contact_queue.py # 联系候选人工作台的 Tk 构建与控件引用模块
+├── gui_data_maintenance_dialogs.py # 候选人数据清理等维护确认弹窗模块
 ├── gui_main.py           # 图形界面主程序（v2.27）
 ├── gui_dialogs.py        # 独立对话框模块（更新日志、关于弹窗、CHANGELOG 渲染）
 ├── ui_messagebox.py      # 统一居中提示与确认弹窗（兼容 tkinter.messagebox）
@@ -163,12 +165,14 @@ boss-resume-filter/
 
 - `gui_main.py` 保留版本号、Tk 窗口生命周期、导航、页面按需创建和兼容门面；新的纯格式化或业务转换不得继续加入 `BossFilterGUI`。
 - `*_presenter.py` 只接收普通 Python 数据并返回文本或结构化展示结果；不得导入 `tkinter`、`gui_main`、候选人存储或网络模块，不得读写文件。
+- `candidate_cleanup.py` 只在调用方提供的候选人列表上执行按岗位/全部范围的清理与保留策略并返回统计；不得读写文件、导入 GUI、存储或网络模块。
 - `gui_main.py` 可以向新模块单向委托；新模块禁止反向导入 `gui_main.py`。迁移期保留原 `BossFilterGUI` 方法作为薄兼容层，待调用方和测试迁移后再删除。
 - `gui_*_page.py` 只负责指定页面的 Tk 控件构建和页面局部引用；不得读写业务数据、访问网络或导入 `gui_main`。迁移期通过显式 Host 协议注入回调，并由 `gui_main.py` 保留原页面属性别名。
 - `gui_candidate_*.py` 只负责候选人工作台弹窗的 Tk 控件、局部选择状态和事件绑定；候选人加载、状态诊断、业务动作和报告写盘必须通过显式回调留在 `gui_main.py`，不得导入存储、网络或 `gui_main`。
 - `gui_candidate_menus.py` 只消费宿主已计算的菜单状态和显式动作回调，负责候选人单选、批量及工作流右键菜单的 Tk 构建与弹出；候选人资格判断、联系门禁、状态更新和持久化必须留在 `gui_main.py`/纯业务模块。
 - `gui_candidate_state_dialogs.py` 只构建候选人屏蔽理由、跟进和人工反馈表单，并将用户输入交给显式回调；候选人定位、字段更新、原子持久化、联系清单同步、Excel 再生成和页面刷新必须留在 `gui_main.py`。
 - `gui_contact_queue.py` 只构建联系清单窗口并绑定显式回调；清单持久化、浏览器预检、发送、暂停恢复、失败重试和状态复核必须留在 `gui_main.py`，不得导入存储、浏览器、网络或 `gui_main`。
+- `gui_data_maintenance_dialogs.py` 只构建数据维护确认弹窗并回传用户选择；候选人读取、备份、删除、简历副本清理、日志记录和页面刷新必须留在 `gui_main.py`/存储模块，不得导入存储、网络或 `gui_main`。
 - `gui_result_page.py` 只构建筛选结果页控件、样式和事件绑定，并通过显式引用包交还 `gui_main.py`；候选人读取、过滤、排序、复核、联系、导出和状态持久化必须留在 `gui_main.py`，不得导入存储、网络或 `gui_main`。
 - `gui_stats_detail.py` 只构建首页/结果页统计候选人明细弹窗及列表交互；统计筛选口径、候选人读取、删除持久化、页面刷新和候选人业务动作必须由 `gui_main.py` 通过显式回调提供，不得导入存储、网络或 `gui_main`。
 - `gui_job_review.py` 只消费 `stats_presenter.py` 已生成的岗位复盘模型并构建工作台；候选人加载、反馈样本口径、复盘建议计算和岗位配置导航必须留在 `gui_main.py`/`stats_presenter.py`，通过显式回调接入，不得导入存储、网络或 `gui_main`。

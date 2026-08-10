@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import candidate_diagnostics_presenter
+import candidate_cleanup
 import candidate_presenter
 import changelog_renderer
 import contact_presenter
@@ -14,6 +15,7 @@ import gui_candidate_review
 import gui_candidate_state_dialogs
 import gui_contact_queue
 import gui_config_page
+import gui_data_maintenance_dialogs
 import gui_education_page
 import gui_home_page
 import gui_job_review
@@ -116,6 +118,21 @@ def test_resume_import_controller_delegates_file_parsing_only():
     assert "open(filepath" not in block
 
 
+def test_candidate_cleanup_does_not_import_gui_storage_or_network_modules():
+    forbidden = {
+        "bossmaster",
+        "gui_main",
+        "storage",
+        "tkinter",
+        "requests",
+        "socket",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("candidate_cleanup") & forbidden)
+    assert callable(candidate_cleanup.clear_candidates_in_place)
+
+
 def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():
     forbidden = {
         "bossmaster",
@@ -136,6 +153,7 @@ def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():
         "gui_candidate_workbench",
         "gui_contact_queue",
         "gui_config_page",
+        "gui_data_maintenance_dialogs",
         "gui_education_page",
         "gui_home_page",
         "gui_job_review",
@@ -1016,6 +1034,55 @@ def test_candidate_batch_menu_keeps_one_icon_alignment_prefix():
     labels = [item.kwargs["label"] for item in menu.add_command.call_args_list]
     assert " 批量AI评估（2人）" in labels
     assert "  批量AI评估（2人）" not in labels
+
+
+def test_clear_candidates_dialog_exposes_choices_and_controller_callback():
+    assert (
+        gui_data_maintenance_dialogs.ClearCandidatesDialogWidgets
+        .__dataclass_fields__.keys()
+    ) == {
+        "window",
+        "choice_var",
+        "keep_greeted_var",
+        "current_job_radio",
+        "all_jobs_radio",
+        "keep_greeted_checkbutton",
+        "confirm_button",
+        "cancel_button",
+    }
+    source = (ROOT / "gui_data_maintenance_dialogs.py").read_text(
+        encoding="utf-8"
+    )
+    assert "on_confirm(choice, keep_greeted)" in source
+    assert "mutate_candidates_with_resume_cleanup" not in source
+    assert "CANDIDATES_PATH" not in source
+
+
+def test_clear_candidates_compatibility_method_is_a_thin_delegate():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def clear_candidates"):]
+    block = block[:block.index("\n    def show_help")]
+
+    assert "gui_data_maintenance_dialogs.show_clear_candidates_dialog(" in block
+    assert "load_candidates_all(CANDIDATES_PATH)" in block
+    assert "tk.Toplevel" not in block
+    assert "ttk.Radiobutton" not in block
+    assert "mutate_candidates_with_resume_cleanup" not in block
+
+
+def test_clear_candidates_persistence_remains_in_main_controller():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    builder = (ROOT / "gui_data_maintenance_dialogs.py").read_text(
+        encoding="utf-8"
+    )
+    controller = source[source.index("def _clear_candidates_from_dialog"):]
+    controller = controller[:controller.index("\n    def clear_candidates")]
+
+    assert "mutate_candidates_with_resume_cleanup(" in controller
+    assert "clear_candidates_in_place(" in controller
+    assert "self._regenerate_excel()" in controller
+    assert "self.refresh_results()" in controller
+    assert "mutate_candidates_with_resume_cleanup(" not in builder
 
 
 def test_candidate_review_compatibility_method_delegates_window_construction():

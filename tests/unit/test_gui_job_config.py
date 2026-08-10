@@ -5365,6 +5365,113 @@ def test_batch_greet_context_menu_adds_to_queue_instead_of_direct_send():
     assert "_add_candidates_to_greet_queue" in source
 
 
+def test_clear_candidates_dialog_uses_selected_job_greeted_count():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        candidates_path = Path(tmp_dir) / "candidates.json"
+        candidates_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "geek_id": "java-greeted",
+                        "job_name": "Java 工程师",
+                        "greet_sent": True,
+                    },
+                    {
+                        "geek_id": "python-greeted",
+                        "job_name": "Python 工程师",
+                        "greet_sent": True,
+                    },
+                ],
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+        gui.root = Mock()
+        gui.result_job_var = Mock()
+        gui.result_job_var.get.return_value = "Java 工程师"
+
+        with (
+            patch("gui_main.CANDIDATES_PATH", candidates_path),
+            patch.object(
+                gui_main.gui_data_maintenance_dialogs,
+                "show_clear_candidates_dialog",
+            ) as show_dialog,
+        ):
+            gui.clear_candidates()
+
+    assert show_dialog.call_args.kwargs["selected_job"] == "Java 工程师"
+    assert show_dialog.call_args.kwargs["is_all_jobs"] is False
+    assert show_dialog.call_args.kwargs["greeted_count"] == 1
+
+
+def test_clear_candidates_controller_keeps_greeted_blacklisted_and_other_jobs():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        base_dir = Path(tmp_dir)
+        candidates_path = base_dir / "candidates.json"
+        candidates_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "geek_id": "greeted",
+                        "job_name": "Java 工程师",
+                        "greet_sent": True,
+                    },
+                    {
+                        "geek_id": "blacklisted",
+                        "job_name": "Java 工程师",
+                        "blacklisted": True,
+                    },
+                    {
+                        "geek_id": "remove",
+                        "job_name": "Java 工程师",
+                    },
+                    {
+                        "geek_id": "other-job",
+                        "job_name": "Python 工程师",
+                        "greet_sent": True,
+                    },
+                ],
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+        gui.root = Mock()
+        gui.append_log = Mock()
+        gui._regenerate_excel = Mock()
+        gui.refresh_results = Mock()
+        gui.refresh_home_stats = Mock()
+        gui.refresh_stats = Mock()
+
+        with (
+            patch("gui_main.CANDIDATES_PATH", candidates_path),
+            patch("gui_main.BASE_DIR", base_dir),
+            patch.object(gui_main.messagebox, "show_result") as show_result,
+        ):
+            gui._clear_candidates_from_dialog(
+                "current",
+                True,
+                "Java 工程师",
+            )
+
+        saved = load_candidates_all(candidates_path)
+
+    assert {candidate["geek_id"] for candidate in saved} == {
+        "greeted",
+        "blacklisted",
+        "other-job",
+    }
+    metrics = show_result.call_args.kwargs["metrics"]
+    assert ("已清理", "1 条") in metrics
+    assert ("已打招呼保留", "1 条") in metrics
+    assert ("黑名单保留", "1 条") in metrics
+    gui._regenerate_excel.assert_called_once_with()
+    gui.refresh_results.assert_called_once_with()
+    gui.refresh_home_stats.assert_called_once_with()
+    gui.refresh_stats.assert_called_once_with()
+
+
 def test_greet_queue_add_filters_before_enqueue():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     add_block = source[source.index("def _add_candidates_to_greet_queue"):]

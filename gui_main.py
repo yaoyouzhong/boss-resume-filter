@@ -29,6 +29,7 @@ from tkinter import filedialog, font, ttk
 from urllib.parse import urlparse
 
 import icons
+from candidate_cleanup import clear_candidates_in_place
 import candidate_presenter
 import candidate_diagnostics_presenter
 import contact_presenter
@@ -40,6 +41,7 @@ import gui_candidate_state_dialogs
 import gui_candidate_workbench
 import gui_contact_queue
 import gui_config_page
+import gui_data_maintenance_dialogs
 import gui_education_page
 import gui_home_page
 import gui_job_review
@@ -17569,288 +17571,155 @@ class BossFilterGUI:
         else:
             messagebox.showwarning("警告", "文件不存在")
 
+    def _clear_candidates_from_dialog(
+        self,
+        choice,
+        keep_greeted,
+        selected_job,
+    ):
+        """Apply a confirmed candidate-data cleanup request."""
+        try:
+            backup_path = CANDIDATES_PATH.with_suffix(".json.bak")
+            cleanup_outcome = None
+
+            def clear_snapshot(candidates):
+                nonlocal cleanup_outcome
+                cleanup_outcome = clear_candidates_in_place(
+                    candidates,
+                    scope=choice,
+                    selected_job=selected_job,
+                    keep_greeted=keep_greeted,
+                )
+                return cleanup_outcome.removed_count
+
+            _result, resume_cleanup = mutate_candidates_with_resume_cleanup(
+                clear_snapshot,
+                CANDIDATES_PATH,
+                base_dir=BASE_DIR,
+            )
+            if cleanup_outcome is None:
+                raise RuntimeError("候选人清理事务未返回结果")
+            removed = cleanup_outcome.removed_count
+            kept_count = cleanup_outcome.greeted_kept_count
+            blacklist_kept_count = cleanup_outcome.blacklist_kept_count
+            if removed:
+                self.append_log(
+                    f"已备份候选人数据到 {backup_path.name}"
+                )
+
+            if choice == "current":
+                log_message = (
+                    f"已清空岗位「{selected_job}」的 {removed} 条候选人数据"
+                )
+                result_message = f"已清空 {removed} 条候选人数据"
+            else:
+                log_message = f"已清空全部 {removed} 条候选人数据"
+                result_message = f"已清空全部 {removed} 条候选人数据"
+            if kept_count > 0:
+                log_message += f"，保留 {kept_count} 条已打招呼记录"
+                result_message += f"，保留 {kept_count} 条已打招呼记录"
+            if blacklist_kept_count > 0:
+                log_message += (
+                    f"，保留 {blacklist_kept_count} 条黑名单记录"
+                )
+                result_message += (
+                    f"，保留 {blacklist_kept_count} 条黑名单记录"
+                )
+            self.append_log(log_message)
+            messagebox.show_result(
+                "清空候选人",
+                headline="候选人数据已清理",
+                message=result_message,
+                metrics=(
+                    ("已清理", f"{removed} 条"),
+                    ("已打招呼保留", f"{kept_count} 条"),
+                    ("黑名单保留", f"{blacklist_kept_count} 条"),
+                    (
+                        "简历副本清理",
+                        f"{resume_cleanup.deleted_file_count} 个 / "
+                        f"{_format_storage_bytes(resume_cleanup.reclaimed_bytes)}",
+                    ),
+                ),
+                notice=(
+                    f"候选人数据备份已保存为 {backup_path.name}。"
+                    + (
+                        f"另有 {resume_cleanup.failure_count} 项受管简历清理失败，"
+                        "可稍后运行存储体检。"
+                        if resume_cleanup.failure_count
+                        else "已删除的无人引用简历副本不包含在 JSON 备份中。"
+                    )
+                ),
+                notice_kind=(
+                    "warning" if resume_cleanup.failure_count else "success"
+                ),
+                parent=self.root,
+            )
+            self._regenerate_excel()
+            self.refresh_results()
+            self.refresh_home_stats()
+            self.refresh_stats()
+        except Exception as exc:
+            messagebox.show_failure(
+                "清空候选人",
+                headline="候选人数据未清理",
+                message="原有候选人数据保持不变。",
+                detail=str(exc),
+                parent=self.root,
+            )
+
     def clear_candidates(self):
-        """清空候选人数据"""
+        """Show candidate cleanup choices and delegate confirmed persistence."""
         if not CANDIDATES_PATH.exists():
-            self._show_inline_banner(self.result_page, 'info', "暂无候选人数据。")
+            self._show_inline_banner(
+                self.result_page,
+                "info",
+                "暂无候选人数据。",
+            )
             return
 
-        # 读取当前岗位过滤条件
-        selected_job = self.result_job_var.get() if hasattr(self, 'result_job_var') else "全部岗位"
+        selected_job = (
+            self.result_job_var.get()
+            if hasattr(self, "result_job_var")
+            else "全部岗位"
+        )
         is_all_jobs = selected_job == "全部岗位"
-
-        # 统计已打招呼人数
         greeted_count = 0
         try:
-            _candidates = load_candidates_all(CANDIDATES_PATH)
+            candidates = load_candidates_all(CANDIDATES_PATH)
             if is_all_jobs:
-                greeted_count = sum(1 for c in _candidates if c.get('greet_sent'))
+                greeted_count = sum(
+                    1 for candidate in candidates
+                    if candidate.get("greet_sent")
+                )
             else:
                 job_name = normalize_job_name(selected_job)
                 greeted_count = sum(
                     1
-                    for c in _candidates
-                    if c.get('greet_sent')
-                    and normalize_job_name(c.get('job_name')) == job_name
+                    for candidate in candidates
+                    if (
+                        candidate.get("greet_sent")
+                        and normalize_job_name(candidate.get("job_name"))
+                        == job_name
+                    )
                 )
         except (OSError, RuntimeError):
             pass
 
-        # 构建确认对话框
-        dialog = tk.Toplevel(self.root)
-        dialog.title("清空候选人")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        dialog.resizable(False, False)
-        dialog.configure(background=self.colors['bg_main'])
-        dialog.withdraw()
-
-        _s = self.dpi_scale * self.zoom_factor
-        dialog_fs = self.font_scale * 0.88
-        dialog_width = max(460, int(460 * _s))
-        dialog_height = max(300, int(300 * _s))
-        self._center_window(dialog, dialog_width, dialog_height)
-
-        # 配置大号 RadioButton/CheckButton 字体
-        dialog_rb_font = (FONT_FAMILY, int(14 * dialog_fs))
-
-        # 对话框内统一灰底样式
-        _cd_style = ttk.Style()
-        _cd_style.configure('ClearDialog.TLabel', background=self.colors['bg_main'])
-        _cd_style.configure('ClearDialog.TFrame', background=self.colors['bg_main'])
-        _cd_style.configure('ClearDialog.TRadiobutton', font=dialog_rb_font,
-                        background=self.colors['bg_main'])
-        _cd_style.configure('ClearDialog.TCheckbutton', font=dialog_rb_font,
-                        background=self.colors['bg_main'])
-
-        # 标题
-        ttk.Label(dialog, text="清空候选人数据",
-                  font=(FONT_FAMILY, int(16 * dialog_fs)),
-                  foreground=self.colors['danger'],
-                  style='ClearDialog.TLabel').pack(pady=(int(20 * _s), int(10 * _s)))
-
-        # 选项
-        choice_var = tk.StringVar(value="all" if is_all_jobs else "current")
-
-        radio_frame = ttk.Frame(dialog, style='ClearDialog.TFrame')
-        radio_frame.pack(fill="x", padx=int(30 * _s))
-
-        rb_current = ttk.Radiobutton(radio_frame,
-                                     text=f"清空当前岗位数据（{selected_job}）",
-                                     variable=choice_var, value="current",
-                                     style='ClearDialog.TRadiobutton')
-        rb_current.pack(anchor="w", pady=int(5 * _s))
-        if is_all_jobs:
-            rb_current.config(state="disabled")
-
-        rb_all = ttk.Radiobutton(radio_frame,
-                                 text="清空全部数据（所有岗位）",
-                                 variable=choice_var, value="all",
-                                 style='ClearDialog.TRadiobutton')
-        rb_all.pack(anchor="w", pady=int(5 * _s))
-
-        # 分隔线
-        ttk.Separator(dialog, orient="horizontal").pack(
-            fill="x", padx=int(30 * _s),
-            pady=(int(10 * _s), int(6 * _s)))
-
-        # 保留已打招呼复选框
-        keep_greeted_var = tk.BooleanVar(value=True)
-        cb_frame = ttk.Frame(dialog, style='ClearDialog.TFrame')
-        cb_frame.pack(fill="x", padx=int(30 * _s),
-                       pady=(int(12 * _s), 0))
-        cb_text = f"保留已打招呼的候选人（{greeted_count} 人）" if greeted_count > 0 else "保留已打招呼的候选人（无）"
-        cb_greeted = ttk.Checkbutton(cb_frame, text=cb_text,
-                                      variable=keep_greeted_var,
-                                      style='ClearDialog.TCheckbutton')
-        cb_greeted.pack(anchor="w")
-        if greeted_count == 0:
-            cb_greeted.config(state="disabled")
-            keep_greeted_var.set(False)
-
-        # 提示
-        ttk.Label(dialog, text="候选人数据会自动备份；无人引用的受管简历副本将一并删除",
-                  font=(FONT_FAMILY, int(13 * dialog_fs)),
-                  foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED),
-                  style='ClearDialog.TLabel').pack(pady=(int(12 * _s), 0))
-
-        # 按钮
-        btn_frame = ttk.Frame(dialog, style='ClearDialog.TFrame')
-        btn_frame.pack(pady=int(15 * _s))
-
-        def do_clear():
-            choice = choice_var.get()
-            keep_greeted = keep_greeted_var.get()
-            dialog.destroy()
-
-            try:
-                backup_path = CANDIDATES_PATH.with_suffix('.json.bak')
-                outcome = {
-                    "removed": 0,
-                    "kept": 0,
-                    "blacklist_kept": 0,
-                }
-
-                def clear_snapshot(candidates):
-                    if choice == "current":
-                        job_name = normalize_job_name(selected_job)
-                        other_jobs = [
-                            c for c in candidates
-                            if normalize_job_name(c.get('job_name')) != job_name
-                        ]
-                        current_job = [
-                            c for c in candidates
-                            if normalize_job_name(c.get('job_name')) == job_name
-                        ]
-                        if keep_greeted:
-                            kept = [
-                                c for c in current_job
-                                if c.get('greet_sent') or c.get('blacklisted')
-                            ]
-                            removed_list = [
-                                c for c in current_job
-                                if not c.get('greet_sent') and not c.get('blacklisted')
-                            ]
-                            outcome["kept"] = sum(
-                                1 for c in kept if c.get('greet_sent')
-                            )
-                            outcome["blacklist_kept"] = sum(
-                                1 for c in kept if c.get('blacklisted')
-                            )
-                        else:
-                            kept = [c for c in current_job if c.get('blacklisted')]
-                            removed_list = [
-                                c for c in current_job if not c.get('blacklisted')
-                            ]
-                            outcome["blacklist_kept"] = len(kept)
-                        candidates[:] = other_jobs + kept
-                    else:
-                        if keep_greeted:
-                            kept = [
-                                c for c in candidates
-                                if c.get('greet_sent') or c.get('blacklisted')
-                            ]
-                            removed_list = [
-                                c for c in candidates
-                                if not c.get('greet_sent') and not c.get('blacklisted')
-                            ]
-                            outcome["kept"] = sum(
-                                1 for c in kept if c.get('greet_sent')
-                            )
-                            outcome["blacklist_kept"] = sum(
-                                1 for c in kept if c.get('blacklisted')
-                            )
-                        else:
-                            kept = [c for c in candidates if c.get('blacklisted')]
-                            removed_list = [
-                                c for c in candidates if not c.get('blacklisted')
-                            ]
-                            outcome["blacklist_kept"] = len(kept)
-                        candidates[:] = kept
-                    outcome["removed"] = len(removed_list)
-                    return outcome["removed"]
-
-                _result, cleanup = mutate_candidates_with_resume_cleanup(
-                    clear_snapshot,
-                    CANDIDATES_PATH,
-                    base_dir=BASE_DIR,
+        gui_data_maintenance_dialogs.show_clear_candidates_dialog(
+            self,
+            self.root,
+            font_family=FONT_FAMILY,
+            selected_job=selected_job,
+            is_all_jobs=is_all_jobs,
+            greeted_count=greeted_count,
+            on_confirm=lambda choice, keep_greeted: (
+                self._clear_candidates_from_dialog(
+                    choice,
+                    keep_greeted,
+                    selected_job,
                 )
-                removed = outcome["removed"]
-                kept_count = outcome["kept"]
-                blacklist_kept_count = outcome["blacklist_kept"]
-                if removed:
-                    self.append_log(f"已备份候选人数据到 {backup_path.name}")
-
-                if choice == "current":
-                    log_msg = f"已清空岗位「{selected_job}」的 {removed} 条候选人数据"
-                    info_msg = f"已清空 {removed} 条候选人数据"
-                else:
-                    log_msg = f"已清空全部 {removed} 条候选人数据"
-                    info_msg = f"已清空全部 {removed} 条候选人数据"
-                if kept_count > 0:
-                    log_msg += f"，保留 {kept_count} 条已打招呼记录"
-                    info_msg += f"，保留 {kept_count} 条已打招呼记录"
-                if blacklist_kept_count > 0:
-                    log_msg += f"，保留 {blacklist_kept_count} 条黑名单记录"
-                    info_msg += f"，保留 {blacklist_kept_count} 条黑名单记录"
-                self.append_log(log_msg)
-                messagebox.show_result(
-                    "清空候选人",
-                    headline="候选人数据已清理",
-                    message=info_msg,
-                    metrics=(
-                        ("已清理", f"{removed} 条"),
-                        ("已打招呼保留", f"{kept_count} 条"),
-                        ("黑名单保留", f"{blacklist_kept_count} 条"),
-                        (
-                            "简历副本清理",
-                            f"{cleanup.deleted_file_count} 个 / "
-                            f"{_format_storage_bytes(cleanup.reclaimed_bytes)}",
-                        ),
-                    ),
-                    notice=(
-                        f"候选人数据备份已保存为 {backup_path.name}。"
-                        + (
-                            f"另有 {cleanup.failure_count} 项受管简历清理失败，"
-                            "可稍后运行存储体检。"
-                            if cleanup.failure_count
-                            else "已删除的无人引用简历副本不包含在 JSON 备份中。"
-                        )
-                    ),
-                    notice_kind=(
-                        "warning" if cleanup.failure_count else "success"
-                    ),
-                    parent=self.root,
-                )
-
-                # 同步 Excel
-                self._regenerate_excel()
-
-                # 刷新所有相关页面
-                self.refresh_results()
-                self.refresh_home_stats()
-                self.refresh_stats()
-
-            except Exception as e:
-                messagebox.show_failure(
-                    "清空候选人",
-                    headline="候选人数据未清理",
-                    message="原有候选人数据保持不变。",
-                    detail=str(e),
-                    parent=self.root,
-                )
-
-        button_style = ttk.Style(dialog)
-        button_style.configure(
-            'ClearDialog.Danger.TButton',
-            font=(FONT_FAMILY, int(11 * self.font_scale)),
-            padding=(int(14 * _s), int(5 * _s)),
-            background=self.colors['danger'],
-            foreground=self.colors['bg_card'],
+            ),
         )
-        button_style.map(
-            'ClearDialog.Danger.TButton',
-            background=[
-                ('pressed', self.colors.get('danger_deep', ui_theme.DANGER_DEEP)),
-                ('active', self.colors.get('danger_text', ui_theme.DANGER_TEXT)),
-            ],
-        )
-        ttk.Button(
-            btn_frame,
-            text="清空所选数据",
-            command=do_clear,
-            style='ClearDialog.Danger.TButton',
-        ).pack(side='left', padx=int(8 * _s))
-        cancel_button = ttk.Button(
-            btn_frame,
-            text="取消",
-            command=dialog.destroy,
-        )
-        cancel_button.pack(side='left', padx=int(8 * _s))
-
-        dialog.bind('<Return>', lambda _event: None)
-        cancel_button.focus_set()
-        dialog.deiconify()
 
     def show_help(self):
         """显示帮助"""
