@@ -12,6 +12,7 @@ import gui_candidate_diagnostics
 import gui_candidate_review
 import gui_contact_queue
 import gui_config_page
+import gui_education_page
 import gui_job_review
 import gui_main
 import gui_model_catalog_dialog
@@ -130,6 +131,7 @@ def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():
         "gui_candidate_workbench",
         "gui_contact_queue",
         "gui_config_page",
+        "gui_education_page",
         "gui_job_review",
         "gui_result_page",
         "gui_run_page",
@@ -393,6 +395,74 @@ def test_result_page_compatibility_method_is_a_thin_builder_delegate():
     assert "tk.Menu" not in block
     assert "self._update_result_tree_columns()" in block
     assert "self._refresh_contact_queue_badge()" in block
+
+
+def test_education_page_builder_exposes_an_explicit_widget_bundle():
+    assert gui_education_page.EducationPageWidgets.__dataclass_fields__.keys() == {
+        "page",
+        "canvas",
+        "scrollable_frame",
+        "items",
+        "current_id",
+        "item_counter",
+        "recognition_running",
+        "manual_rotation",
+        "rotation_locked",
+        "file_var",
+        "remove_button",
+        "queue_card",
+        "tree_font",
+        "queue_tree",
+        "queue_scrollbar",
+        "queue_menu",
+        "workspace",
+        "rotate_button",
+        "preview_label",
+        "name_var",
+        "number_var",
+        "status_var",
+        "warning_var",
+        "recognize_button",
+        "fill_button",
+        "captcha_button",
+    }
+
+
+def test_education_page_compatibility_method_is_a_thin_builder_delegate():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def create_education_page"):]
+    block = block[:block.index("\n    def _select_education_images")]
+
+    assert "gui_education_page.build_education_page(" in block
+    assert "self.education_page = widgets.page" in block
+    assert "self.education_queue_tree = widgets.queue_tree" in block
+    assert "ttk.Treeview" not in block
+    assert "tk.Menu" not in block
+    assert "_recognize_education_image(" not in block
+
+
+def test_education_page_keeps_ai_browser_and_certificate_actions_in_controller():
+    builder = (ROOT / "gui_education_page.py").read_text(encoding="utf-8")
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    assert not (
+        {
+            "ai_adapter",
+            "bossmaster",
+            "education_certificate",
+            "gui_main",
+            "requests",
+            "storage",
+        }
+        & _top_level_imports("gui_education_page")
+    )
+    for method_name in (
+        "_select_education_images",
+        "_recognize_education_image",
+        "_fill_chsi_page",
+        "_solve_captcha",
+    ):
+        assert f"host.{method_name}" in builder
+        assert f"def {method_name}" in source
 
 
 def test_run_page_compatibility_method_is_a_thin_incremental_delegate():

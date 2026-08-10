@@ -38,6 +38,7 @@ import gui_candidate_review
 import gui_candidate_workbench
 import gui_contact_queue
 import gui_config_page
+import gui_education_page
 import gui_job_review
 import gui_result_page
 import gui_run_page
@@ -4433,249 +4434,38 @@ class BossFilterGUI:
 
     def create_education_page(self):
         """创建学历核验页面。"""
-        self.education_page = ttk.Frame(self.pages_frame, style='Page.TFrame')
-
-        self._create_page_header(
-            self.education_page,
-            "学历核验",
-            "导入毕业证书图片/PDF，识别姓名和证书编号；验证码与手机扫码由 HR 人工完成。",
+        widgets = gui_education_page.build_education_page(
+            self,
+            UI_CONFIG,
+            font_family=FONT_FAMILY,
         )
-
-        scroll_frame = ttk.Frame(self.education_page, style='Page.TFrame')
-        scroll_frame.pack(fill="both", expand=True)
-        self.education_canvas, self.education_scrollable_frame = self._create_scroll_container(
-            scroll_frame, self.colors['bg_main'], auto_hide_scrollbar=True
-        )
-        content = self.education_scrollable_frame
-
-        toolbar = self._create_card(
-            content, "毕业证书", fill="x",
-            pady=(0, int(16 * self.dpi_scale * self.zoom_factor)),
-        )
-        self.education_items = {}
-        self.education_current_id = None
-        self.education_item_counter = 0
-        self.education_recognition_running = False
-        self.education_manual_rotation: dict[str, int] = {}
-        self.education_rotation_locked: set[str] = set()
-        self.education_file_var = tk.StringVar(value="尚未导入毕业证书")
-        ttk.Label(
-            toolbar, textvariable=self.education_file_var, font=self.font_label,
-            foreground=self.colors['text_secondary'],
-        ).pack(side="left", fill="x", expand=True)
-        remove_icon = self.icons.button('trash', self.colors['danger'])
-        self.education_remove_btn = ttk.Button(
-            toolbar, text=" 移除当前", image=remove_icon, compound=tk.LEFT,
-            command=self._remove_current_education_image, state="disabled",
-        )
-        self.education_remove_btn._icon_ref = remove_icon
-        self.education_remove_btn.pack(side="right", padx=(10, 0))
-        select_icon = self.icons.button('folder', self.colors['text_primary'])
-        select_btn = ttk.Button(
-            toolbar, text=" 导入证书", image=select_icon, compound=tk.LEFT,
-            command=self._select_education_images,
-        )
-        select_btn._icon_ref = select_icon
-        select_btn.pack(side="right")
-
-        queue_card = self._create_card(
-            content, "待核验队列",
-            fill="x",
-            pady=(0, int(16 * self.dpi_scale * self.zoom_factor)),
-        )
-        self.education_queue_card = queue_card.master
-        queue_columns = ("file", "name", "number", "school", "major", "status")
-        education_style = ttk.Style()
-        education_style.configure(
-            "Education.Treeview",
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            rowheight=int(UI_CONFIG['treeview_rowheight'] * self.dpi_scale * self.zoom_factor),
-        )
-        education_style.configure(
-            "Education.Treeview.Heading",
-            font=(FONT_FAMILY, int(11 * self.font_scale), "bold"),
-        )
-        education_style.configure(
-            "Education.Vertical.TScrollbar",
-            width=max(14, int(16 * self.dpi_scale * self.zoom_factor)),
-            arrowsize=max(14, int(16 * self.dpi_scale * self.zoom_factor)),
-            background=self.colors.get('border_strong', self.colors['border']),
-            troughcolor=self.colors.get('bg_footer', self.colors['bg_main']),
-            bordercolor=self.colors['border'],
-            arrowcolor=self.colors['text_secondary'],
-            lightcolor=self.colors.get('border_strong', self.colors['border']),
-            darkcolor=self.colors.get('border_strong', self.colors['border']),
-        )
-        education_style.map(
-            "Education.Vertical.TScrollbar",
-            background=[
-                ('active', self.colors['text_secondary']),
-                ('pressed', self.colors['text_secondary']),
-            ],
-        )
-        self._education_tree_font = font.Font(
-            family=FONT_FAMILY, size=int(10 * self.font_scale)
-        )
-        self.education_queue_tree = ttk.Treeview(
-            queue_card, columns=queue_columns, show="headings",
-            height=5, selectmode="extended", style="Education.Treeview",
-        )
-        for column, title, width in (
-            ("file", "文件", 230),
-            ("name", "姓名", 120),
-            ("number", "证书编号", 160),
-            ("school", "学校", 175),
-            ("major", "专业", 210),
-            ("status", "状态", 140),
-        ):
-            self.education_queue_tree.heading(column, text=title)
-            self.education_queue_tree.column(
-                column, width=width, minwidth=80,
-                anchor="w" if column == "file" else "center",
-                stretch=column in ("file", "number", "school", "major"),
-            )
-        queue_scroll = ttk.Scrollbar(
-            queue_card,
-            orient="vertical",
-            command=self.education_queue_tree.yview,
-            style="Education.Vertical.TScrollbar",
-        )
-        self.education_queue_scrollbar = queue_scroll
-        self.education_queue_tree.configure(yscrollcommand=queue_scroll.set)
-        queue_card.columnconfigure(0, weight=1)
-        queue_card.rowconfigure(0, weight=1)
-        self.education_queue_tree.grid(row=0, column=0, sticky="nsew")
-        queue_scroll.grid(row=0, column=1, sticky="ns")
-        queue_scroll.grid_remove()
-        self.education_queue_tree.bind(
-            "<<TreeviewSelect>>", self._on_education_queue_select
-        )
-        self.education_queue_tree.bind(
-            "<Motion>", self._on_education_queue_motion, add="+"
-        )
-        self.education_queue_tree.bind("<Leave>", self._hide_tooltip, add="+")
-        self.education_queue_tree.bind(
-            "<Button-3>", self._show_education_queue_context_menu
-        )
-        self.education_queue_tree.bind(
-            "<Configure>",
-            lambda _event: self._update_education_queue_columns(),
-            add="+",
-        )
-        self.education_queue_menu = tk.Menu(
-            self.root, tearoff=0,
-            font=(FONT_FAMILY, int(11 * self.font_scale)),
-        )
-        self.education_queue_menu.add_command(
-            label="识别证书", command=self._recognize_education_image
-        )
-        self.education_queue_menu.add_command(
-            label="删除证书", command=self._remove_selected_education_images
-        )
-        self._context_menus.append(self.education_queue_menu)
-
-        workspace = ttk.Frame(
-            content,
-            style='Page.TFrame',
-            height=max(420, int(440 * self.dpi_scale * self.zoom_factor)),
-        )
-        self.education_workspace = workspace
-        workspace.pack(fill="both", expand=True)
-        workspace.pack_propagate(False)
-
-        # 顺转 90° 构造器：注入到预览卡片标题栏右侧
-        # 用 tk.Label + 点击绑定代替 ttk.Button —— 高度严格等于标题文字高度，绝不撑高标题栏
-        def _build_rotate_button(title_bar, padding):
-            title_bg = title_bar.cget("bg")
-            self.education_rotate_btn = tk.Label(
-                title_bar, text="顺转 90°",
-                font=self.font_label,
-                fg=self.colors['primary'], bg=title_bg,
-                cursor="hand2",
-            )
-            self.education_rotate_btn.pack(side="right", padx=padding)
-            self.education_rotate_btn.bind(
-                "<Button-1>", lambda _e: self._rotate_education_image_cw90()
-            )
-
-        # 左侧预览卡片（按钮在标题栏内，预览区全部留给图片）
-        preview = self._create_card(
-            workspace, "证书预览", fill="both", expand=True, side="left",
-            title_trailing_builder=_build_rotate_button,
-        )
-
-        self.education_preview_label = tk.Label(
-            preview, text="请选择 JPG、JPEG、PNG、BMP、WEBP 图片或 PDF 文件",
-            bg=self.colors['bg_card'], fg=self.colors['text_secondary'],
-            font=self.font_label, justify="center",
-        )
-        self.education_preview_label.bind(
-            "<Configure>", lambda _event: self._schedule_education_preview_render()
-        )
-        self.education_preview_label.pack(fill="both", expand=True)
-
-        # 右侧识别结果卡片
-        form = self._create_card(
-            workspace, "识别结果", fill="both", expand=True, side="left",
-            padx=(int(16 * self.dpi_scale * self.zoom_factor), 0),
-        )
-
-        self.education_name_var = tk.StringVar()
-        self.education_number_var = tk.StringVar()
-        self.education_status_var = tk.StringVar(value="等待选择证书")
-        self.education_warning_var = tk.StringVar(value="")
-
-        ttk.Label(form, text="姓名", font=self.font_label).pack(anchor="w")
-        name_entry = ttk.Entry(form, textvariable=self.education_name_var, font=self.font_label)
-        name_entry.pack(fill="x", pady=(6, 16))
-        self.bind_entry_context_menu(name_entry)
-        ttk.Label(form, text="证书编号", font=self.font_label).pack(anchor="w")
-        number_entry = ttk.Entry(form, textvariable=self.education_number_var, font=self.font_label)
-        number_entry.pack(fill="x", pady=(6, 16))
-        self.bind_entry_context_menu(number_entry)
-
-        ttk.Label(
-            form, textvariable=self.education_status_var, font=self.font_label,
-            foreground=self.colors['primary'],
-        ).pack(anchor="w", pady=(0, 8))
-        ttk.Label(
-            form, textvariable=self.education_warning_var,
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['warning'], wraplength=600, justify="left",
-        ).pack(anchor="w", fill="x")
-
-        actions = ttk.Frame(form, style='TFrame')
-        actions.pack(fill="x", pady=(22, 0))
-        recognize_icon = self.icons.button('search', self.colors['text_primary'])
-        self.education_recognize_btn = ttk.Button(
-            actions, text=" 识别证书", image=recognize_icon, compound=tk.LEFT,
-            command=self._recognize_education_image, state="disabled",
-        )
-        self.education_recognize_btn._icon_ref = recognize_icon
-        self.education_recognize_btn.pack(side="left")
-        fill_icon = self.icons.button('play', self.colors['text_primary'])
-        self.education_fill_btn = ttk.Button(
-            actions, text=" 打开学信网验证", image=fill_icon, compound=tk.LEFT,
-            command=self._fill_chsi_page, state="disabled",
-        )
-        self.education_fill_btn._icon_ref = fill_icon
-        self.education_fill_btn.pack(side="left", padx=(10, 0))
-        captcha_icon = self.icons.button('refresh', self.colors['text_primary'])
-        self.education_captcha_btn = ttk.Button(
-            actions, text=" 重新识别验证码", image=captcha_icon, compound=tk.LEFT,
-            command=self._solve_captcha, state="disabled",
-        )
-        self.education_captcha_btn._icon_ref = captcha_icon
-        self.education_captcha_btn.pack(side="left", padx=(10, 0))
-
-        ttk.Label(
-            form,
-            text="识别时图片/PDF 会发送当前配置的 AI 模型，请确认已取得候选人授权。",
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors['text_secondary'], justify="left",
-        ).pack(anchor="w", fill="x", pady=(20, 0))
-        self.education_queue_card.pack_forget()
-        self._bind_mousewheel(self.education_canvas, self.education_scrollable_frame)
+        self._education_page_widgets = widgets
+        self.education_page = widgets.page
+        self.education_canvas = widgets.canvas
+        self.education_scrollable_frame = widgets.scrollable_frame
+        self.education_items = widgets.items
+        self.education_current_id = widgets.current_id
+        self.education_item_counter = widgets.item_counter
+        self.education_recognition_running = widgets.recognition_running
+        self.education_manual_rotation = widgets.manual_rotation
+        self.education_rotation_locked = widgets.rotation_locked
+        self.education_file_var = widgets.file_var
+        self.education_remove_btn = widgets.remove_button
+        self.education_queue_card = widgets.queue_card
+        self._education_tree_font = widgets.tree_font
+        self.education_queue_tree = widgets.queue_tree
+        self.education_queue_scrollbar = widgets.queue_scrollbar
+        self.education_queue_menu = widgets.queue_menu
+        self.education_workspace = widgets.workspace
+        self.education_rotate_btn = widgets.rotate_button
+        self.education_preview_label = widgets.preview_label
+        self.education_name_var = widgets.name_var
+        self.education_number_var = widgets.number_var
+        self.education_status_var = widgets.status_var
+        self.education_warning_var = widgets.warning_var
+        self.education_recognize_btn = widgets.recognize_button
+        self.education_fill_btn = widgets.fill_button
+        self.education_captcha_btn = widgets.captcha_button
 
     def _select_education_images(self):
         """批量导入毕业证书图片并加入待核验队列。"""

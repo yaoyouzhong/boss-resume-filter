@@ -8075,10 +8075,7 @@ def test_education_import_uses_multi_file_dialog():
 
 def test_education_queue_supports_multi_select_batch_recognition_and_context_menu():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[
-        source.index("def create_education_page"):
-        source.index("def _select_education_images")
-    ]
+    create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
     recognize_block = source[
         source.index("def _recognize_education_image"):
         source.index("def _fill_chsi_page")
@@ -8108,35 +8105,32 @@ def test_education_selected_ids_preserve_multi_selection():
 
 def test_education_page_has_scroll_container_and_conditional_queue():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[
-        source.index("def create_education_page"):
-        source.index("def _select_education_images")
-    ]
+    create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
     summary_block = source[
         source.index("def _refresh_education_queue_summary"):
         source.index("def _save_current_education_fields")
     ]
 
-    assert "self.education_canvas, self.education_scrollable_frame" in create_block
-    assert 'self._create_page_header(\n            self.education_page,' in create_block
-    assert 'scroll_frame = ttk.Frame(self.education_page' in create_block
-    assert '_create_scroll_container(\n            scroll_frame,' in create_block
+    assert "canvas, scrollable_frame = host._create_scroll_container" in create_block
+    assert 'host._create_page_header(\n        page,' in create_block
+    assert 'scroll_frame = ttk.Frame(page' in create_block
+    assert '_create_scroll_container(\n        scroll_frame,' in create_block
     assert "auto_hide_scrollbar=True" in create_block
-    assert create_block.index("self._create_page_header(") < create_block.index(
-        "self._create_scroll_container("
+    assert create_block.index("host._create_page_header(") < create_block.index(
+        "host._create_scroll_container("
     )
-    scroll_content = create_block[create_block.index("content = self.education_scrollable_frame"):]
-    assert "self._create_page_header(" not in scroll_content
-    assert "self.education_queue_card.pack_forget()" in create_block
+    scroll_content = create_block[create_block.index("content = scrollable_frame"):]
+    assert "host._create_page_header(" not in scroll_content
+    assert "queue_card.pack_forget()" in create_block
     queue_card_block = create_block[
-        create_block.index('content, "待核验队列"'):
-        create_block.index("self.education_queue_card")
+        create_block.index('"\u5f85\u6838\u9a8c\u961f\u5217"'):
+        create_block.index("queue_columns")
     ]
     assert "title_font=" not in queue_card_block
     assert '"Education.Treeview"' in create_block
     assert '"Education.Treeview.Heading"' in create_block
-    assert "font=(FONT_FAMILY, int(10 * self.font_scale))" in create_block
-    assert "font=(FONT_FAMILY, int(11 * self.font_scale), \"bold\")" in create_block
+    assert "font=(font_family, int(10 * host.font_scale))" in create_block
+    assert "font=(font_family, int(11 * host.font_scale), \"bold\")" in create_block
     assert '("school", "学校"' in create_block
     assert '("major", "专业"' in create_block
     assert '("file", "文件", 230)' in create_block
@@ -8147,7 +8141,7 @@ def test_education_page_has_scroll_container_and_conditional_queue():
     assert "self._education_tree_font.measure(full_text)" in source
     assert "if total >= 1" in summary_block
     assert "elif total < 1" in summary_block
-    assert "height=max(420, int(440 * self.dpi_scale * self.zoom_factor))" in create_block
+    assert "height=max(420, int(440 * scale))" in create_block
     assert "workspace.pack_propagate(False)" in create_block
 
 
@@ -8163,14 +8157,10 @@ def test_mousewheel_routes_education_and_api_pages_to_correct_canvas():
 
 
 def test_education_queue_context_menu_uses_smaller_font():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[
-        source.index("def create_education_page"):
-        source.index("def _select_education_images")
-    ]
+    create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
 
-    assert "int(11 * self.font_scale)" in create_block
-    assert "int(12 * self.font_scale)" not in create_block
+    assert "int(11 * host.font_scale)" in create_block
+    assert "int(12 * host.font_scale)" not in create_block
 def test_education_remove_clears_manual_rotation():
     from gui_main import BossFilterGUI as _GUI
     gui = object.__new__(_GUI)
@@ -8252,13 +8242,10 @@ def test_education_manual_rotation_starts_from_model_rotation_and_locks():
 
 def test_education_preview_toolbar_has_rotate_not_flip():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[
-        source.index("def create_education_page"):
-        source.index("def _select_education_images")
-    ]
+    create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
 
     assert "顺转 90°" in create_block
-    assert "education_rotate_btn" in create_block
+    assert "rotate_button" in create_block
     assert "_rotate_education_image_cw90" in source
     assert "education_manual_rotation" in source
     # 用 tk.Label + 点击绑定代替 ttk.Button，严格不撑高标题栏
@@ -8275,9 +8262,10 @@ def test_education_preview_toolbar_has_rotate_not_flip():
     assert "preview_column" not in create_block
     assert "title_trailing_builder" in create_block
     assert "_build_rotate_button" in create_block
-    assert "title_bar, text=" in create_block
+    assert "rotate_button = tk.Label(" in create_block
+    assert "title_bar," in create_block
     assert 'side="right"' in create_block
-    assert "self.education_rotate_btn.place(" not in create_block
+    assert "rotate_button.place(" not in create_block
     # 按钮文字无前导空格（缩窄）
     assert 'text="顺转 90°"' in create_block
     assert 'text=" 顺转 90°"' not in create_block
@@ -8295,11 +8283,7 @@ def test_education_preview_toolbar_has_rotate_not_flip():
     assert "_set_education_flip_buttons_enabled" not in source
 
 def test_education_recognize_disclaimer_text_simplified():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[
-        source.index("def create_education_page"):
-        source.index("def _select_education_images")
-    ]
+    create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
 
     # 精简后的提示文本
     assert "识别时图片/PDF 会发送当前配置的 AI 模型，请确认已取得候选人授权。" in create_block
@@ -8444,27 +8428,19 @@ def test_education_scrollbar_is_visible_only_when_content_overflows():
 
 
 def test_education_queue_scrollbar_has_visible_local_style():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[
-        source.index("def create_education_page"):
-        source.index("def _select_education_images")
-    ]
+    create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
 
     assert '"Education.Vertical.TScrollbar"' in create_block
     assert "width=max(14" in create_block
     assert "arrowsize=max(14" in create_block
-    assert "('active', self.colors['text_secondary'])" in create_block
-    assert "('pressed', self.colors['text_secondary'])" in create_block
-    assert "('active', self.colors['primary'])" not in create_block
+    assert '("active", host.colors["text_secondary"])' in create_block
+    assert '("pressed", host.colors["text_secondary"])' in create_block
+    assert '("active", host.colors["primary"])' not in create_block
     assert 'style="Education.Vertical.TScrollbar"' in create_block
 
 
 def test_education_import_button_text_is_certificate():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[
-        source.index("def create_education_page"):
-        source.index("def _select_education_images")
-    ]
+    create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
 
     assert 'text=" 导入证书"' in create_block
     assert 'text=" 导入图片"' not in create_block
