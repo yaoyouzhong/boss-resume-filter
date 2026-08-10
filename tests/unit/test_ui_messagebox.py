@@ -493,7 +493,7 @@ def test_update_helper_reuses_the_main_window_search_icon():
     gui_source = Path("gui_main.py").read_text(encoding="utf-8")
     main_icon_block = gui_source[
         gui_source.index("    def _set_window_icon(self):"):
-        gui_source.index("\n    def show_stat_detail", gui_source.index(
+        gui_source.index("\n    def _stats_detail_row_values", gui_source.index(
             "    def _set_window_icon(self):"
         ))
     ]

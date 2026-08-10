@@ -8,25 +8,41 @@ boss-resume-filter/
 ├── filtering.py          # 纯筛选规则模块（评分、硬条件、薪资/经验/城市解析）
 ├── llm_eval.py           # LLM 辅助评估模块（prompt 构建、API 调用、批量评估）
 ├── ai_adapter.py         # 多服务商接口适配与模型能力验证
+├── api_connectivity.py   # DNS 与模型能力连通性探测及结果分类服务
+├── browser_connection.py # Chrome 调试端口、页面 URL 与 DrissionPage 限时连接服务
+├── model_catalog.py      # 模型目录获取、聊天模型过滤与端点隔离差异分析
 ├── job_ai_parser.py      # 岗位需求 AI 增强解析模块（基于正则初稿补充优化）
 ├── job_config_diagnostics.py # 岗位配置保存前体检模块
 ├── candidate_state_diagnostics.py # 候选人状态一致性体检模块
 ├── candidate_workflow.py # 候选人决策分类、复核规则、待办与下一步动作模块
+├── candidate_cleanup.py # 候选人按岗位清理与保留策略的纯集合转换模块
 ├── greeting_failure.py   # 打招呼失败原因归类模块
 ├── release_user_audit.py # 用户视角发布审计模块
 ├── storage.py            # 候选人数据持久化模块（去重、原子写入、备份恢复）
 ├── contact_queue.py      # GUI 候选人联系清单持久化与恢复模块
-├── candidate_presenter.py # 候选人状态、AI 评估与复核文本的纯格式化模块
+├── candidate_presenter.py # 候选人详情、状态、AI 评估与复核文本的纯格式化模块
 ├── candidate_diagnostics_presenter.py # 候选人状态体检列表的纯展示转换模块
 ├── contact_presenter.py # 联系清单就绪状态、确认内容与结果文本模块
 ├── run_presenter.py     # 运行进度、终态日志与摘要文本模块
 ├── stats_presenter.py   # 统计看板聚合、岗位复盘模型与文本模块
 ├── gui_stats_page.py    # 数据统计页 Tk 控件构建与页面局部引用模块
+├── gui_stats_detail.py  # 首页/结果页统计候选人明细弹窗与列表交互模块
+├── gui_job_review.py    # 岗位复盘工作台 Tk 构建、漏斗与洞察展示模块
+├── gui_result_page.py   # 筛选结果页 Tk 控件构建与显式控件引用模块
+├── gui_run_page.py      # 运行控制页分步 Tk 构建、控件状态联动与事件绑定模块
+├── gui_config_page.py   # 岗位配置页分步 Tk 构建、表单控件装配与事件绑定模块
+├── gui_settings_page.py # 系统设置页分步 Tk 构建、模型控件与数据工具入口装配模块
+├── gui_education_page.py # 学历核验页 Tk 控件构建、队列列表与事件绑定模块
+├── gui_home_page.py     # 首页 Tk 控件构建、统计卡与快速入口装配模块
+├── gui_model_catalog_dialog.py # 模型目录选择、搜索与连通性测试对话框
 ├── gui_candidate_diagnostics.py # 候选人状态体检弹窗的 Tk 构建与交互状态模块
 ├── gui_candidate_review.py # 候选人查看与复核工作台的 Tk 构建与视图切换模块
 ├── gui_candidate_actions.py # 今日待办弹窗的 Tk 构建、分组导航与局部选择状态模块
+├── gui_candidate_menus.py # 候选人单选、批量及工作流右键菜单构建模块
 ├── gui_candidate_workbench.py # 候选人工作台共用标题、指标条与导航树 UI 原语
+├── gui_candidate_state_dialogs.py # 候选人屏蔽、跟进与人工反馈表单弹窗模块
 ├── gui_contact_queue.py # 联系候选人工作台的 Tk 构建与控件引用模块
+├── gui_data_maintenance_dialogs.py # 候选人数据清理等维护确认弹窗模块
 ├── gui_main.py           # 图形界面主程序（v2.27）
 ├── gui_dialogs.py        # 独立对话框模块（更新日志、关于弹窗、CHANGELOG 渲染）
 ├── ui_messagebox.py      # 统一居中提示与确认弹窗（兼容 tkinter.messagebox）
@@ -34,6 +50,8 @@ boss-resume-filter/
 ├── updater.py            # 自动更新模块（Gitee/GitHub 双源检查、下载替换、完整性校验、启动时自动检查）
 ├── icons.py              # 图标绘制模块（Pillow 矢量图标 + IconCache）
 ├── doc_parser.py         # 招聘需求文档解析器（JD → 必要条件 + 职位要求）
+├── resume_parser.py      # 本地简历文件解析与可预期错误分类模块
+├── resume_import_service.py # 受管简历副本与候选人引用的事务替换服务
 ├── education_certificate.py # 毕业证书图片识别、字段校验与学信网页面填写
 ├── education_tool.py    # 独立学历证书核验助手入口（复用 gui_main 学历核验模式）
 ├── education_tool_config.py # 独立工具固定 AI 配置
@@ -150,10 +168,24 @@ boss-resume-filter/
 
 - `gui_main.py` 保留版本号、Tk 窗口生命周期、导航、页面按需创建和兼容门面；新的纯格式化或业务转换不得继续加入 `BossFilterGUI`。
 - `*_presenter.py` 只接收普通 Python 数据并返回文本或结构化展示结果；不得导入 `tkinter`、`gui_main`、候选人存储或网络模块，不得读写文件。
+- `candidate_cleanup.py` 只在调用方提供的候选人列表上执行按岗位/全部范围的清理与保留策略并返回统计；不得读写文件、导入 GUI、存储或网络模块。
+- `api_connectivity.py` 只执行 DNS 预检、模型能力探测和结果分类；不得导入 `tkinter`、`gui_main`、密钥存储或配置文件模块，API Key 必须由调用方显式传入。
+- `browser_connection.py` 只执行浏览器 URL 分类、调试端口探测、限时页面读取和限时 DrissionPage 连接；不得导入 `tkinter`、`gui_main`、存储或业务扫描模块，不得启动/终止 Chrome、导航页面或更新 UI。
 - `gui_main.py` 可以向新模块单向委托；新模块禁止反向导入 `gui_main.py`。迁移期保留原 `BossFilterGUI` 方法作为薄兼容层，待调用方和测试迁移后再删除。
 - `gui_*_page.py` 只负责指定页面的 Tk 控件构建和页面局部引用；不得读写业务数据、访问网络或导入 `gui_main`。迁移期通过显式 Host 协议注入回调，并由 `gui_main.py` 保留原页面属性别名。
 - `gui_candidate_*.py` 只负责候选人工作台弹窗的 Tk 控件、局部选择状态和事件绑定；候选人加载、状态诊断、业务动作和报告写盘必须通过显式回调留在 `gui_main.py`，不得导入存储、网络或 `gui_main`。
+- `gui_candidate_menus.py` 只消费宿主已计算的菜单状态和显式动作回调，负责候选人单选、批量及工作流右键菜单的 Tk 构建与弹出；候选人资格判断、联系门禁、状态更新和持久化必须留在 `gui_main.py`/纯业务模块。
+- `gui_candidate_state_dialogs.py` 只构建候选人屏蔽理由、跟进和人工反馈表单，并将用户输入交给显式回调；候选人定位、字段更新、原子持久化、联系清单同步、Excel 再生成和页面刷新必须留在 `gui_main.py`。
 - `gui_contact_queue.py` 只构建联系清单窗口并绑定显式回调；清单持久化、浏览器预检、发送、暂停恢复、失败重试和状态复核必须留在 `gui_main.py`，不得导入存储、浏览器、网络或 `gui_main`。
+- `gui_data_maintenance_dialogs.py` 只构建数据维护确认弹窗并回传用户选择；候选人读取、备份、删除、简历副本清理、日志记录和页面刷新必须留在 `gui_main.py`/存储模块，不得导入存储、网络或 `gui_main`。
+- `gui_result_page.py` 只构建筛选结果页控件、样式和事件绑定，并通过显式引用包交还 `gui_main.py`；候选人读取、过滤、排序、复核、联系、导出和状态持久化必须留在 `gui_main.py`，不得导入存储、网络或 `gui_main`。
+- `gui_stats_detail.py` 只构建首页/结果页统计候选人明细弹窗及列表交互；统计筛选口径、候选人读取、删除持久化、页面刷新和候选人业务动作必须由 `gui_main.py` 通过显式回调提供，不得导入存储、网络或 `gui_main`。
+- `gui_job_review.py` 只消费 `stats_presenter.py` 已生成的岗位复盘模型并构建工作台；候选人加载、反馈样本口径、复盘建议计算和岗位配置导航必须留在 `gui_main.py`/`stats_presenter.py`，通过显式回调接入，不得导入存储、网络或 `gui_main`。
+- `gui_run_page.py` 只负责运行控制页的分步 Tk 构建、表单状态联动和事件绑定；API Key 查询、浏览器检测、扫描启动/停止、进度数据和日志业务必须通过宿主回调留在 `gui_main.py`，不得导入存储、浏览器、网络或 `gui_main`。
+- `gui_education_page.py` 只负责学历核验页的 Tk 控件、队列列表、页面局部状态和事件绑定；证书读取与识别、模型调用、学信网填写、验证码和浏览器操作必须通过显式 Host 回调留在 `gui_main.py`，不得导入存储、AI、浏览器、网络或 `gui_main`。
+- `gui_home_page.py` 只负责首页标题、岗位筛选控件、统计卡和快速入口的 Tk 构建与事件绑定；岗位加载、统计口径、页面导航生命周期和候选人明细必须通过显式 Host 回调留在 `gui_main.py`，不得读取存储或导入网络、浏览器、`gui_main`。首页仍是启动时唯一立即创建的业务页，不得因拆分引入隐藏页预构建。
+- `resume_parser.py` 只把本地 PDF、DOCX、TXT、MD、RTF 或 HTML 简历转为文本并抛出可预期的分类异常；不得导入 `tkinter`、`gui_main`、候选人存储或网络模块，不得修改候选人数据或受管简历引用。
+- `resume_import_service.py` 只负责受管简历副本写入、候选人引用原子替换及失败后的新副本回收/保留判定；不得导入 `tkinter`、`gui_main` 或网络模块，不得处理文件选择、用户提示或 AI 评估。
 - 后续如新建 `gui_pages/`、`gui_workbenches/` 或 `gui_runtime/` 目录，必须先在本文档定义目录职责和依赖方向，再创建文件。
 
 ## 代码规范

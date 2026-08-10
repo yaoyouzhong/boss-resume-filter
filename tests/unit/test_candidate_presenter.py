@@ -77,3 +77,34 @@ def test_format_display_datetime_and_candidate_decision_summary():
     assert "下一步" in summary
     assert "筛选结论" in summary
     assert "当前状态" in summary
+
+
+def test_format_candidate_detail_uses_prepared_data_without_external_access():
+    detail = candidate_presenter.format_candidate_detail(
+        {
+            "name": "候选人甲",
+            "job_name": "数据分析师",
+            "geek_id": "candidate-1",
+            "match_score": 70,
+            "summary": "教育经历：南京大学 计算机 本科 2015 2019",
+            "feedback_status": "合适",
+            "feedback_note": "业务经验匹配",
+            "llm_error": "请求超时\n请稍后重试",
+        },
+        summary_info={
+            "age": "29",
+            "exp_years": "6",
+            "salary": "15-20K",
+            "job_status": "离职",
+            "education": "本科",
+        },
+        feedback_reasons=["技能匹配"],
+        dimension_labels={"skill_depth": "技能深度"},
+    )
+
+    assert "候选人甲" in detail
+    assert "29 岁｜6 年｜期望薪资 15-20K｜离职" in detail
+    assert "【人工反馈】" in detail
+    assert "原因：技能匹配" in detail
+    assert "失败原因：请求超时 请稍后重试" in detail
+    assert "【教育经历】" in detail

@@ -249,7 +249,7 @@ def test_save_current_job_is_blocked_while_requirement_parse_is_active():
 
 
 def test_job_config_primary_actions_are_lowered_without_moving_quality_row():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
+    source = Path("gui_config_page.py").read_text(encoding="utf-8")
     block = source[source.index("# 按钮行（居中布局"):]
     block = block[:block.index("# 存储技能数据的列表")]
 
@@ -257,7 +257,7 @@ def test_job_config_primary_actions_are_lowered_without_moving_quality_row():
     footer_block = source[
         source.index("# 底部按钮固定在页面底部"):source.index("# 在所有控件创建完毕后绑定滚轮事件")
     ]
-    assert "int(10 * self.dpi_scale * self.zoom_factor),\n                0," in footer_block
+    assert "int(10 * self.dpi_scale * self.zoom_factor),\n            0," in footer_block
 
 
 class _FakeVar:
@@ -447,9 +447,7 @@ class _FakeCalendarTop:
 
 
 def test_job_config_page_uses_business_sections_and_one_low_frequency_menu():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    block = source[source.index("def create_config_page"):]
-    block = block[:block.index("\n    def create_api_config_page")]
+    block = Path("gui_config_page.py").read_text(encoding="utf-8")
 
     assert '"招聘需求"' in block
     assert '"基础筛选条件"' in block
@@ -478,7 +476,7 @@ def test_job_config_page_uses_business_sections_and_one_low_frequency_menu():
 
 
 def test_job_config_basic_filters_use_compact_grouped_rows_and_keep_alignment():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
+    source = Path("gui_config_page.py").read_text(encoding="utf-8")
     block = source[source.index("# 岗位名称"):]
     block = block[:block.index("# 技能关键词区域")]
 
@@ -534,7 +532,7 @@ def test_compact_filter_spinbox_matches_combobox_pixel_width_contract():
 
 
 def test_skill_score_table_uses_shared_font_and_wider_key_columns():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
+    source = Path("gui_config_page.py").read_text(encoding="utf-8")
     block = source[source.index("# 使用 Treeview 显示技能列表"):]
     block = block[:block.index("skills_scroll = ttk.Scrollbar")]
 
@@ -1589,7 +1587,8 @@ def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
 
 def test_saved_model_list_keeps_library_fields_and_removes_derived_purpose_column():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    list_block = source[source.index("# 模型列表 Treeview"):]
+    settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
+    list_block = settings_source[settings_source.index("# 模型列表 Treeview"):]
     list_block = list_block[:list_block.index("# 滚动条（垂直 + 水平）")]
     load_block = source[source.index("def load_saved_models_to_tree"):]
     load_block = load_block[:load_block.index("\n    def _get_model_list_max_rows")]
@@ -1763,76 +1762,67 @@ def test_save_capability_to_model_matches_provider_base_url_and_model():
 
 
 def test_result_scope_label_matches_filter_label_style():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
     assert 'text="结果范围:"' in result_block
 
 
 def test_result_page_defaults_to_all_records_and_offers_today():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
     assert 'values=("全部时间", "今天", "近7天", "近30天", "自定义")' in result_block
-    assert 'self.result_view_var = tk.StringVar(value="全部记录")' in result_block
+    assert 'view_var = tk.StringVar(value="全部记录")' in result_block
     assert '"推荐候选人", "复核通过", "待复核", "淘汰记录", "全部记录"' in result_block
 
 
 def test_result_page_keeps_gender_visible_and_all_fields_horizontally_scrollable():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
-    assert '"name", "gender", "exp", "salary", "skills", "score", "ai_eval"' in result_block
-    assert 'self.result_tree.heading("gender", text="性别")' in result_block
+    assert '"gender": "性别"' in result_block
+    assert '"gender": (55, 48)' in result_block
     assert 'orient="horizontal"' in result_block
-    assert 'command=self.result_tree.xview' in result_block
+    assert 'command=tree.xview' in result_block
     assert 'xscrollcommand=tree_scroll_x.set' in result_block
     assert 'tree_scroll_x.pack(' in result_block
 
 
 def test_result_blacklist_check_blends_with_page_background_in_every_state():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
-    style_block = result_block[result_block.index('_cb_style.configure('):]
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
+    style_block = result_block[result_block.index('checkbox_style.configure('):]
     style_block = style_block[:style_block.index('blacklist_check = ttk.Checkbutton(')]
 
-    assert "background=self.colors['bg_main']" in style_block
+    assert 'background=host.colors["bg_main"]' in style_block
     for state in ("active", "pressed", "selected", "disabled"):
-        assert f'(\"{state}\", self.colors[\'bg_main\'])' in style_block
+        assert f'(\"{state}\", host.colors[\"bg_main\"])' in style_block
 
 
 def test_result_page_keeps_workflow_actions_visible_and_groups_utilities():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
     assert 'text=" 今日待办"' in result_block
-    assert "self.icons.button('task_list', self.colors['primary'])" in result_block
+    assert 'host.icons.button("task_list", host.colors["primary"])' in result_block
     assert 'text=" 查看与复核"' in result_block
-    assert "self.icons.button('candidate_review', self.colors['primary'])" in result_block
-    review_button_block = result_block[result_block.index("self.result_review_button = ttk.Button("):]
-    review_button_block = review_button_block[:review_button_block.index("self.result_review_button._icon_ref")]
+    assert 'host.icons.button("candidate_review", host.colors["primary"])' in result_block
+    review_button_block = result_block[result_block.index("review_button = ttk.Button("):]
+    review_button_block = review_button_block[:review_button_block.index("review_button._icon_ref")]
     assert "style='Accent.TButton'" not in review_button_block
     assert 'text=" 联系候选人"' in result_block
     assert 'text="更多操作"' in result_block
     assert 'label=" 查看今日待办"' not in result_block
     assert 'label=" 候选人状态体检"' in result_block
-    assert "self.icons.button('health_shield', self.colors['primary'])" in result_block
+    assert 'host.icons.button("health_shield", host.colors["primary"])' in result_block
     assert 'label=" 导出 Excel"' in result_block
     assert 'label=" 清空候选人"' in result_block
     assert 'text=" 状态体检"' not in result_block
     assert 'text=" 导出 Excel"' not in result_block
     assert 'text=" 清空候选人"' not in result_block
-    assert "pady=(int(20 * self.dpi_scale * self.zoom_factor), 0)" in result_block
+    assert 'pady=(int(20 * scale), 0)' in result_block
 
 
 def test_system_settings_model_name_matches_provider_control_width():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    settings_block = source[source.index("# 模型接入配置"):]
+    settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
+    settings_block = settings_source[settings_source.index("# 模型接入配置"):]
     settings_block = settings_block[:settings_block.index("# 第三行：API Key")]
     styles_block = source[source.index("def setup_styles"):]
     styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
@@ -1847,6 +1837,8 @@ def test_system_settings_model_name_matches_provider_control_width():
 
 def test_more_action_menubuttons_share_centered_overlay_arrow_style():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    config_source = Path("gui_config_page.py").read_text(encoding="utf-8")
+    result_source = Path("gui_result_page.py").read_text(encoding="utf-8")
     setup_block = source[source.index("def setup_styles"):]
     setup_block = setup_block[:setup_block.index("\n    def _create_status_icons")]
 
@@ -1856,18 +1848,21 @@ def test_more_action_menubuttons_share_centered_overlay_arrow_style():
     assert "padding=(24, 8)" in setup_block
     assert "anchor='center'" in setup_block
     assert "justify='center'" in setup_block
-    assert source.count("style='CenteredActions.TMenubutton'") == 2
-    assert "ConfigActions.TMenubutton" not in source
+    assert (
+        source.count("style='CenteredActions.TMenubutton'")
+        + config_source.count("style='CenteredActions.TMenubutton'")
+        + result_source.count('style="CenteredActions.TMenubutton"')
+        == 2
+    )
+    assert "ConfigActions.TMenubutton" not in config_source
     assert "ResultActions.TMenubutton" not in source
 
-    config_block = source[source.index("def create_config_page"):]
-    config_block = config_block[:config_block.index("\n    def create_api_config_page")]
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    config_block = config_source
+    result_block = result_source
     assert "tk.Menu(select_frame, tearoff=0, font=self.font_label)" in config_block
-    assert "font=self.font_label," in result_block[result_block.index("more_menu = tk.Menu("):]
-    assert "menu=more_menu,\n            width=9," in config_block
-    assert "menu=more_menu,\n            width=9," in result_block
+    assert "font=host.font_label" in result_block[result_block.index("more_menu = tk.Menu("):]
+    assert "menu=more_menu,\n        width=9," in config_block
+    assert "menu=more_menu,\n        width=9," in result_block
     assert "self.icons.button('trash', self.colors['danger'])" in config_block
 
 
@@ -1886,10 +1881,11 @@ def test_combobox_style_keeps_readonly_text_visible_and_clears_inactive_highligh
 
 def test_checkbutton_style_uses_large_checkmark_indicator_but_ai_keeps_switch():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    run_source = Path("gui_run_page.py").read_text(encoding="utf-8")
     setup_block = source[source.index("def setup_styles"):]
     setup_block = setup_block[:setup_block.index("\n    def create_sidebar")]
-    run_block = source[source.index("# AI 辅助评估开关"):]
-    run_block = run_block[:run_block.index("\n        yield")]
+    run_block = run_source[run_source.index("# AI 辅助评估开关"):]
+    run_block = run_block[:run_block.index("\n    yield")]
 
     assert "checkbox_size = max(24, int(round(24 * fs)))" in setup_block
     assert "checkbox_indicator = 'App.Checkbutton.indicator'" in setup_block
@@ -1899,7 +1895,7 @@ def test_checkbutton_style_uses_large_checkmark_indicator_but_ai_keeps_switch():
     check_layout = check_layout[:check_layout.index("\n        style.configure(")]
     assert "Checkbutton.focus" not in check_layout
     assert "('Checkbutton.label', {" in check_layout
-    assert "enabled_variable=self.ai_eval_available_var" in run_block
+    assert "enabled_variable=host.ai_eval_available_var" in run_block
 
 
 def test_ai_switch_is_compact_and_supersampled():
@@ -2068,26 +2064,24 @@ def test_background_export_reports_worker_failure_on_ui_thread():
 
 
 def test_model_settings_use_explicit_role_selectors_not_hidden_actions():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    settings_block = source[source.index("def _create_api_config_content"):]
-    settings_block = settings_block[:settings_block.index("\n    def load_api_config_to_ui")]
+    settings_block = Path("gui_settings_page.py").read_text(encoding="utf-8")
 
     assert '"使用中的模型"' in settings_block
     assert 'text="默认 AI 模型:"' in settings_block
     assert 'text="学历核验模型:"' in settings_block
     assert "label_width_assignment = 14" in settings_block
     assert "model_choice_width = 34" in settings_block
-    assert "TRAFFIC_LIGHT_BASE_SIZE * self.dpi_scale * self.zoom_factor" in settings_block
+    assert "traffic_light_base_size * self.dpi_scale * self.zoom_factor" in settings_block
     assert "traffic_light_pending" in settings_block
     assert "traffic_light_success" in settings_block
     assert "traffic_light_error" in settings_block
     assert "pulse_check" not in settings_block
     assert 'width=model_choice_width' in settings_block
-    assert "width=UI_CONFIG['entry_width_url']" in settings_block
+    assert "width=ui_config['entry_width_url']" in settings_block
     assert "self.api_key_entry = ttk.Entry(" in settings_block
     api_key_block = settings_block[settings_block.index("self.api_key_entry = ttk.Entry("):]
     api_key_block = api_key_block[:api_key_block.index("self.api_key_entry.pack")]
-    assert "width=UI_CONFIG['entry_width_url']" in api_key_block
+    assert "width=ui_config['entry_width_url']" in api_key_block
     assert 'sticky="w"' in settings_block
     assert "btn_test_default_model" in settings_block
     assert "btn_test_education_model" in settings_block
@@ -2715,18 +2709,15 @@ def test_result_contact_button_opens_pending_verification_group():
 
 
 def test_home_and_result_empty_state_use_staged_navigation_entrypoint():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    home_block = source[source.index("def create_home_page"):]
-    home_block = home_block[:home_block.index("\n    def create_config_page")]
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    home_block = Path("gui_home_page.py").read_text(encoding="utf-8")
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
-    assert "command=lambda: self._request_sidebar_page(PageIndex.RUN)" in home_block
-    assert "command=lambda: self._request_sidebar_page(PageIndex.RESULTS)" in home_block
-    assert "command=lambda: self._request_sidebar_page(PageIndex.CONFIG)" in home_block
-    assert "action_command=lambda: self._request_sidebar_page(PageIndex.RUN)" in result_block
-    assert "command=self.show_page_run" not in home_block
-    assert "command=self.show_page_config" not in home_block
+    assert "command=lambda: host._request_sidebar_page(run_page_index)" in home_block
+    assert "command=lambda: host._request_sidebar_page(result_page_index)" in home_block
+    assert "command=lambda: host._request_sidebar_page(config_page_index)" in home_block
+    assert "action_command=lambda: host._request_sidebar_page(run_page_index)" in result_block
+    assert "command=host.show_page_run" not in home_block
+    assert "command=host.show_page_config" not in home_block
 
 
 def test_navigation_highlight_updates_only_previous_and_current_items():
@@ -2916,10 +2907,25 @@ def test_job_config_page_releases_bottom_padding_but_preserves_header_position()
     assert gui.pages_frame.pack_configure.call_args.kwargs["pady"] == (
         gui_main.UI_CONFIG["page_padding_y"] - 15
     )
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    config_block = source[source.index("def create_config_page"):]
-    config_block = config_block[:config_block.index("\n    def create_api_config_page")]
+    config_block = Path("gui_config_page.py").read_text(encoding="utf-8")
     assert 'self._create_page_header(self.config_page, "岗位配置", top_padding=15)' in config_block
+
+
+def test_job_config_page_builder_is_ui_only_and_main_keeps_business_actions():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    builder = Path("gui_config_page.py").read_text(encoding="utf-8")
+    delegate = source[source.index("def _create_config_page_steps"):]
+    delegate = delegate[:delegate.index("\n    def create_api_config_page")]
+
+    assert "yield from gui_config_page.build_config_page_steps(" in delegate
+    assert "from job_config_store" not in builder
+    assert "from job_config_diagnostics" not in builder
+    assert "def save_current_job" not in builder
+    assert "def load_job_to_form" not in builder
+    assert "def parse_requirement" not in builder
+    assert "def save_current_job" in source
+    assert "def load_job_to_form" in source
+    assert "def parse_requirement" in source
 
 
 def test_api_key_is_visible_only_while_eye_button_is_pressed():
@@ -2944,9 +2950,7 @@ def test_api_key_is_visible_only_while_eye_button_is_pressed():
 
 
 def test_api_key_eye_uses_press_and_release_bindings_not_click_toggle():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    settings_block = source[source.index("def _create_api_config_content"):]
-    settings_block = settings_block[:settings_block.index("\n    def load_api_config_to_ui")]
+    settings_block = Path("gui_settings_page.py").read_text(encoding="utf-8")
 
     assert '"<ButtonPress-1>", self._show_api_key_while_pressed' in settings_block
     assert '"<ButtonRelease-1>", self._hide_api_key_after_release' in settings_block
@@ -2956,9 +2960,7 @@ def test_api_key_eye_uses_press_and_release_bindings_not_click_toggle():
 
 
 def test_api_key_eye_blends_with_settings_card_background():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    settings_block = source[source.index("def _create_api_config_content"):]
-    settings_block = settings_block[:settings_block.index("\n    def load_api_config_to_ui")]
+    settings_block = Path("gui_settings_page.py").read_text(encoding="utf-8")
     button_block = settings_block[settings_block.index("self.api_key_toggle_btn = tk.Button("):]
     button_block = button_block[:button_block.index("self.api_key_toggle_btn._icon_eye")]
 
@@ -3142,6 +3144,99 @@ def test_assigned_model_connectivity_status_uses_role_and_model_name():
     assert 'f"✓ {assigned_target_label}测试通过"' in result_block
 
 
+def test_api_connection_delegates_probe_and_returns_result_on_ui_thread():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.DISPLAY_TO_KEY = gui_main.DISPLAY_TO_KEY
+    gui.api_key_var = Mock()
+    gui.api_key_var.get.return_value = "secret"
+    gui.api_base_url_var = Mock()
+    gui.api_base_url_var.get.return_value = "https://api.example.test/v1"
+    gui.api_model_var = Mock()
+    gui.api_model_var.get.return_value = "model-a"
+    gui.api_provider_var = Mock()
+    gui.api_provider_var.get.return_value = "通义千问 (Qwen)"
+    gui.colors = {"warning": "warning"}
+    gui._update_api_status = Mock()
+    gui._apply_api_connectivity_result = Mock()
+    gui.run_on_ui = Mock(side_effect=lambda callback: callback())
+    result = types.SimpleNamespace(status="compatible", successful=True)
+
+    def immediate_thread(*_args, **kwargs):
+        return types.SimpleNamespace(start=kwargs["target"])
+
+    with (
+        patch.object(
+            gui_main,
+            "probe_api_connectivity",
+            return_value=result,
+        ) as probe,
+        patch.object(
+            gui_main.threading,
+            "Thread",
+            side_effect=immediate_thread,
+        ),
+    ):
+        gui.test_api_connection()
+
+    config = probe.call_args.args[0]
+    assert config == {
+        "api_provider": "qwen",
+        "base_url": "https://api.example.test/v1",
+        "model": "model-a",
+    }
+    assert probe.call_args.args[1] == "secret"
+    gui._apply_api_connectivity_result.assert_called_once_with(
+        result,
+        "model-a",
+    )
+
+
+def test_api_connectivity_result_renders_limited_and_dns_outcomes():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.colors = {
+        "success": "success",
+        "danger": "danger",
+    }
+    gui._update_api_status = Mock()
+    gui._status_flash = Mock()
+    limited = types.SimpleNamespace(
+        status="limited",
+        successful=True,
+        elapsed_seconds=1.25,
+        hostname="api.example.test",
+        message="",
+    )
+
+    gui._apply_api_connectivity_result(limited, "model-a")
+
+    gui._update_api_status.assert_called_with(
+        text="✓ 兼容模式 (1.2s)",
+        foreground="success",
+    )
+    gui._status_flash.assert_called_once_with(
+        "model-a 连接正常，可用于 AI 评估"
+    )
+
+    dns_error = types.SimpleNamespace(
+        status="dns_error",
+        successful=False,
+        elapsed_seconds=0.2,
+        hostname="missing.example.test",
+        message="域名解析失败",
+    )
+    with patch.object(gui_main.messagebox, "show_failure") as show_failure:
+        gui._apply_api_connectivity_result(dns_error, "model-a")
+
+    show_failure.assert_called_once_with(
+        "DNS 解析失败",
+        headline="无法解析域名 missing.example.test",
+        message="请检查 Base URL、DNS 设置或 hosts 配置。",
+        detail="DNS 检查耗时 0.2 秒",
+        parent=gui.root,
+    )
+
+
 def test_assigned_model_test_result_is_ignored_after_model_switch():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     default_button = _FakeWidget()
@@ -3217,13 +3312,12 @@ def test_traffic_light_icons_are_registered_without_pulse_check():
 
 def test_run_and_settings_traffic_lights_share_one_base_size():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    settings_block = source[source.index("def _create_api_config_content"):]
-    settings_block = settings_block[:settings_block.index("\n    def load_api_config_to_ui")]
+    settings_block = Path("gui_settings_page.py").read_text(encoding="utf-8")
     lamp_block = source[source.index("def _get_lamp_icon"):]
     lamp_block = lamp_block[:lamp_block.index("\n    def _apply_lamp_status")]
 
     assert "TRAFFIC_LIGHT_BASE_SIZE = 32" in source
-    assert "TRAFFIC_LIGHT_BASE_SIZE * self.dpi_scale * self.zoom_factor" in settings_block
+    assert "traffic_light_base_size * self.dpi_scale * self.zoom_factor" in settings_block
     assert "TRAFFIC_LIGHT_BASE_SIZE" in lamp_block
     assert "int(16 *" not in lamp_block
 
@@ -3430,15 +3524,95 @@ def test_save_api_config_sets_default_when_current_model_is_not_saved():
 
 def test_model_discovery_keeps_custom_base_url_explicit_and_scopes_catalog_cache():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    catalog_source = Path("model_catalog.py").read_text(encoding="utf-8")
+    settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
     fetch_block = source[source.index("def fetch_model_list"):]
     fetch_block = fetch_block[:fetch_block.index("\n    def _show_api_key_while_pressed")]
 
-    assert 'self.api_base_url_var = tk.StringVar()' in source
-    assert 'text=" 自动识别并获取模型"' in source
+    assert 'self.api_base_url_var = tk.StringVar()' in settings_source
+    assert 'text=" 自动识别并获取模型"' in settings_source
     assert 'if not base_url and not has_endpoint_discovery(provider):' in fetch_block
-    assert '自定义/中转地址只验证用户明确输入的 URL' in fetch_block
-    assert 'resolution = discover_api_endpoint(' in fetch_block
-    assert 'catalog_key = model_catalog_cache_key(provider, base_url)' in fetch_block
+    assert 'catalog_response = fetch_model_catalog(' in fetch_block
+    assert 'analysis = analyze_model_catalog(' in fetch_block
+    assert '自定义/中转地址只请求用户明确输入的 URL' in catalog_source
+    assert 'resolution = discover_endpoint(' in catalog_source
+    assert 'catalog_key = model_catalog_cache_key(provider, base_url)' in catalog_source
+
+
+def test_fetch_model_list_routes_catalog_result_to_extracted_dialog():
+    from ai_adapter import model_catalog_cache_key
+    from model_catalog import ModelCatalogResponse
+
+    class _QueuedRoot:
+        def __init__(self):
+            self.queued = []
+
+        def after(self, delay, callback):
+            if delay == 0:
+                callback()
+            else:
+                self.queued.append(callback)
+
+    class _SyncThread:
+        def __init__(self, target, daemon=None):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    code_url = "https://api.kimi.com/coding/v1"
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._model_dialog = None
+    gui.api_key_var = _FakeVar("sk-kimi-test")
+    gui.api_base_url_var = _FakeVar("https://api.moonshot.cn/v1")
+    gui.api_provider_var = _FakeVar("Kimi")
+    gui.DISPLAY_TO_KEY = {"Kimi": "kimi"}
+    gui.colors = {"warning": "orange", "success": "green", "danger": "red"}
+    gui.root = _QueuedRoot()
+    gui._update_api_status = Mock()
+    gui._sanitize_config_for_save = lambda config: config
+    gui._mark_api_config_ui_current = Mock()
+    gui._status_clickable_labels = []
+    gui.api_config = {
+        "base_url": code_url,
+        "fetched_models": {
+            model_catalog_cache_key("kimi", code_url): ["kimi-for-coding"],
+        },
+    }
+
+    response = ModelCatalogResponse(
+        http_status=200,
+        response_text="",
+        payload={"data": [{"id": "kimi-for-coding"}]},
+        base_url=code_url,
+        service_name="Kimi Code",
+        resolution_status="confirmed",
+        endpoint_confirmed=True,
+    )
+
+    with (
+        tempfile.TemporaryDirectory() as tmp_dir,
+        patch("gui_main.fetch_model_catalog", return_value=response) as fetch,
+        patch("gui_main.threading.Thread", _SyncThread),
+        patch("gui_main.get_api_config_path", return_value=Path(tmp_dir) / "api.json"),
+        patch(
+            "gui_main.gui_model_catalog_dialog.show_model_catalog_dialog"
+        ) as show_dialog,
+    ):
+        gui.fetch_model_list()
+        assert len(gui.root.queued) == 1
+        gui.root.queued.pop()()
+
+    fetch.assert_called_once_with(
+        "kimi",
+        "sk-kimi-test",
+        "https://api.moonshot.cn/v1",
+    )
+    assert gui.api_base_url_var.get() == code_url
+    assert gui._verified_api_endpoint == ("kimi", "sk-kimi-test", code_url)
+    show_dialog.assert_called_once()
+    assert show_dialog.call_args.kwargs["models"] == ["kimi-for-coding"]
+    gui._mark_api_config_ui_current.assert_called_once_with()
 
 
 def test_education_captcha_low_confidence_is_not_auto_submitted():
@@ -4331,6 +4505,142 @@ def test_update_candidate_followup_to_uncontacted_clears_incorrect_greeting_fact
         assert "next_followup_at" not in saved
 
 
+def test_followup_dialog_controller_syncs_saved_state_and_views():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._update_candidate_followup = Mock(return_value=True)
+    gui._sync_greet_queue_candidate_state = Mock()
+    gui._regenerate_excel = Mock()
+    gui.refresh_results = Mock()
+    on_saved = Mock()
+    candidate = {
+        "geek_id": "g1",
+        "job_name": "Java 工程师",
+        "followup_status": "未沟通",
+        "greet_sent": False,
+    }
+
+    result = gui._save_candidate_followup_from_dialog(
+        candidate,
+        "待约面",
+        "周三确认",
+        "20260723_090000",
+        Mock(),
+        on_saved,
+    )
+
+    assert result.saved is True
+    assert result.request_feedback is False
+    saved_args = gui._update_candidate_followup.call_args.args
+    assert saved_args[:5] == (
+        "g1",
+        "Java 工程师",
+        "待约面",
+        "周三确认",
+        "20260723_090000",
+    )
+    assert candidate["greet_sent"] is True
+    assert candidate["greet_method"] == "manual_status"
+    assert candidate["followup_status"] == "待约面"
+    assert candidate["next_followup_at"] == "20260723_090000"
+    gui._sync_greet_queue_candidate_state.assert_called_once_with(candidate)
+    gui._regenerate_excel.assert_called_once_with()
+    gui.refresh_results.assert_called_once_with()
+    on_saved.assert_called_once_with()
+
+
+def test_followup_dialog_controller_cancels_uncontacted_correction_before_write():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._update_candidate_followup = Mock(return_value=True)
+    candidate = {
+        "geek_id": "g1",
+        "job_name": "Java 工程师",
+        "followup_status": "已回复",
+        "greet_sent": True,
+    }
+
+    with patch.object(gui_main.messagebox, "ask_confirmation", return_value=False):
+        result = gui._save_candidate_followup_from_dialog(
+            candidate,
+            "未沟通",
+            "纠正误记",
+            "",
+            Mock(),
+        )
+
+    assert result.saved is False
+    assert result.request_feedback is False
+    gui._update_candidate_followup.assert_not_called()
+    assert candidate["followup_status"] == "已回复"
+    assert candidate["greet_sent"] is True
+
+
+def test_feedback_dialog_controller_promotes_suitable_review_candidate():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._update_candidate_feedback = Mock(return_value=True)
+    gui._sync_greet_queue_candidate_state = Mock()
+    gui._regenerate_excel = Mock()
+    gui.refresh_results = Mock()
+    on_saved = Mock()
+    candidate = {
+        "geek_id": "g1",
+        "job_name": "Java 工程师",
+        "match_score": 60,
+    }
+
+    result = gui._save_candidate_feedback_from_dialog(
+        candidate,
+        "合适",
+        ["技能匹配"],
+        "人工复核通过",
+        Mock(),
+        on_saved,
+    )
+
+    assert result.saved is True
+    gui._update_candidate_feedback.assert_called_once_with(
+        "g1",
+        "Java 工程师",
+        "合适",
+        ["技能匹配"],
+        "人工复核通过",
+    )
+    assert candidate["feedback_status"] == "合适"
+    assert candidate["feedback_reasons"] == ["技能匹配"]
+    assert candidate["review_passed_reasons"] == ["评分处于待定区间（60 分）"]
+    gui._sync_greet_queue_candidate_state.assert_called_once_with(candidate)
+    gui._regenerate_excel.assert_called_once_with()
+    gui.refresh_results.assert_called_once_with()
+    on_saved.assert_called_once_with()
+
+
+def test_feedback_dialog_controller_clears_contact_approval_on_rejection():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._update_candidate_feedback = Mock(return_value=True)
+    gui._sync_greet_queue_candidate_state = Mock()
+    gui._regenerate_excel = Mock()
+    gui.refresh_results = Mock()
+    candidate = {
+        "geek_id": "g1",
+        "job_name": "Java 工程师",
+        "match_score": 80,
+        "contact_approved_at": "20260729_100000",
+        "contact_approval_reason": "人工确认",
+    }
+
+    result = gui._save_candidate_feedback_from_dialog(
+        candidate,
+        "误推",
+        ["技能不匹配"],
+        "不再联系",
+        Mock(),
+    )
+
+    assert result.saved is True
+    assert "contact_approved_at" not in candidate
+    assert "contact_approval_reason" not in candidate
+    gui._sync_greet_queue_candidate_state.assert_called_once_with(candidate)
+
+
 def test_manual_contact_approval_is_persisted_for_only_matching_job():
     with tempfile.TemporaryDirectory() as tmp_dir:
         candidates_path = Path(tmp_dir) / "candidates.json"
@@ -4611,20 +4921,81 @@ def test_candidate_review_actions_keep_stable_two_row_layout_and_button_style():
 
 def test_candidate_context_menu_uses_review_workbench_wording():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    menus = Path("gui_candidate_menus.py").read_text(encoding="utf-8")
     block = source[source.index("def _build_candidate_context_menu"):]
     block = block[:block.index("\n    def _find_candidate_by_tree_item")]
 
-    assert 'label=" 查看与复核"' in block
-    assert "self.icons.button('candidate_review', self.colors['primary'])" in block
-    assert "self.icons.button('ai_spark', self.colors['primary'])" in block
-    assert 'label=" 查看详情"' not in block
-    assert 'label=" 加入联系清单"' in block
-    assert 'label=" 确认并加入联系清单"' in block
-    assert 'label=" 打招呼"' not in block
+    assert 'label="查看与复核"' in menus
+    assert '("candidate_review", "primary")' in menus
+    assert '("ai_spark", "primary")' in menus
+    assert 'label="查看详情"' not in menus
+    assert 'label="加入联系清单"' in menus
+    assert 'label="确认并加入联系清单"' in menus
+    assert 'label="打招呼"' not in menus
     assert "candidate_greet_skip_reason(candidate)" in block
-    assert "not _candidate_has_ai_eval(candidate)" in block
-    assert "candidate.get('qualification_status') == 'manual_review'" in block
-    assert 'label=" 导出选中"' not in block
+    assert "has_ai_evaluation=_candidate_has_ai_eval(candidate)" in block
+    assert 'candidate.get("qualification_status") == "manual_review"' in block
+    single_menu = menus[menus.index("def show_candidate_context_menu"):]
+    single_menu = single_menu[:single_menu.index("\ndef show_candidate_batch_menu")]
+    assert 'label="导出选中"' not in single_menu
+
+
+def test_candidate_context_menu_controller_passes_business_eligibility_state():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._greet_queue_item_for_candidate = Mock(return_value=None)
+    gui._ai_eval_selected_candidates = Mock()
+    gui._import_resume = Mock()
+    gui._revert_resume_eval = Mock()
+    gui._confirm_manual_review = Mock()
+    gui._confirm_review_rejection = Mock()
+    gui._add_candidates_to_greet_queue = Mock()
+    gui._focus_candidate_in_greet_queue = Mock()
+    gui._approve_candidate_contact_and_queue = Mock()
+    gui._mark_candidate_followup = Mock()
+    gui._mark_candidate_feedback = Mock()
+    gui._blacklist_candidate = Mock()
+    gui._unblacklist_candidate = Mock()
+    candidate = {
+        "geek_id": "g1",
+        "qualification_status": "manual_review",
+        "manual_review_required": True,
+        "resume_eval_adjustment": 5,
+    }
+
+    with (
+        patch.object(
+            gui_main,
+            "derive_candidate_decision",
+            return_value=types.SimpleNamespace(review_status="pending"),
+        ),
+        patch.object(gui_main, "candidate_greet_skip_reason", return_value="待复核"),
+        patch.object(
+            gui_main,
+            "candidate_can_manual_approve_contact",
+            return_value=True,
+        ),
+        patch.object(
+            gui_main.gui_candidate_menus,
+            "show_candidate_context_menu",
+        ) as show_menu,
+    ):
+        gui._build_candidate_context_menu(
+            Mock(),
+            Mock(),
+            "row-1",
+            candidate,
+            Mock(),
+            Mock(),
+            100,
+            200,
+        )
+
+    state = show_menu.call_args.kwargs["state"]
+    assert state.needs_review is True
+    assert state.can_confirm_review is True
+    assert state.has_resume_adjustment is True
+    assert state.queue_action == "approve"
+    assert state.blacklisted is False
 
 
 def test_candidate_detail_explains_ai_failure_and_retained_rule_score():
@@ -5030,9 +5401,9 @@ def test_browser_auto_check_debounces_one_transient_connection_failure():
 
 def test_result_page_stats_show_greeted_after_pending():
     """结果页依次展示强烈推荐、推荐、待定、已打招呼。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    stats_block = source[source.index("stats_data = [", source.index("def create_result_page")):]
-    stats_block = stats_block[:stats_block.index("\n\n        card_gap")]
+    source = Path("gui_result_page.py").read_text(encoding="utf-8")
+    stats_block = source[source.index("stats_data = ["):]
+    stats_block = stats_block[:stats_block.index("\n    card_gap")]
 
     assert '"通过筛选"' not in stats_block
     assert (
@@ -5053,41 +5424,145 @@ def test_result_page_greeted_detail_uses_passed_candidates_only():
     detail_block = source[source.index("elif stat_type == 'greeted':"):]
     detail_block = detail_block[:detail_block.index("\n            else:")]
 
-    assert "derive_candidate_decision(c).screening_result" in detail_block
+    assert "derive_candidate_decision(candidate).screening_result" in detail_block
     assert "{'强烈推荐', '推荐', '待定'}" in detail_block
-    assert "c.get('greet_sent', False)" in detail_block
+    assert "candidate.get('greet_sent', False)" in detail_block
 
 
 def test_result_page_has_greet_queue_entry():
     """筛选结果页提供显性的候选人联系入口。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
     assert 'text=" 联系候选人"' in result_block
-    assert "command=self._open_greet_queue_from_result" in result_block
-    assert "self.result_greet_queue_badge = tk.Label(" in result_block
+    assert "command=host._open_greet_queue_from_result" in result_block
+    assert "greet_queue_badge = tk.Label(" in result_block
     assert result_block.index('text=" 联系候选人"') < result_block.index('label=" 导出 Excel"')
 
 
 def test_result_page_hides_technical_json_button():
     """筛选结果页不暴露面向技术排障的 JSON 文件入口。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
     assert 'text=" 打开 JSON"' not in result_block
-    assert "command=self.open_json" not in result_block
+    assert "command=host.open_json" not in result_block
 
 
 def test_batch_greet_context_menu_adds_to_queue_instead_of_direct_send():
     """多选右键只加入队列，不再直接启动批量发送黑盒流程。"""
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    menus = Path("gui_candidate_menus.py").read_text(encoding="utf-8")
 
-    assert 'label=" 加入联系清单"' in source
-    assert 'menu.add_command(label=" 批量打招呼"' not in source
+    assert 'label="加入联系清单"' in menus
+    assert 'label="批量打招呼"' not in menus
     assert "_collect_selected_candidates_for_queue" in source
     assert "_add_candidates_to_greet_queue" in source
+
+
+def test_clear_candidates_dialog_uses_selected_job_greeted_count():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        candidates_path = Path(tmp_dir) / "candidates.json"
+        candidates_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "geek_id": "java-greeted",
+                        "job_name": "Java 工程师",
+                        "greet_sent": True,
+                    },
+                    {
+                        "geek_id": "python-greeted",
+                        "job_name": "Python 工程师",
+                        "greet_sent": True,
+                    },
+                ],
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+        gui.root = Mock()
+        gui.result_job_var = Mock()
+        gui.result_job_var.get.return_value = "Java 工程师"
+
+        with (
+            patch("gui_main.CANDIDATES_PATH", candidates_path),
+            patch.object(
+                gui_main.gui_data_maintenance_dialogs,
+                "show_clear_candidates_dialog",
+            ) as show_dialog,
+        ):
+            gui.clear_candidates()
+
+    assert show_dialog.call_args.kwargs["selected_job"] == "Java 工程师"
+    assert show_dialog.call_args.kwargs["is_all_jobs"] is False
+    assert show_dialog.call_args.kwargs["greeted_count"] == 1
+
+
+def test_clear_candidates_controller_keeps_greeted_blacklisted_and_other_jobs():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        base_dir = Path(tmp_dir)
+        candidates_path = base_dir / "candidates.json"
+        candidates_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "geek_id": "greeted",
+                        "job_name": "Java 工程师",
+                        "greet_sent": True,
+                    },
+                    {
+                        "geek_id": "blacklisted",
+                        "job_name": "Java 工程师",
+                        "blacklisted": True,
+                    },
+                    {
+                        "geek_id": "remove",
+                        "job_name": "Java 工程师",
+                    },
+                    {
+                        "geek_id": "other-job",
+                        "job_name": "Python 工程师",
+                        "greet_sent": True,
+                    },
+                ],
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        gui = BossFilterGUI.__new__(BossFilterGUI)
+        gui.root = Mock()
+        gui.append_log = Mock()
+        gui._regenerate_excel = Mock()
+        gui.refresh_results = Mock()
+        gui.refresh_home_stats = Mock()
+        gui.refresh_stats = Mock()
+
+        with (
+            patch("gui_main.CANDIDATES_PATH", candidates_path),
+            patch("gui_main.BASE_DIR", base_dir),
+            patch.object(gui_main.messagebox, "show_result") as show_result,
+        ):
+            gui._clear_candidates_from_dialog(
+                "current",
+                True,
+                "Java 工程师",
+            )
+
+        saved = load_candidates_all(candidates_path)
+
+    assert {candidate["geek_id"] for candidate in saved} == {
+        "greeted",
+        "blacklisted",
+        "other-job",
+    }
+    metrics = show_result.call_args.kwargs["metrics"]
+    assert ("已清理", "1 条") in metrics
+    assert ("已打招呼保留", "1 条") in metrics
+    assert ("黑名单保留", "1 条") in metrics
+    gui._regenerate_excel.assert_called_once_with()
+    gui.refresh_results.assert_called_once_with()
+    gui.refresh_home_stats.assert_called_once_with()
+    gui.refresh_stats.assert_called_once_with()
 
 
 def test_greet_queue_add_filters_before_enqueue():
@@ -5922,6 +6397,64 @@ def test_browser_reconnect_method_reuses_existing_live_page():
     assert gui.browser_connected is True
 
 
+def test_browser_reconnect_delegates_debug_port_and_bounded_connection():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.browser_page = None
+    gui.browser_address = "127.0.0.1:9333"
+    gui.browser_connected = False
+    gui._is_browser_page_alive = Mock(side_effect=[False, True])
+    page = object()
+    result = types.SimpleNamespace(
+        page=page,
+        address="127.0.0.1:9333",
+        error=None,
+        timed_out=False,
+    )
+    port_file = Mock()
+    port_file.read_text.side_effect = OSError("missing")
+
+    with patch("gui_main.CHROME_DEBUG_PORT_FILE", port_file), \
+            patch("gui_main.is_debug_port_open", return_value=True) as port_open, \
+            patch("gui_main.connect_browser_address", return_value=result) as connect:
+        assert gui._try_reconnect_browser() is True
+
+    port_open.assert_called_once_with("127.0.0.1:9333", timeout=0.5)
+    connect.assert_called_once_with(
+        "127.0.0.1:9333",
+        timeout=4,
+        prefer_boss_tab=True,
+        validate_page=True,
+    )
+    assert gui.browser_page is page
+    assert gui.browser_address == "127.0.0.1:9333"
+    assert gui.browser_connected is True
+
+
+def test_browser_reconnect_timeout_fails_closed_without_trying_other_ports():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.browser_page = None
+    gui.browser_address = "127.0.0.1:9333"
+    gui.browser_connected = True
+    gui._is_browser_page_alive = Mock(return_value=False)
+    result = types.SimpleNamespace(
+        page=None,
+        address="127.0.0.1:9333",
+        error=TimeoutError("connect timeout"),
+        timed_out=True,
+    )
+    port_file = Mock()
+    port_file.read_text.side_effect = OSError("missing")
+
+    with patch("gui_main.CHROME_DEBUG_PORT_FILE", port_file), \
+            patch("gui_main.is_debug_port_open", return_value=True), \
+            patch("gui_main.connect_browser_address", return_value=result) as connect:
+        assert gui._try_reconnect_browser() is False
+
+    connect.assert_called_once()
+    assert gui.browser_page is None
+    assert gui.browser_connected is False
+
+
 def test_contact_browser_reconnect_launches_recommend_page_when_chrome_is_absent():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.append_operation_log = Mock()
@@ -6092,14 +6625,14 @@ def test_candidate_workflow_dialog_subtitles_use_neutral_text_color():
 
 def test_information_and_workbench_windows_do_not_lock_main_window():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    stats_detail_source = Path("gui_stats_detail.py").read_text(encoding="utf-8")
     dialog_source = Path("gui_dialogs.py").read_text(encoding="utf-8")
     daily_actions_source = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
     state_dialog_source = Path("gui_candidate_diagnostics.py").read_text(encoding="utf-8")
     candidate_review_source = Path("gui_candidate_review.py").read_text(encoding="utf-8")
     contact_queue_source = Path("gui_contact_queue.py").read_text(encoding="utf-8")
     blocks = [
-        source[source.index("def show_stat_detail"):source.index("\n    def show_result_stat_detail")],
-        source[source.index("def show_result_stat_detail"):source.index("\n    def _get_job_rules_cached")],
+        stats_detail_source,
         daily_actions_source,
         state_dialog_source,
         contact_queue_source,
@@ -6177,6 +6710,7 @@ def test_daily_action_due_uses_explicit_immediate_and_unscheduled_labels():
 def test_daily_resume_action_promotes_resume_context_menu_entry():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     action_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
+    menus = Path("gui_candidate_menus.py").read_text(encoding="utf-8")
     menu_block = source[source.index("def _show_candidate_workflow_context_menu"):]
     menu_block = menu_block[:menu_block.index("\n    def _bind_treeview_sorting")]
     result_menu_block = source[source.index("def _build_candidate_context_menu"):]
@@ -6184,26 +6718,28 @@ def test_daily_resume_action_promotes_resume_context_menu_entry():
 
     assert 'item.group == "待完成简历评估"' in action_block
     assert '"resume"' in action_block
-    assert 'label=" 导入简历 / 二次评估"' in menu_block
-    assert 'label=" 导入简历 / 二次评估"' in result_menu_block
-    assert 'elif primary_action == "resume":' in menu_block
+    assert 'label="导入简历 / 二次评估"' in menus
+    assert "import_resume=lambda:" in menu_block
+    assert "import_resume=lambda:" in result_menu_block
+    assert 'elif state.primary_action == "resume":' in menus
 
 
 def test_workflow_context_menu_opens_review_and_uses_shared_decision_rules():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    menus = Path("gui_candidate_menus.py").read_text(encoding="utf-8")
     menu_block = source[source.index("def _show_candidate_workflow_context_menu"):]
     menu_block = menu_block[:menu_block.index("\n    def _bind_treeview_sorting")]
 
-    assert 'label=" 查看与复核"' in menu_block
-    assert "self.icons.button('candidate_review', self.colors['primary'])" in menu_block
-    assert 'label=" 查看详情"' not in menu_block
+    assert 'label="查看与复核"' in menus
+    assert '("candidate_review", "primary")' in menus
+    assert 'label="查看详情"' not in menus
     assert "self._open_candidate_review_workbench(candidate)" in menu_block
     assert "candidate_greet_skip_reason(candidate)" in menu_block
     assert "candidate_can_manual_approve_contact(candidate)" in menu_block
-    assert 'label=" 确认并加入联系清单"' in menu_block
-    assert 'label=" 确认不通过"' in menu_block
-    assert "candidate.get('qualification_status') == 'manual_review'" in menu_block
-    assert 'label=" 核实发送结果"' in menu_block
+    assert 'label="确认并加入联系清单"' in menus
+    assert 'label="确认不通过"' in menus
+    assert 'candidate.get("qualification_status") == "manual_review"' in menu_block
+    assert 'label="核实发送结果"' in menus
     assert "self._focus_candidate_in_greet_queue(candidate)" in menu_block
 
 
@@ -6338,44 +6874,47 @@ def test_focus_candidate_in_greet_queue_uses_actual_status_group():
 def test_daily_followup_action_promotes_followup_context_menu_entry():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     action_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
+    menus = Path("gui_candidate_menus.py").read_text(encoding="utf-8")
     menu_block = source[source.index("def _show_candidate_workflow_context_menu"):]
     menu_block = menu_block[:menu_block.index("\n    def _bind_treeview_sorting")]
 
     assert '"待约面待推进"' in action_block
     assert '"面试后待反馈"' in action_block
-    assert 'label=" 更新跟进"' in menu_block
-    assert 'elif primary_action == "followup":' in menu_block
-    assert 'label=" 标记已回复"' in menu_block
-    assert 'label=" 推进到待约面"' in menu_block
-    assert 'label=" 明天再跟进"' in menu_block
+    assert 'label="更新跟进"' in menus
+    assert 'elif state.primary_action == "followup":' in menus
+    assert 'label="标记已回复"' in menus
+    assert 'label="推进到待约面"' in menus
+    assert 'label="明天再跟进"' in menus
+    assert "follow_up_tomorrow=lambda:" in menu_block
 
 
 def test_followup_dialog_supports_due_date_quick_choices_and_persistence():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    block = source[source.index("def _mark_candidate_followup"):]
-    block = block[:block.index("\n    def _update_candidate_feedback")]
+    block = Path("gui_candidate_state_dialogs.py").read_text(encoding="utf-8")
+    controller = source[source.index("def _save_candidate_followup_from_dialog"):]
+    controller = controller[:controller.index("\n    def _update_candidate_feedback")]
 
     assert 'text="下次跟进日期"' in block
     for label in ("今天", "明天", "3 天后", "7 天后", "不设置"):
         assert f'("{label}",' in block
     assert "quick_date_frame.pack(" in block
-    assert "fill='x'" in block
-    assert "grid_columnconfigure(column, weight=1, uniform='followup_quick_date')" in block
-    assert "sticky='ew'" in block
+    assert 'fill="x"' in block
+    assert 'uniform="followup_quick_date"' in block
+    assert 'sticky="ew"' in block
     assert 'status_combo.bind("<<ComboboxSelected>>", reset_due_for_status)' in block
-    assert "next_due = normalize_followup_at(due_input)" in block
+    assert "next_due = normalize_followup(due_input)" in block
     assert 're.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", due_input)' in block
     assert "下次跟进日期无效，请检查年月日是否正确" in block
     assert "下次跟进日期格式不正确，请使用 YYYY-MM-DD" in block
     assert "show_form_error(error_text, next_followup_entry)" in block
     assert 'next_followup_entry.bind("<KeyRelease>", clear_form_error)' in block
     assert 'status in {"待约面", "已约面"} and not next_due' in block
-    assert 'status == "未沟通"' in block
-    assert "本地已打招呼事实、发送方式和跟进日期会同时清除" in block
-    assert "messagebox.ask_confirmation(" in block
-    assert "apply_followup_state(" in block
-    assert 'needs_feedback = status == "不合适"' in block
-    assert 'default_status="放弃"' in block
+    assert 'status == "未沟通"' in controller
+    assert "本地已打招呼事实、发送方式和跟进日期会同时清除" in controller
+    assert "messagebox.ask_confirmation(" in controller
+    assert "apply_followup_state(" in controller
+    assert 'status == "不合适"' in controller
+    assert 'default_status="放弃"' in controller
 
 
 def test_greet_queue_start_requires_confirmation():
@@ -6780,8 +7319,7 @@ def test_browser_reconnect_rechecks_cooldown_before_launch():
 
 def test_gui_run_builds_contact_list_without_direct_sending():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    run_page_block = source[source.index("def create_run_page"):]
-    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+    run_page_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     worker_block = source[source.index("def run_worker"):]
     worker_block = worker_block[:worker_block.index("\n        # 启动后台线程")]
 
@@ -6797,9 +7335,7 @@ def test_gui_run_builds_contact_list_without_direct_sending():
 
 
 def test_run_page_describes_actual_ai_score_adjustment_range():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    run_page_block = source[source.index("def create_run_page"):]
-    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+    run_page_block = Path("gui_run_page.py").read_text(encoding="utf-8")
 
     assert '_note_suffix = "15 分调整"' in run_page_block
     assert '_note_suffix = "10 分调整"' not in run_page_block
@@ -6807,19 +7343,18 @@ def test_run_page_describes_actual_ai_score_adjustment_range():
 
 def test_run_page_exposes_user_friendly_advanced_scan_settings():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    run_page_block = source[source.index("def create_run_page"):]
-    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+    run_page_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     worker_block = source[source.index("def run_worker"):]
     worker_block = worker_block[:worker_block.index("\n    def on_closing")]
 
     assert "高级运行设置" in run_page_block
     assert "高级扫描设置" not in run_page_block
     assert "⚠ 部分设置会增加扫描耗时或页面访问量，请谨慎调高" in run_page_block
-    assert "font=(FONT_FAMILY, max(8, int(10 * self.font_scale)))" in run_page_block
+    assert "font=(font_family, max(8, int(10 * host.font_scale)))" in run_page_block
     assert "'warning_text', ui_theme.WARNING_TEXT" in run_page_block
     assert "'banner_warning_bg', ui_theme.BANNER_WARNING_BG" in run_page_block
-    assert "padx=max(6, int(8 * self.dpi_scale * self.zoom_factor))" in run_page_block
-    assert "pady=max(2, int(3 * self.dpi_scale * self.zoom_factor))" in run_page_block
+    assert "padx=max(6, int(8 * host.dpi_scale * host.zoom_factor))" in run_page_block
+    assert "pady=max(2, int(3 * host.dpi_scale * host.zoom_factor))" in run_page_block
     assert 'advanced_inner.pack(fill="x")' in run_page_block
     assert '_create_advanced_setting_label(0, "滚动轮次:")' in run_page_block
     assert "扫描增强:" in run_page_block
@@ -6829,11 +7364,11 @@ def test_run_page_exposes_user_friendly_advanced_scan_settings():
     assert "后续联系:" in run_page_block
     assert "扫描后准备联系信息" in run_page_block
     assert "最多准备:" in run_page_block
-    assert 'font=(FONT_FAMILY, int(11 * self.font_scale))' in run_page_block
-    assert "_sub_font = (FONT_FAMILY, int(11 * self.font_scale))" in run_page_block
-    assert "_spin_font = (FONT_FAMILY, int(12 * self.font_scale))" in run_page_block
-    assert "textvariable=self.api_direct_pages_var" in run_page_block
-    assert "textvariable=self.greet_context_capture_limit_var" in run_page_block
+    assert 'font=(font_family, int(11 * host.font_scale))' in run_page_block
+    assert "_sub_font = (font_family, int(11 * host.font_scale))" in run_page_block
+    assert "_spin_font = (font_family, int(12 * host.font_scale))" in run_page_block
+    assert "textvariable=host.api_direct_pages_var" in run_page_block
+    assert "textvariable=host.greet_context_capture_limit_var" in run_page_block
     assert "读取越多越慢" not in run_page_block
     assert "准备人数越多耗时越长" not in run_page_block
     assert "api_direct_pages * 20" in worker_block
@@ -6853,9 +7388,9 @@ def test_run_page_exposes_user_friendly_advanced_scan_settings():
     assert [advanced_block.index(label) for label in setting_labels] == sorted(
         advanced_block.index(label) for label in setting_labels
     )
-    assert "before_widget = getattr(self, 'run_progress_frame', None)" in advanced_block
+    assert "before_widget = getattr(host, 'run_progress_frame', None)" in advanced_block
     assert "before=before_widget, **pack_kwargs" in advanced_block
-    assert "self.run_progress_frame = progress_frame" in run_page_block
+    assert "host.run_progress_frame = progress_frame" in run_page_block
     assert "advanced_inner.columnconfigure(0, minsize=_run_control_lead_width)" in advanced_block
     assert "def _create_advanced_setting_label(row_index, label_text):" in advanced_block
     assert "row_rounds_controls.grid(" in advanced_block
@@ -6865,16 +7400,16 @@ def test_run_page_exposes_user_friendly_advanced_scan_settings():
     assert 'api_switch.pack(side="left")' in advanced_block
     assert 'contact_prepare_switch.pack(side="left")' in advanced_block
     assert "_create_run_control_lead(row_advanced_header)" not in advanced_block
-    assert "self.scan_advanced_summary_label" in advanced_block
+    assert "host.scan_advanced_summary_label" in advanced_block
     assert 'text="恢复默认"' in advanced_block
-    assert "self.scan_advanced_warning_label.pack(" in advanced_block
-    assert "self.scan_advanced_warning_label.pack_forget()" in advanced_block
-    assert "self.scan_advanced_summary_label.pack_forget()" in advanced_block
+    assert "host.scan_advanced_warning_label.pack(" in advanced_block
+    assert "host.scan_advanced_warning_label.pack_forget()" in advanced_block
+    assert "host.scan_advanced_summary_label.pack_forget()" in advanced_block
     assert "def _restore_advanced_run_defaults(_event=None):" in advanced_block
     assert "'<Return>', _toggle_advanced_scan_settings" in advanced_block
     assert "'<space>', _toggle_advanced_scan_settings" in advanced_block
-    assert "self.api_direct_risk_label" in advanced_block
-    assert "self.greet_context_risk_label" in advanced_block
+    assert "host.api_direct_risk_label" in advanced_block
+    assert "host.greet_context_risk_label" in advanced_block
     assert '"访问量和耗时会明显增加"' in advanced_block
     assert advanced_block.count('"继续调高会增加触发风控的风险"') == 2
     assert "listener_first=not api_direct_enabled" in worker_block
@@ -6886,23 +7421,19 @@ def test_run_page_exposes_user_friendly_advanced_scan_settings():
 
 
 def test_ai_timeout_setting_follows_ai_evaluation_switch():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    run_page_block = source[source.index("def create_run_page"):]
-    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+    run_page_block = Path("gui_run_page.py").read_text(encoding="utf-8")
 
-    assert "self.llm_read_timeout_spin = ttk.Spinbox(" in run_page_block
+    assert "host.llm_read_timeout_spin = ttk.Spinbox(" in run_page_block
     assert (
         'state="normal" if ai_enabled else "disabled"'
         in run_page_block
     )
-    assert "self.ai_eval_var.trace_add('write', _sync_advanced_scan_controls)" in run_page_block
+    assert "host.ai_eval_var.trace_add('write', _sync_advanced_scan_controls)" in run_page_block
     assert 'else "开启 AI 辅助评估后可设置"' in run_page_block
 
 
 def test_dynamic_ai_timeout_hint_isolated_from_following_advanced_rows():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    run_page_block = source[source.index("def create_run_page"):]
-    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+    run_page_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     api_block = run_page_block[run_page_block.index("# 3. 扫描信息补全"):]
     api_block = api_block[:api_block.index("# 4. 联系信息准备")]
     contact_block = run_page_block[run_page_block.index("# 4. 联系信息准备"):]
@@ -6910,12 +7441,12 @@ def test_dynamic_ai_timeout_hint_isolated_from_following_advanced_rows():
 
     assert "row_api_controls = ttk.Frame(advanced_inner" in api_block
     assert "row_contact_controls = ttk.Frame(advanced_inner" in contact_block
-    assert "row_api_controls, self.api_direct_enabled_var" in api_block
-    assert "row_contact_controls, self.greet_context_capture_enabled_var" in contact_block
-    assert "ttk.Label(\n            row_api_controls," in api_block
-    assert "ttk.Label(\n            row_contact_controls," in contact_block
-    assert "ttk.Spinbox(\n            row_api_controls," in api_block
-    assert "ttk.Spinbox(\n            row_contact_controls," in contact_block
+    assert "row_api_controls, host.api_direct_enabled_var" in api_block
+    assert "row_contact_controls, host.greet_context_capture_enabled_var" in contact_block
+    assert "ttk.Label(\n        row_api_controls," in api_block
+    assert "ttk.Label(\n        row_contact_controls," in contact_block
+    assert "ttk.Spinbox(\n        row_api_controls," in api_block
+    assert "ttk.Spinbox(\n        row_contact_controls," in contact_block
     assert "column=2" not in api_block
     assert "column=3" not in api_block
     assert "column=2" not in contact_block
@@ -6924,15 +7455,14 @@ def test_dynamic_ai_timeout_hint_isolated_from_following_advanced_rows():
 
 def test_run_page_job_selector_defaults_to_recent_or_saved_job():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    run_page_block = source[source.index("def create_run_page"):]
-    run_page_block = run_page_block[:run_page_block.index("\n    def create_result_page")]
+    run_page_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     show_page_run_block = source[source.index("def show_page_run"):]
     show_page_run_block = show_page_run_block[:show_page_run_block.index("\n    def show_page_result")]
     save_job_block = source[source.index("def save_current_job"):]
     save_job_block = save_job_block[:save_job_block.index("\n    def _restore_or_clear_job_form")]
 
-    assert 'self.job_select_var = tk.StringVar(value="")' in run_page_block
-    assert "_sync_run_job_combo_values(self.job_rules, prefer_current=False)" in run_page_block
+    assert 'host.job_select_var = tk.StringVar(value="")' in run_page_block
+    assert "host._sync_run_job_combo_values(host.job_rules, prefer_current=False)" in run_page_block
     assert "self._sync_run_job_combo_values(job_rules)" in show_page_run_block
     assert "self._remember_run_job_selection(normalized_job_name)" in save_job_block
 
@@ -7315,8 +7845,7 @@ def test_run_worker_preserves_scan_completion_state():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     run_block = source[source.index("def run_worker"):]
     run_block = run_block[:run_block.index("\n    def on_closing")]
-    create_block = source[source.index("def create_run_page"):]
-    create_block = create_block[:create_block.index("\n    def create_result_page")]
+    create_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     start_block = source[source.index("def start_run"):]
     start_block = start_block[:start_block.index("\n    def stop_run")]
 
@@ -7330,32 +7859,29 @@ def test_run_worker_preserves_scan_completion_state():
     assert 'self._replace_run_summary_contact_queue_count(final_desc, 0)' in run_block
     assert 'self._set_run_summary(summary_desc)' in run_block
     assert 'self._reset_run_summary()' in start_block
-    assert 'self.run_summary_text_label' in create_block
+    assert 'host.run_summary_text_label' in create_block
     assert '本轮结果摘要' in create_block
     assert '✔ 运行完成' not in run_block
 
 
 def test_run_control_buttons_keep_icons_visible_while_disabled():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[source.index("def create_run_page"):]
-    create_block = create_block[:create_block.index("\n    def create_result_page")]
+    create_block = Path("gui_run_page.py").read_text(encoding="utf-8")
 
-    assert "icon_play_run_disabled = self.icons.button('play', self.colors['text_muted'])" in create_block
+    assert "icon_play_run_disabled = host.icons.button('play', host.colors['text_muted'])" in create_block
     assert "image=(icon_play_run, 'disabled', icon_play_run_disabled)" in create_block
-    assert "self.start_btn._icon_refs = (icon_play_run, icon_play_run_disabled)" in create_block
-    assert "icon_stop_disabled = self.icons.button('stop', self.colors['text_muted'])" in create_block
+    assert "host.start_btn._icon_refs = (icon_play_run, icon_play_run_disabled)" in create_block
+    assert "icon_stop_disabled = host.icons.button('stop', host.colors['text_muted'])" in create_block
     assert "image=(icon_stop, 'disabled', icon_stop_disabled)" in create_block
-    assert "self.stop_btn._icon_refs = (icon_stop, icon_stop_disabled)" in create_block
+    assert "host.stop_btn._icon_refs = (icon_stop, icon_stop_disabled)" in create_block
 
 
 def test_run_control_uses_compact_rounds_input_and_matching_button_fonts():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     styles_block = source[source.index("def setup_styles"):]
     styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
-    create_block = source[source.index("def create_run_page"):]
-    create_block = create_block[:create_block.index("\n    def create_result_page")]
+    create_block = Path("gui_run_page.py").read_text(encoding="utf-8")
 
-    assert "increment=10,\n            textvariable=self.rounds_var,\n            width=8" in create_block
+    assert "increment=10,\n        textvariable=host.rounds_var,\n        width=8" in create_block
     assert "'RunControl.Danger.TButton'" in styles_block
     assert "font=(FONT_FAMILY_SEMIBOLD, int(13 * page_fs))" in styles_block
     assert "style='Accent.TButton'" in create_block
@@ -7363,9 +7889,7 @@ def test_run_control_uses_compact_rounds_input_and_matching_button_fonts():
 
 
 def test_run_control_inputs_share_browser_action_start_column():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[source.index("def create_run_page"):]
-    create_block = create_block[:create_block.index("\n    def create_result_page")]
+    create_block = Path("gui_run_page.py").read_text(encoding="utf-8")
 
     assert "_run_control_lead_width = (" in create_block
     assert "def _create_run_control_lead(parent, text=None, label_font=None):" in create_block
@@ -7373,25 +7897,23 @@ def test_run_control_inputs_share_browser_action_start_column():
     assert "btn_browser.pack(side=\"left\")" in create_block
     assert '_create_advanced_setting_label(0, "滚动轮次:")' in create_block
     assert "row_rounds_controls.grid(" in create_block
-    assert "self.rounds_spin.pack(side=\"left\")" in create_block
+    assert "host.rounds_spin.pack(side=\"left\")" in create_block
     assert '_create_run_control_lead(row_job, "选择岗位:")' in create_block
-    assert "self.job_combo.pack(side=\"left\")" in create_block
+    assert "host.job_combo.pack(side=\"left\")" in create_block
     assert '_create_run_control_lead(row2, "筛选完成:")' in create_block
     assert "contact_combo.pack(side=\"left\")" in create_block
-    assert "self.scan_advanced_toggle_label.pack(side=\"left\")" in create_block
+    assert "host.scan_advanced_toggle_label.pack(side=\"left\")" in create_block
     assert '_create_run_control_lead(row_ai, "AI 评估:")' in create_block
     assert "ai_switch.pack(side=\"left\")" in create_block
     assert '1, "AI 响应超时:"' in create_block
     assert "row_ai_timeout_controls.grid(" in create_block
-    assert "self.llm_read_timeout_spin.pack(side=\"left\")" in create_block
+    assert "host.llm_read_timeout_spin.pack(side=\"left\")" in create_block
 
 
 def test_inline_form_notes_use_flat_copy_without_outer_parentheses():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    run_block = source[source.index("def create_run_page"):]
-    run_block = run_block[:run_block.index("\n    def create_result_page")]
-    result_block = source[source.index("def create_result_page"):]
-    result_block = result_block[:result_block.index("\n    def create_education_page")]
+    run_block = Path("gui_run_page.py").read_text(encoding="utf-8")
+    result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
     assert 'text="默认 50，推荐 20-100"' in run_block
     assert '_note_prefix = "对通过筛选的候选人进行 LLM 二次评估，"' in run_block
@@ -7399,19 +7921,19 @@ def test_inline_form_notes_use_flat_copy_without_outer_parentheses():
     assert '(推荐 50-200 轮次)' not in run_block
     assert 'StringVar(value=str(MAX_ROUNDS_DEFAULT))' in run_block
     assert gui_main.MAX_ROUNDS_DEFAULT == 50
-    assert 'self._result_search_placeholder = "姓名/性别/匹配分/推荐指数/状态"' in result_block
-    assert "textvariable=self.result_search_var, width=26" in result_block
-    assert "'text_placeholder', ui_theme.TEXT_PLACEHOLDER" in result_block
-    assert "max(8, int(8 * self.dpi_scale * self.zoom_factor))" in result_block
-    assert "bind('<FocusIn>', _hide_result_search_placeholder)" in result_block
-    assert "bind('<FocusOut>', _show_result_search_placeholder)" in result_block
+    assert 'self._result_search_placeholder = "姓名/性别/匹配分/推荐指数/状态"' in source
+    assert "textvariable=search_var," in result_block
+    assert '"text_placeholder",\n        ui_theme.TEXT_PLACEHOLDER' in result_block
+    assert "max(8, int(8 * scale))" in result_block
+    assert 'bind("<FocusIn>", hide_search_placeholder)' in result_block
+    assert 'bind("<FocusOut>", show_search_placeholder)' in result_block
     assert 'text="Esc 清空"' in result_block
-    assert "def _sync_result_search_clear_hint():" in result_block
-    assert "hint.pack_forget()" in result_block
-    assert "pack_options['before'] = result_view_label" in result_block
+    assert "def sync_search_clear_hint()" in result_block
+    assert "search_clear_hint.pack_forget()" in result_block
+    assert "before=view_label" in result_block
     assert 'text="姓名/性别/匹配分/推荐指数/状态，Esc 清空"' not in result_block
     assert 'bind_all("<Button-1>", self._on_global_left_click, add="+")' in source
-    assert 'lambda _event: self._refresh_results_and_reset_sort()' in result_block
+    assert 'lambda _event: host._refresh_results_and_reset_sort()' in result_block
     assert '"刷新结果并恢复默认排序"' in result_block
 
 
@@ -7419,12 +7941,11 @@ def test_run_log_and_shared_dialogs_use_the_larger_font():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     styles_block = source[source.index("def setup_styles"):]
     styles_block = styles_block[:styles_block.index("\n    def create_sidebar")]
-    create_block = source[source.index("def create_run_page"):]
-    create_block = create_block[:create_block.index("\n    def create_result_page")]
+    create_block = Path("gui_run_page.py").read_text(encoding="utf-8")
 
     assert "self.font_log = (FONT_FAMILY, int(12 * page_fs))" in styles_block
     assert "font_run_log" not in styles_block
-    assert "font=self.font_log" in create_block
+    assert "font=host.font_log" in create_block
 
 
 def test_ai_parse_reminder_uses_shared_modal_font_without_compact_delta():
@@ -7615,19 +8136,20 @@ def test_strong_recommendation_uses_registered_emphasized_thumb_icon():
 
 def test_home_page_strong_recommendation_uses_emphasized_thumb_icon():
     """首页与筛选结果页统一使用点赞加光芒表达强烈推荐。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    home_block = source[source.index("cards_data = [", source.index("def create_home_page")):]
-    home_block = home_block[:home_block.index("\n\n        self.home_stats_vars")]
+    source = Path("gui_home_page.py").read_text(encoding="utf-8")
+    home_block = source[source.index("cards_data = ["):]
+    home_block = home_block[:home_block.index("\n    stats_vars")]
 
-    assert '("strong_recommend", "强烈推荐"' in home_block
-    assert '("star", "强烈推荐"' not in home_block
+    assert '"strong_recommend"' in home_block
+    assert '"强烈推荐"' in home_block
+    assert '"star"' not in home_block
 
 
 def test_home_page_renames_total_candidates_to_passed_filter():
     """首页第一张卡片展示通过筛选，并使用放大的原双人图案。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    home_block = source[source.index("cards_data = [", source.index("def create_home_page")):]
-    home_block = home_block[:home_block.index("\n\n        self.home_stats_vars")]
+    source = Path("gui_home_page.py").read_text(encoding="utf-8")
+    home_block = source[source.index("cards_data = ["):]
+    home_block = home_block[:home_block.index("\n    stats_vars")]
 
     assert '("passed_filter", "通过筛选", "total_home"' in home_block
     assert '"累计候选人"' not in home_block
@@ -7678,28 +8200,28 @@ def test_stats_page_review_entry_is_row_level_not_toolbar_button():
 
 def test_feedback_dialog_status_control_stays_inside_form_content():
     """反馈状态下拉框必须和标签在同一表单容器内，避免被 pack 到弹窗底部。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    feedback_block = source[source.index("def _mark_candidate_feedback"):]
-    feedback_block = feedback_block[:feedback_block.index("\n    def _format_candidate_detail")]
+    source = Path("gui_candidate_state_dialogs.py").read_text(encoding="utf-8")
+    feedback_block = source[source.index("def show_feedback_dialog"):]
 
-    assert "status_combo = ttk.Combobox(\n            content," in feedback_block
-    assert "status_combo.pack(anchor='w', fill='x'" in feedback_block
-    assert "note_text.pack(anchor='w', fill='x'" in feedback_block
-    assert 'text="结构化原因（可多选）",\n            font=(FONT_FAMILY, int(12 * self.font_scale))' in feedback_block
+    assert "status_combo = ttk.Combobox(\n        content," in feedback_block
+    assert "status_combo.pack(" in feedback_block
+    assert "note_text.pack(" in feedback_block
+    assert 'text="结构化原因（可多选）"' in feedback_block
+    assert "font=(font_family, int(12 * host.font_scale))" in feedback_block
     assert 'status in {"误推", "误杀"} and not reasons' in feedback_block
 
 
 def test_feedback_dialog_height_expands_to_keep_buttons_visible():
     """反馈弹窗必须服从实际内容请求高度，避免 1080p 缩放下裁掉底部按钮。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    feedback_block = source[source.index("def _mark_candidate_feedback"):]
-    feedback_block = feedback_block[:feedback_block.index("\n    def _format_candidate_detail")]
+    source = Path("gui_candidate_state_dialogs.py").read_text(encoding="utf-8")
+    feedback_block = source[source.index("def show_feedback_dialog"):]
 
-    assert "win.update_idletasks()" in feedback_block
-    assert "win.winfo_reqheight() + int(12 * scale)" in feedback_block
+    assert "window.update_idletasks()" in feedback_block
+    assert "window.winfo_reqheight() + int(12 * scale)" in feedback_block
     assert "dialog_height = max(" in feedback_block
-    assert "_place_window_centered(win, int(440 * scale), dialog_height" in feedback_block
-    assert "_place_window_centered(win, int(440 * scale), int(485 * scale)" not in feedback_block
+    assert "place_window_centered(" in feedback_block
+    assert "int(440 * scale),\n        dialog_height," in feedback_block
+    assert "int(440 * scale), int(485 * scale)" not in feedback_block
 
 
 def test_job_review_text_aggregates_structured_feedback_reasons():
@@ -7765,24 +8287,22 @@ def test_job_review_dialog_opens_structured_workbench_with_shared_model():
 
 
 def test_job_review_workbench_uses_cards_funnel_and_contextual_actions():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    block = source[source.index("def _show_job_review_workbench"):]
-    block = block[:block.index("\n    def _show_job_review_feedback_candidates")]
+    block = Path("gui_job_review.py").read_text(encoding="utf-8")
 
     assert '"筛选转化"' in block
     assert '"反馈质量"' in block
     assert '"问题洞察"' in block
     assert '"建议调整"' in block
-    assert "if insight_sections:" in block
+    assert "if not insight_sections:" in block
     assert 'text="查看反馈候选人"' in block
     assert 'text="前往岗位配置"' in block
-    assert "if review['feedback_count'] < 5:" in block
+    assert 'if review["feedback_count"] < 5:' in block
     assert "title_trailing_builder=build_suggestion_action" in block
-    assert "enumerate(review['suggestions'], start=1)" in block
-    assert "anchor='w'" in block
-    assert "int(9 * self.font_scale)" not in block
-    assert "self._show_text_dialog(" not in block
-    assert "root_height = self.root.winfo_height()" in block
+    assert 'enumerate(review["suggestions"], start=1)' in block
+    assert 'anchor="w"' in block
+    assert "int(9 * host.font_scale)" not in block
+    assert "_show_text_dialog(" not in block
+    assert "root_height = host.root.winfo_height()" in block
     assert "height = min(int(760 * scale), root_height, int(area_height * 0.82))" in block
     assert "width, height = int(820 * scale), int(760 * scale)" in block
 
@@ -8016,10 +8536,7 @@ def test_education_import_uses_multi_file_dialog():
 
 def test_education_queue_supports_multi_select_batch_recognition_and_context_menu():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[
-        source.index("def create_education_page"):
-        source.index("def _select_education_images")
-    ]
+    create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
     recognize_block = source[
         source.index("def _recognize_education_image"):
         source.index("def _fill_chsi_page")
@@ -8049,35 +8566,32 @@ def test_education_selected_ids_preserve_multi_selection():
 
 def test_education_page_has_scroll_container_and_conditional_queue():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[
-        source.index("def create_education_page"):
-        source.index("def _select_education_images")
-    ]
+    create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
     summary_block = source[
         source.index("def _refresh_education_queue_summary"):
         source.index("def _save_current_education_fields")
     ]
 
-    assert "self.education_canvas, self.education_scrollable_frame" in create_block
-    assert 'self._create_page_header(\n            self.education_page,' in create_block
-    assert 'scroll_frame = ttk.Frame(self.education_page' in create_block
-    assert '_create_scroll_container(\n            scroll_frame,' in create_block
+    assert "canvas, scrollable_frame = host._create_scroll_container" in create_block
+    assert 'host._create_page_header(\n        page,' in create_block
+    assert 'scroll_frame = ttk.Frame(page' in create_block
+    assert '_create_scroll_container(\n        scroll_frame,' in create_block
     assert "auto_hide_scrollbar=True" in create_block
-    assert create_block.index("self._create_page_header(") < create_block.index(
-        "self._create_scroll_container("
+    assert create_block.index("host._create_page_header(") < create_block.index(
+        "host._create_scroll_container("
     )
-    scroll_content = create_block[create_block.index("content = self.education_scrollable_frame"):]
-    assert "self._create_page_header(" not in scroll_content
-    assert "self.education_queue_card.pack_forget()" in create_block
+    scroll_content = create_block[create_block.index("content = scrollable_frame"):]
+    assert "host._create_page_header(" not in scroll_content
+    assert "queue_card.pack_forget()" in create_block
     queue_card_block = create_block[
-        create_block.index('content, "待核验队列"'):
-        create_block.index("self.education_queue_card")
+        create_block.index('"\u5f85\u6838\u9a8c\u961f\u5217"'):
+        create_block.index("queue_columns")
     ]
     assert "title_font=" not in queue_card_block
     assert '"Education.Treeview"' in create_block
     assert '"Education.Treeview.Heading"' in create_block
-    assert "font=(FONT_FAMILY, int(10 * self.font_scale))" in create_block
-    assert "font=(FONT_FAMILY, int(11 * self.font_scale), \"bold\")" in create_block
+    assert "font=(font_family, int(10 * host.font_scale))" in create_block
+    assert "font=(font_family, int(11 * host.font_scale), \"bold\")" in create_block
     assert '("school", "学校"' in create_block
     assert '("major", "专业"' in create_block
     assert '("file", "文件", 230)' in create_block
@@ -8088,7 +8602,7 @@ def test_education_page_has_scroll_container_and_conditional_queue():
     assert "self._education_tree_font.measure(full_text)" in source
     assert "if total >= 1" in summary_block
     assert "elif total < 1" in summary_block
-    assert "height=max(420, int(440 * self.dpi_scale * self.zoom_factor))" in create_block
+    assert "height=max(420, int(440 * scale))" in create_block
     assert "workspace.pack_propagate(False)" in create_block
 
 
@@ -8104,14 +8618,10 @@ def test_mousewheel_routes_education_and_api_pages_to_correct_canvas():
 
 
 def test_education_queue_context_menu_uses_smaller_font():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[
-        source.index("def create_education_page"):
-        source.index("def _select_education_images")
-    ]
+    create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
 
-    assert "int(11 * self.font_scale)" in create_block
-    assert "int(12 * self.font_scale)" not in create_block
+    assert "int(11 * host.font_scale)" in create_block
+    assert "int(12 * host.font_scale)" not in create_block
 def test_education_remove_clears_manual_rotation():
     from gui_main import BossFilterGUI as _GUI
     gui = object.__new__(_GUI)
@@ -8193,13 +8703,10 @@ def test_education_manual_rotation_starts_from_model_rotation_and_locks():
 
 def test_education_preview_toolbar_has_rotate_not_flip():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[
-        source.index("def create_education_page"):
-        source.index("def _select_education_images")
-    ]
+    create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
 
     assert "顺转 90°" in create_block
-    assert "education_rotate_btn" in create_block
+    assert "rotate_button" in create_block
     assert "_rotate_education_image_cw90" in source
     assert "education_manual_rotation" in source
     # 用 tk.Label + 点击绑定代替 ttk.Button，严格不撑高标题栏
@@ -8216,9 +8723,10 @@ def test_education_preview_toolbar_has_rotate_not_flip():
     assert "preview_column" not in create_block
     assert "title_trailing_builder" in create_block
     assert "_build_rotate_button" in create_block
-    assert "title_bar, text=" in create_block
+    assert "rotate_button = tk.Label(" in create_block
+    assert "title_bar," in create_block
     assert 'side="right"' in create_block
-    assert "self.education_rotate_btn.place(" not in create_block
+    assert "rotate_button.place(" not in create_block
     # 按钮文字无前导空格（缩窄）
     assert 'text="顺转 90°"' in create_block
     assert 'text=" 顺转 90°"' not in create_block
@@ -8236,11 +8744,7 @@ def test_education_preview_toolbar_has_rotate_not_flip():
     assert "_set_education_flip_buttons_enabled" not in source
 
 def test_education_recognize_disclaimer_text_simplified():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[
-        source.index("def create_education_page"):
-        source.index("def _select_education_images")
-    ]
+    create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
 
     # 精简后的提示文本
     assert "识别时图片/PDF 会发送当前配置的 AI 模型，请确认已取得候选人授权。" in create_block
@@ -8385,27 +8889,19 @@ def test_education_scrollbar_is_visible_only_when_content_overflows():
 
 
 def test_education_queue_scrollbar_has_visible_local_style():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[
-        source.index("def create_education_page"):
-        source.index("def _select_education_images")
-    ]
+    create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
 
     assert '"Education.Vertical.TScrollbar"' in create_block
     assert "width=max(14" in create_block
     assert "arrowsize=max(14" in create_block
-    assert "('active', self.colors['text_secondary'])" in create_block
-    assert "('pressed', self.colors['text_secondary'])" in create_block
-    assert "('active', self.colors['primary'])" not in create_block
+    assert '("active", host.colors["text_secondary"])' in create_block
+    assert '("pressed", host.colors["text_secondary"])' in create_block
+    assert '("active", host.colors["primary"])' not in create_block
     assert 'style="Education.Vertical.TScrollbar"' in create_block
 
 
 def test_education_import_button_text_is_certificate():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    create_block = source[
-        source.index("def create_education_page"):
-        source.index("def _select_education_images")
-    ]
+    create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
 
     assert 'text=" 导入证书"' in create_block
     assert 'text=" 导入图片"' not in create_block
@@ -8490,24 +8986,23 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
         resume_path = tmp_path / "resume.txt"
         resume_path.write_text("Java 开发经验 " * 10, encoding="utf-8")
 
-        def persist_resume(mutator, _path, *, base_dir):
-            assert base_dir == gui_main.BASE_DIR
-            updated = mutator([candidate])
-            cleanup = types.SimpleNamespace(
-                failed_file_count=0,
-                failure_count=0,
-            )
-            return updated, cleanup
+        persistence = types.SimpleNamespace(
+            candidate={
+                **candidate,
+                "resume_file": "resumes/test.txt",
+                "resume_imported_at": "2026-08-10 10:00:00",
+            },
+            cleanup=types.SimpleNamespace(failure_count=0),
+        )
 
         with patch("gui_main.filedialog.askopenfilename", return_value=str(resume_path)), \
                 patch("gui_main.messagebox.ask_confirmation", return_value=True), \
                 patch("gui_main.messagebox.show_failure") as show_failure, \
                 patch(
-                    "gui_main.mutate_candidates_with_resume_cleanup",
-                    side_effect=persist_resume,
+                    "gui_main.persist_candidate_resume",
+                    return_value=persistence,
                 ), \
                 patch("gui_main.get_api_key", return_value="secret"), \
-                patch("gui_main.get_base_dir", return_value=tmp_path), \
                 patch("llm_eval.evaluate_with_resume", side_effect=RuntimeError("模型故障")), \
                 patch("gui_main.threading.Thread", side_effect=run_thread):
             gui._import_resume(
@@ -8576,7 +9071,6 @@ def test_import_resume_replaces_old_copy_and_clears_old_resume_evaluation():
             ),
             patch.object(gui_main, "BASE_DIR", root),
             patch.object(gui_main, "CANDIDATES_PATH", candidates_path),
-            patch.object(gui_main, "get_base_dir", return_value=root),
         ):
             gui._import_resume(None, candidate=candidate, parent=gui.root)
 
@@ -9529,15 +10023,15 @@ def test_data_maintenance_multisection_dialogs_use_structured_templates():
 
 
 def test_resume_storage_audit_button_is_in_data_maintenance_card():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    data_card = source[
-        source.index('data_card = self._create_card('):
-        source.index('diagnostic_card = self._create_card(')
+    settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
+    data_card = settings_source[
+        settings_source.index('data_card = self._create_card('):
+        settings_source.index('diagnostic_card = self._create_card(')
     ]
 
     assert 'text=" 简历存储体检"' in data_card
     assert 'command=self._show_resume_storage_audit' in data_card
-    assert 'self.icons.button(\n            "health_shield"' in data_card
+    assert 'self.icons.button(\n        "health_shield"' in data_card
 
 
 def test_resume_storage_audit_shows_privacy_safe_read_only_summary():
@@ -9689,7 +10183,7 @@ def test_open_containing_folder_uses_windows_file_manager():
 
 
 def test_model_connectivity_summary_stays_inside_selection_dialog():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
+    source = Path("gui_model_catalog_dialog.py").read_text(encoding="utf-8")
     block = source[
         source.index("def _test_model_in_dialog"):
         source.index('listbox.bind("<Button-3>"')
@@ -9703,21 +10197,22 @@ def test_model_connectivity_summary_stays_inside_selection_dialog():
 
 def test_followup_and_feedback_validation_use_inline_errors():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    followup = source[
-        source.index("def _mark_candidate_followup"):
+    dialogs = Path("gui_candidate_state_dialogs.py").read_text(encoding="utf-8")
+    followup_controller = source[
+        source.index("def _save_candidate_followup_from_dialog"):
         source.index("\n    def _update_candidate_feedback")
     ]
-    feedback = source[
-        source.index("def _mark_candidate_feedback"):
+    feedback_controller = source[
+        source.index("def _save_candidate_feedback_from_dialog"):
         source.index("\n    def _format_candidate_detail")
     ]
 
-    assert "show_form_error(error_text, next_followup_entry)" in followup
-    assert 'show_form_error("请选择有效的跟进状态。", status_combo)' in followup
-    assert "messagebox.show_failure(" in followup
-    assert 'show_form_error("请选择有效的反馈状态。", status_combo)' in feedback
-    assert "标记误推或误杀时，请至少选择一个原因。" in feedback
-    assert "messagebox.show_failure(" in feedback
+    assert "show_form_error(error_text, next_followup_entry)" in dialogs
+    assert 'show_form_error("请选择有效的跟进状态。", status_combo)' in dialogs
+    assert "messagebox.show_failure(" in followup_controller
+    assert 'show_form_error("请选择有效的反馈状态。", status_combo)' in dialogs
+    assert "标记误推或误杀时，请至少选择一个原因。" in dialogs
+    assert "messagebox.show_failure(" in feedback_controller
 
 
 def test_only_reversible_unblacklist_keeps_plain_yes_no_confirmation():
