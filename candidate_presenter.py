@@ -3,12 +3,27 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from candidate_workflow import derive_candidate_decision, format_followup_due_at
-from filtering import normalize_candidate_gender
+from filtering import (
+    _parse_candidate_salary_range,
+    normalize_candidate_gender,
+    parse_experience_years,
+)
+
+
+@dataclass(frozen=True)
+class CandidateStatusView:
+    """Transient result-table status without Tk or persistence side effects."""
+
+    display: str
+    detail: str
+    expired_evaluation_id: str = ""
 
 
 def candidate_gender_display(candidate: Mapping[str, Any]) -> str:
@@ -85,6 +100,147 @@ def latest_history_value(
             value = stripped[len(summary_prefix) :].strip()
             return value.split()[0] if value else ""
     return ""
+
+
+def parse_salary_experience(
+    summary: object,
+    structured: Mapping[str, Any] | None = None,
+) -> tuple[str, str]:
+    """Return compact salary and experience text for a result-table row."""
+    salary = ""
+    experience = ""
+    structured = structured or {}
+    if structured.get("salary_min") is not None:
+        salary_min = structured["salary_min"]
+        salary_max = structured.get("salary_max")
+        salary = (
+            f"{salary_min}-{salary_max}K"
+            if salary_max and salary_max != salary_min
+            else f"{salary_min}K"
+        )
+    if structured.get("exp_years") is not None:
+        experience = f"{structured['exp_years']}年"
+
+    summary_text = str(summary or "")
+    if not salary:
+        salary_min, salary_max = _parse_candidate_salary_range(summary_text)
+        if salary_min is not None:
+            salary = (
+                f"{salary_min}-{salary_max}K"
+                if salary_max is not None and salary_max != salary_min
+                else f"{salary_min}K"
+            )
+        elif "面议" in summary_text:
+            salary = "面议"
+    if not experience:
+        years = parse_experience_years(summary_text)
+        experience = f"{years}年" if years is not None else ""
+    return salary, experience
+
+
+def extract_candidate_extra_fields(
+    candidate: Mapping[str, Any],
+) -> tuple[str, str, str, str, str]:
+    """Return education, age, job status, school, and company display text."""
+    structured = candidate.get("structured") or {}
+    education = str(structured.get("degree") or "")
+    age = str(structured.get("age") or "")
+    job_status = str(structured.get("job_status") or "")
+    api_profile = candidate.get("_api_profile") or {}
+    summary = candidate.get("summary") or ""
+    school = latest_history_value(
+        api_profile.get("educations"),
+        "school",
+        summary,
+        "教育经历：",
+    )
+    company = latest_history_value(
+        api_profile.get("works"),
+        "company",
+        summary,
+        "工作经历：",
+    )
+    if not education or not age or not job_status:
+        fallback = extract_summary_display_fields(summary)
+        education = education or fallback["education"]
+        age = age or fallback["age"]
+        job_status = job_status or fallback["job_status"]
+    if age:
+        age = f"{age}岁"
+    return education, age, job_status, school, company
+
+
+def format_candidate_status(
+    candidate: Mapping[str, Any],
+    *,
+    evaluating_ids: set[str] | frozenset[str] = frozenset(),
+    evaluation_results: Mapping[str, Mapping[str, Any]] | None = None,
+    now: float | None = None,
+) -> CandidateStatusView:
+    """Build transient candidate status and report expired AI feedback."""
+    geek_id = str(candidate.get("geek_id") or "")
+    if geek_id in evaluating_ids:
+        return CandidateStatusView("AI评估中...", "AI评估中...")
+
+    result = (evaluation_results or {}).get(geek_id)
+    if result is not None:
+        current_time = time.time() if now is None else now
+        if current_time - float(result.get("timestamp") or 0) < 3:
+            prefix = "✓" if result.get("status") == "success" else "✗"
+            display = f"{prefix} {result.get('message') or ''}".rstrip()
+            return CandidateStatusView(display, display)
+        expired_id = geek_id
+    else:
+        expired_id = ""
+
+    decision = derive_candidate_decision(dict(candidate))
+    status_parts = [decision.communication_status]
+    detail = ""
+    if decision.review_status == "pending":
+        status_parts.append("待复核")
+        detail = "复核原因：" + "；".join(
+            decision.review_reasons or ("请人工确认",)
+        )
+    elif decision.review_status == "passed":
+        status_parts.append("复核通过")
+        passed_reasons = [
+            str(reason).strip()
+            for reason in (candidate.get("review_passed_reasons") or [])
+            if str(reason).strip()
+        ]
+        reason_text = (
+            f"复核事项：{'；'.join(passed_reasons)}\n" if passed_reasons else ""
+        )
+        detail = (
+            f"{reason_text}人工复核结论已通过；原评分和推荐指数不变。"
+            "是否可联系仍以当前沟通、反馈和屏蔽状态为准。"
+        )
+    elif decision.review_status == "cancelled":
+        status_parts.append("复核已结束")
+        detail = (
+            "候选人已因放弃、不合适或屏蔽结束处理；"
+            "如需恢复，请先调整对应的反馈、跟进或屏蔽状态。"
+        )
+    elif candidate.get("review_rejected_at"):
+        status_parts.append("复核未通过")
+        rejected_reasons = [
+            str(reason).strip()
+            for reason in (candidate.get("review_rejected_reasons") or [])
+            if str(reason).strip()
+        ]
+        detail = "复核结论：不通过" + (
+            f"\n复核事项：{'；'.join(rejected_reasons)}"
+            if rejected_reasons
+            else ""
+        )
+    elif decision.result_view == "淘汰记录":
+        status_parts.append(decision.primary_review_reason or "淘汰记录")
+    if candidate.get("feedback_status"):
+        status_parts.append(str(candidate.get("feedback_status")))
+    if candidate.get("blacklisted"):
+        status_parts.append("已屏蔽")
+    display = "｜".join(status_parts)
+    return CandidateStatusView(display, detail or display, expired_id)
 
 
 def format_ai_hard_conditions(rule: Mapping[str, Any]) -> str:

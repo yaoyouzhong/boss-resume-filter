@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 
 import api_connectivity
 import browser_connection
+import candidate_controller
 import candidate_diagnostics_presenter
 import candidate_cleanup
 import candidate_presenter
@@ -31,6 +32,7 @@ import gui_stats_page
 import model_catalog
 import resume_parser
 import resume_import_service
+import result_controller
 import run_presenter
 import stats_presenter
 import ui_windowing
@@ -110,16 +112,38 @@ def test_resume_import_controller_delegates_parsing_and_persistence_boundaries()
     block = source[source.index("def _import_resume"):]
     block = block[:block.index("\n    def _revert_resume_eval")]
 
-    assert "parse_resume_text(filepath)" in block
-    assert "persist_candidate_resume(" in block
+    assert "_candidate_controller_for(self).import_resume(" in block
+    assert "parser=parse_resume_text" in block
+    assert "persister=persist_candidate_resume" in block
+    assert "parse_resume_text(filepath)" not in block
+    assert "persist_candidate_resume(" not in block
     assert "store_resume_copy(" not in block
     assert "mutate_candidates_with_resume_cleanup(" not in block
-    assert "evaluate_with_resume(" in block
+    assert "evaluator=evaluate_with_resume" in block
     assert "pdfminer.high_level" not in block
     assert "docx.Document" not in block
     assert "striprtf.striprtf" not in block
     assert "re.sub(" not in block
     assert "open(filepath" not in block
+
+
+def test_resume_revert_delegates_mutation_to_candidate_controller():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _revert_resume_eval"):]
+    block = block[:block.index("\n    # ===== 一键AI评估功能 =====")]
+
+    assert "_candidate_controller_for(self).revert_resume_evaluation(" in block
+    assert "mutate_candidates_with_resume_cleanup(" not in block
+    assert "persisted.pop(" not in block
+
+
+def test_resume_worker_routes_all_ui_updates_through_ui_queue():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _eval_worker():"):]
+    block = block[:block.index("threading.Thread(target=_eval_worker")]
+
+    assert "self.run_on_ui(" in block
+    assert "_parent.after(" not in block
 
 
 def test_resume_import_service_excludes_gui_parser_and_network_dependencies():
@@ -161,6 +185,31 @@ def test_browser_connection_service_excludes_gui_storage_and_scan_dependencies()
     assert callable(browser_connection.probe_page_url)
     assert callable(browser_connection.is_debug_port_open)
     assert callable(browser_connection.connect_browser_address)
+
+
+def test_result_controller_excludes_tk_gui_and_storage_dependencies():
+    forbidden = {
+        "bossmaster",
+        "gui_main",
+        "storage",
+        "tkinter",
+    }
+    assert not (_top_level_imports("result_controller") & forbidden)
+    assert callable(result_controller.prepare_result_view)
+    assert callable(result_controller.candidate_query_match)
+    assert callable(result_controller.result_sort_value)
+
+
+def test_candidate_controller_excludes_tk_gui_and_storage_dependencies():
+    forbidden = {
+        "bossmaster",
+        "gui_main",
+        "storage",
+        "tkinter",
+    }
+    assert not (_top_level_imports("candidate_controller") & forbidden)
+    assert callable(candidate_controller.CandidateController)
+    assert callable(candidate_controller.CandidatePersistence)
 
 
 def test_candidate_cleanup_does_not_import_gui_storage_or_network_modules():
@@ -691,6 +740,33 @@ def test_browser_controllers_delegate_bounded_connection_probes():
     assert "self.set_browser_ui(" in check
 
 
+def test_result_page_controller_owns_data_scope_metrics_and_row_decisions():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    refresh = source[source.index("def refresh_results"):]
+    refresh = refresh[:refresh.index("\n    def _refresh_results_and_reset_sort")]
+
+    assert "ResultQuery(" in refresh
+    assert "ResultController(load_candidates_all)" in refresh
+    assert "controller.load(CANDIDATES_PATH, query)" in refresh
+    assert "state.metrics" in refresh
+    assert "state.rows" in refresh
+    assert "derive_candidate_decision(" not in refresh
+    assert "normalize_job_name(" not in refresh
+    assert "_parse_salary_exp(" not in refresh
+
+
+def test_candidate_persistence_compatibility_methods_delegate_to_controller():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    assert "_candidate_controller_for(self).blacklist(" in source
+    assert "_candidate_controller_for(self).unblacklist(" in source
+    assert "_candidate_controller_for(self).update_followup(" in source
+    assert "_candidate_controller_for(self).complete_review(" in source
+    assert "_candidate_controller_for(self).reject_review(" in source
+    assert "_candidate_controller_for(self).approve_contact(" in source
+    assert "_candidate_controller_for(self).update_feedback(" in source
+    assert "_candidate_controller_for(self).save_ai_evaluations(" in source
+
+
 def test_model_catalog_dialog_does_not_import_controller_storage_or_http_clients():
     forbidden = {
         "gui_main",
@@ -893,15 +969,17 @@ def test_candidate_blacklist_dialog_compatibility_method_is_a_thin_delegate():
     assert "ttk.Button" not in block
 
 
-def test_candidate_blacklist_persistence_remains_in_main_controller():
+def test_candidate_blacklist_persistence_delegates_to_candidate_controller():
     builder = (ROOT / "gui_candidate_state_dialogs.py").read_text(encoding="utf-8")
     source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
     assert "def _update_candidate_blacklist" not in builder
     assert "def _update_candidate_blacklist" in source
-    assert "update_candidate_records(" in source[
+    block = source[
         source.index("def _update_candidate_blacklist"):
         source.index("\n    def _import_resume")
     ]
+    assert "_candidate_controller_for(self).blacklist(" in block
+    assert "update_candidate_records(" not in block
 
 
 def test_candidate_followup_dialog_exposes_form_and_save_result_contracts():

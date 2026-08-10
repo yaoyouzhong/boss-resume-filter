@@ -35,6 +35,7 @@ from browser_connection import (
     is_debug_port_open,
     probe_page_url,
 )
+from candidate_controller import CandidateController, CandidatePersistence
 from candidate_cleanup import clear_candidates_in_place
 import candidate_presenter
 import candidate_diagnostics_presenter
@@ -58,6 +59,13 @@ import gui_model_catalog_dialog
 import gui_stats_page
 import gui_stats_detail
 from model_catalog import analyze_model_catalog, fetch_model_catalog
+from result_controller import (
+    ResultController,
+    ResultQuery,
+    candidate_query_match,
+    result_cache_key,
+    result_sort_value,
+)
 import run_presenter
 import stats_presenter
 import ui_theme
@@ -225,6 +233,26 @@ MAINTENANCE_TIME_PREFERENCE_KEYS = {
 }
 API_CONFIG_PATH = get_api_config_path()
 CHROME_DEBUG_PORT_FILE = BASE_DIR / ".chrome_debug_port"
+
+
+def _candidate_controller_for(host) -> CandidateController:
+    """Return the host's persistence controller without importing GUI state back."""
+    controller = getattr(host, "_candidate_controller", None)
+    if controller is None:
+        controller = CandidateController(
+            CANDIDATES_PATH,
+            BASE_DIR,
+            CandidatePersistence(
+                update_records=update_candidate_records,
+                mutate_all=mutate_candidates_all,
+                mutate_with_resume_cleanup=mutate_candidates_with_resume_cleanup,
+                remove_with_resume_cleanup=remove_candidates_all_with_resume_cleanup,
+                mark_greeted=mark_candidate_greeted,
+                mark_not_greeted=mark_candidate_not_greeted,
+            ),
+        )
+        host._candidate_controller = controller
+    return controller
 
 FEEDBACK_STATUS_OPTIONS = ["合适", "误推", "误杀", "放弃"]
 FEEDBACK_REASON_OPTIONS = [
@@ -10975,47 +11003,8 @@ class BossFilterGUI:
 
     @staticmethod
     def _parse_salary_exp(summary, structured=None):
-        """从候选人摘要中轻量解析薪资和工作年限。
-
-        Args:
-            summary: 候选人摘要文本
-            structured: 结构化字段字典（优先使用）
-
-        Returns:
-            (salary: str, exp: str) — 如 ("15-20K", "5年")
-        """
-        salary = ''
-        exp = ''
-
-        # 优先使用 API 结构化字段
-        if structured:
-            if structured.get('salary_min') is not None:
-                s_min = structured['salary_min']
-                s_max = structured.get('salary_max')
-                if s_max and s_max != s_min:
-                    salary = f"{s_min}-{s_max}K"
-                else:
-                    salary = f"{s_min}K"
-            if structured.get('exp_years') is not None:
-                exp = f"{structured['exp_years']}年"
-
-        # 未解析到的字段用文本解析兜底
-        if not salary or not exp:
-            from filtering import _parse_candidate_salary_range, parse_experience_years
-            if not salary:
-                salary_min, salary_max = _parse_candidate_salary_range(summary or '')
-                if salary_min is not None:
-                    if salary_max is not None and salary_max != salary_min:
-                        salary = f"{salary_min}-{salary_max}K"
-                    else:
-                        salary = f"{salary_min}K"
-                elif '面议' in (summary or ''):
-                    salary = '面议'
-            if not exp:
-                exp_raw = parse_experience_years(summary or '')
-                exp = f"{exp_raw}年" if exp_raw is not None else ''
-
-        return salary, exp
+        """Keep the historical GUI entry point as a presenter delegate."""
+        return candidate_presenter.parse_salary_experience(summary, structured)
 
     @staticmethod
     def _center_window_on_screen(window, width, height):
@@ -11538,237 +11527,90 @@ class BossFilterGUI:
 
     def refresh_results(self, force=False):
         """刷新结果 - 增强版：支持表头排序、颜色标记和岗位+日期过滤"""
-        # 如果结果页面尚未创建，直接返回
         if not hasattr(self, 'result_tree') or self.result_tree is None:
             return
 
-        # 数据未变 + 过滤条件未变 → 跳过 Treeview 重建，避免页面切换卡顿
         current_job = self.result_job_var.get() if hasattr(self, 'result_job_var') else ""
         current_dates = self._get_result_date_filter() if hasattr(self, 'result_date_start_entry') else (None, None)
         show_blacklist = self.result_show_blacklist_var.get() if hasattr(self, 'result_show_blacklist_var') else False
         result_view = self.result_view_var.get() if hasattr(self, 'result_view_var') else "全部记录"
-        if CANDIDATES_PATH.exists():
-            stat = CANDIDATES_PATH.stat()
-            fingerprint = (stat.st_mtime, stat.st_size)
-            if (
-                not force
-                and fingerprint == self._result_tree_fingerprint
-                and current_job == self._result_last_job
-                and current_dates == self._result_last_dates
-                and show_blacklist == self._result_last_show_blacklist
-                and result_view == getattr(self, '_result_last_view', result_view)
-            ):
-                return
-            self._result_tree_fingerprint = fingerprint
-            self._result_last_job = current_job
-            self._result_last_dates = current_dates
-            self._result_last_show_blacklist = show_blacklist
-            self._result_last_view = result_view
-        elif self._result_tree_fingerprint is not None:
-            self._result_tree_fingerprint = None
+        query = ResultQuery(
+            selected_job=current_job,
+            date_start=current_dates[0],
+            date_end=current_dates[1],
+            show_blacklist=show_blacklist,
+            result_view=result_view,
+            evaluating_ids=frozenset(getattr(self, '_ai_evaluating_ids', set())),
+            evaluation_results=getattr(self, '_ai_eval_results', {}) or {},
+        )
+        cache_key = result_cache_key(CANDIDATES_PATH, query)
+        previous_key = getattr(self, '_result_controller_cache_key', None)
+        if previous_key is None:
+            previous_key = (
+                getattr(self, '_result_tree_fingerprint', None),
+                getattr(self, '_result_last_job', None),
+                *(getattr(self, '_result_last_dates', (None, None)) or (None, None)),
+                getattr(self, '_result_last_show_blacklist', False),
+                getattr(self, '_result_last_view', result_view),
+            )
+        if not force and cache_key == previous_key:
+            return
+        self._result_controller_cache_key = cache_key
+        self._result_tree_fingerprint = cache_key[0]
+        self._result_last_job = current_job
+        self._result_last_dates = current_dates
+        self._result_last_show_blacklist = show_blacklist
+        self._result_last_view = result_view
 
         try:
-            if CANDIDATES_PATH.exists():
-                persisted_candidates = load_candidates_all(CANDIDATES_PATH)
-                # 编辑操作始终持有完整数据集，页面过滤只能影响展示范围。
-                self.all_candidates = persisted_candidates
-                candidates = persisted_candidates
-                if not show_blacklist:
-                    candidates = [c for c in candidates if not c.get('blacklisted')]
+            controller = getattr(self, '_result_controller', None)
+            if controller is None:
+                controller = ResultController(load_candidates_all)
+                self._result_controller = controller
+            state = controller.load(CANDIDATES_PATH, query)
+            self.all_candidates = list(state.all_candidates)
+            self.result_tree_data = list(state.view_candidates)
+            for geek_id in state.expired_evaluation_ids:
+                getattr(self, '_ai_eval_results', {}).pop(geek_id, None)
 
-                # 岗位过滤
-                selected_job = self.result_job_var.get()
-                if selected_job != "全部岗位":
-                    candidates = [
-                        c for c in candidates
-                        if normalize_job_name(c.get('job_name')) == normalize_job_name(selected_job)
-                    ]
-
-                # 日期过滤按首次发现时间统计；旧数据回退 batch_timestamp。
-                date_start, date_end = current_dates
-                if date_start or date_end:
-                    def _in_date_range(c):
-                        ts = c.get('first_seen_at') or c.get('batch_timestamp', '')
-                        if not ts or len(ts) < 8:
-                            return False
-                        d = ts[:8]
-                        if date_start and d < date_start:
-                            return False
-                        if date_end and d > date_end:
-                            return False
-                        return True
-                    candidates = [c for c in candidates if _in_date_range(c)]
-
-                # 统计卡片固定使用当前岗位和日期范围，结果范围只过滤下方表格。
-                metric_candidates = list(candidates)
-                candidates = _filter_candidates_by_result_view(metric_candidates, result_view)
-
-                # 计算新的指标
-                strong_list = [
-                    c for c in metric_candidates
-                    if derive_candidate_decision(c).screening_result == '强烈推荐'
-                ]
-                strong_total = len(strong_list)
-                strong_greeted = sum(1 for c in strong_list if c.get('greet_sent', False))
-
-                recommended_list = [
-                    c for c in metric_candidates
-                    if derive_candidate_decision(c).screening_result == '推荐'
-                ]
-                recommended_total = len(recommended_list)
-                recommended_greeted = sum(1 for c in recommended_list if c.get('greet_sent', False))
-
-                pending_list = [
-                    c for c in metric_candidates
-                    if derive_candidate_decision(c).screening_result == '待定'
-                ]
-                pending_total = len(pending_list)
-                pending_greeted = sum(1 for c in pending_list if c.get('greet_sent', False))
-
-                # 已打招呼：全部通过筛选候选人中已完成沟通的人
-                greeted_total = sum(
-                    1 for c in metric_candidates
-                    if derive_candidate_decision(c).screening_result
-                    in {'强烈推荐', '推荐', '待定'}
-                    and c.get('greet_sent', False)
-                )
-
-                # 更新统计卡片
-                self.result_stats_vars['strong'].set(str(strong_total))
-                self.result_stats_vars['recommended'].set(str(recommended_total))
-                self.result_stats_vars['pending'].set(str(pending_total))
-                self.result_stats_vars['greeted'].set(str(greeted_total))
-                # 更新已打招呼数
-                self.result_stats_greeted['strong'].set(f"{strong_greeted} 已打招呼")
-                self.result_stats_greeted['recommended'].set(f"{recommended_greeted} 已打招呼")
-                self.result_stats_greeted['pending'].set(f"{pending_greeted} 已打招呼")
+            metrics = state.metrics
+            if hasattr(self, 'result_stats_vars'):
+                self.result_stats_vars['strong'].set(str(metrics.strong))
+                self.result_stats_vars['recommended'].set(str(metrics.recommended))
+                self.result_stats_vars['pending'].set(str(metrics.pending))
+                self.result_stats_vars['greeted'].set(str(metrics.greeted))
+            if hasattr(self, 'result_stats_greeted'):
+                self.result_stats_greeted['strong'].set(f"{metrics.strong_greeted} 已打招呼")
+                self.result_stats_greeted['recommended'].set(f"{metrics.recommended_greeted} 已打招呼")
+                self.result_stats_greeted['pending'].set(f"{metrics.pending_greeted} 已打招呼")
                 self.result_stats_greeted['greeted'].set("通过筛选中")
 
-                cached_items = getattr(self, '_tree_original_order', None)
-                tree_items = (
-                    list(cached_items)
-                    if cached_items is not None
-                    else list(self.result_tree.get_children())
+            cached_items = getattr(self, '_tree_original_order', None)
+            tree_items = list(cached_items) if cached_items is not None else list(self.result_tree.get_children())
+            for item in tree_items:
+                if self.result_tree.exists(item):
+                    self.result_tree.delete(item)
+            self._tree_original_order = None
+            self._item_to_candidate = {}
+
+            self.result_tree.tag_configure('strong_recommend', background=self.colors['bg_tree_tag_high'])
+            self.result_tree.tag_configure('recommend', background=self.colors['bg_tree_tag_mid'])
+            self.result_tree.tag_configure('pending', background=self.colors['bg_tree_tag_low'])
+            self.result_tree.tag_configure('blacklisted', background=self.colors['bg_tree_tag_low'], foreground=self.colors.get('danger_text', ui_theme.DANGER_TEXT))
+            self.result_tree.tag_configure('rejected', background=self.colors['bg_tree_tag_low'], foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
+            for row in state.rows:
+                item_id = self.result_tree.insert(
+                    "", "end", values=row.values, tags=(row.tag,)
                 )
-                for item in tree_items:
-                    if self.result_tree.exists(item):
-                        self.result_tree.delete(item)
-                self._tree_original_order = None
-                self._item_to_candidate: dict[str, dict] = {}
+                self._item_to_candidate[item_id] = row.candidate
 
-                sorted_candidates = sorted(candidates, key=lambda x: x.get('match_score', 0), reverse=True)
-
-                # 配置颜色标记 tag
-                self.result_tree.tag_configure('strong_recommend', background=self.colors['bg_tree_tag_high'])
-                self.result_tree.tag_configure('recommend', background=self.colors['bg_tree_tag_mid'])
-                self.result_tree.tag_configure('pending', background=self.colors['bg_tree_tag_low'])
-                self.result_tree.tag_configure('blacklisted', background=self.colors['bg_tree_tag_low'], foreground=self.colors.get('danger_text', ui_theme.DANGER_TEXT))
-                self.result_tree.tag_configure('rejected', background=self.colors['bg_tree_tag_low'], foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
-
-                visible_count = 0
-                for c in sorted_candidates:
-                    score = c.get('match_score', 0)
-                    geek_id = str(c.get('geek_id', ''))
-
-                    # 评估中或已完成 AI 评估的候选人，即使分数低于55分也显示
-                    is_evaluating = geek_id in self._ai_evaluating_ids
-                    is_just_evaluated = geek_id in self._ai_eval_results
-                    is_ai_evaluated = bool(c.get('llm_evaluated'))
-                    has_ai_failure = bool(c.get('llm_error'))
-                    should_keep_low_score = (
-                        is_evaluating or is_just_evaluated or is_ai_evaluated or has_ai_failure
-                    )
-
-                    is_rejected = c.get('qualification_status') == 'rejected'
-                    if score < SCORE_THRESHOLD_PASS and not should_keep_low_score and not is_rejected:
-                        continue  # 低于通过分且没有 AI 评估上下文，不显示
-
-                    level = derive_candidate_decision(c).screening_result
-                    status = self._format_candidate_status(c)
-
-                    # 根据推荐等级设置颜色标记
-                    if c.get('blacklisted'):
-                        tag = 'blacklisted'
-                    elif is_rejected:
-                        tag = 'rejected'
-                    elif score >= SCORE_THRESHOLD_STRONG:
-                        tag = 'strong_recommend'
-                    elif score >= SCORE_THRESHOLD_RECOMMEND:
-                        tag = 'recommend'
-                    else:
-                        tag = 'pending'
-
-                    # 从 summary 中解析工作年限和薪资
-                    salary, exp = self._parse_salary_exp(c.get('summary', ''), c.get('structured'))
-
-                    # AI 评估调整值：有简历时显示简历评估（替代一次评估），否则显示一次评估
-                    ai_adj = c.get('llm_adjustment')
-                    resume_adj = c.get('resume_eval_adjustment')
-
-                    if resume_adj is not None:
-                        ai_text = f"+{resume_adj}" if resume_adj > 0 else str(resume_adj)
-                    elif ai_adj is not None and c.get('llm_evaluated'):
-                        ai_text = f"+{ai_adj}" if ai_adj > 0 else str(ai_adj)
-                    elif c.get('llm_error'):
-                        ai_text = "失败"
-                    else:
-                        ai_text = "—"
-
-                    edu, age, job_status, school, company = self._extract_extra_fields(c)
-                    c['_extra_fields'] = (edu, age, job_status, school, company)
-                    item_id = self.result_tree.insert("", "end", values=(
-                        c.get('name', ''),
-                        self._candidate_gender_display(c),
-                        exp,
-                        salary,
-                        c.get('skill_match_ratio', ''),
-                        score,
-                        ai_text,
-                        level,
-                        status,
-                        age,
-                        edu,
-                        job_status,
-                        school,
-                        company,
-                    ), tags=(tag,))
-                    self._item_to_candidate[item_id] = c
-                    visible_count += 1
-
-                # 存储原始数据用于排序和详情展示
-                self.result_tree_data = sorted_candidates
-                if hasattr(self, 'result_count_var'):
-                    self.result_count_var.set(f"{visible_count} / 共 {len(candidates)} 人")
-                self._toggle_result_empty_state(visible_count == 0)
-                self._tree_original_order = None  # 搜索排序缓存失效，下次搜索时重建
-                self._update_result_review_button_state()
-            else:
-                # 数据文件不存在：清空表格与统计卡片，展示空态引导
-                cached_items = getattr(self, '_tree_original_order', None)
-                tree_items = (
-                    list(cached_items)
-                    if cached_items is not None
-                    else list(self.result_tree.get_children())
+            if hasattr(self, 'result_count_var'):
+                self.result_count_var.set(
+                    f"{state.visible_count} / 共 {state.total_count} 人"
                 )
-                for item in tree_items:
-                    if self.result_tree.exists(item):
-                        self.result_tree.delete(item)
-                self._tree_original_order = None
-                self._item_to_candidate = {}
-                self.result_tree_data = []
-                self.all_candidates = []
-                if hasattr(self, 'result_count_var'):
-                    self.result_count_var.set("0 / 共 0 人")
-                if hasattr(self, 'result_stats_vars'):
-                    for stat_var in self.result_stats_vars.values():
-                        stat_var.set('0')
-                if hasattr(self, 'result_stats_greeted'):
-                    for key in ('strong', 'recommended', 'pending'):
-                        if key in self.result_stats_greeted:
-                            self.result_stats_greeted[key].set('0 已打招呼')
-                    if 'greeted' in self.result_stats_greeted:
-                        self.result_stats_greeted['greeted'].set('通过筛选中')
-                self._toggle_result_empty_state(True)
+            self._toggle_result_empty_state(state.visible_count == 0)
+            self._tree_original_order = None
+            self._update_result_review_button_state()
         except Exception as e:
             self.append_log(f"加载结果失败：{e}")
 
@@ -12178,27 +12020,8 @@ class BossFilterGUI:
 
     @staticmethod
     def _result_tree_sort_value(col: str, value) -> tuple[bool, float | str]:
-        """Return a typed sort value for one result-table cell."""
-        text = str(value or '').strip()
-        if not text or text in {'—', '-'}:
-            return False, 0.0
-
-        numeric_columns = {'exp', 'salary', 'skills', 'score', 'ai_eval', 'age'}
-        if col not in numeric_columns:
-            return True, text.casefold()
-
-        if col in {'exp', 'salary'}:
-            numbers = [float(number) for number in re.findall(r'\d+(?:\.\d+)?', text)]
-            if not numbers:
-                return False, 0.0
-            if len(numbers) >= 2:
-                return True, (numbers[0] + numbers[1]) / 2
-            return True, numbers[0]
-
-        match = re.search(r'[-+]?\d+(?:\.\d+)?', text)
-        if match is None:
-            return False, 0.0
-        return True, float(match.group())
+        """Keep the historical GUI entry point as a controller delegate."""
+        return result_sort_value(col, value)
 
     def _filter_result_tree(self):
         """根据搜索框内容实时过滤 Treeview 行（不匹配的行隐藏）。
@@ -12244,57 +12067,13 @@ class BossFilterGUI:
                 self.result_count_var.set(f"{len(all_items)} / 共 {total} 人")
             return
 
-        # 解析数字比较查询（>=60 / >60 / =60 / 60）
-        num_op, num_val = None, None
-        m = re.fullmatch(r'(>=|>|=)?\s*(\d{1,3})', query)
-        if m:
-            num_op = m.group(1) or '>='
-            num_val = int(m.group(2))
-
-        # 匹配判断：返回匹配类型用于优先级排序
-        def _match_type(cand: dict) -> str | None:
-            if not cand:
-                return None
-            name = str(cand.get('name', '')).lower()
-            gender = self._candidate_gender_display(cand).lower()
-            score_str = str(cand.get('match_score', '')).lower()
-            level = str(cand.get('recommend_level', '')).lower()
-            status = " ".join(filter(None, (
-                str(cand.get('_display_status') or cand.get('followup_status', '')),
-                str(cand.get('_full_status', '')),
-            ))).lower()
-            if query == name:
-                return 'exact_name'
-            if query in name:
-                return 'partial_name'
-            if query in gender:
-                return 'gender'
-            if query in level:
-                return 'level'
-            if query in status:
-                return 'status'
-            # 数字查询：匹配分比较（默认 ≥）
-            if num_val is not None:
-                try:
-                    s_num = int(score_str) if score_str else 0
-                except (ValueError, TypeError):
-                    s_num = 0
-                if num_op == '>=' and s_num >= num_val:
-                    return 'score'
-                if num_op == '>' and s_num > num_val:
-                    return 'score'
-                if num_op == '=' and s_num == num_val:
-                    return 'score'
-                return None
-            return None
-
         _priority = {
             'exact_name': 0, 'partial_name': 1, 'gender': 2,
             'score': 3, 'level': 4, 'status': 5,
         }
         matched_with_type: list[tuple[str, str]] = []
         for item_id in all_items:
-            mt = _match_type(item_map.get(item_id, {}))
+            mt = candidate_query_match(item_map.get(item_id, {}), query)
             if mt:
                 matched_with_type.append((item_id, mt))
 
@@ -13008,32 +12787,8 @@ class BossFilterGUI:
         return None
 
     def _extract_extra_fields(self, candidate):
-        """提取最大化结果表使用的学历、年龄、状态、学校和公司字段。"""
-        structured = candidate.get('structured') or {}
-        edu = structured.get('degree', '')
-        age = structured.get('age', '')
-        job_status = structured.get('job_status', '')
-        api_profile = candidate.get('_api_profile') or {}
-        school = self._latest_history_value(
-            api_profile.get('educations'), 'school',
-            candidate.get('summary', ''), '教育经历：',
-        )
-        company = self._latest_history_value(
-            api_profile.get('works'), 'company',
-            candidate.get('summary', ''), '工作经历：',
-        )
-        # 有缺失时使用本地轻量正则兜底，避免仅为列表展示导入完整自动化模块。
-        if not edu or not age or not job_status:
-            info = self._extract_summary_display_fields(candidate.get('summary', ''))
-            if not edu:
-                edu = info.get('education', '')
-            if not age:
-                age = info.get('age', '')
-            if not job_status:
-                job_status = info.get('job_status', '')
-        if age:
-            age = f"{age}岁"
-        return edu, age, job_status, school, company
+        """Keep the historical GUI entry point as a presenter delegate."""
+        return candidate_presenter.extract_candidate_extra_fields(candidate)
 
     @staticmethod
     def _candidate_gender_display(candidate):
@@ -13056,81 +12811,20 @@ class BossFilterGUI:
         )
 
     def _format_candidate_status(self, candidate):
-        """生成简短状态文本，并将完整状态和复核原因保存供 tooltip 使用。"""
-        def _store_status(display, details=None):
-            candidate['_display_status'] = display
-            candidate['_full_status'] = details or display
-            return display
-
-        # AI评估中状态（使用全局集合，refresh_results 后仍有效）
-        geek_id = str(candidate.get('geek_id', ''))
-        if geek_id in getattr(self, '_ai_evaluating_ids', set()):
-            return _store_status("AI评估中...")
-
-        # AI评估结果状态（显示约3秒后自动恢复）
-        ai_eval_results = getattr(self, '_ai_eval_results', {})
-        if geek_id in ai_eval_results:
-            result = ai_eval_results[geek_id]
-            # 检查是否在3秒内
-            if time.time() - result.get('timestamp', 0) < 3:
-                if result['status'] == 'success':
-                    return _store_status(f"✓ {result['message']}")
-                else:
-                    return _store_status(f"✗ {result['message']}")
-            else:
-                # 超过3秒，清除结果
-                del ai_eval_results[geek_id]
-
-        decision = derive_candidate_decision(candidate)
-        status_parts = [decision.communication_status]
-        tooltip_text = ""
-        if decision.review_status == "pending":
-            status_parts.append("待复核")
-            tooltip_text = (
-                "复核原因："
-                + "；".join(decision.review_reasons or ("请人工确认",))
+        """Keep the historical GUI entry point as a presenter delegate."""
+        status = candidate_presenter.format_candidate_status(
+            candidate,
+            evaluating_ids=frozenset(getattr(self, '_ai_evaluating_ids', set())),
+            evaluation_results=getattr(self, '_ai_eval_results', {}) or {},
+        )
+        candidate['_display_status'] = status.display
+        candidate['_full_status'] = status.detail
+        if status.expired_evaluation_id:
+            getattr(self, '_ai_eval_results', {}).pop(
+                status.expired_evaluation_id,
+                None,
             )
-        elif decision.review_status == "passed":
-            status_parts.append("复核通过")
-            passed_reasons = [
-                str(reason).strip()
-                for reason in (candidate.get('review_passed_reasons') or [])
-                if str(reason).strip()
-            ]
-            reason_text = (
-                f"复核事项：{'；'.join(passed_reasons)}\n"
-                if passed_reasons else ""
-            )
-            tooltip_text = (
-                f"{reason_text}人工复核结论已通过；原评分和推荐指数不变。"
-                "是否可联系仍以当前沟通、反馈和屏蔽状态为准。"
-            )
-        elif decision.review_status == "cancelled":
-            status_parts.append("复核已结束")
-            tooltip_text = (
-                "候选人已因放弃、不合适或屏蔽结束处理；"
-                "如需恢复，请先调整对应的反馈、跟进或屏蔽状态。"
-            )
-        elif candidate.get('review_rejected_at'):
-            status_parts.append("复核未通过")
-            rejected_reasons = [
-                str(reason).strip()
-                for reason in (candidate.get('review_rejected_reasons') or [])
-                if str(reason).strip()
-            ]
-            tooltip_text = (
-                "复核结论：不通过"
-                + (f"\n复核事项：{'；'.join(rejected_reasons)}" if rejected_reasons else "")
-            )
-        elif decision.result_view == "淘汰记录":
-            rejection_reason = decision.primary_review_reason or "淘汰记录"
-            status_parts.append(rejection_reason)
-        if candidate.get('feedback_status'):
-            status_parts.append(candidate.get('feedback_status'))
-        if candidate.get('blacklisted'):
-            status_parts.append("已屏蔽")
-        display = "｜".join(status_parts)
-        return _store_status(display, tooltip_text or display)
+        return status.display
 
     @staticmethod
     def _get_greet_confirmation_hint(candidate):
@@ -13155,28 +12849,11 @@ class BossFilterGUI:
         )
 
     def _update_candidate_blacklist(self, geek_id, reason, timestamp=None):
-        """按 geek_id 标记候选人黑名单，跨岗位生效。"""
-        if not CANDIDATES_PATH.exists():
-            return 0
-        blacklisted_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        def apply_blacklist(candidate):
-            candidate['blacklisted'] = True
-            candidate['blacklist_reason'] = reason.strip()
-            candidate['blacklisted_at'] = blacklisted_at
-            if candidate.get('followup_status') not in {"不合适", "已归档"}:
-                apply_followup_state(
-                    candidate,
-                    "不合适",
-                    candidate.get('followup_note', ''),
-                    timestamp=blacklisted_at,
-                )
-
-        return update_candidate_records(
-            lambda candidate: str(candidate.get('geek_id')) == str(geek_id),
-            apply_blacklist,
-            CANDIDATES_PATH,
-            update_all=True,
+        """Keep the historical GUI entry point as a controller delegate."""
+        return _candidate_controller_for(self).blacklist(
+            geek_id,
+            reason,
+            timestamp=timestamp,
         )
 
     def _import_resume(self, item, candidate=None, parent=None, tree=None, tree_item=None):
@@ -13202,9 +12879,15 @@ class BossFilterGUI:
         if not filepath:
             return
 
-        # 2. 解析文件
+        # 2. 由候选人控制器解析并原子替换受管简历引用。
         try:
-            resume_text = parse_resume_text(filepath)
+            import_outcome = _candidate_controller_for(self).import_resume(
+                candidate,
+                filepath,
+                parser=parse_resume_text,
+                persister=persist_candidate_resume,
+            )
+            resume_text = import_outcome.resume_text
         except ResumeParserDependencyError as exc:
             messagebox.show_notice(
                 f"无法解析 {exc.format_name} 简历",
@@ -13249,28 +12932,6 @@ class BossFilterGUI:
                 parent=parent or self.root,
             )
             return
-        except Exception as e:
-            messagebox.show_failure(
-                "解析简历",
-                headline="简历文件解析失败",
-                message="没有从所选文件中提取到可用内容。",
-                detail=str(e),
-                notice="请检查文件是否损坏，或转换为 PDF、DOCX 后重试。",
-                parent=parent or self.root,
-            )
-            return
-
-        # 3. 由持久化服务原子替换受管简历引用。
-        resume_identity = self._candidate_identity_key(candidate)
-        imported_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        try:
-            persistence = persist_candidate_resume(
-                filepath,
-                identity=resume_identity,
-                candidates_path=CANDIDATES_PATH,
-                base_dir=BASE_DIR,
-                imported_at=imported_at,
-            )
         except ResumeCopyError as exc:
             messagebox.show_failure(
                 "保存简历",
@@ -13305,10 +12966,17 @@ class BossFilterGUI:
                 parent=parent or self.root,
             )
             return
-
-        candidate.clear()
-        candidate.update(persistence.candidate)
-        if persistence.cleanup.failure_count:
+        except Exception as e:
+            messagebox.show_failure(
+                "解析简历",
+                headline="简历文件解析失败",
+                message="没有从所选文件中提取到可用内容。",
+                detail=str(e),
+                notice="请检查文件是否损坏，或转换为 PDF、DOCX 后重试。",
+                parent=parent or self.root,
+            )
+            return
+        if import_outcome.cleanup.failure_count:
             self.append_log(
                 "[简历导入] 新简历已保存，但旧受管副本清理失败，"
                 "可运行简历存储体检重试"
@@ -13381,41 +13049,26 @@ class BossFilterGUI:
                         messagebox.showwarning("API Key 缺失",
                             "未找到 API Key，请先在「模型配置」页配置。",
                             parent=_parent)
-                    _parent.after(0, _no_key)
+                    self.run_on_ui(_no_key)
                     return
 
-                self.append_log(f"[简历评估] 正在评估 {name}...")
-                result = evaluate_with_resume(
-                    candidate, resume_text, job_requirement,
-                    api_config, api_key, hard_conditions=hard_conditions,
+                self.run_on_ui(
+                    lambda: self.append_log(f"[简历评估] 正在评估 {name}...")
                 )
+                controller = _candidate_controller_for(self)
+                result = controller.evaluate_resume(
+                    candidate,
+                    resume_text,
+                    job_requirement,
+                    api_config,
+                    api_key,
+                    hard_conditions,
+                    evaluator=evaluate_with_resume,
+                )
+                if result.success:
+                    controller.persist_resume_evaluation(candidate)
 
                 def _on_done():
-                    if result.success:
-                        resume_fields = (
-                            'resume_eval_adjustment',
-                            'resume_eval_reason',
-                            'resume_eval_model',
-                            'resume_eval_at',
-                            'resume_eval_dimension_scores',
-                            'rule_score',
-                            'match_score',
-                            'recommend_level',
-                            'score_breakdown',
-                        )
-
-                        def save_resume_evaluation(persisted):
-                            for field in resume_fields:
-                                if field in candidate:
-                                    persisted[field] = candidate[field]
-
-                        update_candidate_records(
-                            lambda persisted: (
-                                self._candidate_identity_key(persisted) == resume_identity
-                            ),
-                            save_resume_evaluation,
-                            CANDIDATES_PATH,
-                        )
                     self.refresh_results()
                     self.refresh_home_stats()
                     if result.success:
@@ -13445,7 +13098,7 @@ class BossFilterGUI:
                             parent=_parent,
                         )
 
-                _parent.after(0, _on_done)
+                self.run_on_ui(_on_done)
 
             except Exception as exc:
                 def _on_error(error=exc):
@@ -13464,13 +13117,13 @@ class BossFilterGUI:
                         notice="请检查模型配置或网络连接后重试。",
                         parent=_parent,
                     )
-                _parent.after(0, _on_error)
+                self.run_on_ui(_on_error)
 
         threading.Thread(target=_eval_worker, daemon=True).start()
 
     def _revert_resume_eval(self, item, candidate=None, parent=None):
         """撤销简历评估：清空简历数据和二次评估结果，回退分数。"""
-        from llm_eval import _recalc_recommend_level
+        from llm_eval import _recalc_recommend_level, _resolve_rule_score
 
         candidate = self._resolve_candidate(item, candidate)
         if not candidate:
@@ -13491,40 +13144,13 @@ class BossFilterGUI:
         if not confirm:
             return
 
-        from llm_eval import _resolve_rule_score
-        identity = self._candidate_identity_key(candidate)
-        updated_snapshot = {}
-        reverted_score = [candidate.get('match_score', 0)]
-
-        def revert_resume(persisted):
-            rule_score = _resolve_rule_score(persisted)
-            llm_adj = persisted.get('llm_adjustment', 0) or 0
-            reverted_score[0] = max(0, min(100, rule_score + llm_adj))
-            for field in RESUME_STATE_FIELDS:
-                persisted.pop(field, None)
-            persisted['rule_score'] = rule_score
-            persisted['match_score'] = reverted_score[0]
-            persisted['recommend_level'] = _recalc_recommend_level(reverted_score[0])
-            breakdown = persisted.get('score_breakdown')
-            if isinstance(breakdown, dict):
-                breakdown.pop('resume_adjustment', None)
-                breakdown['total'] = reverted_score[0]
-            updated_snapshot.update(persisted)
-
-        def persist_revert(candidates):
-            for persisted in candidates:
-                if self._candidate_identity_key(persisted) != identity:
-                    continue
-                revert_resume(persisted)
-                return 1
-            return 0
-
-        updated, cleanup = mutate_candidates_with_resume_cleanup(
-            persist_revert,
-            CANDIDATES_PATH,
-            base_dir=BASE_DIR,
+        outcome = _candidate_controller_for(self).revert_resume_evaluation(
+            candidate,
+            resolve_rule_score=_resolve_rule_score,
+            recalc_recommend_level=_recalc_recommend_level,
+            resume_state_fields=RESUME_STATE_FIELDS,
         )
-        if not updated:
+        if not outcome.updated:
             messagebox.showerror(
                 "撤销失败",
                 "候选人记录已变化，请刷新后重试。",
@@ -13532,18 +13158,16 @@ class BossFilterGUI:
             )
             return
 
-        candidate.clear()
-        candidate.update(updated_snapshot)
-        if cleanup.unmanaged_reference_count:
+        if outcome.cleanup.unmanaged_reference_count:
             self.append_log("[撤销评估] 已清除记录，但未删除受管目录外的简历文件")
-        if cleanup.failure_count:
+        if outcome.cleanup.failure_count:
             self.append_log(
                 "[撤销评估] 受管简历副本删除失败，可运行简历存储体检重试"
             )
 
         self.refresh_results()
         self.refresh_home_stats()
-        self.append_log(f"[撤销评估] {name}: 分数回退到 {reverted_score[0]}")
+        self.append_log(f"[撤销评估] {name}: 分数回退到 {outcome.score}")
 
     # ===== 一键AI评估功能 =====
 
@@ -13950,42 +13574,7 @@ class BossFilterGUI:
 
     def _save_ai_eval_results(self, candidates):
         """把 AI 评估字段合并到最新候选人快照。"""
-        # AI 评估结果属于具体岗位；同一候选人在多个岗位中的评分不能互相覆盖。
-        eval_map = {
-            self._candidate_identity_key(candidate): candidate
-            for candidate in candidates
-            if self._candidate_identity_key(candidate)[0]
-        }
-        def merge_ai_results(all_candidates):
-            updated = 0
-            for persisted in all_candidates:
-                identity = self._candidate_identity_key(persisted)
-                if identity not in eval_map:
-                    continue
-                eval_result = eval_map[identity]
-                persisted.update({
-                    'llm_evaluated': eval_result.get('llm_evaluated'),
-                    'llm_adjustment': eval_result.get('llm_adjustment'),
-                    'llm_reason': eval_result.get('llm_reason'),
-                    'llm_model': eval_result.get('llm_model'),
-                    'llm_error': eval_result.get('llm_error'),
-                    'match_score': eval_result.get('match_score'),
-                    'recommend_level': eval_result.get('recommend_level'),
-                    'rule_score': eval_result.get('rule_score'),
-                    'score_breakdown': eval_result.get('score_breakdown'),
-                    'llm_hard_condition_verdict': eval_result.get('llm_hard_condition_verdict'),
-                    'llm_hard_condition_findings': eval_result.get('llm_hard_condition_findings'),
-                    'llm_dimension_scores': eval_result.get('llm_dimension_scores'),
-                    'qualification_status': eval_result.get('qualification_status'),
-                    'qualification_reasons': eval_result.get('qualification_reasons'),
-                    'qualification_evidence': eval_result.get('qualification_evidence'),
-                    'manual_review_required': eval_result.get('manual_review_required'),
-                    'auto_greet_blocked_reason': eval_result.get('auto_greet_blocked_reason'),
-                })
-                updated += 1
-            return updated
-
-        mutate_candidates_all(merge_ai_results, CANDIDATES_PATH)
+        eval_map = _candidate_controller_for(self).save_ai_evaluations(candidates)
 
         # 更新内存数据
         if hasattr(self, 'all_candidates'):
@@ -14036,24 +13625,8 @@ class BossFilterGUI:
         self._open_blacklist_reason_dialog(candidate, parent or self.root, save_blacklist)
 
     def _update_candidate_unblacklist(self, geek_id):
-        """按 geek_id 移除候选人黑名单，跨岗位生效。"""
-        if not CANDIDATES_PATH.exists():
-            return 0
-
-        def clear_blacklist(candidate):
-            candidate.pop('blacklisted', None)
-            candidate.pop('blacklist_reason', None)
-            candidate.pop('blacklisted_at', None)
-
-        return update_candidate_records(
-            lambda candidate: (
-                str(candidate.get('geek_id')) == str(geek_id)
-                and bool(candidate.get('blacklisted'))
-            ),
-            clear_blacklist,
-            CANDIDATES_PATH,
-            update_all=True,
-        )
+        """Keep the historical GUI entry point as a controller delegate."""
+        return _candidate_controller_for(self).unblacklist(geek_id)
 
     def _unblacklist_candidate(self, item, candidate=None, parent=None, on_saved=None):
         """把选中候选人移出黑名单。"""
@@ -14093,36 +13666,15 @@ class BossFilterGUI:
         next_followup_at=None,
         timestamp=None,
     ):
-        """更新候选人的跟进状态。"""
-        if not CANDIDATES_PATH.exists():
-            return False
-        followup_time = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        def apply_status(candidate):
-            if status == "未沟通":
-                mark_candidate_not_greeted(candidate, followup_time)
-            elif (
-                status in CONTACTED_FOLLOWUP_STATUSES
-                and not candidate.get('greet_sent')
-            ):
-                mark_candidate_greeted(candidate, "manual_status", followup_time)
-            apply_followup_state(
-                candidate,
-                status,
-                note,
-                timestamp=followup_time,
-                next_followup_at=next_followup_at,
-            )
-
-        return bool(update_candidate_records(
-            lambda candidate: (
-                candidate.get('geek_id') == geek_id
-                and normalize_job_name(candidate.get('job_name'))
-                == normalize_job_name(job_name)
-            ),
-            apply_status,
-            CANDIDATES_PATH,
-        ))
+        """Keep the historical GUI entry point as a controller delegate."""
+        return _candidate_controller_for(self).update_followup(
+            geek_id,
+            job_name,
+            status,
+            note,
+            next_followup_at,
+            timestamp,
+        )
 
     def _quick_update_candidate_followup(
         self,
@@ -14197,43 +13749,14 @@ class BossFilterGUI:
         review_passed_reasons=None,
         timestamp=None,
     ):
-        """按候选人和岗位完成复核，记录通过结论及可选联系批准。"""
-        if not geek_id or not CANDIDATES_PATH.exists():
-            return 0
-        approved_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        def complete_review(candidates):
-            updated = 0
-            for candidate in candidates:
-                if (
-                    str(candidate.get('geek_id')) == str(geek_id)
-                    and normalize_job_name(candidate.get('job_name'))
-                    == normalize_job_name(job_name)
-                    and (
-                        candidate.get('manual_review_required')
-                        or candidate.get('qualification_status') == 'manual_review'
-                    )
-                ):
-                    passed_reasons = list(
-                        review_passed_reasons
-                        or derive_candidate_decision(candidate).review_reasons
-                        or ["人工复核"]
-                    )
-                    candidate['manual_review_required'] = False
-                    candidate['qualification_status'] = 'qualified'
-                    candidate['qualification_reasons'] = []
-                    candidate.pop('auto_greet_blocked_reason', None)
-                    candidate['review_passed_at'] = approved_at
-                    candidate['review_passed_reasons'] = passed_reasons
-                    candidate.pop('review_rejected_at', None)
-                    candidate.pop('review_rejected_reasons', None)
-                    if contact_approval_reason:
-                        candidate['contact_approved_at'] = approved_at
-                        candidate['contact_approval_reason'] = contact_approval_reason
-                    updated += 1
-            return updated
-
-        return mutate_candidates_all(complete_review, CANDIDATES_PATH)
+        """Keep the historical GUI entry point as a controller delegate."""
+        return _candidate_controller_for(self).complete_review(
+            geek_id,
+            job_name,
+            contact_approval_reason=contact_approval_reason,
+            review_passed_reasons=review_passed_reasons,
+            timestamp=timestamp,
+        )
 
     def _reject_candidate_review(
         self,
@@ -14242,42 +13765,13 @@ class BossFilterGUI:
         review_rejected_reasons=None,
         timestamp=None,
     ):
-        """Persist one explicit human decision that the candidate did not pass review."""
-        if not geek_id or not CANDIDATES_PATH.exists():
-            return 0
-        rejected_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-        normalized_job = normalize_job_name(job_name)
-
-        def reject_review(candidates):
-            for candidate in candidates:
-                if (
-                    str(candidate.get('geek_id') or '') != str(geek_id)
-                    or normalize_job_name(candidate.get('job_name')) != normalized_job
-                ):
-                    continue
-                decision = derive_candidate_decision(candidate)
-                if decision.review_status != "pending":
-                    continue
-                rejected_reasons = list(
-                    review_rejected_reasons
-                    or decision.review_reasons
-                    or ["人工复核不通过"]
-                )
-                candidate['manual_review_required'] = False
-                candidate['qualification_status'] = 'rejected'
-                candidate['qualification_reasons'] = rejected_reasons
-                candidate['review_rejected_at'] = rejected_at
-                candidate['review_rejected_reasons'] = rejected_reasons
-                candidate['recommend_level'] = '未通过'
-                candidate.pop('review_passed_at', None)
-                candidate.pop('review_passed_reasons', None)
-                candidate.pop('contact_approved_at', None)
-                candidate.pop('contact_approval_reason', None)
-                candidate.pop('auto_greet_blocked_reason', None)
-                return 1
-            return 0
-
-        return mutate_candidates_all(reject_review, CANDIDATES_PATH)
+        """Keep the historical GUI entry point as a controller delegate."""
+        return _candidate_controller_for(self).reject_review(
+            geek_id,
+            job_name,
+            review_rejected_reasons=review_rejected_reasons,
+            timestamp=timestamp,
+        )
 
     def _update_candidate_contact_approval(
         self,
@@ -14286,32 +13780,13 @@ class BossFilterGUI:
         reason,
         timestamp=None,
     ):
-        """Persist one explicit approval to contact a pending candidate."""
-        if not geek_id or not CANDIDATES_PATH.exists():
-            return False
-        approved_at = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-        normalized_job = normalize_job_name(job_name)
-
-        def approve_contact(candidate):
-            review_reasons = list(
-                derive_candidate_decision(candidate).review_reasons
-                or [f"评分处于待定区间（{candidate.get('match_score', 0)} 分）"]
-            )
-            candidate['contact_approved_at'] = approved_at
-            candidate['contact_approval_reason'] = str(reason or '').strip()
-            candidate['review_passed_at'] = approved_at
-            candidate['review_passed_reasons'] = review_reasons
-            candidate.pop('review_rejected_at', None)
-            candidate.pop('review_rejected_reasons', None)
-
-        return bool(update_candidate_records(
-            lambda candidate: (
-                str(candidate.get('geek_id') or '') == str(geek_id)
-                and normalize_job_name(candidate.get('job_name')) == normalized_job
-            ),
-            approve_contact,
-            CANDIDATES_PATH,
-        ))
+        """Keep the historical GUI entry point as a controller delegate."""
+        return _candidate_controller_for(self).approve_contact(
+            geek_id,
+            job_name,
+            reason,
+            timestamp=timestamp,
+        )
 
     def _approve_candidate_contact_and_queue(
         self,
@@ -14722,41 +14197,14 @@ class BossFilterGUI:
         )
 
     def _update_candidate_feedback(self, geek_id, job_name, status, reasons, note):
-        """更新候选人的人工反馈。"""
-        if not CANDIDATES_PATH.exists():
-            return False
-        feedback_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        def apply_feedback(candidate):
-            candidate['feedback_status'] = status
-            candidate['feedback_reasons'] = reasons
-            candidate['feedback_note'] = note.strip()
-            candidate['feedback_updated_at'] = feedback_time
-            try:
-                score = int(candidate.get('match_score', 0) or 0)
-            except (TypeError, ValueError):
-                score = 0
-            if (
-                status == "合适"
-                and SCORE_THRESHOLD_PASS <= score < SCORE_THRESHOLD_RECOMMEND
-            ):
-                candidate['review_passed_at'] = feedback_time
-                candidate['review_passed_reasons'] = [
-                    f"评分处于待定区间（{score} 分）"
-                ]
-            if status in {"误推", "放弃"}:
-                candidate.pop('contact_approved_at', None)
-                candidate.pop('contact_approval_reason', None)
-
-        return bool(update_candidate_records(
-            lambda candidate: (
-                candidate.get('geek_id') == geek_id
-                and normalize_job_name(candidate.get('job_name'))
-                == normalize_job_name(job_name)
-            ),
-            apply_feedback,
-            CANDIDATES_PATH,
-        ))
+        """Keep the historical GUI entry point as a controller delegate."""
+        return _candidate_controller_for(self).update_feedback(
+            geek_id,
+            job_name,
+            status,
+            reasons,
+            note,
+        )
 
     def _save_candidate_feedback_from_dialog(
         self,
@@ -16458,10 +15906,7 @@ class BossFilterGUI:
     @staticmethod
     def _candidate_identity_key(candidate):
         """Return the persisted candidate identity used by result-page actions."""
-        return (
-            str(candidate.get('geek_id') or ''),
-            normalize_job_name(candidate.get('job_name')),
-        )
+        return CandidateController.identity(candidate)
 
     @staticmethod
     def _format_display_datetime(value, missing="未知"):
@@ -17076,11 +16521,7 @@ class BossFilterGUI:
 
     def _remove_candidate_records(self, predicate) -> int:
         """Remove records and reclaim only managed resumes no longer referenced."""
-        removed, cleanup = remove_candidates_all_with_resume_cleanup(
-            predicate,
-            CANDIDATES_PATH,
-            base_dir=BASE_DIR,
-        )
+        removed, cleanup = _candidate_controller_for(self).remove_records(predicate)
         if cleanup.failure_count:
             messagebox.showwarning(
                 "简历副本未完全清理",

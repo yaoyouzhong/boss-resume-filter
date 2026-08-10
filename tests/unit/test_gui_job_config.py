@@ -8976,7 +8976,7 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
     parent = Mock()
     tree = Mock()
     callbacks = []
-    parent.after.side_effect = lambda _delay, callback: callbacks.append(callback)
+    gui.run_on_ui = lambda callback: callbacks.append(callback)
 
     def run_thread(*_args, **kwargs):
         return types.SimpleNamespace(start=kwargs["target"])
@@ -9013,8 +9013,9 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
                 tree_item="row-1",
             )
 
-            assert len(callbacks) == 1
-            callbacks[0]()
+            assert len(callbacks) == 2
+            for callback in callbacks:
+                callback()
 
     assert gui.append_log.call_args_list[-1].args == (
         "[简历评估] ✗ 张三 异常：模型故障",
