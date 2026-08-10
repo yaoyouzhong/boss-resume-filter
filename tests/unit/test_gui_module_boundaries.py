@@ -13,6 +13,7 @@ import gui_candidate_review
 import gui_contact_queue
 import gui_config_page
 import gui_education_page
+import gui_home_page
 import gui_job_review
 import gui_main
 import gui_model_catalog_dialog
@@ -132,6 +133,7 @@ def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():
         "gui_contact_queue",
         "gui_config_page",
         "gui_education_page",
+        "gui_home_page",
         "gui_job_review",
         "gui_result_page",
         "gui_run_page",
@@ -463,6 +465,48 @@ def test_education_page_keeps_ai_browser_and_certificate_actions_in_controller()
     ):
         assert f"host.{method_name}" in builder
         assert f"def {method_name}" in source
+
+
+def test_home_page_builder_exposes_an_explicit_widget_bundle():
+    assert gui_home_page.HomePageWidgets.__dataclass_fields__.keys() == {
+        "page",
+        "job_var",
+        "job_combo",
+        "stats_vars",
+        "stats_labels",
+    }
+
+
+def test_home_page_compatibility_method_is_a_thin_builder_delegate():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def create_home_page"):]
+    block = block[:block.index("\n    def create_config_page")]
+
+    assert "gui_home_page.build_home_page(" in block
+    assert "self.home_page = widgets.page" in block
+    assert "self.home_stats_vars = widgets.stats_vars" in block
+    assert "ttk.Frame" not in block
+    assert "tk.Canvas" not in block
+
+
+def test_home_page_keeps_data_loading_and_navigation_lifecycle_in_controller():
+    forbidden = {
+        "bossmaster",
+        "gui_main",
+        "storage",
+        "requests",
+        "socket",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("gui_home_page") & forbidden)
+    builder = (ROOT / "gui_home_page.py").read_text(encoding="utf-8")
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    assert "load_candidates_all" not in builder
+    assert "def refresh_home_stats(self):" not in builder
+    assert "def refresh_home_stats(self):" in source
+    assert "host.refresh_home_stats()" in builder
+    assert "host._request_sidebar_page(" in builder
 
 
 def test_run_page_compatibility_method_is_a_thin_incremental_delegate():

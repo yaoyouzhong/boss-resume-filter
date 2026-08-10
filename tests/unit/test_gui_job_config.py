@@ -2709,17 +2709,15 @@ def test_result_contact_button_opens_pending_verification_group():
 
 
 def test_home_and_result_empty_state_use_staged_navigation_entrypoint():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    home_block = source[source.index("def create_home_page"):]
-    home_block = home_block[:home_block.index("\n    def create_config_page")]
+    home_block = Path("gui_home_page.py").read_text(encoding="utf-8")
     result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
-    assert "command=lambda: self._request_sidebar_page(PageIndex.RUN)" in home_block
-    assert "command=lambda: self._request_sidebar_page(PageIndex.RESULTS)" in home_block
-    assert "command=lambda: self._request_sidebar_page(PageIndex.CONFIG)" in home_block
+    assert "command=lambda: host._request_sidebar_page(run_page_index)" in home_block
+    assert "command=lambda: host._request_sidebar_page(result_page_index)" in home_block
+    assert "command=lambda: host._request_sidebar_page(config_page_index)" in home_block
     assert "action_command=lambda: host._request_sidebar_page(run_page_index)" in result_block
-    assert "command=self.show_page_run" not in home_block
-    assert "command=self.show_page_config" not in home_block
+    assert "command=host.show_page_run" not in home_block
+    assert "command=host.show_page_config" not in home_block
 
 
 def test_navigation_highlight_updates_only_previous_and_current_items():
@@ -7676,19 +7674,20 @@ def test_strong_recommendation_uses_registered_emphasized_thumb_icon():
 
 def test_home_page_strong_recommendation_uses_emphasized_thumb_icon():
     """首页与筛选结果页统一使用点赞加光芒表达强烈推荐。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    home_block = source[source.index("cards_data = [", source.index("def create_home_page")):]
-    home_block = home_block[:home_block.index("\n\n        self.home_stats_vars")]
+    source = Path("gui_home_page.py").read_text(encoding="utf-8")
+    home_block = source[source.index("cards_data = ["):]
+    home_block = home_block[:home_block.index("\n    stats_vars")]
 
-    assert '("strong_recommend", "强烈推荐"' in home_block
-    assert '("star", "强烈推荐"' not in home_block
+    assert '"strong_recommend"' in home_block
+    assert '"强烈推荐"' in home_block
+    assert '"star"' not in home_block
 
 
 def test_home_page_renames_total_candidates_to_passed_filter():
     """首页第一张卡片展示通过筛选，并使用放大的原双人图案。"""
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    home_block = source[source.index("cards_data = [", source.index("def create_home_page")):]
-    home_block = home_block[:home_block.index("\n\n        self.home_stats_vars")]
+    source = Path("gui_home_page.py").read_text(encoding="utf-8")
+    home_block = source[source.index("cards_data = ["):]
+    home_block = home_block[:home_block.index("\n    stats_vars")]
 
     assert '("passed_filter", "通过筛选", "total_home"' in home_block
     assert '"累计候选人"' not in home_block

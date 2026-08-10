@@ -28,6 +28,7 @@ boss-resume-filter/
 ├── gui_config_page.py   # 岗位配置页分步 Tk 构建、表单控件装配与事件绑定模块
 ├── gui_settings_page.py # 系统设置页分步 Tk 构建、模型控件与数据工具入口装配模块
 ├── gui_education_page.py # 学历核验页 Tk 控件构建、队列列表与事件绑定模块
+├── gui_home_page.py     # 首页 Tk 控件构建、统计卡与快速入口装配模块
 ├── gui_model_catalog_dialog.py # 模型目录选择、搜索与连通性测试对话框
 ├── gui_candidate_diagnostics.py # 候选人状态体检弹窗的 Tk 构建与交互状态模块
 ├── gui_candidate_review.py # 候选人查看与复核工作台的 Tk 构建与视图切换模块
@@ -152,6 +153,7 @@ boss-resume-filter/
 - `gui_job_review.py` 只消费 `stats_presenter.py` 已生成的岗位复盘模型并构建工作台；候选人加载、反馈样本口径、复盘建议计算和岗位配置导航必须留在 `gui_main.py`/`stats_presenter.py`，通过显式回调接入，不得导入存储、网络或 `gui_main`。
 - `gui_run_page.py` 只负责运行控制页的分步 Tk 构建、表单状态联动和事件绑定；API Key 查询、浏览器检测、扫描启动/停止、进度数据和日志业务必须通过宿主回调留在 `gui_main.py`，不得导入存储、浏览器、网络或 `gui_main`。
 - `gui_education_page.py` 只负责学历核验页的 Tk 控件、队列列表、页面局部状态和事件绑定；证书读取与识别、模型调用、学信网填写、验证码和浏览器操作必须通过显式 Host 回调留在 `gui_main.py`，不得导入存储、AI、浏览器、网络或 `gui_main`。
+- `gui_home_page.py` 只负责首页标题、岗位筛选控件、统计卡和快速入口的 Tk 构建与事件绑定；岗位加载、统计口径、页面导航生命周期和候选人明细必须通过显式 Host 回调留在 `gui_main.py`，不得读取存储或导入网络、浏览器、`gui_main`。首页仍是启动时唯一立即创建的业务页，不得因拆分引入隐藏页预构建。
 - `resume_parser.py` 只把本地 PDF、DOCX、TXT、MD、RTF 或 HTML 简历转为文本并抛出可预期的分类异常；不得导入 `tkinter`、`gui_main`、候选人存储或网络模块，不得修改候选人数据或受管简历引用。
 - 后续如新建 `gui_pages/`、`gui_workbenches/` 或 `gui_runtime/` 目录，必须先在本文档定义目录职责和依赖方向，再创建文件。
 

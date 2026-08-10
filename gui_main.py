@@ -39,6 +39,7 @@ import gui_candidate_workbench
 import gui_contact_queue
 import gui_config_page
 import gui_education_page
+import gui_home_page
 import gui_job_review
 import gui_result_page
 import gui_run_page
@@ -2485,129 +2486,20 @@ class BossFilterGUI:
         return content
 
     def create_home_page(self):
-        """创建首页"""
-        self.home_page = ttk.Frame(self.pages_frame, style='Page.TFrame')
-
-        # 页面标题 - 白色卡片 + 左侧蓝色竖线，避免文字直接浮在灰色背景上
-        _card_pad = int(20 * self.dpi_scale * self.zoom_factor)
-        header_card = ttk.Frame(self.home_page, style='WelcomeCard.TFrame')
-        header_card.pack(fill="x", pady=(0, int(25 * self.dpi_scale * self.zoom_factor)))
-
-        # 左侧蓝色竖线
-        accent_bar = tk.Frame(header_card, width=int(4 * self.dpi_scale * self.zoom_factor),
-                              bg=self.colors['primary'])
-        accent_bar.pack(side="left", fill="y")
-
-        header_frame = ttk.Frame(header_card, style='WelcomeInner.TFrame')
-        header_frame.pack(fill="x", padx=(_card_pad, _card_pad), pady=(_card_pad, _card_pad))
-
-        title_label = ttk.Label(header_frame, text="欢迎使用 BOSS 简历筛选器",
-                               font=self.font_title, foreground=self.colors['text_primary'],
-                               background=self.colors['bg_card'])
-        title_label.pack(anchor="w")
-
-        subtitle_label = ttk.Label(header_frame, text="智能解析、智能匹配、AI 评估、候选人联系、学历核验、人工反馈、跟进状态、数据复盘",
-                                   font=self.font_label, foreground=self.colors['text_secondary'],
-                                   background=self.colors['bg_card'])
-        subtitle_label.pack(anchor="w", pady=(int(10 * self.dpi_scale * self.zoom_factor), 0))
-
-        # 岗位过滤
-        home_filter_frame = ttk.Frame(self.home_page, style='Page.TFrame')
-        home_filter_frame.pack(fill="x", pady=(int(15 * self.dpi_scale * self.zoom_factor), 0))
-        ttk.Label(home_filter_frame, text="岗位过滤:", font=self.font_label,
-                 background=self.colors['bg_main']).pack(side="left")
-        self.home_job_var = tk.StringVar(value="全部岗位")
-        self.home_job_combo = ttk.Combobox(home_filter_frame, textvariable=self.home_job_var,
-                                            values=["全部岗位"], width=28, state="readonly",
-                                            font=self.font_label)
-        self.home_job_combo.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
-        self.home_job_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_home_stats())
-
-        # 统计卡片区
-        stats_container = ttk.Frame(self.home_page, style='Page.TFrame')
-        stats_container.pack(fill="x", pady=int(30 * self.dpi_scale * self.zoom_factor))
-
-        # 卡片数据
-        cards_data = [
-            ("passed_filter", "通过筛选", "total_home", self.colors['primary']),
-            ("strong_recommend", "强烈推荐", "strong_home", self.colors['purple']),
-            ("thumbs_up", "推荐", "recommended_home", self.colors['success']),
-            ("chat", "已打招呼", "greeted_home", self.colors['warning']),
-        ]
-
-        self.home_stats_vars = {}
-        self.home_stats_labels = {}  # 保存标签引用用于绑定事件
-        card_gap = int(15 * self.dpi_scale * self.zoom_factor)
-        for idx, (icon_name, label_text, var_name, color) in enumerate(cards_data):
-            card_frame = ttk.Frame(stats_container, style='Card.TFrame')
-            card_padx = (0, card_gap) if idx < len(cards_data) - 1 else 0
-            card_frame.pack(side="left", fill="x", expand=True, padx=card_padx, pady=int(12 * self.dpi_scale * self.zoom_factor))
-
-            # 图标容器 - 彩色圆形背景
-            icon_size = int(UI_CONFIG['stat_icon_size'] * self.dpi_scale * self.zoom_factor)
-            icon_canvas = tk.Canvas(card_frame, width=icon_size, height=icon_size,
-                                    bg=self.colors['bg_card'], highlightthickness=0)
-            icon_canvas.pack(anchor="center",
-                            pady=(int(20 * self.dpi_scale * self.zoom_factor), int(8 * self.dpi_scale * self.zoom_factor)))
-
-            # 绘制彩色圆形背景
-            margin = int(UI_CONFIG['icon_margin'] * self.dpi_scale * self.zoom_factor)
-            icon_canvas.create_oval(margin, margin, icon_size - margin, icon_size - margin,
-                                    fill=color, outline='')
-
-            # 在圆形上绘制白色图标（使用 PhotoImage）
-            stat_icon = self.icons.stat(icon_name, 'white')
-            icon_canvas.create_image(icon_size // 2, icon_size // 2, image=stat_icon)
-            icon_canvas._icon_ref = stat_icon
-
-            # 数值
-            var = tk.StringVar(value="0")
-            self.home_stats_vars[var_name] = var
-            value_label = ttk.Label(card_frame, textvariable=var,
-                                   font=self.font_stat, foreground=color,
-                                   background=self.colors['bg_card'],
-                                   cursor="hand2")
-            value_label.pack(anchor="center", pady=(0, int(8 * self.dpi_scale * self.zoom_factor)))
-
-            # 绑定点击事件
-            self.home_stats_labels[var_name] = (value_label, label_text)
-            value_label.bind("<Button-1>", lambda e, vt=var_name: self.show_stat_detail(vt))
-
-            # 标签
-            text_label = ttk.Label(card_frame, text=label_text,
-                                  font=self.font_stat_label, foreground=self.colors['text_secondary'],
-                                  background=self.colors['bg_card'])
-            text_label.pack(anchor="center", pady=(0, int(20 * self.dpi_scale * self.zoom_factor)))
-
-        # 快速操作区（纵向吸收多余高度，避免高窗口下页面底部大片空白）
-        quick_frame = self._create_card(self.home_page, "快速操作",
-            padding=int(UI_CONFIG['card_padding'] * self.dpi_scale * self.zoom_factor),
-            fill="both", expand=True, pady=int(30 * self.dpi_scale * self.zoom_factor))
-
-        quick_buttons = ttk.Frame(quick_frame, style='TFrame')
-        quick_buttons.pack(fill="x")
-
-        icon_play = self.icons.button('play', '#FFFFFF')
-        btn1 = ttk.Button(
-            quick_buttons, image=icon_play, text=" 开始筛选", compound=tk.LEFT,
-            command=lambda: self._request_sidebar_page(PageIndex.RUN), style='Accent.TButton',
+        """创建首页。"""
+        widgets = gui_home_page.build_home_page(
+            self,
+            UI_CONFIG,
+            run_page_index=PageIndex.RUN,
+            result_page_index=PageIndex.RESULTS,
+            config_page_index=PageIndex.CONFIG,
         )
-        btn1._icon_ref = icon_play
-        btn1.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
-        icon_filter = self.icons.button('filter', self.colors['text_primary'])
-        btn2 = ttk.Button(
-            quick_buttons, image=icon_filter, text=" 查看结果", compound=tk.LEFT,
-            command=lambda: self._request_sidebar_page(PageIndex.RESULTS), style='TButton',
-        )
-        btn2._icon_ref = icon_filter
-        btn2.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
-        icon_briefcase = self.icons.button('briefcase', self.colors['text_primary'])
-        btn3 = ttk.Button(
-            quick_buttons, image=icon_briefcase, text=" 配置岗位", compound=tk.LEFT,
-            command=lambda: self._request_sidebar_page(PageIndex.CONFIG), style='TButton',
-        )
-        btn3._icon_ref = icon_briefcase
-        btn3.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
+        self._home_page_widgets = widgets
+        self.home_page = widgets.page
+        self.home_job_var = widgets.job_var
+        self.home_job_combo = widgets.job_combo
+        self.home_stats_vars = widgets.stats_vars
+        self.home_stats_labels = widgets.stats_labels
 
     def create_config_page(self) -> None:
         """同步创建岗位配置页，供需要立即访问控件的内部流程使用。"""
