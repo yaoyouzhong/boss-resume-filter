@@ -11,6 +11,12 @@ import ui_theme
 from ui_layout import result_display_columns
 
 
+class NavigationShell(Protocol):
+    def request_sidebar_page(self, page_index: int) -> None: ...
+
+    def schedule_page_width_policy(self) -> None: ...
+
+
 class ResultPageHost(Protocol):
     """Narrow host contract required to build the result page."""
 
@@ -28,6 +34,7 @@ class ResultPageHost(Protocol):
     _result_search_placeholder: str
     _result_search_placeholder_active: bool
     _result_search_focused: bool
+    app_shell: NavigationShell
 
     def _create_page_header(
         self,
@@ -59,8 +66,6 @@ class ResultPageHost(Protocol):
 
     def _hide_tooltip(self, event: tk.Event | None = None) -> None: ...
 
-    def _schedule_page_width_policy(self) -> None: ...
-
     def _update_result_review_button_state(self, event: tk.Event | None = None) -> None: ...
 
     def _build_empty_state(
@@ -73,8 +78,6 @@ class ResultPageHost(Protocol):
         action_text: str,
         action_command: Any,
     ) -> tk.Misc: ...
-
-    def _request_sidebar_page(self, page_index: int) -> None: ...
 
     def show_daily_candidate_actions(self) -> None: ...
 
@@ -510,7 +513,7 @@ def build_result_page(
     tree.pack(side="left", fill="both", expand=True, padx=(pad_x, 0), pady=pad_y)
     tree.bind(
         "<Configure>",
-        lambda _event: host._schedule_page_width_policy(),
+        lambda _event: host.app_shell.schedule_page_width_policy(),
         add="+",
     )
     tree.bind(
@@ -524,7 +527,7 @@ def build_result_page(
         "暂无候选人",
         "调整岗位或时间范围，或到运行控制页开始新一轮筛选",
         action_text="开始筛选",
-        action_command=lambda: host._request_sidebar_page(run_page_index),
+        action_command=lambda: host.app_shell.request_sidebar_page(run_page_index),
     )
 
     button_frame = ttk.Frame(page, style="Page.TFrame")

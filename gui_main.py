@@ -21,9 +21,7 @@ import socket
 import subprocess
 import zipfile
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
 from datetime import datetime, timedelta
-from enum import IntEnum
 from pathlib import Path
 from tkinter import filedialog, font, ttk
 
@@ -55,6 +53,7 @@ import gui_data_maintenance_dialogs
 import gui_education_page
 import gui_home_page
 import gui_job_review
+import gui_app_shell
 import gui_result_page
 import gui_run_page
 import gui_settings_page
@@ -70,6 +69,7 @@ from result_controller import (
     result_cache_key,
     result_sort_value,
 )
+from gui_app_shell import PAGE_SPECS, TRAFFIC_LIGHT_BASE_SIZE, PageIndex
 import run_presenter
 import stats_presenter
 import ui_theme
@@ -353,50 +353,6 @@ def _export_daily_candidate_actions_report(items, parent):
     except Exception as exc:
         messagebox.showerror("今日待办", f"导出失败：{exc}", parent=parent)
 
-
-class PageIndex(IntEnum):
-    """Stable sidebar page identities shared by navigation and page logic."""
-
-    HOME = 0
-    CONFIG = 1
-    RUN = 2
-    RESULTS = 3
-    EDUCATION = 4
-    STATS = 5
-    SETTINGS = 6
-
-
-@dataclass(frozen=True)
-class PageSpec:
-    icon_name: str
-    title: str
-    page_attr: str
-    creator_name: str
-    show_name: str
-    full_width: bool = False
-
-
-PAGE_SPECS = {
-    PageIndex.HOME: PageSpec("home", "首页", "home_page", "create_home_page", "show_page_home"),
-    PageIndex.CONFIG: PageSpec(
-        "briefcase", "岗位配置", "config_page", "_create_config_page_steps", "show_page_config"
-    ),
-    PageIndex.RUN: PageSpec("play", "运行控制", "run_page", "_create_run_page_steps", "show_page_run"),
-    PageIndex.RESULTS: PageSpec(
-        "filter", "筛选结果", "result_page", "create_result_page", "show_page_result"
-    ),
-    PageIndex.EDUCATION: PageSpec(
-        "document", "学历核验", "education_page", "create_education_page", "show_page_education"
-    ),
-    PageIndex.STATS: PageSpec(
-        "chart", "数据统计", "stats_page", "create_stats_page", "show_page_stats"
-    ),
-    PageIndex.SETTINGS: PageSpec(
-        "gear", "系统设置", "api_config_page", "_create_api_config_page_steps", "show_page_api"
-    ),
-}
-PRIMARY_NAV_PAGES = tuple(page for page in PageIndex if page is not PageIndex.SETTINGS)
-TRAFFIC_LIGHT_BASE_SIZE = 32
 
 # 服务商显示名称映射（内部键 -> 显示名称）
 PROVIDER_DISPLAY = {
@@ -1099,6 +1055,14 @@ class BossFilterGUI:
 
         # 设置 Combobox 下拉列表字体由 gui_style_setup 统一注册
 
+        self.app_shell = gui_app_shell.AppShell(
+            self,
+            ui_config=UI_CONFIG,
+            font_family=FONT_FAMILY,
+            font_family_semibold=FONT_FAMILY_SEMIBOLD,
+            version=__version__,
+        )
+
         # 创建进度状态图标（依赖 self.colors，必须在 setup_styles 之后）
         self._create_status_icons()
 
@@ -1106,7 +1070,7 @@ class BossFilterGUI:
         if standalone_education:
             self.create_education_main_content()
         else:
-            self.create_sidebar()
+            self.app_shell.create_sidebar()
             self.create_main_content()
 
         # 启动日志更新
@@ -1245,7 +1209,7 @@ class BossFilterGUI:
         for key_number, page_index in enumerate(PageIndex, start=1):
             self.root.bind(
                 f'<Control-Key-{key_number}>',
-                lambda _event, index=page_index: self._request_sidebar_page(index),
+                lambda _event, index=page_index: self.app_shell.request_sidebar_page(index),
             )
 
     def _on_global_left_click(self, event) -> None:
@@ -1305,7 +1269,7 @@ class BossFilterGUI:
                     self.result_search_entry.focus_set()
                     self.result_search_entry.select_range(0, 'end')
 
-            self._request_sidebar_page(PageIndex.RESULTS, on_ready=_focus_search)
+            self.app_shell.request_sidebar_page(PageIndex.RESULTS, on_ready=_focus_search)
         except Exception as exc:
             logger.warning("Ctrl+F 聚焦搜索失败：%s", exc)
 
@@ -1429,193 +1393,6 @@ class BossFilterGUI:
         except tk.TclError:
             pass
 
-    def create_sidebar(self):
-        """创建左侧边栏"""
-        sidebar = ttk.Frame(self.root, style='Sidebar.TFrame', width=int(UI_CONFIG['sidebar_width'] * self.dpi_scale * self.zoom_factor))
-        sidebar.pack(side="left", fill="y")
-        sidebar.pack_propagate(False)
-
-        # Logo 区域 - 上下布局，增加间距
-        logo_frame = ttk.Frame(sidebar, style='Sidebar.TFrame')
-        logo_frame.pack(fill="x", padx=int(20 * self.dpi_scale * self.zoom_factor), pady=(int(30 * self.dpi_scale * self.zoom_factor), int(20 * self.dpi_scale * self.zoom_factor)))
-
-        # 主标题 "BOSS" - 带彩色放大镜图标，大字体
-        title_row = ttk.Frame(logo_frame, style='Sidebar.TFrame')
-        title_row.pack(anchor="center")
-        gap = int(4 * self.dpi_scale * self.zoom_factor)
-        logo_icon = self.icons.logo('search_color', self.colors['text_sidebar_active'], self.colors['bg_sidebar'])
-        logo_icon_label = ttk.Label(title_row, image=logo_icon, background=self.colors['bg_sidebar'])
-        logo_icon_label._icon_ref = logo_icon
-        logo_icon_label.pack(side="left")
-        logo_text = ttk.Label(title_row, text="BOSS",
-                              font=(FONT_FAMILY_SEMIBOLD, int(26 * self.font_scale)),
-                              foreground=self.colors['text_sidebar_active'], background=self.colors['bg_sidebar'])
-        logo_text.pack(side="left", padx=(gap, 0))
-
-        # 副标题 "简历筛选器" - 调大字体，居中
-        subtitle_label = ttk.Label(logo_frame, text="简历筛选器",
-                                   font=(FONT_FAMILY, int(16 * self.font_scale)),
-                                   foreground=self.colors['text_sidebar_subtitle'], background=self.colors['bg_sidebar'])
-        subtitle_label.pack(anchor="center", pady=(int(6 * self.dpi_scale * self.zoom_factor), 0))
-
-        # 分隔线
-        sep = ttk.Separator(sidebar, orient='horizontal')
-        sep.pack(fill="x", padx=0, pady=int(10 * self.dpi_scale * self.zoom_factor))
-
-        # 导航项 - 使用 Frame 容器确保文字对齐（图标固定宽度）
-        nav_items = [(page, PAGE_SPECS[page]) for page in PRIMARY_NAV_PAGES]
-
-        self.nav_labels = []
-        self.nav_components = []  # 保存所有导航组件引用，用于 hover 效果
-        sidebar_nav_font_size = int(15 * self.font_scale)
-
-        # 设置导航项样式（含 pill 选中态与 hover 态）
-        style = ttk.Style()
-        pill_bg = self.colors.get('bg_sidebar_pill', ui_theme.BG_SIDEBAR_PILL)
-        style.configure('SidebarNav.TLabel',
-                       font=(FONT_FAMILY, sidebar_nav_font_size),
-                       foreground=self.colors['text_sidebar'],
-                       background=self.colors['bg_sidebar'])
-        style.configure('SidebarNavSelected.TLabel',
-                       font=(FONT_FAMILY_SEMIBOLD, sidebar_nav_font_size),
-                       foreground=self.colors['text_sidebar_active'],
-                       background=self.colors['bg_sidebar'])
-        style.configure('SidebarPill.TFrame', background=pill_bg)
-        style.configure('SidebarNavPill.TLabel',
-                       font=(FONT_FAMILY, sidebar_nav_font_size),
-                       foreground=self.colors['text_sidebar_active'],
-                       background=pill_bg)
-        style.configure('SidebarNavSelectedPill.TLabel',
-                       font=(FONT_FAMILY_SEMIBOLD, sidebar_nav_font_size),
-                       foreground=self.colors['text_sidebar_active'],
-                       background=pill_bg)
-
-        # 图标容器内边距（固定宽度，确保文字对齐）
-        emoji_padx = int(14 * self.dpi_scale * self.zoom_factor)
-        text_padx = int(10 * self.dpi_scale * self.zoom_factor)
-        nav_outer_padx = int(12 * self.dpi_scale * self.zoom_factor)
-        badge_font = (FONT_FAMILY, int(10 * self.font_scale), 'bold')
-
-        for page_index, page_spec in nav_items:
-            idx = int(page_index)
-            icon_name = page_spec.icon_name
-            text = page_spec.title
-            command = lambda index=page_index: self._request_sidebar_page(index)
-            # 生成两个颜色版本的图标（默认态 / pill 底高亮态）
-            icon_default = self.icons.nav(icon_name, self.colors['text_sidebar'], self.colors['bg_sidebar'])
-            icon_active = self.icons.nav(icon_name, self.colors['text_sidebar_active'], pill_bg)
-
-            # 使用 Frame 容器
-            nav_frame = ttk.Frame(sidebar, style='Sidebar.TFrame')
-            nav_frame.pack(fill="x", padx=nav_outer_padx, pady=1)
-
-            # 左侧选中强调条
-            accent_bar = tk.Frame(nav_frame, width=3, background=self.colors['bg_sidebar'])
-            accent_bar.pack(side="left", fill="y")
-
-            # 图标标签
-            icon_label = ttk.Label(nav_frame, image=icon_default,
-                                   style='SidebarNav.TLabel', cursor="hand2")
-            icon_label._icon_default = icon_default
-            icon_label._icon_active = icon_active
-            icon_label.pack(side="left", padx=(emoji_padx, 0))
-
-            # 文字标签
-            text_label = ttk.Label(nav_frame, text=text,
-                                  style='SidebarNav.TLabel', cursor="hand2",
-                                  padding=(text_padx, int(14 * self.dpi_scale * self.zoom_factor)))
-            text_label.pack(side="left", fill="x", expand=True)
-
-            # 角标（默认隐藏，set_nav_badge 按需显示）
-            badge_label = tk.Label(
-                nav_frame, text="", font=badge_font, cursor="hand2",
-                background=self.colors['danger'], foreground='#FFFFFF',
-                padx=int(5 * self.dpi_scale), pady=0,
-            )
-
-            # 绑定点击和 hover 事件 - 所有子组件绑定到同一个 command
-            for widget in [nav_frame, accent_bar, icon_label, text_label, badge_label]:
-                widget.bind("<Button-1>", lambda e, c=command: c())
-                widget.bind("<Enter>", lambda e, i=idx: self.on_nav_enter(i))
-                widget.bind("<Leave>", lambda e, i=idx: self.on_nav_leave(i))
-
-            # 保存所有组件引用，用于 hover 效果
-            self.nav_components.append({
-                'frame': nav_frame,
-                'accent': accent_bar,
-                'icon': icon_label,
-                'icon_default': icon_default,
-                'icon_active': icon_active,
-                'text': text_label,
-                'badge': badge_label,
-                'command': command,
-                'index': idx
-            })
-
-            self.nav_labels.append(text_label)
-
-        # 分隔线 - 导航与设置之间
-        sep2 = ttk.Separator(sidebar, orient='horizontal')
-        sep2.pack(fill="x", padx=0, pady=int(10 * self.dpi_scale * self.zoom_factor))
-
-        # 系统设置（独立导航项）- 使用 Frame 容器保持一致对齐
-        settings_page = PageIndex.SETTINGS
-        settings_spec = PAGE_SPECS[settings_page]
-        settings_idx = int(settings_page)
-        settings_frame = ttk.Frame(sidebar, style='Sidebar.TFrame')
-        settings_frame.pack(fill="x", padx=nav_outer_padx, pady=1)
-
-        settings_accent = tk.Frame(settings_frame, width=3, background=self.colors['bg_sidebar'])
-        settings_accent.pack(side="left", fill="y")
-
-        settings_icon_default = self.icons.nav(settings_spec.icon_name, self.colors['text_sidebar'], self.colors['bg_sidebar'])
-        settings_icon_active = self.icons.nav(settings_spec.icon_name, self.colors['text_sidebar_active'], pill_bg)
-        settings_icon_label = ttk.Label(settings_frame, image=settings_icon_default,
-                                  style='SidebarNav.TLabel', cursor="hand2")
-        settings_icon_label._icon_default = settings_icon_default
-        settings_icon_label._icon_active = settings_icon_active
-        settings_icon_label.pack(side="left", padx=(emoji_padx, 0))
-
-        settings_text = ttk.Label(settings_frame, text=settings_spec.title,
-                                 style='SidebarNav.TLabel', cursor="hand2",
-                                 padding=(text_padx, int(14 * self.dpi_scale * self.zoom_factor)))
-        settings_text.pack(side="left", fill="x", expand=True)
-
-        settings_badge = tk.Label(
-            settings_frame, text="", font=badge_font, cursor="hand2",
-            background=self.colors['danger'], foreground='#FFFFFF',
-            padx=int(5 * self.dpi_scale), pady=0,
-        )
-
-        for widget in [settings_frame, settings_accent, settings_icon_label, settings_text, settings_badge]:
-            widget.bind("<Button-1>", lambda _event: self._request_sidebar_page(settings_page))
-            widget.bind("<Enter>", lambda e, i=settings_idx: self.on_nav_enter(i))
-            widget.bind("<Leave>", lambda e, i=settings_idx: self.on_nav_leave(i))
-
-        self.nav_components.append({
-            'frame': settings_frame,
-            'accent': settings_accent,
-            'icon': settings_icon_label,
-            'icon_default': settings_icon_default,
-            'icon_active': settings_icon_active,
-            'text': settings_text,
-            'badge': settings_badge,
-            'command': lambda: self._request_sidebar_page(settings_page),
-            'index': settings_idx
-        })
-        self.nav_labels.append(settings_text)
-
-        # 底部信息 - 仅版本号 - 调大字体
-        bottom_frame = ttk.Frame(sidebar, style='Sidebar.TFrame')
-        bottom_frame.pack(side="bottom", fill="x", padx=int(20 * self.dpi_scale * self.zoom_factor), pady=int(20 * self.dpi_scale * self.zoom_factor))
-
-        version_label = ttk.Label(bottom_frame, text=f"v{__version__}",
-                                  font=(FONT_FAMILY, int(12 * self.font_scale)),
-                                  foreground=self.colors['text_sidebar_version'], background=self.colors['bg_sidebar'],
-                                  cursor="hand2")
-        version_label.pack(anchor="w")
-        version_label.bind("<Button-1>", lambda e: self.show_changelog())
-
     def create_main_content(self):
         """创建主内容区域"""
         # 主容器
@@ -1632,7 +1409,11 @@ class BossFilterGUI:
             padx=int(UI_CONFIG['page_padding_x'] * self.dpi_scale * self.zoom_factor),
             pady=int(UI_CONFIG['page_padding_y'] * self.dpi_scale * self.zoom_factor),
         )
-        self.main_frame.bind("<Configure>", lambda _e: self._schedule_page_width_policy(), add="+")
+        self.main_frame.bind(
+            "<Configure>",
+            lambda _event: self.app_shell.schedule_page_width_policy(),
+            add="+",
+        )
 
         self.home_page = None
         self.config_page = None
@@ -1730,132 +1511,6 @@ class BossFilterGUI:
 
         self.root.after_idle(_run)
 
-    def _request_sidebar_page(
-        self,
-        page_index: PageIndex | int,
-        on_ready: Callable[[], None] | None = None,
-    ) -> None:
-        """Navigate to a page, painting feedback before its first build."""
-        try:
-            page = PageIndex(page_index)
-        except (TypeError, ValueError):
-            return
-        if (
-            str(getattr(self, "_data_storage_error", "") or "").strip()
-            and page not in {PageIndex.HOME, PageIndex.SETTINGS}
-        ):
-            self._ensure_data_storage_available(f"打开“{PAGE_SPECS[page].title}”")
-            return
-        page_spec = PAGE_SPECS[page]
-        self._request_page_first_open(
-            page,
-            page_spec.page_attr,
-            page_spec.title,
-            getattr(self, page_spec.creator_name),
-            getattr(self, page_spec.show_name),
-            on_ready=on_ready,
-        )
-
-    def _request_page_first_open(
-        self,
-        page_index: int,
-        page_attr: str,
-        title: str,
-        creator: Callable[[], object | None],
-        show_page: Callable[[], None],
-        on_ready: Callable[[], None] | None = None,
-    ) -> None:
-        """Show a lightweight first frame, then build and cache a missing page."""
-        if not hasattr(self, '_pending_page_builds'):
-            self._pending_page_builds = set()
-        if not hasattr(self, '_pending_page_ready_callbacks'):
-            self._pending_page_ready_callbacks = {}
-        if on_ready is not None:
-            self._pending_page_ready_callbacks.setdefault(page_attr, []).append(on_ready)
-
-        def _run_ready_callbacks() -> None:
-            callbacks = self._pending_page_ready_callbacks.pop(page_attr, [])
-            for callback in callbacks:
-                try:
-                    callback()
-                except Exception:
-                    logger.exception("%s页面就绪回调失败", title)
-
-        def _paint_loading_frame() -> None:
-            self.hide_all_pages()
-            self._page_loading_var.set(f"正在打开{title}…")
-            self._page_loading_frame.pack(fill="both", expand=True)
-            self.current_page_index = page_index
-            self._schedule_page_width_policy()
-            self.update_nav_highlight()
-
-        if page_attr in self._pending_page_builds:
-            _paint_loading_frame()
-            return
-        if getattr(self, page_attr, None) is not None:
-            # 已在当前页且无就绪回调时直接短路，避免重复 hide+pack+刷新
-            if (
-                getattr(self, 'current_page_index', None) == page_index
-                and on_ready is None
-            ):
-                return
-            show_page()
-            _run_ready_callbacks()
-            return
-
-        _paint_loading_frame()
-        self._pending_page_builds.add(page_attr)
-
-        def _discard_partial_page() -> None:
-            partial_page = getattr(self, page_attr, None)
-            if partial_page is not None:
-                try:
-                    partial_page.destroy()
-                except tk.TclError:
-                    pass
-                setattr(self, page_attr, None)
-
-        def _advance(iterator: Iterator[object] | None = None) -> None:
-            if getattr(self, 'current_page_index', None) != page_index:
-                self._pending_page_builds.discard(page_attr)
-                self._pending_page_ready_callbacks.pop(page_attr, None)
-                _discard_partial_page()
-                return
-            self._pending_page_builds.discard(page_attr)
-            try:
-                if iterator is None:
-                    build_result = creator()
-                    if isinstance(build_result, Iterator):
-                        iterator = build_result
-                    else:
-                        show_page()
-                        _run_ready_callbacks()
-                        return
-                next(iterator)
-            except StopIteration:
-                if getattr(self, 'current_page_index', None) == page_index:
-                    show_page()
-                    _run_ready_callbacks()
-                return
-            except Exception as exc:
-                logger.exception("首次创建%s页面失败", title)
-                self._pending_page_ready_callbacks.pop(page_attr, None)
-                _discard_partial_page()
-                if getattr(self, 'current_page_index', None) == page_index:
-                    self._page_loading_var.set(f"{title}打开失败")
-                    messagebox.showerror(
-                        "页面打开失败",
-                        f"{title}页面打开失败：{exc}",
-                        parent=self.root,
-                    )
-                return
-
-            self._pending_page_builds.add(page_attr)
-            self.root.after(1, lambda: _advance(iterator))
-
-        # Give Tk one frame to paint the selected navigation state and loading shell.
-        self.root.after(30, _advance)
-
     def _create_result_date_entry(self, parent, **kwargs):
         """创建结果页日期控件；只在结果页构建时加载 tkcalendar。"""
         try:
@@ -1867,77 +1522,6 @@ class BossFilterGUI:
             return DateEntry(parent, locale='zh_CN', **kwargs)
         except Exception:
             return DateEntry(parent, **kwargs)
-
-    def _schedule_page_width_policy(self):
-        """Debounce width policy recalculation during resize/layout churn."""
-        if self._page_width_policy_after_id is not None:
-            try:
-                self.root.after_cancel(self._page_width_policy_after_id)
-            except tk.TclError:
-                pass
-
-        def _run():
-            self._page_width_policy_after_id = None
-            self._apply_page_width_policy()
-
-        self._page_width_policy_after_id = self.root.after(60, _run)
-
-    def _apply_page_width_policy(self):
-        """Center page content on wide screens unless a page explicitly opts out."""
-        if not hasattr(self, 'pages_frame') or not hasattr(self, 'main_frame'):
-            return
-
-        scale = self.dpi_scale * self.zoom_factor
-        base_pad_x = int(UI_CONFIG['page_padding_x'] * scale)
-        base_pad_y = int(UI_CONFIG['page_padding_y'] * scale)
-        current_page = getattr(self, 'current_page_index', PageIndex.HOME)
-
-        # Pages read more consistently when content stays bounded; exceptional
-        # surfaces can still opt into the full available width through PAGE_SPECS.
-        full_width_pages = {
-            page for page, page_spec in PAGE_SPECS.items() if page_spec.full_width
-        }
-        if current_page in full_width_pages:
-            target_pad_x = base_pad_x
-        else:
-            try:
-                available_width = max(0, self.main_frame.winfo_width())
-            except tk.TclError:
-                available_width = 0
-            max_content_width = int(UI_CONFIG['content_max_width'] * scale)
-            extra_pad = max(0, (available_width - max_content_width) // 2)
-            target_pad_x = max(base_pad_x, extra_pad)
-
-        target_pad_y = (
-            max(0, base_pad_y - int(15 * scale))
-            if current_page == PageIndex.CONFIG
-            else base_pad_y
-        )
-        if (
-            self._last_page_pack_padx != target_pad_x
-            or getattr(self, '_last_page_pack_pady', None) != target_pad_y
-        ):
-            self._last_page_pack_padx = target_pad_x
-            self._last_page_pack_pady = target_pad_y
-            self.pages_frame.pack_configure(
-                padx=target_pad_x,
-                pady=target_pad_y,
-            )
-
-        if current_page == 6:
-            self._update_model_list_height()
-            self._update_model_list_columns()
-        elif current_page == 1:
-            self._update_config_page_dynamic_heights()
-        elif current_page == 2:
-            self._update_run_page_dynamic_heights()
-        elif current_page == 3:
-            self._update_result_tree_columns()
-            self._update_result_stats_compact()
-        elif current_page == 4:
-            self._update_education_queue_columns()
-        elif current_page == 5:
-            self._update_stats_tree_columns()
 
     def _update_run_page_dynamic_heights(self):
         """高窗口下让运行日志区域利用多余高度。"""
@@ -5194,7 +4778,7 @@ class BossFilterGUI:
             self.config_job_combo.set(matched_job)
             self.on_job_selected(None)
 
-        self._request_sidebar_page(PageIndex.CONFIG, on_ready=_select_reviewed_job)
+        self.app_shell.request_sidebar_page(PageIndex.CONFIG, on_ready=_select_reviewed_job)
 
     @staticmethod
     def _feedback_reasons(candidate):
@@ -5343,7 +4927,7 @@ class BossFilterGUI:
         self.hide_all_pages()
         self.home_page.pack(fill="both", expand=True)
         self.current_page_index = PageIndex.HOME
-        self._schedule_page_width_policy()
+        self.app_shell.schedule_page_width_policy()
         self.update_nav_highlight()
         # 刷新岗位过滤列表
         try:
@@ -5363,7 +4947,7 @@ class BossFilterGUI:
         self.hide_all_pages()
         self.config_page.pack(fill="both", expand=True)
         self.current_page_index = PageIndex.CONFIG
-        self._schedule_page_width_policy()
+        self.app_shell.schedule_page_width_policy()
         # 刷新技能树和必要条件列表
         if self.job_rules:
             self._defer_ui_work(
@@ -5384,7 +4968,7 @@ class BossFilterGUI:
         self.hide_all_pages()
         self.run_page.pack(fill="both", expand=True)
         self.current_page_index = PageIndex.RUN
-        self._schedule_page_width_policy()
+        self.app_shell.schedule_page_width_policy()
         self.update_nav_highlight()
         # 恢复浏览器自动检测（仅检测连接，不启动浏览器）
         self._start_browser_auto_check()
@@ -5404,7 +4988,7 @@ class BossFilterGUI:
         self.hide_all_pages()
         self.result_page.pack(fill="both", expand=True)
         self.current_page_index = PageIndex.RESULTS
-        self._schedule_page_width_policy()
+        self.app_shell.schedule_page_width_policy()
         self.update_nav_highlight()
         # 刷新岗位过滤列表
         try:
@@ -5424,7 +5008,7 @@ class BossFilterGUI:
         self.hide_all_pages()
         self.stats_page.pack(fill="both", expand=True)
         self.current_page_index = PageIndex.STATS
-        self._schedule_page_width_policy()
+        self.app_shell.schedule_page_width_policy()
         self.update_nav_highlight()
         # 刷新岗位过滤列表
         try:
@@ -5444,7 +5028,7 @@ class BossFilterGUI:
         self.hide_all_pages()
         self.education_page.pack(fill="both", expand=True)
         self.current_page_index = PageIndex.EDUCATION
-        self._schedule_page_width_policy()
+        self.app_shell.schedule_page_width_policy()
         self.update_nav_highlight()
         self._bind_mousewheel(self.education_canvas, self.education_scrollable_frame)
 
@@ -5458,85 +5042,19 @@ class BossFilterGUI:
         self.hide_all_pages()
         self.api_config_page.pack(fill="both", expand=True)
         self.current_page_index = PageIndex.SETTINGS
-        self._schedule_page_width_policy()
+        self.app_shell.schedule_page_width_policy()
         self.update_nav_highlight()
         # 重新绑定滚轮事件（覆盖动态创建的控件）
         self._bind_mousewheel(self.api_canvas, self.api_scrollable_frame)
         self._schedule_api_key_resolution()
 
     def hide_all_pages(self):
-        """隐藏所有页面"""
-        self._stop_browser_auto_check()
-        for page in [
-            getattr(self, '_page_loading_frame', None),
-            self.home_page,
-            self.config_page,
-            self.api_config_page,
-            self.run_page,
-            self.result_page,
-            self.stats_page,
-            self.education_page,
-        ]:
-            if page is not None:
-                page.pack_forget()
+        """Compatibility facade for scripts that hide all pages."""
+        self.app_shell.hide_all_pages()
 
     def update_nav_highlight(self):
-        """只更新前后两个导航项，避免每次切页重绘整条侧边栏。"""
-        current_index = self.current_page_index
-        previous_index = getattr(self, '_highlighted_page_index', None)
-        if previous_index == current_index:
-            return
-
-        if previous_index is not None and 0 <= previous_index < len(self.nav_components):
-            self._apply_nav_state(self.nav_components[previous_index], 'default')
-        if 0 <= current_index < len(self.nav_components):
-            self._apply_nav_state(self.nav_components[current_index], 'selected')
-        self._highlighted_page_index = current_index
-
-    def _apply_nav_state(self, comp, state):
-        """应用导航项视觉状态：default / hover / selected（pill 背景 + 左侧强调条）。"""
-        pill_bg = self.colors.get('bg_sidebar_pill', ui_theme.BG_SIDEBAR_PILL)
-        active = state in ('hover', 'selected')
-        selected = state == 'selected'
-        comp['frame'].configure(style='SidebarPill.TFrame' if active else 'Sidebar.TFrame')
-        label_style = (
-            ('SidebarNavSelectedPill.TLabel' if selected else 'SidebarNavPill.TLabel')
-            if active else 'SidebarNav.TLabel'
-        )
-        comp['icon'].configure(
-            image=comp['icon_active'] if active else comp['icon_default'],
-            style=label_style,
-        )
-        comp['text'].configure(style=label_style)
-        if 'accent' in comp:
-            comp['accent'].configure(
-                background=(self.colors['primary_light'] if selected
-                            else (pill_bg if active else self.colors['bg_sidebar']))
-            )
-
-    def on_nav_enter(self, index):
-        """鼠标移入导航项时 pill 高亮（当前页面保持选中态）"""
-        if index != self.current_page_index:
-            self._apply_nav_state(self.nav_components[index], 'hover')
-
-    def on_nav_leave(self, index):
-        """鼠标移出导航项时恢复样式（当前页面除外）"""
-        if index != self.current_page_index:
-            self._apply_nav_state(self.nav_components[index], 'default')
-
-    def set_nav_badge(self, page_index, count):
-        """设置导航角标数字；0 或负数时隐藏。"""
-        if not (0 <= page_index < len(self.nav_components)):
-            return
-        badge = self.nav_components[page_index].get('badge')
-        if badge is None:
-            return
-        if count and count > 0:
-            badge.configure(text=str(count if count < 100 else '99+'))
-            if not badge.winfo_ismapped():
-                badge.pack(side="right", padx=(0, int(12 * self.dpi_scale * self.zoom_factor)))
-        else:
-            badge.pack_forget()
+        """Compatibility facade for scripts that refresh sidebar selection."""
+        self.app_shell.update_nav_highlight()
 
     def _set_result_contact_badge(self, count):
         """在“联系候选人”按钮右上角显示发送结果待核实数。"""
@@ -5565,7 +5083,7 @@ class BossFilterGUI:
                 pending = count_pending_contact_queue(self.greet_queue_items)
             else:
                 pending = load_pending_contact_queue_count(CONTACT_QUEUE_PATH)
-            self.set_nav_badge(PageIndex.RESULTS, 0)
+            self.app_shell.set_nav_badge(PageIndex.RESULTS, 0)
             self._set_result_contact_badge(pending)
         except Exception as exc:
             logger.warning("刷新联系清单角标失败：%s", exc)

@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 import gui_main
+import gui_app_shell
 import icons
 import bossmaster
 from gui_main import (
@@ -30,6 +31,20 @@ from gui_main import (
 from job_config_diagnostics import summarize_job_config_diagnostics
 from llm_eval import _resolve_rule_score
 from storage import load_candidates_all, save_candidates_all
+
+
+def _make_app_shell(host):
+    shell = gui_app_shell.AppShell(
+        host,
+        ui_config=gui_main.UI_CONFIG,
+        font_family="Test Font",
+        font_family_semibold="Test Font Semibold",
+        version="test",
+    )
+    shell.hide_all_pages = Mock()
+    shell.update_nav_highlight = Mock()
+    shell.schedule_page_width_policy = Mock()
+    return shell
 
 
 def test_optional_max_age_none_displays_as_blank():
@@ -2297,7 +2312,7 @@ def test_sidebar_first_open_paints_loading_frame_before_building_page():
     creator = Mock(side_effect=lambda: setattr(gui, "config_page", object()))
     show_page = Mock()
 
-    gui._request_page_first_open(
+    _make_app_shell(gui).request_page_first_open(
         1, "config_page", "岗位配置", creator, show_page
     )
 
@@ -2342,7 +2357,7 @@ def test_sidebar_first_open_advances_staged_page_one_chunk_per_callback():
         yield
         events.append("complete")
 
-    gui._request_page_first_open(
+    _make_app_shell(gui).request_page_first_open(
         1, "config_page", "岗位配置", staged_creator, show_page, on_ready=on_ready
     )
 
@@ -2398,7 +2413,7 @@ def test_sidebar_first_open_cancels_staged_page_after_navigation():
         yield
         events.append("must-not-run")
 
-    gui._request_page_first_open(
+    _make_app_shell(gui).request_page_first_open(
         2, "run_page", "运行控制", staged_creator, show_page
     )
     gui.root.scheduled.pop(0)[1]()
@@ -2432,7 +2447,7 @@ def test_sidebar_first_open_skips_stale_build_after_navigation():
     creator = Mock()
     show_page = Mock()
 
-    gui._request_page_first_open(
+    _make_app_shell(gui).request_page_first_open(
         3, "result_page", "筛选结果", creator, show_page
     )
     gui.current_page_index = 0
@@ -2466,8 +2481,8 @@ def test_sidebar_first_open_cleans_partial_page_after_build_failure():
         gui.run_page = partial_page
         raise RuntimeError("broken widget")
 
-    with patch("gui_main.messagebox.showerror") as show_error:
-        gui._request_page_first_open(
+    with patch("gui_app_shell.messagebox.showerror") as show_error:
+        _make_app_shell(gui).request_page_first_open(
             2, "run_page", "运行控制", fail_build, Mock()
         )
         gui.root.callback()
@@ -2484,7 +2499,7 @@ def test_sidebar_cached_page_is_shown_without_loading_frame():
     show_page = Mock()
     on_ready = Mock()
 
-    gui._request_page_first_open(
+    _make_app_shell(gui).request_page_first_open(
         5, "stats_page", "数据统计", Mock(), show_page, on_ready=on_ready
     )
 
@@ -2572,7 +2587,8 @@ def test_ctrl_f_waits_for_result_page_before_focusing_search():
         gui.result_search_entry.focus_set.assert_not_called()
         on_ready()
 
-    gui._request_sidebar_page = Mock(side_effect=request_page)
+    gui.app_shell = Mock()
+    gui.app_shell.request_sidebar_page.side_effect = request_page
 
     gui._shortcut_focus_search()
 
@@ -2632,13 +2648,13 @@ def test_contact_button_badge_uses_queue_module_before_runtime_queue_is_loaded(m
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui._greet_queue_loaded = False
     gui.greet_queue_items = []
-    gui.set_nav_badge = Mock()
+    gui.app_shell = Mock()
     gui._set_result_contact_badge = Mock()
 
     gui._refresh_contact_queue_badge()
 
     mock_load_count.assert_called_once_with(gui_main.CONTACT_QUEUE_PATH)
-    gui.set_nav_badge.assert_called_once_with(PageIndex.RESULTS, 0)
+    gui.app_shell.set_nav_badge.assert_called_once_with(PageIndex.RESULTS, 0)
     gui._set_result_contact_badge.assert_called_once_with(3)
 
 
@@ -2651,13 +2667,13 @@ def test_contact_button_badge_uses_memory_after_runtime_queue_is_loaded(mock_loa
         {"status": "发送失败"},
         {"status": "发送中"},
     ]
-    gui.set_nav_badge = Mock()
+    gui.app_shell = Mock()
     gui._set_result_contact_badge = Mock()
 
     gui._refresh_contact_queue_badge()
 
     mock_load_count.assert_not_called()
-    gui.set_nav_badge.assert_called_once_with(PageIndex.RESULTS, 0)
+    gui.app_shell.set_nav_badge.assert_called_once_with(PageIndex.RESULTS, 0)
     gui._set_result_contact_badge.assert_called_once_with(2)
 
 
@@ -2701,10 +2717,10 @@ def test_home_and_result_empty_state_use_staged_navigation_entrypoint():
     home_block = Path("gui_home_page.py").read_text(encoding="utf-8")
     result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
-    assert "command=lambda: host._request_sidebar_page(run_page_index)" in home_block
-    assert "command=lambda: host._request_sidebar_page(result_page_index)" in home_block
-    assert "command=lambda: host._request_sidebar_page(config_page_index)" in home_block
-    assert "action_command=lambda: host._request_sidebar_page(run_page_index)" in result_block
+    assert "command=lambda: host.app_shell.request_sidebar_page(run_page_index)" in home_block
+    assert "command=lambda: host.app_shell.request_sidebar_page(result_page_index)" in home_block
+    assert "command=lambda: host.app_shell.request_sidebar_page(config_page_index)" in home_block
+    assert "action_command=lambda: host.app_shell.request_sidebar_page(run_page_index)" in result_block
     assert "command=host.show_page_run" not in home_block
     assert "command=host.show_page_config" not in home_block
 
@@ -2714,12 +2730,14 @@ def test_navigation_highlight_updates_only_previous_and_current_items():
     gui.nav_components = [object() for _ in range(7)]
     gui.current_page_index = 3
     gui._highlighted_page_index = 1
-    gui._apply_nav_state = Mock()
+    shell = _make_app_shell(gui)
+    shell.apply_nav_state = Mock()
 
-    gui.update_nav_highlight()
-    gui.update_nav_highlight()
+    shell.update_nav_highlight = gui_app_shell.AppShell.update_nav_highlight.__get__(shell)
+    shell.update_nav_highlight()
+    shell.update_nav_highlight()
 
-    assert gui._apply_nav_state.call_args_list == [
+    assert shell.apply_nav_state.call_args_list == [
         call(gui.nav_components[1], "default"),
         call(gui.nav_components[3], "selected"),
     ]
@@ -2862,8 +2880,11 @@ def test_stats_page_uses_centered_width_policy():
     gui.zoom_factor = 1.0
     gui.current_page_index = 5
     gui._last_page_pack_padx = None
+    gui._last_page_pack_pady = None
+    gui._update_stats_tree_columns = Mock()
 
-    gui._apply_page_width_policy()
+    shell = _make_app_shell(gui)
+    gui_app_shell.AppShell.apply_page_width_policy(shell)
 
     assert gui.pages_frame.pack_configure.call_args.kwargs["padx"] == max(
         int(gui_main.UI_CONFIG["page_padding_x"]),
@@ -2876,7 +2897,7 @@ def test_stats_tree_reflows_after_its_rendered_width_changes():
     stats_block = Path("gui_stats_page.py").read_text(encoding="utf-8")
 
     assert 'tree.bind(\n        "<Configure>",' in stats_block
-    assert "lambda _event: host._schedule_page_width_policy()" in stats_block
+    assert "lambda _event: host.app_shell.schedule_page_width_policy()" in stats_block
 
 
 def test_job_config_page_releases_bottom_padding_but_preserves_header_position():
@@ -2891,7 +2912,8 @@ def test_job_config_page_releases_bottom_padding_but_preserves_header_position()
     gui._last_page_pack_pady = None
     gui._update_config_page_dynamic_heights = Mock()
 
-    gui._apply_page_width_policy()
+    shell = _make_app_shell(gui)
+    gui_app_shell.AppShell.apply_page_width_policy(shell)
 
     assert gui.pages_frame.pack_configure.call_args.kwargs["pady"] == (
         gui_main.UI_CONFIG["page_padding_y"] - 15
@@ -3301,11 +3323,13 @@ def test_traffic_light_icons_are_registered_without_pulse_check():
 
 def test_run_and_settings_traffic_lights_share_one_base_size():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    shell_source = Path("gui_app_shell.py").read_text(encoding="utf-8")
     settings_block = Path("gui_settings_page.py").read_text(encoding="utf-8")
     lamp_block = source[source.index("def _get_lamp_icon"):]
     lamp_block = lamp_block[:lamp_block.index("\n    def _apply_lamp_status")]
 
-    assert "TRAFFIC_LIGHT_BASE_SIZE = 32" in source
+    assert "TRAFFIC_LIGHT_BASE_SIZE = 32" in shell_source
+    assert "from gui_app_shell import PAGE_SPECS, TRAFFIC_LIGHT_BASE_SIZE, PageIndex" in source
     assert "traffic_light_base_size * self.dpi_scale * self.zoom_factor" in settings_block
     assert "TRAFFIC_LIGHT_BASE_SIZE" in lamp_block
     assert "int(16 *" not in lamp_block
@@ -8365,11 +8389,12 @@ def test_job_review_can_navigate_to_matching_saved_job_config():
         assert page_index == 1
         on_ready()
 
-    gui._request_sidebar_page = Mock(side_effect=request_page)
+    gui.app_shell = Mock()
+    gui.app_shell.request_sidebar_page.side_effect = request_page
 
     gui._open_job_config_from_review("  Java   工程师 ")
 
-    gui._request_sidebar_page.assert_called_once()
+    gui.app_shell.request_sidebar_page.assert_called_once()
     assert gui.config_job_combo.get() == "Java 工程师"
     gui.on_job_selected.assert_called_once_with(None)
 

@@ -10,6 +10,10 @@ from typing import Any, Protocol
 import ui_theme
 
 
+class LayoutShell(Protocol):
+    def schedule_page_width_policy(self) -> None: ...
+
+
 class StatsPageHost(Protocol):
     """Narrow host contract required to build the statistics page."""
 
@@ -24,6 +28,7 @@ class StatsPageHost(Protocol):
     font_section: Any
     font_table: Any
     icons: Any
+    app_shell: LayoutShell
 
     def _create_page_header(
         self,
@@ -38,8 +43,6 @@ class StatsPageHost(Protocol):
     def _show_selected_job_review(self) -> None: ...
 
     def _show_stats_context_menu(self, event: tk.Event) -> None: ...
-
-    def _schedule_page_width_policy(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -249,7 +252,7 @@ def build_stats_page(
     tree.bind("<Button-3>", host._show_stats_context_menu)
     tree.bind(
         "<Configure>",
-        lambda _event: host._schedule_page_width_policy(),
+        lambda _event: host.app_shell.schedule_page_width_policy(),
         add="+",
     )
     return StatsPageWidgets(

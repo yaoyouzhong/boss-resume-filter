@@ -15,6 +15,7 @@ import contact_presenter
 import data_maintenance_controller
 import education_controller
 import gui_dialogs
+import gui_app_shell
 import gui_candidate_actions
 import gui_candidate_diagnostics
 import gui_candidate_menus
@@ -388,6 +389,45 @@ def test_gui_style_setup_owns_only_global_tk_style_registration():
     assert "def setup_styles(self)" not in source
 
 
+def test_gui_app_shell_excludes_gui_business_storage_browser_and_network_dependencies():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "candidate_workflow",
+        "contact_queue",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("gui_app_shell") & forbidden)
+    assert callable(gui_app_shell.AppShell)
+    assert tuple(gui_app_shell.PAGE_SPECS) == tuple(gui_app_shell.PageIndex)
+
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    gui_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BossFilterGUI"
+    )
+    method_names = {
+        node.name
+        for node in gui_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "self.app_shell = gui_app_shell.AppShell(" in source
+    assert {
+        "create_sidebar",
+        "_request_sidebar_page",
+        "_request_page_first_open",
+        "_schedule_page_width_policy",
+        "_apply_page_width_policy",
+    }.isdisjoint(method_names)
+
+
 def test_gui_compatibility_methods_delegate_to_presenters():
     candidate = {"match_score": 70, "recommend_level": "推荐"}
     BossFilterGUI = gui_main.BossFilterGUI
@@ -733,7 +773,7 @@ def test_home_page_compatibility_method_is_a_thin_builder_delegate():
     assert "tk.Canvas" not in block
 
 
-def test_home_page_keeps_data_loading_and_navigation_lifecycle_in_controller():
+def test_home_page_keeps_data_loading_in_host_and_delegates_navigation_to_shell():
     forbidden = {
         "bossmaster",
         "gui_main",
@@ -750,7 +790,7 @@ def test_home_page_keeps_data_loading_and_navigation_lifecycle_in_controller():
     assert "def refresh_home_stats(self):" not in builder
     assert "def refresh_home_stats(self):" in source
     assert "host.refresh_home_stats()" in builder
-    assert "host._request_sidebar_page(" in builder
+    assert "host.app_shell.request_sidebar_page(" in builder
 
 
 def test_run_page_compatibility_method_is_a_thin_incremental_delegate():
