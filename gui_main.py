@@ -29,6 +29,12 @@ from tkinter import filedialog, font, ttk
 
 import icons
 from api_connectivity import probe_api_connectivity, probe_model_capability
+from browser_connection import (
+    classify_browser_url,
+    connect_browser_address,
+    is_debug_port_open,
+    probe_page_url,
+)
 from candidate_cleanup import clear_candidates_in_place
 import candidate_presenter
 import candidate_diagnostics_presenter
@@ -5341,11 +5347,15 @@ class BossFilterGUI:
             return True
 
         addresses = []
-        current_address = str(getattr(self, 'browser_address', '') or '').strip()
+        current_address = str(
+            getattr(self, "browser_address", "") or ""
+        ).strip()
         if current_address:
             addresses.append(current_address)
         try:
-            saved_port = CHROME_DEBUG_PORT_FILE.read_text(encoding='utf-8').strip()
+            saved_port = CHROME_DEBUG_PORT_FILE.read_text(
+                encoding="utf-8"
+            ).strip()
             if saved_port.isdigit():
                 addresses.append(f"127.0.0.1:{saved_port}")
         except OSError:
@@ -5353,55 +5363,22 @@ class BossFilterGUI:
         addresses.append("127.0.0.1:9222")
 
         for address in dict.fromkeys(addresses):
-            try:
-                host, port_text = address.rsplit(':', 1)
-                with socket.create_connection(
-                    (host, int(port_text)), timeout=0.5
-                ):
-                    pass
-            except (OSError, ValueError):
+            if not is_debug_port_open(address, timeout=0.5):
                 continue
-
-            connection = {}
-
-            def connect(target_address=address):
-                try:
-                    from DrissionPage import ChromiumOptions, ChromiumPage
-                    options = ChromiumOptions()
-                    options.set_address(target_address)
-                    page = ChromiumPage(options)
-                    selected_page = page
-                    try:
-                        tabs = list(page.get_tabs() or [])
-                    except Exception:
-                        tabs = []
-                    for tab in tabs:
-                        try:
-                            if "zhipin.com" in str(tab.url or '').lower():
-                                selected_page = tab
-                                break
-                        except Exception:
-                            continue
-                    selected_page.run_js("return 1")
-                    connection["page"] = selected_page
-                    connection["address"] = str(
-                        getattr(page, 'address', '') or target_address
-                    )
-                except Exception as exc:
-                    connection["error"] = exc
-
-            worker = threading.Thread(target=connect, daemon=True)
-            worker.start()
-            worker.join(timeout=4)
-            page = connection.get("page")
-            if worker.is_alive():
+            connection = connect_browser_address(
+                address,
+                timeout=4,
+                prefer_boss_tab=True,
+                validate_page=True,
+            )
+            if connection.timed_out:
                 self.browser_page = None
                 self.browser_connected = False
                 return False
-            if not self._is_browser_page_alive(page):
+            if not self._is_browser_page_alive(connection.page):
                 continue
-            self.browser_page = page
-            self.browser_address = connection.get("address", address)
+            self.browser_page = connection.page
+            self.browser_address = connection.address or address
             self.browser_connected = True
             return True
 
@@ -10446,36 +10423,24 @@ class BossFilterGUI:
                 if self.browser_page is not None:
                     try:
                         prev_help = self._browser_status_help_text
-                        # page.url 可能阻塞（Chrome 已关闭时 WebSocket 断开），加超时保护
-                        page_url_result = [None]
-                        page_url_exception = [None]
-                        def _get_existing_url():
-                            try:
-                                page_url_result[0] = self.browser_page.url
-                            except Exception as e:
-                                page_url_exception[0] = e
-                        url_t = threading.Thread(target=_get_existing_url, daemon=True)
-                        url_t.start()
-                        url_t.join(timeout=1)
-                        if url_t.is_alive():
-                            raise TimeoutError("browser_page.url 访问超时")
-                        if page_url_exception[0] is not None:
-                            raise page_url_exception[0]
-                        current_url = page_url_result[0] or ''
+                        url_probe = probe_page_url(
+                            self.browser_page,
+                            timeout=1,
+                        )
+                        if url_probe.error is not None:
+                            raise url_probe.error
+                        current_url = url_probe.url
+                        url_state = classify_browser_url(
+                            current_url,
+                            recommend_matcher=self._is_boss_recommend_url,
+                        )
                         self._browser_connection_failures = 0
-                        if self._is_boss_recommend_url(current_url):
+                        if url_state == "recommend":
                             self._browser_non_target_checks = 0
                             self.browser_connected = True
                             self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
                             if prev_help != "已连接到 BOSS 直聘推荐牛人页面":
                                 self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
-                        elif 'zhipin.com' in current_url.lower() or 'boss' in current_url.lower():
-                            if self._should_defer_browser_navigation_warning(silent):
-                                return
-                            self.browser_connected = False
-                            self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
-                            if prev_help != "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面":
-                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                         else:
                             if self._should_defer_browser_navigation_warning(silent):
                                 return
@@ -10502,11 +10467,8 @@ class BossFilterGUI:
                         pass
                 if not addr:
                     addr = '127.0.0.1:9222'
-                host, port = addr.rsplit(':', 1)
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(1)
-                port_open = s.connect_ex((host, int(port))) == 0
-                s.close()
+                _host, port = addr.rsplit(':', 1)
+                port_open = is_debug_port_open(addr, timeout=1)
 
                 if not port_open:
                     prev_state = self._browser_status_text
@@ -10654,44 +10616,22 @@ class BossFilterGUI:
                             self.append_log("✗ 未检测到 Chrome 调试端口")
                     return
 
-                from DrissionPage import ChromiumPage, ChromiumOptions
-
                 try:
-                    # 将整个 ChromiumPage 构造 + page.url 放入线程超时保护
-                    # ChromiumPage() 构造函数和 page.url 都可能在 Chrome 已死时阻塞
-                    co = ChromiumOptions()
-                    co.set_address(addr)
-
-                    page_result = [None]
-                    url_result = [None]
-                    connect_exception = [None]
-
-                    def _connect_and_get_url():
-                        try:
-                            p = ChromiumPage(co)
-                            page_result[0] = p
-                            url_result[0] = p.url
-                        except Exception as e:
-                            connect_exception[0] = e
-
-                    conn_thread = threading.Thread(target=_connect_and_get_url, daemon=True)
-                    conn_thread.start()
-                    conn_thread.join(timeout=3)
-                    if conn_thread.is_alive():
-                        raise TimeoutError("ChromiumPage 连接超时")
-                    if connect_exception[0] is not None:
-                        raise connect_exception[0]
-
-                    page = page_result[0]
-                    current_url = url_result[0]
-                    if not current_url:
-                        current_url = ''
+                    connection = connect_browser_address(addr, timeout=3)
+                    if connection.error is not None:
+                        raise connection.error
+                    page = connection.page
+                    current_url = connection.url
+                    url_state = classify_browser_url(
+                        current_url,
+                        recommend_matcher=self._is_boss_recommend_url,
+                    )
                     self._browser_connection_failures = 0
 
                     # Chrome 进程还在但窗口已关闭时，page.url 可能是 about:blank
                     # 直接在现有进程里导航到 BOSS 直聘，不杀进程不重启
                     target_url = 'https://www.zhipin.com/web/chat/recommend'
-                    if current_url in ('about:blank', ''):
+                    if url_state == "blank":
                         if not silent:
                             self.append_log("⚠ Chrome 进程存在但无有效页面，正在激活并导航...")
                             nav_page = self._reactivate_and_navigate(page, target_url)
@@ -10725,7 +10665,7 @@ class BossFilterGUI:
                         # 处理完毕，不再往下走 URL 检查
                         return
 
-                    if self._is_boss_recommend_url(current_url):
+                    if url_state == "recommend":
                         self._browser_non_target_checks = 0
                         prev_connected = self.browser_connected
                         self.browser_connected = True
@@ -10734,16 +10674,6 @@ class BossFilterGUI:
                         self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
                         if not silent or not prev_connected:
                             self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
-                    elif 'zhipin.com' in current_url.lower() or 'boss' in current_url.lower():
-                        if self._should_defer_browser_navigation_warning(silent):
-                            return
-                        prev_state = self._browser_status_text
-                        self.browser_connected = False
-                        self.browser_page = page
-                        self.browser_address = page.address
-                        self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
-                        if not silent or prev_state != "● 需导航":
-                            self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
                     else:
                         if self._should_defer_browser_navigation_warning(silent):
                             return
@@ -10755,6 +10685,8 @@ class BossFilterGUI:
                         if not silent or prev_state != "● 需导航":
                             self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
 
+                except ImportError:
+                    raise
                 except Exception as e:
                     if self._should_defer_browser_connection_failure(silent):
                         self.browser_connected = False

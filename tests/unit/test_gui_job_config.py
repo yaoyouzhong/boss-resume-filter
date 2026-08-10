@@ -6397,6 +6397,64 @@ def test_browser_reconnect_method_reuses_existing_live_page():
     assert gui.browser_connected is True
 
 
+def test_browser_reconnect_delegates_debug_port_and_bounded_connection():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.browser_page = None
+    gui.browser_address = "127.0.0.1:9333"
+    gui.browser_connected = False
+    gui._is_browser_page_alive = Mock(side_effect=[False, True])
+    page = object()
+    result = types.SimpleNamespace(
+        page=page,
+        address="127.0.0.1:9333",
+        error=None,
+        timed_out=False,
+    )
+    port_file = Mock()
+    port_file.read_text.side_effect = OSError("missing")
+
+    with patch("gui_main.CHROME_DEBUG_PORT_FILE", port_file), \
+            patch("gui_main.is_debug_port_open", return_value=True) as port_open, \
+            patch("gui_main.connect_browser_address", return_value=result) as connect:
+        assert gui._try_reconnect_browser() is True
+
+    port_open.assert_called_once_with("127.0.0.1:9333", timeout=0.5)
+    connect.assert_called_once_with(
+        "127.0.0.1:9333",
+        timeout=4,
+        prefer_boss_tab=True,
+        validate_page=True,
+    )
+    assert gui.browser_page is page
+    assert gui.browser_address == "127.0.0.1:9333"
+    assert gui.browser_connected is True
+
+
+def test_browser_reconnect_timeout_fails_closed_without_trying_other_ports():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.browser_page = None
+    gui.browser_address = "127.0.0.1:9333"
+    gui.browser_connected = True
+    gui._is_browser_page_alive = Mock(return_value=False)
+    result = types.SimpleNamespace(
+        page=None,
+        address="127.0.0.1:9333",
+        error=TimeoutError("connect timeout"),
+        timed_out=True,
+    )
+    port_file = Mock()
+    port_file.read_text.side_effect = OSError("missing")
+
+    with patch("gui_main.CHROME_DEBUG_PORT_FILE", port_file), \
+            patch("gui_main.is_debug_port_open", return_value=True), \
+            patch("gui_main.connect_browser_address", return_value=result) as connect:
+        assert gui._try_reconnect_browser() is False
+
+    connect.assert_called_once()
+    assert gui.browser_page is None
+    assert gui.browser_connected is False
+
+
 def test_contact_browser_reconnect_launches_recommend_page_when_chrome_is_absent():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.append_operation_log = Mock()

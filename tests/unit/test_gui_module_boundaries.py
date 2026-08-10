@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import api_connectivity
+import browser_connection
 import candidate_diagnostics_presenter
 import candidate_cleanup
 import candidate_presenter
@@ -146,6 +147,20 @@ def test_api_connectivity_service_excludes_gui_secrets_and_persistence():
     assert not (_top_level_imports("api_connectivity") & forbidden)
     assert callable(api_connectivity.probe_api_connectivity)
     assert callable(api_connectivity.probe_model_capability)
+
+
+def test_browser_connection_service_excludes_gui_storage_and_scan_dependencies():
+    forbidden = {
+        "bossmaster",
+        "gui_main",
+        "storage",
+        "tkinter",
+    }
+    assert not (_top_level_imports("browser_connection") & forbidden)
+    assert callable(browser_connection.classify_browser_url)
+    assert callable(browser_connection.probe_page_url)
+    assert callable(browser_connection.is_debug_port_open)
+    assert callable(browser_connection.connect_browser_address)
 
 
 def test_candidate_cleanup_does_not_import_gui_storage_or_network_modules():
@@ -651,6 +666,29 @@ def test_api_connectivity_controllers_delegate_network_probes():
     assert "time.sleep" not in direct
     assert "probe_model_capability(config, api_key)" in saved
     assert "from llm_eval import probe_model_compatibility" not in saved
+
+
+def test_browser_controllers_delegate_bounded_connection_probes():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    reconnect = source[source.index("def _try_reconnect_browser"):]
+    reconnect = reconnect[:reconnect.index("\n    def _launch_boss_browser")]
+    check = source[source.index("def check_browser_connection"):]
+    check = check[:check.index("\n    def _start_browser_auto_check")]
+
+    assert "is_debug_port_open(address, timeout=0.5)" in reconnect
+    assert "connect_browser_address(" in reconnect
+    assert "prefer_boss_tab=True" in reconnect
+    assert "validate_page=True" in reconnect
+    assert "from DrissionPage" not in reconnect
+
+    assert "probe_page_url(" in check
+    assert "classify_browser_url(" in check
+    assert "is_debug_port_open(addr, timeout=1)" in check
+    assert "connect_browser_address(addr, timeout=3)" in check
+    assert "except ImportError:\n                    raise" in check
+    assert "subprocess.Popen(" in check
+    assert "_reactivate_and_navigate(" in check
+    assert "self.set_browser_ui(" in check
 
 
 def test_model_catalog_dialog_does_not_import_controller_storage_or_http_clients():
