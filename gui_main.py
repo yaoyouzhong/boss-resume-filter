@@ -35,6 +35,7 @@ from browser_connection import (
     is_debug_port_open,
     probe_page_url,
 )
+from browser_controller import BrowserController, BrowserRuntime
 from candidate_controller import CandidateController, CandidatePersistence
 from candidate_cleanup import clear_candidates_in_place
 from data_maintenance_controller import DataMaintenanceController
@@ -259,6 +260,33 @@ def _candidate_controller_for(host) -> CandidateController:
             ),
         )
         host._candidate_controller = controller
+    return controller
+
+
+def _browser_controller_for(host) -> BrowserController:
+    """Return the host's Chrome lifecycle controller with explicit runtime deps."""
+    controller = getattr(host, "_browser_controller", None)
+    if controller is None:
+        controller = BrowserController(
+            BASE_DIR,
+            CHROME_DEBUG_PORT_FILE,
+            BrowserRuntime(
+                platform=sys.platform,
+                environ=os.environ,
+                exists=os.path.exists,
+                expandvars=os.path.expandvars,
+                expanduser=os.path.expanduser,
+                which=shutil.which,
+                socket_factory=socket.socket,
+                popen=subprocess.Popen,
+                run_process=subprocess.run,
+                kill_process=os.kill,
+                sleep=time.sleep,
+                port_open=is_debug_port_open,
+                connector=connect_browser_address,
+            ),
+        )
+        host._browser_controller = controller
     return controller
 
 FEEDBACK_STATUS_OPTIONS = ["合适", "误推", "误杀", "放弃"]
@@ -5180,164 +5208,40 @@ class BossFilterGUI:
 
     @staticmethod
     def _is_browser_page_alive(page) -> bool:
-        """确认 DrissionPage 页面对象仍能执行命令。"""
-        if page is None:
-            return False
-        try:
-            page.run_js("return 1")
-            return True
-        except Exception:
-            return False
+        """Confirm that a browser page can still execute commands."""
+        return BrowserController.is_page_alive(page)
 
     def _try_reconnect_browser(self) -> bool:
-        """Reconnect to the existing debug Chrome without forcing navigation."""
+        """Reconnect through the browser lifecycle controller."""
         if self._is_browser_page_alive(self.browser_page):
             self.browser_connected = True
             return True
-
-        addresses = []
-        current_address = str(
-            getattr(self, "browser_address", "") or ""
-        ).strip()
-        if current_address:
-            addresses.append(current_address)
-        try:
-            saved_port = CHROME_DEBUG_PORT_FILE.read_text(
-                encoding="utf-8"
-            ).strip()
-            if saved_port.isdigit():
-                addresses.append(f"127.0.0.1:{saved_port}")
-        except OSError:
-            pass
-        addresses.append("127.0.0.1:9222")
-
-        for address in dict.fromkeys(addresses):
-            if not is_debug_port_open(address, timeout=0.5):
-                continue
-            connection = connect_browser_address(
-                address,
-                timeout=4,
-                prefer_boss_tab=True,
-                validate_page=True,
-            )
-            if connection.timed_out:
-                self.browser_page = None
-                self.browser_connected = False
-                return False
-            if not self._is_browser_page_alive(connection.page):
-                continue
-            self.browser_page = connection.page
-            self.browser_address = connection.address or address
-            self.browser_connected = True
-            return True
-
-        self.browser_page = None
-        self.browser_connected = False
-        return False
+        state = _browser_controller_for(self).reconnect(
+            getattr(self, "browser_address", ""),
+        )
+        self.browser_page = state.page
+        self.browser_connected = state.connected
+        if state.address:
+            self.browser_address = state.address
+        return state.connected
 
     def _launch_boss_browser(self) -> bool:
-        """Start the app-managed Chrome profile on the BOSS recommendation page."""
-        if sys.platform == 'darwin':
-            candidates = [
-                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-                os.path.expanduser(
-                    '~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-                ),
-            ]
-        elif sys.platform == 'win32':
-            candidates = [
-                os.path.expandvars(
-                    r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe'
-                ),
-                r'C:\Program Files\Google\Chrome\Application\chrome.exe',
-                r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
-            ]
-        else:
-            candidates = [
-                shutil.which('google-chrome'),
-                shutil.which('google-chrome-stable'),
-                shutil.which('chromium'),
-            ]
-        chrome_path = next(
-            (path for path in candidates if path and os.path.exists(path)),
-            None,
+        """Start the managed Chrome profile on the recommendation page."""
+        target_url = "https://www.zhipin.com/web/chat/recommend"
+        state = _browser_controller_for(self).launch_managed_chrome(
+            target_url,
+            recommend_matcher=self._is_boss_recommend_url,
+            should_stop=lambda: bool(
+                getattr(self, "stop_event", None)
+                and self.stop_event.is_set()
+            ),
         )
-        if not chrome_path:
-            self._greet_queue_browser_error = "未找到 Chrome 浏览器，请安装后重试。"
-            return False
-
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as port_socket:
-                port_socket.bind(('127.0.0.1', 0))
-                debug_port = int(port_socket.getsockname()[1])
-
-            profile_dir = BASE_DIR / '.chrome_profile'
-            profile_dir.mkdir(parents=True, exist_ok=True)
-            subprocess.Popen(
-                [
-                    chrome_path,
-                    f'--remote-debugging-port={debug_port}',
-                    f'--user-data-dir={profile_dir}',
-                    '--no-first-run',
-                    '--no-default-browser-check',
-                    'https://www.zhipin.com/web/chat/recommend',
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                show_window=True,
-            )
-            try:
-                CHROME_DEBUG_PORT_FILE.write_text(str(debug_port), encoding='utf-8')
-            except OSError:
-                pass
-        except (OSError, ValueError) as exc:
-            self._greet_queue_browser_error = f"Chrome 启动失败：{str(exc)[:80]}"
-            return False
-
-        self.browser_address = f'127.0.0.1:{debug_port}'
-        stop_event = getattr(self, 'stop_event', None)
-        for _ in range(40):
-            if stop_event is not None and stop_event.is_set():
-                self._greet_queue_browser_error = "发送已停止。"
-                return False
-            time.sleep(0.5)
-            try:
-                with socket.create_connection(
-                    ('127.0.0.1', debug_port), timeout=0.5
-                ):
-                    break
-            except OSError:
-                continue
-        else:
-            self._greet_queue_browser_error = (
-                "Chrome 启动超时，请关闭应用专用 Chrome 后重试。"
-            )
-            return False
-
-        if not self._try_reconnect_browser():
-            self._greet_queue_browser_error = (
-                "Chrome 已启动，但程序无法连接页面，请稍后再次发送。"
-            )
-            return False
-
-        recommend_url = 'https://www.zhipin.com/web/chat/recommend'
-        try:
-            current_url = str(getattr(self.browser_page, 'url', '') or '')
-            if not self._is_boss_recommend_url(current_url):
-                self.browser_page.get(recommend_url)
-            for _ in range(10):
-                current_url = str(getattr(self.browser_page, 'url', '') or '')
-                if "zhipin.com" in current_url.lower():
-                    return True
-                time.sleep(0.5)
-        except Exception as exc:
-            self._greet_queue_browser_error = (
-                f"Chrome 已启动，但推荐牛人页面打开失败：{str(exc)[:80]}"
-            )
-            return False
-        self._greet_queue_browser_error = "Chrome 已启动，但推荐牛人页面未能打开。"
-        return False
-
+        self.browser_page = state.page
+        self.browser_connected = state.connected
+        if state.address:
+            self.browser_address = state.address
+        self._greet_queue_browser_error = state.error
+        return state.connected
     def _get_education_api_key(self, config: dict) -> str:
         """按运行模式取得学历核验专用 API Key。"""
         if self._education_api_key_provider is not None:
@@ -9982,13 +9886,11 @@ class BossFilterGUI:
 
     def _should_defer_browser_navigation_warning(self, silent: bool) -> bool:
         """自动轮询首次读到非推荐页时暂缓告警，过滤页面刷新产生的瞬时 URL。"""
-        self._browser_non_target_checks = getattr(self, '_browser_non_target_checks', 0) + 1
-        return silent and self._browser_non_target_checks < 2
+        return _browser_controller_for(self).should_defer_navigation(silent)
 
     def _should_defer_browser_connection_failure(self, silent: bool) -> bool:
         """自动轮询首次连接失败时暂缓报错，给页面连接一次自恢复机会。"""
-        self._browser_connection_failures = getattr(self, '_browser_connection_failures', 0) + 1
-        return silent and self._browser_connection_failures < 2
+        return _browser_controller_for(self).should_defer_connection_failure(silent)
 
     @staticmethod
     def _boss_access_cooldown_state():
@@ -10080,9 +9982,9 @@ class BossFilterGUI:
                             current_url,
                             recommend_matcher=self._is_boss_recommend_url,
                         )
-                        self._browser_connection_failures = 0
+                        _browser_controller_for(self).reset_connection_failures()
                         if url_state == "recommend":
-                            self._browser_non_target_checks = 0
+                            _browser_controller_for(self).reset_navigation_failures()
                             self.browser_connected = True
                             self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
                             if prev_help != "已连接到 BOSS 直聘推荐牛人页面":
@@ -10101,167 +10003,49 @@ class BossFilterGUI:
                         self.browser_connected = False
                         self._selectors_auto_checked = False  # 页面失效，下次连接重新检查选择器
 
-                # 没有可用连接，检查 Chrome 调试端口
-                # 优先读取上次持久化的端口号
-                addr = getattr(self, 'browser_address', None)
-                if not addr:
-                    try:
-                        saved_port = CHROME_DEBUG_PORT_FILE.read_text(encoding='utf-8').strip()
-                        if saved_port.isdigit():
-                            addr = f'127.0.0.1:{saved_port}'
-                    except OSError:
-                        pass
-                if not addr:
-                    addr = '127.0.0.1:9222'
+                # 没有可用连接，按显式地址、持久化端口、默认端口顺序检查。
+                addr = _browser_controller_for(self).address_candidates(
+                    getattr(self, "browser_address", ""),
+                )[0]
                 _host, port = addr.rsplit(':', 1)
                 port_open = is_debug_port_open(addr, timeout=1)
 
                 if not port_open:
-                    prev_state = self._browser_status_text
                     self.browser_connected = False
-                    self.set_browser_ui("● 未连接", self.colors['danger'], start_state="disabled")
-
-                    # 自动启动 Chrome（仅在手动点击时）
-                    if not silent:
-                        self.set_browser_ui(help_text="正在启动 Chrome 浏览器...")
-                        self.append_log("正在启动 Chrome 浏览器...")
-
-                        # 找到 Chrome 可执行文件
-                        if sys.platform == 'darwin':
-                            candidates = [
-                                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-                                os.path.expanduser('~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'),
-                            ]
-                        else:
-                            candidates = [
-                                os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe'),
-                                r'C:\Program Files\Google\Chrome\Application\chrome.exe',
-                                r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
-                            ]
-                        chrome_path = next((p for p in candidates if os.path.exists(p)), None)
-                        if not chrome_path:
-                            self.set_browser_ui(help_text="未找到 Chrome 浏览器，请安装后重试")
-                            self.append_log("✗ 未找到 Chrome 浏览器")
-                            return
-
-                        # 自动选一个空闲端口，避免 9222 被占用
-                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        s.bind(('127.0.0.1', 0))
-                        debug_port = s.getsockname()[1]
-                        s.close()
-
-                        # 清理 Chrome 锁文件，保留登录态（SingletonLock/Socket/Cookie
-                        # 是上次异常退出残留的，删掉即可，不影响 cookies）
-                        profile_dir = BASE_DIR / '.chrome_profile'
-                        profile_dir.mkdir(parents=True, exist_ok=True)
-                        for lock_file in ['SingletonLock', 'SingletonSocket', 'SingletonCookie']:
-                            lock_path = profile_dir / lock_file
-                            if lock_path.exists():
-                                try:
-                                    lock_path.unlink()
-                                except Exception:
-                                    pass
-
-                        # 用 subprocess 直接启动 Chrome（不依赖 DrissionPage 的启动逻辑）
-                        self.append_log(f"正在启动 Chrome（调试端口 {debug_port}）...")
-                        subprocess.Popen(
-                            [
-                                chrome_path,
-                                f'--remote-debugging-port={debug_port}',
-                                f'--user-data-dir={profile_dir}',
-                                '--no-first-run',
-                                '--no-default-browser-check',
-                            ],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            show_window=True,
+                    self.set_browser_ui(
+                        "● 未连接",
+                        self.colors["danger"],
+                        start_state="disabled",
+                    )
+                    if silent:
+                        self.set_browser_ui(
+                            help_text="未检测到 Chrome，请确保浏览器已启动"
                         )
-
-                        # 持久化端口号，下次启动时可复用
-                        try:
-                            CHROME_DEBUG_PORT_FILE.write_text(str(debug_port), encoding='utf-8')
-                        except OSError:
-                            pass
-
-                        # 轮询等待端口就绪
-                        port_ready = False
-                        for i in range(30):
-                            time.sleep(1)
-                            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                            s.settimeout(0.5)
-                            if s.connect_ex(('127.0.0.1', debug_port)) == 0:
-                                s.close()
-                                port_ready = True
-                                break
-                            s.close()
-                            if i == 0:
-                                self.append_log("⏳ 等待 Chrome 就绪...")
-                            elif i % 5 == 4:
-                                self.append_log(f"⏳ 等待 Chrome 就绪... ({i+1}/30)")
-
-                        if not port_ready:
-                            self.set_browser_ui("● 未连接", self.colors['danger'], "Chrome 启动超时，请关闭所有 Chrome 窗口后重试")
-                            self.append_log("✗ Chrome 启动超时，调试端口未开启")
-                            return
-
-                        # 端口已开，用 DrissionPage 连接
-                        time.sleep(2)
-                        try:
-                            from DrissionPage import ChromiumPage, ChromiumOptions
-                            co = ChromiumOptions()
-                            co.set_address(f'127.0.0.1:{debug_port}')
-
-                            # 整个连接+导航放入线程超时保护，防止 Chrome 被杀后 DrissionPage 阻塞
-                            startup_result = [None]
-                            startup_exception = [None]
-
-                            def _connect_and_navigate():
-                                try:
-                                    p = ChromiumPage(co)
-                                    u = p.url
-                                    if not self._is_boss_recommend_url(u):
-                                        p.get('https://www.zhipin.com/web/chat/recommend')
-                                        time.sleep(2)
-                                        u = p.url
-                                    startup_result[0] = (p, u)
-                                except Exception as e:
-                                    startup_exception[0] = e
-
-                            st = threading.Thread(target=_connect_and_navigate, daemon=True)
-                            st.start()
-                            st.join(timeout=6)
-                            if st.is_alive():
-                                raise TimeoutError("Chrome 连接超时")
-                            if startup_exception[0] is not None:
-                                raise startup_exception[0]
-
-                            page, current_url = startup_result[0]
-                            if self._is_boss_recommend_url(current_url):
-                                self.browser_connected = True
-                                self.browser_page = page
-                                self.browser_address = page.address
-                                self.set_browser_ui("● 已连接", self.colors['success'], "已连接到 BOSS 直聘推荐牛人页面", "normal")
-                                self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
-                            else:
-                                self.browser_connected = True
-                                self.browser_page = page
-                                self.browser_address = page.address
-                                self.set_browser_ui("● 需导航", self.colors['warning'], "浏览器已连接，请导航到 BOSS 直聘推荐牛人页面", "disabled")
-                                self.append_log("⚠ 浏览器已连接，请导航到 BOSS 直聘推荐牛人页面")
-                        except Exception as e:
-                            self.browser_connected = False
-                            self.browser_page = None
-                            self._selectors_auto_checked = False
-                            self.set_browser_ui("● 未连接", self.colors['danger'], "Chrome 已启动，但页面连接失败", "disabled")
-                            error_text = str(e).splitlines()[0] if str(e) else type(e).__name__
-                            self.append_log(f"✗ Chrome 已启动，但页面连接失败：{error_text}")
                         return
-                    else:
-                        self.set_browser_ui(help_text="未检测到 Chrome，请确保浏览器已启动")
-                        if not silent and prev_state != "● 未连接":
-                            self.append_log("✗ 未检测到 Chrome 调试端口")
-                    return
 
+                    self.set_browser_ui(help_text="正在启动 Chrome 浏览器...")
+                    self.append_log("正在启动 Chrome 浏览器...")
+                    if self._launch_boss_browser():
+                        self.set_browser_ui(
+                            "● 已连接",
+                            self.colors["success"],
+                            "已连接到 BOSS 直聘推荐牛人页面",
+                            "normal",
+                        )
+                        self.append_log("✓ 已连接到 BOSS 直聘推荐牛人页面")
+                    else:
+                        error = (
+                            getattr(self, "_greet_queue_browser_error", "")
+                            or "Chrome 启动或页面连接失败"
+                        )
+                        self.set_browser_ui(
+                            "● 未连接",
+                            self.colors["danger"],
+                            error,
+                            "disabled",
+                        )
+                        self.append_log(f"✗ {error}")
+                    return
                 try:
                     connection = connect_browser_address(addr, timeout=3)
                     if connection.error is not None:
@@ -10272,7 +10056,7 @@ class BossFilterGUI:
                         current_url,
                         recommend_matcher=self._is_boss_recommend_url,
                     )
-                    self._browser_connection_failures = 0
+                    _browser_controller_for(self).reset_connection_failures()
 
                     # Chrome 进程还在但窗口已关闭时，page.url 可能是 about:blank
                     # 直接在现有进程里导航到 BOSS 直聘，不杀进程不重启
@@ -10312,7 +10096,7 @@ class BossFilterGUI:
                         return
 
                     if url_state == "recommend":
-                        self._browser_non_target_checks = 0
+                        _browser_controller_for(self).reset_navigation_failures()
                         prev_connected = self.browser_connected
                         self.browser_connected = True
                         self.browser_page = page
@@ -10358,40 +10142,14 @@ class BossFilterGUI:
                     # 手动点击时，尝试杀掉彻底挂掉的调试 Chrome 进程并重启
                     if not silent:
                         self.append_log("⚠ 正在尝试清理残留的调试 Chrome 进程...")
-                        killed = False
-                        try:
-                            port_num = int(port)
-                            if sys.platform == 'darwin' or sys.platform.startswith('linux'):
-                                # 找到包含 remote-debugging-port=PORT 的 Chrome 进程 PID
-                                result = subprocess.run(
-                                    ['pgrep', '-f', f'remote-debugging-port={port_num}'],
-                                    capture_output=True, text=True, timeout=3
-                                )
-                                pids = result.stdout.strip().split('\n')
-                                for pid in pids:
-                                    if pid.isdigit():
-                                        try:
-                                            os.kill(int(pid), 15)  # SIGTERM
-                                            killed = True
-                                        except ProcessLookupError:
-                                            pass
-                            elif sys.platform == 'win32':
-                                # Windows: 用 wmic 找到包含调试端口的 Chrome 进程
-                                result = subprocess.run(
-                                    ['wmic', 'process', 'where',
-                                     f"CommandLine like '%remote-debugging-port={port_num}%'",
-                                     'get', 'ProcessId'],
-                                    capture_output=True, text=True, timeout=5
-                                )
-                                for line in result.stdout.strip().split('\n'):
-                                    pid = line.strip()
-                                    if pid.isdigit():
-                                        subprocess.run(['taskkill', '/PID', pid],
-                                                     timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                                        killed = True
-                        except Exception as kill_err:
-                            self.append_log(f"清理残留进程失败：{kill_err}")
-
+                        cleanup = _browser_controller_for(
+                            self
+                        ).terminate_debug_processes(int(port))
+                        killed = cleanup.killed
+                        if cleanup.error:
+                            self.append_log(
+                                f"清理残留进程失败：{cleanup.error}"
+                            )
                         if killed:
                             time.sleep(1)
                             self.append_log("✓ 已清理残留的调试 Chrome 进程，2秒后自动重新启动...")

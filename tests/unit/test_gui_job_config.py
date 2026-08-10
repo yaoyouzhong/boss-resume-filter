@@ -6406,29 +6406,21 @@ def test_browser_reconnect_delegates_debug_port_and_bounded_connection():
     gui.browser_page = None
     gui.browser_address = "127.0.0.1:9333"
     gui.browser_connected = False
-    gui._is_browser_page_alive = Mock(side_effect=[False, True])
-    page = object()
-    result = types.SimpleNamespace(
+    gui._is_browser_page_alive = Mock(return_value=False)
+    page = Mock()
+    state = types.SimpleNamespace(
+        connected=True,
         page=page,
         address="127.0.0.1:9333",
-        error=None,
-        timed_out=False,
+        error="",
     )
-    port_file = Mock()
-    port_file.read_text.side_effect = OSError("missing")
+    controller = Mock()
+    controller.reconnect.return_value = state
 
-    with patch("gui_main.CHROME_DEBUG_PORT_FILE", port_file), \
-            patch("gui_main.is_debug_port_open", return_value=True) as port_open, \
-            patch("gui_main.connect_browser_address", return_value=result) as connect:
+    with patch("gui_main._browser_controller_for", return_value=controller):
         assert gui._try_reconnect_browser() is True
 
-    port_open.assert_called_once_with("127.0.0.1:9333", timeout=0.5)
-    connect.assert_called_once_with(
-        "127.0.0.1:9333",
-        timeout=4,
-        prefer_boss_tab=True,
-        validate_page=True,
-    )
+    controller.reconnect.assert_called_once_with("127.0.0.1:9333")
     assert gui.browser_page is page
     assert gui.browser_address == "127.0.0.1:9333"
     assert gui.browser_connected is True
@@ -6440,21 +6432,19 @@ def test_browser_reconnect_timeout_fails_closed_without_trying_other_ports():
     gui.browser_address = "127.0.0.1:9333"
     gui.browser_connected = True
     gui._is_browser_page_alive = Mock(return_value=False)
-    result = types.SimpleNamespace(
+    state = types.SimpleNamespace(
+        connected=False,
         page=None,
         address="127.0.0.1:9333",
-        error=TimeoutError("connect timeout"),
-        timed_out=True,
+        error="connect timeout",
     )
-    port_file = Mock()
-    port_file.read_text.side_effect = OSError("missing")
+    controller = Mock()
+    controller.reconnect.return_value = state
 
-    with patch("gui_main.CHROME_DEBUG_PORT_FILE", port_file), \
-            patch("gui_main.is_debug_port_open", return_value=True), \
-            patch("gui_main.connect_browser_address", return_value=result) as connect:
+    with patch("gui_main._browser_controller_for", return_value=controller):
         assert gui._try_reconnect_browser() is False
 
-    connect.assert_called_once()
+    controller.reconnect.assert_called_once_with("127.0.0.1:9333")
     assert gui.browser_page is None
     assert gui.browser_connected is False
 
@@ -6475,29 +6465,25 @@ def test_contact_browser_reconnect_launches_recommend_page_when_chrome_is_absent
 
 def test_launch_boss_browser_uses_managed_profile_and_recommend_url():
     gui = BossFilterGUI.__new__(BossFilterGUI)
-    gui.stop_event = threading.Event()
-    gui.browser_page = Mock(url='https://www.zhipin.com/web/chat/recommend')
-    gui._try_reconnect_browser = Mock(return_value=True)
-    port_socket = MagicMock()
-    port_socket.__enter__.return_value.getsockname.return_value = ('127.0.0.1', 45678)
-    connection = MagicMock()
+    page = Mock(url='https://www.zhipin.com/web/chat/recommend')
+    state = types.SimpleNamespace(
+        connected=True,
+        page=page,
+        address="127.0.0.1:45678",
+        error="",
+    )
+    controller = Mock()
+    controller.launch_managed_chrome.return_value = state
 
-    with patch("gui_main.sys.platform", "win32"), \
-            patch("gui_main.os.path.exists", return_value=True), \
-            patch("gui_main.socket.socket", return_value=port_socket), \
-            patch("gui_main.socket.create_connection", return_value=connection), \
-            patch("gui_main.subprocess.Popen") as popen, \
-            patch("pathlib.Path.mkdir"), \
-            patch("pathlib.Path.write_text"), \
-            patch("gui_main.time.sleep", return_value=None):
+    with patch("gui_main._browser_controller_for", return_value=controller):
         assert gui._launch_boss_browser() is True
 
-    command = popen.call_args.args[0]
-    assert '--remote-debugging-port=45678' in command
-    assert any(arg.startswith('--user-data-dir=') for arg in command)
-    assert 'https://www.zhipin.com/web/chat/recommend' in command
+    controller.launch_managed_chrome.assert_called_once()
+    assert controller.launch_managed_chrome.call_args.args[0] == (
+        "https://www.zhipin.com/web/chat/recommend"
+    )
     assert gui.browser_address == '127.0.0.1:45678'
-    gui._try_reconnect_browser.assert_called_once_with()
+    assert gui.browser_page is page
 
 
 def test_greet_queue_run_feedback_covers_success_and_visible_errors():
@@ -7842,7 +7828,11 @@ def test_silent_browser_poll_does_not_log_missing_debug_port():
     check_block = source[source.index("def check_browser_connection"):]
     check_block = check_block[:check_block.index("\n    def _start_browser_auto_check")]
 
-    assert 'if not silent and prev_state != "● 未连接":' in check_block
+    missing_port = check_block[check_block.index("if not port_open:"):]
+    missing_port = missing_port[:missing_port.index("\n                try:")]
+    silent_branch = missing_port[missing_port.index("if silent:"):]
+    silent_branch = silent_branch[:silent_branch.index("\n\n                    self.set_browser_ui")]
+    assert "append_log" not in silent_branch
 
 
 def test_run_worker_preserves_scan_completion_state():

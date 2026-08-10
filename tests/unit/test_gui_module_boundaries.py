@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 
 import api_connectivity
 import browser_connection
+import browser_controller
 import candidate_controller
 import candidate_diagnostics_presenter
 import candidate_cleanup
@@ -188,6 +189,20 @@ def test_browser_connection_service_excludes_gui_storage_and_scan_dependencies()
     assert callable(browser_connection.probe_page_url)
     assert callable(browser_connection.is_debug_port_open)
     assert callable(browser_connection.connect_browser_address)
+
+
+def test_browser_controller_excludes_tk_gui_storage_and_business_workflows():
+    forbidden = {
+        "bossmaster",
+        "candidate_workflow",
+        "contact_queue",
+        "gui_main",
+        "storage",
+        "tkinter",
+    }
+    assert not (_top_level_imports("browser_controller") & forbidden)
+    assert callable(browser_controller.BrowserController)
+    assert callable(browser_controller.BrowserRuntime)
 
 
 def test_result_controller_excludes_tk_gui_and_storage_dependencies():
@@ -748,15 +763,17 @@ def test_api_connectivity_controllers_delegate_network_probes():
 
 def test_browser_controllers_delegate_bounded_connection_probes():
     source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    controller_source = (ROOT / "browser_controller.py").read_text(encoding="utf-8")
     reconnect = source[source.index("def _try_reconnect_browser"):]
     reconnect = reconnect[:reconnect.index("\n    def _launch_boss_browser")]
     check = source[source.index("def check_browser_connection"):]
     check = check[:check.index("\n    def _start_browser_auto_check")]
 
-    assert "is_debug_port_open(address, timeout=0.5)" in reconnect
-    assert "connect_browser_address(" in reconnect
-    assert "prefer_boss_tab=True" in reconnect
-    assert "validate_page=True" in reconnect
+    assert "_browser_controller_for(self).reconnect(" in reconnect
+    assert "self._runtime.port_open(address, timeout=0.5)" in controller_source
+    assert "self._runtime.connector(" in controller_source
+    assert "prefer_boss_tab=prefer_boss_tab" in controller_source
+    assert "validate_page=validate_page" in controller_source
     assert "from DrissionPage" not in reconnect
 
     assert "probe_page_url(" in check
@@ -764,7 +781,8 @@ def test_browser_controllers_delegate_bounded_connection_probes():
     assert "is_debug_port_open(addr, timeout=1)" in check
     assert "connect_browser_address(addr, timeout=3)" in check
     assert "except ImportError:\n                    raise" in check
-    assert "subprocess.Popen(" in check
+    assert "self._launch_boss_browser()" in check
+    assert "self._runtime.popen(" in controller_source
     assert "_reactivate_and_navigate(" in check
     assert "self.set_browser_ui(" in check
 
