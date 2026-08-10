@@ -399,7 +399,7 @@ def build_settings_content_steps(
     self.model_list_tree.bind("<Leave>", _on_model_leave)
     self.model_list_tree.bind(
         "<Configure>",
-        lambda _event: self._update_model_list_columns(),
+        lambda _event: self.layout_support.update_model_list_columns(),
         add="+",
     )
 

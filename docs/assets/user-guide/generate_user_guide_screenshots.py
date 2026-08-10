@@ -340,7 +340,7 @@ def main() -> None:
     normal_geometry = root.geometry()
     root.state("zoomed")
     root.update()
-    app._update_result_tree_columns()
+    app.layout_support.update_result_tree_columns()
     capture_widget(root, "05-results-maximized.png")
     crop_maximized_result_columns(root, app.result_tree, "05-results-maximized.png")
     root.state("normal")

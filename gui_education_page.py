@@ -45,6 +45,10 @@ class WidgetSupport(Protocol):
     ) -> tk.Misc: ...
 
 
+class LayoutSupport(Protocol):
+    def update_education_queue_columns(self) -> None: ...
+
+
 class EducationPageHost(Protocol):
     """Narrow host contract required to build the education page."""
 
@@ -61,6 +65,7 @@ class EducationPageHost(Protocol):
     input_support: InputSupport
     feedback_support: FeedbackSupport
     widget_support: WidgetSupport
+    layout_support: LayoutSupport
 
     def _remove_current_education_image(self) -> None: ...
 
@@ -71,8 +76,6 @@ class EducationPageHost(Protocol):
     def _on_education_queue_motion(self, event: tk.Event) -> None: ...
 
     def _show_education_queue_context_menu(self, event: tk.Event) -> None: ...
-
-    def _update_education_queue_columns(self) -> None: ...
 
     def _recognize_education_image(self) -> None: ...
 
@@ -260,7 +263,7 @@ def build_education_page(
     queue_tree.bind("<Button-3>", host._show_education_queue_context_menu)
     queue_tree.bind(
         "<Configure>",
-        lambda _event: host._update_education_queue_columns(),
+        lambda _event: host.layout_support.update_education_queue_columns(),
         add="+",
     )
     queue_menu = tk.Menu(

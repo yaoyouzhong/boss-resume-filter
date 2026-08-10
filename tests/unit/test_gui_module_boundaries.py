@@ -29,6 +29,7 @@ import gui_feedback_support
 import gui_home_page
 import gui_input_support
 import gui_job_review
+import gui_layout_support
 import gui_main
 import gui_model_catalog_dialog
 import gui_result_page
@@ -644,6 +645,62 @@ def test_gui_widget_support_excludes_business_storage_browser_and_gui_main_depen
         assert ".widget_support." in page_source
 
 
+def test_gui_layout_support_owns_responsive_layout_without_host_forwarders():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "candidate_workflow",
+        "contact_queue",
+        "filtering",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("gui_layout_support") & forbidden)
+    assert callable(gui_layout_support.LayoutSupport)
+
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    gui_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BossFilterGUI"
+    )
+    method_names = {
+        node.name
+        for node in gui_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "self.layout_support = gui_layout_support.LayoutSupport(" in source
+    assert {
+        "_update_run_page_dynamic_heights",
+        "_update_result_stats_compact",
+        "_is_window_maximized",
+        "_update_result_tree_columns",
+        "_tree_header_floors",
+        "_distribute_tree_surplus",
+        "_apply_result_tree_column_widths",
+        "_update_stats_tree_columns",
+        "_is_tall_window",
+        "_get_tall_window_extra_rows",
+        "_update_config_page_dynamic_heights",
+        "_get_model_list_max_rows",
+        "_update_model_list_height",
+        "_update_model_list_columns",
+        "_update_education_queue_columns",
+    }.isdisjoint(method_names)
+
+    app_shell_source = (ROOT / "gui_app_shell.py").read_text(encoding="utf-8")
+    settings_source = (ROOT / "gui_settings_page.py").read_text(encoding="utf-8")
+    education_source = (ROOT / "gui_education_page.py").read_text(encoding="utf-8")
+    assert "layout = host.layout_support" in app_shell_source
+    assert "self.layout_support.update_model_list_columns()" in settings_source
+    assert "host.layout_support.update_education_queue_columns()" in education_source
+
+
 def test_gui_compatibility_methods_delegate_to_presenters():
     candidate = {"match_score": 70, "recommend_level": "推荐"}
     BossFilterGUI = gui_main.BossFilterGUI
@@ -895,7 +952,7 @@ def test_result_page_compatibility_method_is_a_thin_builder_delegate():
     assert "gui_result_page.build_result_page(" in block
     assert "ttk.Treeview" not in block
     assert "tk.Menu" not in block
-    assert "self._update_result_tree_columns()" in block
+    assert "self.layout_support.update_result_tree_columns()" in block
     assert "self._refresh_contact_queue_badge()" in block
 
 

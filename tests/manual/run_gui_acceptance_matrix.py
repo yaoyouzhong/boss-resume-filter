@@ -72,13 +72,13 @@ def _result_layout_smoke(
 ) -> dict:
     app.show_page_result()
     _render(root)
-    app._update_result_tree_columns()
+    app.layout_support.update_result_tree_columns()
     _render(root)
     tree_width = int(app.result_tree.winfo_width())
     actual = tuple(app.result_tree.cget("displaycolumns"))
     expected = result_display_columns(
         tree_width,
-        maximized=app._is_window_maximized(),
+        maximized=app.layout_support.is_window_maximized(),
     )
     if actual != expected:
         raise RuntimeError(
@@ -89,7 +89,7 @@ def _result_layout_smoke(
         "id": "result-column-policy-current-host",
         "status": "passed",
         "tree_width": tree_width,
-        "maximized": app._is_window_maximized(),
+        "maximized": app.layout_support.is_window_maximized(),
         "column_count": len(actual),
     }
 

@@ -14,6 +14,7 @@ from unittest.mock import Mock, call, patch
 
 import gui_main
 import gui_app_shell
+import gui_layout_support
 import gui_scroll_support
 import icons
 import bossmaster
@@ -35,6 +36,8 @@ from storage import load_candidates_all, save_candidates_all
 
 
 def _make_app_shell(host):
+    if not hasattr(host, "layout_support"):
+        host.layout_support = Mock()
     shell = gui_app_shell.AppShell(
         host,
         ui_config=gui_main.UI_CONFIG,
@@ -46,6 +49,17 @@ def _make_app_shell(host):
     shell.update_nav_highlight = Mock()
     shell.schedule_page_width_policy = Mock()
     return shell
+
+
+def _make_layout_support(host):
+    host.dpi_scale = getattr(host, "dpi_scale", 1.0)
+    host.zoom_factor = getattr(host, "zoom_factor", 1.0)
+    host.font_scale = getattr(host, "font_scale", 1.0)
+    return gui_layout_support.LayoutSupport(
+        host,
+        ui_config=gui_main.UI_CONFIG,
+        font_family="Test Font",
+    )
 
 
 def test_optional_max_age_none_displays_as_blank():
@@ -1467,10 +1481,11 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     """All fields stay addressable; narrow tables overflow into horizontal scroll."""
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot()
+    layout = _make_layout_support(gui)
 
     # 窄窗口保留所有字段及可读宽度，列宽总和大于视口以启用水平滚动。
     gui.result_tree = _FakeTree(700)
-    gui._update_result_tree_columns()
+    layout.update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 14
     assert gui.result_tree.displaycolumns[:2] == ("name", "gender")
     assert gui.result_tree.column_options["skills"]["width"] == 85
@@ -1481,7 +1496,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
 
     # 较窄窗口仍不隐藏后续画像字段。
     gui.result_tree = _FakeTree(1099)
-    gui._update_result_tree_columns()
+    layout.update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 14
     assert gui.result_tree.displaycolumns[-2:] == ("school", "company")
     assert gui.result_tree.column_options["skills"]["stretch"] is False
@@ -1491,7 +1506,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
 
     # 默认 1080P 宽度仍保留可读列宽，由水平滚动查看后续字段。
     gui.result_tree = _FakeTree(1249)
-    gui._update_result_tree_columns()
+    layout.update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 14
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
@@ -1506,7 +1521,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
         screen_height=2160,
     )
     gui.result_tree = _FakeTree(1600)
-    gui._update_result_tree_columns()
+    layout.update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 14
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
@@ -1515,7 +1530,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     # 1080P 高 DPI 最大化仍保持全部 14 列。
     gui.root = _FakeRoot(state="zoomed")
     gui.result_tree = _FakeTree(1250)
-    gui._update_result_tree_columns()
+    layout.update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 14
     assert gui.result_tree.displaycolumns[-2:] == ("school", "company")
     assert gui.result_tree.column_options["school"]["width"] >= 120
@@ -1536,7 +1551,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     ) > 1248
 
     gui.result_tree = _FakeTree(0)
-    gui._apply_result_tree_column_widths((
+    layout.apply_result_tree_column_widths((
         "name", "gender", "exp", "salary", "skills", "score", "ai_eval",
         "level", "status", "age", "education", "job_status", "school", "company",
     ))
@@ -1549,14 +1564,15 @@ def test_stats_tree_columns_expand_with_available_width():
     宽窗口显式分配富余填满表格（ttk stretch 只会收缩不会放大）。"""
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot()
+    layout = _make_layout_support(gui)
 
     gui.stats_tree = _FakeTree(900)
-    gui._update_stats_tree_columns()
+    layout.update_stats_tree_columns()
     assert gui.stats_tree.column_options["job"]["width"] == 200
     assert gui.stats_tree.column_options["job"]["stretch"] is True
 
     gui.stats_tree = _FakeTree(1400)
-    gui._update_stats_tree_columns()
+    layout.update_stats_tree_columns()
     assert gui.stats_tree.column_options["job"]["width"] > 200
     assert gui.stats_tree.column_options["job"]["width"] <= 340
     assert gui.stats_tree.column_options["avg_score"]["width"] <= 105
@@ -1570,8 +1586,9 @@ def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot(state="zoomed", width=3840, height=2000)
     gui.model_list_tree = _FakeTree(1800)
+    layout = _make_layout_support(gui)
 
-    gui._update_model_list_columns()
+    layout.update_model_list_columns()
 
     assert gui.model_list_tree.column_options["name"]["width"] == 400
     assert gui.model_list_tree.column_options["provider"]["width"] == 300
@@ -1581,7 +1598,7 @@ def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
 
     gui.root = _FakeRoot(width=1920, height=1040)
     gui.model_list_tree = _FakeTree(920)
-    gui._update_model_list_columns()
+    layout.update_model_list_columns()
 
     widths_1080p = {
         column: options["width"]
@@ -1594,7 +1611,7 @@ def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
 
     gui.root = _FakeRoot(width=2560, height=1400)
     gui.model_list_tree = _FakeTree(980)
-    gui._update_model_list_columns()
+    layout.update_model_list_columns()
 
     widths_2k = {
         column: options["width"]
@@ -1604,13 +1621,82 @@ def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
     assert widths_2k["provider"] < 240
 
 
+def test_layout_support_expands_page_widgets_only_for_tall_windows():
+    class _HeightTree:
+        def __init__(self):
+            self.height = None
+
+        def get_children(self):
+            return tuple(range(12))
+
+        def __setitem__(self, key, value):
+            assert key == "height"
+            self.height = value
+
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = _FakeRoot(height=1200, screen_height=1080)
+    gui.requirement_text = Mock()
+    gui.skills_tree = Mock()
+    gui.log_text = Mock()
+    gui.model_list_tree = _HeightTree()
+    layout = _make_layout_support(gui)
+
+    extra_rows = layout.get_tall_window_extra_rows()
+    assert layout.is_tall_window() is True
+    assert extra_rows >= 2
+
+    layout.update_config_page_dynamic_heights()
+    layout.update_run_page_dynamic_heights()
+    layout.update_model_list_height()
+
+    gui.requirement_text.configure.assert_called_once_with(
+        height=min(
+            24,
+            gui_main.UI_CONFIG["text_height_large"] + max(1, extra_rows // 2),
+        )
+    )
+    gui.skills_tree.configure.assert_called_once_with(
+        height=min(18, gui_main.UI_CONFIG["treeview_height"] + extra_rows * 2)
+    )
+    gui.log_text.configure.assert_called_once_with(height=min(40, 20 + extra_rows))
+    assert gui.model_list_tree.height == min(12, layout.get_model_list_max_rows())
+
+    gui.root = _FakeRoot(height=900, screen_height=1080)
+    assert layout.is_tall_window() is False
+    assert layout.get_tall_window_extra_rows() == 0
+    assert layout.get_model_list_max_rows() == 6
+
+
+def test_layout_support_compacts_and_restores_result_stat_icons_by_height():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = _FakeRoot(height=700)
+    gui._result_stats_compact = False
+    icon = Mock()
+    value_label = object()
+    gui._result_stat_icon_canvases = [(icon, value_label)]
+    layout = _make_layout_support(gui)
+
+    layout.update_result_stats_compact()
+    assert gui._result_stats_compact is True
+    icon.pack_forget.assert_called_once_with()
+
+    gui.root = _FakeRoot(height=900)
+    layout.update_result_stats_compact()
+    assert gui._result_stats_compact is False
+    icon.pack.assert_called_once_with(
+        anchor="center",
+        pady=(12, 4),
+        before=value_label,
+    )
+
+
 def test_saved_model_list_keeps_library_fields_and_removes_derived_purpose_column():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
     list_block = settings_source[settings_source.index("# 模型列表 Treeview"):]
     list_block = list_block[:list_block.index("# 滚动条（垂直 + 水平）")]
     load_block = source[source.index("def load_saved_models_to_tree"):]
-    load_block = load_block[:load_block.index("\n    def _get_model_list_max_rows")]
+    load_block = load_block[:load_block.index("\n    def create_run_page")]
 
     assert 'model_columns = ("name", "provider", "compat", "base_url")' in list_block
     assert 'heading("edu_ref"' not in list_block
@@ -1655,8 +1741,7 @@ def test_saved_model_list_marks_active_models_with_role_colors():
         ],
     }
     gui.model_list_tree = _FakeResultTree()
-    gui._update_model_list_height = Mock()
-    gui._update_model_list_columns = Mock()
+    gui.layout_support = Mock()
     gui._refresh_model_assignment_controls = Mock()
     gui.scroll_support = Mock()
     gui.api_canvas = Mock()
@@ -1696,15 +1781,16 @@ def test_saved_model_list_marks_shared_default_and_education_model():
 def test_education_queue_columns_keep_status_visible_on_narrow_screens():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.education_queue_tree = _FakeTree(1300)
+    layout = _make_layout_support(gui)
 
-    gui._update_education_queue_columns()
+    layout.update_education_queue_columns()
 
     assert gui.education_queue_tree.column_options["file"]["width"] == 230
     assert gui.education_queue_tree.column_options["major"]["width"] == 210
     assert gui.education_queue_tree.column_options["status"]["width"] == 140
 
     gui.education_queue_tree = _FakeTree(950)
-    gui._update_education_queue_columns()
+    layout.update_education_queue_columns()
 
     widths_1080p = {
         column: options["width"]
@@ -1715,7 +1801,7 @@ def test_education_queue_columns_keep_status_visible_on_narrow_screens():
     assert widths_1080p["major"] < 210
 
     gui.education_queue_tree = _FakeTree(1030)
-    gui._update_education_queue_columns()
+    layout.update_education_queue_columns()
 
     widths_2k = {
         column: options["width"]
@@ -2887,7 +2973,7 @@ def test_stats_page_uses_centered_width_policy():
     gui.current_page_index = 5
     gui._last_page_pack_padx = None
     gui._last_page_pack_pady = None
-    gui._update_stats_tree_columns = Mock()
+    gui.layout_support = Mock()
 
     shell = _make_app_shell(gui)
     gui_app_shell.AppShell.apply_page_width_policy(shell)
@@ -2916,7 +3002,7 @@ def test_job_config_page_releases_bottom_padding_but_preserves_header_position()
     gui.current_page_index = PageIndex.CONFIG
     gui._last_page_pack_padx = None
     gui._last_page_pack_pady = None
-    gui._update_config_page_dynamic_heights = Mock()
+    gui.layout_support = Mock()
 
     shell = _make_app_shell(gui)
     gui_app_shell.AppShell.apply_page_width_policy(shell)

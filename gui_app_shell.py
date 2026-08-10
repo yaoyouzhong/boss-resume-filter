@@ -67,6 +67,26 @@ PRIMARY_NAV_PAGES = tuple(page for page in PageIndex if page is not PageIndex.SE
 TRAFFIC_LIGHT_BASE_SIZE = 32
 
 
+class LayoutSupport(Protocol):
+    """Responsive layout operations used by the application shell."""
+
+    def update_model_list_height(self) -> None: ...
+
+    def update_model_list_columns(self) -> None: ...
+
+    def update_config_page_dynamic_heights(self) -> None: ...
+
+    def update_run_page_dynamic_heights(self) -> None: ...
+
+    def update_result_tree_columns(self) -> None: ...
+
+    def update_result_stats_compact(self) -> None: ...
+
+    def update_education_queue_columns(self) -> None: ...
+
+    def update_stats_tree_columns(self) -> None: ...
+
+
 class AppShellHost(Protocol):
     """Explicit host surface consumed by the application shell."""
 
@@ -97,26 +117,11 @@ class AppShellHost(Protocol):
     result_page: tk.Widget | None
     stats_page: tk.Widget | None
     education_page: tk.Widget | None
+    layout_support: LayoutSupport
 
     def _ensure_data_storage_available(self, action: str) -> bool: ...
 
     def _stop_browser_auto_check(self) -> None: ...
-
-    def _update_model_list_height(self) -> None: ...
-
-    def _update_model_list_columns(self) -> None: ...
-
-    def _update_config_page_dynamic_heights(self) -> None: ...
-
-    def _update_run_page_dynamic_heights(self) -> None: ...
-
-    def _update_result_tree_columns(self) -> None: ...
-
-    def _update_result_stats_compact(self) -> None: ...
-
-    def _update_education_queue_columns(self) -> None: ...
-
-    def _update_stats_tree_columns(self) -> None: ...
 
     def create_home_page(self) -> object | None: ...
 
@@ -554,20 +559,21 @@ class AppShell:
     def _refresh_current_page_layout(self, current_page: int) -> None:
         """Delegate page-local responsive updates through the explicit host surface."""
         host = self.host
+        layout = host.layout_support
         if current_page == PageIndex.SETTINGS:
-            host._update_model_list_height()
-            host._update_model_list_columns()
+            layout.update_model_list_height()
+            layout.update_model_list_columns()
         elif current_page == PageIndex.CONFIG:
-            host._update_config_page_dynamic_heights()
+            layout.update_config_page_dynamic_heights()
         elif current_page == PageIndex.RUN:
-            host._update_run_page_dynamic_heights()
+            layout.update_run_page_dynamic_heights()
         elif current_page == PageIndex.RESULTS:
-            host._update_result_tree_columns()
-            host._update_result_stats_compact()
+            layout.update_result_tree_columns()
+            layout.update_result_stats_compact()
         elif current_page == PageIndex.EDUCATION:
-            host._update_education_queue_columns()
+            layout.update_education_queue_columns()
         elif current_page == PageIndex.STATS:
-            host._update_stats_tree_columns()
+            layout.update_stats_tree_columns()
 
     def hide_all_pages(self) -> None:
         """Hide all cached pages and stop run-page browser polling."""

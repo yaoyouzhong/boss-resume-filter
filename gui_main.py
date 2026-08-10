@@ -56,6 +56,7 @@ import gui_home_page
 import gui_input_support
 import gui_job_review
 import gui_app_shell
+import gui_layout_support
 import gui_result_page
 import gui_run_page
 import gui_scroll_support
@@ -77,7 +78,6 @@ from gui_app_shell import PAGE_SPECS, TRAFFIC_LIGHT_BASE_SIZE, PageIndex
 import run_presenter
 import stats_presenter
 import ui_theme
-from ui_layout import result_display_columns
 from ui_windowing import (
     clamp as _clamp,
     get_windows_monitor_area as _get_windows_monitor_area,
@@ -1073,6 +1073,11 @@ class BossFilterGUI:
         )
         self.feedback_support = gui_feedback_support.FeedbackSupport(self, font_family=FONT_FAMILY)
         self.widget_support = gui_widget_support.WidgetSupport(self, ui_config=UI_CONFIG)
+        self.layout_support = gui_layout_support.LayoutSupport(
+            self,
+            ui_config=UI_CONFIG,
+            font_family=FONT_FAMILY,
+        )
 
         # 创建进度状态图标（依赖 self.colors，必须在 setup_styles 之后）
         status_icons = self.widget_support.create_status_icons()
@@ -1534,258 +1539,6 @@ class BossFilterGUI:
             return DateEntry(parent, locale='zh_CN', **kwargs)
         except Exception:
             return DateEntry(parent, **kwargs)
-
-    def _update_run_page_dynamic_heights(self):
-        """高窗口下让运行日志区域利用多余高度。"""
-        log_text = getattr(self, 'log_text', None)
-        if log_text is None:
-            return
-        extra_rows = self._get_tall_window_extra_rows()
-        try:
-            log_text.configure(height=min(40, 20 + extra_rows))
-        except tk.TclError:
-            return
-
-    def _update_result_stats_compact(self):
-        """矮窗口下隐藏结果页统计卡片的圆形图标，把纵向空间还给候选人表格。"""
-        cards = getattr(self, '_result_stat_icon_canvases', None)
-        if not cards:
-            return
-        try:
-            window_height = int(self.root.winfo_height())
-        except (tk.TclError, ValueError):
-            return
-        if window_height <= 0:
-            return
-        compact = window_height < 820
-        if compact == getattr(self, '_result_stats_compact', False):
-            return
-        self._result_stats_compact = compact
-        icon_pady = (
-            int(12 * self.dpi_scale * self.zoom_factor),
-            int(4 * self.dpi_scale * self.zoom_factor),
-        )
-        for icon_canvas, value_label in cards:
-            try:
-                if compact:
-                    icon_canvas.pack_forget()
-                else:
-                    icon_canvas.pack(anchor="center", pady=icon_pady, before=value_label)
-            except tk.TclError:
-                pass
-
-    def _is_window_maximized(self) -> bool:
-        """Return True when the main window is maximized or effectively fullscreen."""
-        try:
-            if self.root.state() == "zoomed":
-                return True
-            return (
-                self.root.winfo_width() >= self.root.winfo_screenwidth() * 0.9
-                and self.root.winfo_height() >= self.root.winfo_screenheight() * 0.85
-            )
-        except (tk.TclError, ValueError):
-            return False
-
-    def _update_result_tree_columns(self):
-        """Keep every result field available and size it for horizontal scrolling."""
-        if not hasattr(self, 'result_tree'):
-            return
-
-        try:
-            tree_width = int(self.result_tree.winfo_width())
-        except (tk.TclError, ValueError):
-            tree_width = 0
-        display_columns = result_display_columns(
-            tree_width,
-            maximized=self._is_window_maximized(),
-        )
-        self._apply_result_tree_column_widths(display_columns)
-        if tuple(self.result_tree.cget("displaycolumns")) != display_columns:
-            self.result_tree.configure(displaycolumns=display_columns)
-
-    def _tree_header_floors(self, tree, display_columns, min_widths):
-        """每列不被截断的宽度下限：表头文字实测宽度 + 排序/内边距余量，与 minwidth 取大。"""
-        import tkinter.font as tkfont
-        scale = getattr(self, 'dpi_scale', 1.0) * getattr(self, 'zoom_factor', 1.0)
-        overhead = int(30 * scale)
-        try:
-            measure_font = tkfont.Font(
-                font=(FONT_FAMILY, int(12 * getattr(self, 'font_scale', 1.0)), 'bold'))
-            floors = {}
-            for column in display_columns:
-                text = str(tree.heading(column).get('text', '') or '')
-                floors[column] = max(
-                    min_widths[column], measure_font.measure(text) + overhead)
-            return floors
-        except (tk.TclError, RuntimeError, AttributeError):
-            return {column: min_widths[column] for column in display_columns}
-
-    @staticmethod
-    def _distribute_tree_surplus(widths, flexible_columns, floors, base_widths,
-                                 growth_caps, extra):
-        """富余宽度分配：增长上限内按基础宽度权重灌水，全部触顶后余量再按比例摊开。
-
-        ttk 的 stretch 只会收缩不会放大，富余宽度必须显式分配；
-        数值/短文本列设增长上限，避免宽屏下短内容列被拉成空阔巨列、
-        长文本列反而截断。
-        """
-        while extra > 0:
-            eligible = [c for c in flexible_columns
-                        if widths[c] < max(growth_caps[c], floors[c])]
-            if not eligible:
-                break
-            total_weight = sum(base_widths[c] for c in eligible)
-            allocated = 0
-            for column in eligible:
-                share = min(extra * base_widths[column] // total_weight,
-                            max(growth_caps[column], floors[column]) - widths[column])
-                widths[column] += share
-                allocated += share
-            if allocated <= 0:
-                break
-            extra -= allocated
-        if extra > 0:
-            total_weight = sum(base_widths[c] for c in flexible_columns)
-            allocated = 0
-            for column in flexible_columns[:-1]:
-                share = extra * base_widths[column] // total_weight
-                widths[column] += share
-                allocated += share
-            widths[flexible_columns[-1]] += extra - allocated
-
-    def _apply_result_tree_column_widths(self, display_columns):
-        """Keep readable widths; use horizontal overflow before compressing fields."""
-        base_widths = {
-            "name": 80, "gender": 55, "exp": 85, "salary": 85, "skills": 85,
-            "score": 70, "ai_eval": 70, "level": 80, "status": 180,
-            "age": 70, "education": 90, "job_status": 130,
-            "school": 150, "company": 160,
-        }
-        min_widths = {
-            "name": 60, "gender": 48, "exp": 70, "salary": 70, "skills": 70,
-            "score": 60, "ai_eval": 60, "level": 70, "status": 150,
-            "age": 60, "education": 80, "job_status": 90,
-            "school": 120, "company": 125,
-        }
-
-        try:
-            available_width = max(0, int(self.result_tree.winfo_width()) - 2)
-        except (tk.TclError, ValueError):
-            available_width = 0
-
-        # 短画像列保持紧凑；窗口不足时保留可读列宽并交给水平滚动条，
-        # 仅当全部字段已经容纳后，才把富余宽度分配给长文本列。
-        fixed_columns = {"gender", "age", "education"}
-        flexible_columns = [c for c in display_columns if c not in fixed_columns]
-        floors = self._tree_header_floors(self.result_tree, display_columns, min_widths)
-        widths = {
-            column: max(base_widths[column], floors[column])
-            for column in display_columns
-        }
-        stretch = False
-        growth_caps = {
-            "name": 130, "gender": 65, "exp": 115, "salary": 120, "skills": 130,
-            "score": 95, "ai_eval": 95, "level": 120, "status": 260,
-            "age": 80, "education": 110, "job_status": 170,
-            "school": 280, "company": 320,
-        }
-        content_width = sum(widths.values())
-        if available_width > content_width and flexible_columns:
-            self._distribute_tree_surplus(
-                widths, flexible_columns, floors, base_widths, growth_caps,
-                available_width - content_width,
-            )
-
-        for column in display_columns:
-            self.result_tree.column(
-                column,
-                width=widths[column],
-                minwidth=min_widths[column],
-                stretch=stretch,
-            )
-
-    def _update_stats_tree_columns(self):
-        """Rebalance stats detail columns so wide windows fill the table.
-
-        与结果表同一套逻辑：表头实测宽度为下限，富余在增长上限内按
-        基础宽度分配，避免右侧留白或岗位名称等长文本列截断。
-        """
-        tree = getattr(self, 'stats_tree', None)
-        if tree is None:
-            return
-        base_widths = {
-            "job": 200, "filter_dist": 175, "greeted": 100, "feedback": 80,
-            "suitable_rate": 75, "false_positive_rate": 75,
-            "replied": 100, "interviewed": 100, "avg_score": 65,
-        }
-        min_widths = {
-            "job": 150, "filter_dist": 140, "greeted": 80, "feedback": 65,
-            "suitable_rate": 60, "false_positive_rate": 60,
-            "replied": 80, "interviewed": 80, "avg_score": 55,
-        }
-        growth_caps = {
-            "job": 340, "filter_dist": 260, "greeted": 150, "feedback": 120,
-            "suitable_rate": 110, "false_positive_rate": 110,
-            "replied": 150, "interviewed": 150, "avg_score": 100,
-        }
-        columns = list(base_widths)
-        try:
-            available_width = max(0, int(tree.winfo_width()) - 2)
-        except (tk.TclError, ValueError):
-            available_width = 0
-
-        floors = self._tree_header_floors(tree, columns, min_widths)
-        widths = dict(base_widths)
-        stretch = True
-        floor_total = sum(floors.values())
-        if available_width > max(sum(base_widths.values()), floor_total):
-            widths.update(floors)
-            self._distribute_tree_surplus(
-                widths, columns, floors, base_widths, growth_caps,
-                available_width - floor_total)
-            stretch = False
-
-        for column in columns:
-            tree.column(
-                column,
-                width=widths[column],
-                minwidth=min_widths[column],
-                stretch=stretch,
-            )
-
-    def _is_tall_window(self) -> bool:
-        """Return True if the window height exceeds 85% of screen height (min 1000px)."""
-        try:
-            window_height = int(self.root.winfo_height())
-            screen_height = int(self.root.winfo_screenheight())
-        except (tk.TclError, ValueError):
-            return False
-        return window_height >= max(1000, int(screen_height * 0.85))
-
-    def _get_tall_window_extra_rows(self):
-        """Return extra visible rows for pages that can use fullscreen height."""
-        if not self._is_tall_window():
-            return 0
-        try:
-            window_height = int(self.root.winfo_height())
-        except (tk.TclError, ValueError):
-            return 0
-        return max(2, (window_height - UI_CONFIG['window_base_height']) // 70)
-
-    def _update_config_page_dynamic_heights(self):
-        """Increase job-config text/list heights only for tall or fullscreen windows."""
-        extra_rows = self._get_tall_window_extra_rows()
-        requirement_extra_rows = 0 if extra_rows == 0 else max(1, extra_rows // 2)
-        requirement_rows = min(24, UI_CONFIG['text_height_large'] + requirement_extra_rows)
-        skills_rows = min(18, UI_CONFIG['treeview_height'] + extra_rows * 2)
-
-        try:
-            if hasattr(self, 'requirement_text'):
-                self.requirement_text.configure(height=requirement_rows)
-            if hasattr(self, 'skills_tree'):
-                self.skills_tree.configure(height=skills_rows)
-        except tk.TclError:
-            return
 
     def create_home_page(self):
         """创建首页。"""
@@ -2948,9 +2701,9 @@ class BossFilterGUI:
             )
 
         # 动态调整高度：普通窗口保持原来的最多6行，全屏/高窗口显示更多行。
-        self._update_model_list_height()
+        self.layout_support.update_model_list_height()
         # 根据窗口状态显示/隐藏 Base URL 列
-        self._update_model_list_columns()
+        self.layout_support.update_model_list_columns()
         self._refresh_model_assignment_controls()
 
         # 在所有控件创建完毕后绑定滚轮事件
@@ -2958,116 +2711,6 @@ class BossFilterGUI:
             self.api_canvas,
             self.api_scrollable_frame,
         )
-
-    def _get_model_list_max_rows(self):
-        """Return saved-model list max rows for the current window height."""
-        base_rows = 6
-        if not self._is_tall_window():
-            return base_rows
-        try:
-            window_height = int(self.root.winfo_height())
-        except (tk.TclError, ValueError):
-            return base_rows
-        extra_rows = max(0, (window_height - UI_CONFIG['window_base_height']) // 42)
-        return min(18, max(10, base_rows + extra_rows))
-
-    def _update_model_list_height(self):
-        """Resize saved-model Treeview height without changing normal-window layout."""
-        if not hasattr(self, 'model_list_tree'):
-            return
-        try:
-            row_count = len(self.model_list_tree.get_children())
-            max_rows = self._get_model_list_max_rows()
-            self.model_list_tree['height'] = max(1, min(row_count, max_rows))
-        except tk.TclError:
-            return
-
-    def _update_model_list_columns(self):
-        """Fit saved-model columns while preserving the wider 4K layout."""
-        if not hasattr(self, 'model_list_tree'):
-            return
-        display = ("name", "provider", "compat", "base_url")
-        current = tuple(self.model_list_tree.cget("displaycolumns"))
-        if current != display:
-            self.model_list_tree.configure(displaycolumns=display)
-
-        if self._is_window_maximized():
-            base_widths = {
-                "name": 400, "provider": 300, "compat": 220, "base_url": 380,
-            }
-        else:
-            base_widths = {
-                "name": 320, "provider": 260, "compat": 190, "base_url": 360,
-            }
-
-        min_widths = {
-            "name": 180, "provider": 160, "compat": 120, "base_url": 170,
-        }
-        widths = dict(base_widths)
-        try:
-            available_width = max(0, int(self.model_list_tree.winfo_width()) - 24)
-        except (tk.TclError, ValueError):
-            available_width = 0
-
-        overflow = sum(widths.values()) - available_width
-        if available_width > 0 and overflow > 0:
-            for column in ("provider", "base_url", "compat", "name"):
-                reducible = max(0, widths[column] - min_widths[column])
-                reduction = min(reducible, overflow)
-                widths[column] -= reduction
-                overflow -= reduction
-                if overflow <= 0:
-                    break
-            if overflow > 0:
-                widths["base_url"] = max(
-                    min_widths["base_url"], widths["base_url"] - overflow
-                )
-
-        for column in display:
-            self.model_list_tree.column(
-                column,
-                width=widths[column],
-                minwidth=min_widths[column],
-                stretch=column == "base_url",
-            )
-
-    def _update_education_queue_columns(self):
-        """Keep the education queue status column visible on 1080p screens."""
-        if not hasattr(self, 'education_queue_tree'):
-            return
-
-        base_widths = {
-            "file": 230, "name": 120, "number": 160,
-            "school": 175, "major": 210, "status": 140,
-        }
-        min_widths = {
-            "file": 150, "name": 80, "number": 130,
-            "school": 130, "major": 150, "status": 120,
-        }
-        widths = dict(base_widths)
-        try:
-            available_width = max(0, int(self.education_queue_tree.winfo_width()) - 24)
-        except (tk.TclError, ValueError):
-            available_width = 0
-
-        overflow = sum(widths.values()) - available_width
-        if available_width > 0 and overflow > 0:
-            for column in ("major", "file", "school", "name", "number", "status"):
-                reducible = max(0, widths[column] - min_widths[column])
-                reduction = min(reducible, overflow)
-                widths[column] -= reduction
-                overflow -= reduction
-                if overflow <= 0:
-                    break
-
-        for column in ("file", "name", "number", "school", "major", "status"):
-            self.education_queue_tree.column(
-                column,
-                width=widths[column],
-                minwidth=min_widths[column],
-                anchor="w" if column == "file" else "center",
-                stretch=column in ("file", "number", "school", "major"),
-            )
 
     def create_run_page(self) -> None:
         """同步创建运行控制页，供需要立即访问控件的内部流程使用。"""
@@ -3169,7 +2812,7 @@ class BossFilterGUI:
         self.result_more_menu_button = widgets.more_menu_button
         self.result_more_menu = widgets.more_menu
 
-        self._update_result_tree_columns()
+        self.layout_support.update_result_tree_columns()
         self._refresh_contact_queue_badge()
 
 
