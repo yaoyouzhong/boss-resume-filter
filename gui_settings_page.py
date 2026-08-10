@@ -111,7 +111,7 @@ def build_settings_content_steps(
         "<Enter>",
         lambda e: self._show_assigned_model_test_tooltip("default", e),
     )
-    btn_test_default_model.bind("<Leave>", self._hide_tooltip)
+    btn_test_default_model.bind("<Leave>", self.feedback_support.hide_tooltip)
 
     yield
 
@@ -151,7 +151,7 @@ def build_settings_content_steps(
         "<Enter>",
         lambda e: self._show_assigned_model_test_tooltip("education", e),
     )
-    btn_test_education_model.bind("<Leave>", self._hide_tooltip)
+    btn_test_education_model.bind("<Leave>", self.feedback_support.hide_tooltip)
 
     yield
 
@@ -344,16 +344,16 @@ def build_settings_content_steps(
         item = self.model_list_tree.identify_row(event.y)
         column = self.model_list_tree.identify_column(event.x)
         if not item or column not in self._model_col_idx:
-            self._hide_model_tooltip()
+            self.feedback_support.hide_model_tooltip()
             return
         idx = self._model_col_idx[column]
         values = self.model_list_tree.item(item, 'values')
         if not values or len(values) <= idx:
-            self._hide_model_tooltip()
+            self.feedback_support.hide_model_tooltip()
             return
         text = str(values[idx])
         if not text:
-            self._hide_model_tooltip()
+            self.feedback_support.hide_model_tooltip()
             return
         # 用 bbox 获取单元格实际像素宽度
         try:
@@ -374,7 +374,7 @@ def build_settings_content_steps(
             text_width = len(text) * 8
         # 内边距 16px
         if text_width <= cell_width - 16:
-            self._hide_model_tooltip()
+            self.feedback_support.hide_model_tooltip()
             return
         tooltip_key = (item, column)
         if tooltip_key == self._model_tooltip_item and self._model_tooltip and self._model_tooltip.winfo_exists():
@@ -385,12 +385,15 @@ def build_settings_content_steps(
         x = self.root.winfo_pointerx() + 15
         y = self.root.winfo_pointery() + 10
         self._model_tooltip_after_id = self.root.after(
-            300, lambda t=text, k=tooltip_key, px=x, py=y: self._show_model_tooltip(t, px, py, k)
+            300,
+            lambda t=text, k=tooltip_key, px=x, py=y: (
+                self.feedback_support.show_model_tooltip(t, px, py, k)
+            ),
         )
 
     def _on_model_leave(event):
         """鼠标离开时隐藏 tooltip"""
-        self._hide_model_tooltip()
+        self.feedback_support.hide_model_tooltip()
 
     self.model_list_tree.bind("<Motion>", _on_model_motion)
     self.model_list_tree.bind("<Leave>", _on_model_leave)

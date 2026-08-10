@@ -17,6 +17,18 @@ class NavigationShell(Protocol):
     def schedule_page_width_policy(self) -> None: ...
 
 
+class FeedbackSupport(Protocol):
+    def show_tooltip(
+        self,
+        text: str,
+        x: int,
+        y: int,
+        tooltip_key: object,
+    ) -> None: ...
+
+    def hide_tooltip(self, event: tk.Event | None = None) -> None: ...
+
+
 class ResultPageHost(Protocol):
     """Narrow host contract required to build the result page."""
 
@@ -35,6 +47,7 @@ class ResultPageHost(Protocol):
     _result_search_placeholder_active: bool
     _result_search_focused: bool
     app_shell: NavigationShell
+    feedback_support: FeedbackSupport
 
     def _create_page_header(
         self,
@@ -55,16 +68,6 @@ class ResultPageHost(Protocol):
     def _filter_result_tree(self) -> None: ...
 
     def _refresh_results_and_reset_sort(self) -> None: ...
-
-    def _show_tooltip(
-        self,
-        text: str,
-        x: int,
-        y: int,
-        source_key: tuple[str, ...],
-    ) -> None: ...
-
-    def _hide_tooltip(self, event: tk.Event | None = None) -> None: ...
 
     def _update_result_review_button_state(self, event: tk.Event | None = None) -> None: ...
 
@@ -408,14 +411,14 @@ def build_result_page(
     )
     refresh_icon.bind(
         "<Enter>",
-        lambda event: host._show_tooltip(
+        lambda event: host.feedback_support.show_tooltip(
             "刷新结果并恢复默认排序",
             event.x_root + int(12 * scale),
             event.y_root + int(12 * scale),
             ("result_refresh",),
         ),
     )
-    refresh_icon.bind("<Leave>", host._hide_tooltip)
+    refresh_icon.bind("<Leave>", host.feedback_support.hide_tooltip)
     refresh_icon.pack(side="right", padx=(int(6 * scale), int(12 * scale)))
     blacklist_check.pack(side="right", padx=(0, int(6 * scale)))
 
@@ -588,7 +591,7 @@ def build_result_page(
         lambda _event: host._open_greet_queue_from_result(),
     )
     greet_queue_badge.bind("<Enter>", host._show_result_contact_badge_tooltip)
-    greet_queue_badge.bind("<Leave>", host._hide_tooltip)
+    greet_queue_badge.bind("<Leave>", host.feedback_support.hide_tooltip)
 
     state_check_icon = host.icons.button("health_shield", host.colors["primary"])
     export_icon = host.icons.button("export", host.colors["text_primary"])

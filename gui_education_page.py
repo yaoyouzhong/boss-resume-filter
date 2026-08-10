@@ -24,6 +24,10 @@ class InputSupport(Protocol):
     def bind_entry_context_menu(self, entry: tk.Misc) -> None: ...
 
 
+class FeedbackSupport(Protocol):
+    def hide_tooltip(self, event: tk.Event | None = None) -> None: ...
+
+
 class EducationPageHost(Protocol):
     """Narrow host contract required to build the education page."""
 
@@ -38,6 +42,7 @@ class EducationPageHost(Protocol):
     _context_menus: list[tk.Menu]
     scroll_support: ScrollSupport
     input_support: InputSupport
+    feedback_support: FeedbackSupport
 
     def _create_page_header(
         self,
@@ -61,8 +66,6 @@ class EducationPageHost(Protocol):
     def _on_education_queue_select(self, event: tk.Event | None = None) -> None: ...
 
     def _on_education_queue_motion(self, event: tk.Event) -> None: ...
-
-    def _hide_tooltip(self, event: tk.Event | None = None) -> None: ...
 
     def _show_education_queue_context_menu(self, event: tk.Event) -> None: ...
 
@@ -250,7 +253,7 @@ def build_education_page(
     queue_scrollbar.grid_remove()
     queue_tree.bind("<<TreeviewSelect>>", host._on_education_queue_select)
     queue_tree.bind("<Motion>", host._on_education_queue_motion, add="+")
-    queue_tree.bind("<Leave>", host._hide_tooltip, add="+")
+    queue_tree.bind("<Leave>", host.feedback_support.hide_tooltip, add="+")
     queue_tree.bind("<Button-3>", host._show_education_queue_context_menu)
     queue_tree.bind(
         "<Configure>",

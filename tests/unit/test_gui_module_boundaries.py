@@ -25,6 +25,7 @@ import gui_contact_queue
 import gui_config_page
 import gui_data_maintenance_dialogs
 import gui_education_page
+import gui_feedback_support
 import gui_home_page
 import gui_input_support
 import gui_job_review
@@ -522,6 +523,66 @@ def test_gui_input_support_excludes_business_storage_browser_and_gui_main_depend
     ):
         page_source = (ROOT / page_module).read_text(encoding="utf-8")
         assert ".input_support." in page_source
+
+
+def test_gui_feedback_support_excludes_business_storage_browser_and_gui_main_dependencies():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "candidate_workflow",
+        "contact_queue",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("gui_feedback_support") & forbidden)
+    assert callable(gui_feedback_support.FeedbackSupport)
+    host = type("FeedbackHost", (), {})()
+    gui_feedback_support.FeedbackSupport(host, font_family="Arial")
+    assert host._tooltip is None
+    assert host._model_tooltip is None
+    assert host._skills_tooltip is None
+    assert host._req_tooltip is None
+    assert host._inline_banners == {}
+
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    gui_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BossFilterGUI"
+    )
+    method_names = {
+        node.name
+        for node in gui_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "self.feedback_support = gui_feedback_support.FeedbackSupport(" in source
+    assert {
+        "_styled_tooltip",
+        "_show_tooltip",
+        "_hide_tooltip",
+        "_show_model_tooltip",
+        "_hide_model_tooltip",
+        "_create_simple_tooltip",
+        "_hide_skills_tooltip",
+        "_hide_req_tooltip",
+        "_show_inline_banner",
+        "_hide_inline_banner",
+    }.isdisjoint(method_names)
+    for page_module in (
+        "gui_candidate_actions.py",
+        "gui_candidate_diagnostics.py",
+        "gui_config_page.py",
+        "gui_education_page.py",
+        "gui_result_page.py",
+        "gui_settings_page.py",
+    ):
+        page_source = (ROOT / page_module).read_text(encoding="utf-8")
+        assert ".feedback_support." in page_source
 
 
 def test_gui_compatibility_methods_delegate_to_presenters():
@@ -1641,6 +1702,7 @@ def test_contact_queue_delegate_keeps_refresh_and_business_callbacks_in_gui_main
     gui.greet_queue_window = None
     gui.greet_queue_items = [{"status": "待发送"}]
     gui.greet_queue_selected_group = "待发送"
+    gui.feedback_support = Mock()
     gui._ensure_greet_queue_loaded = Mock()
     gui._refresh_greet_queue_dialog = Mock()
     widgets = Mock()

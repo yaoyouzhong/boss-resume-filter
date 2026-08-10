@@ -51,6 +51,7 @@ import gui_contact_queue
 import gui_config_page
 import gui_data_maintenance_dialogs
 import gui_education_page
+import gui_feedback_support
 import gui_home_page
 import gui_input_support
 import gui_job_review
@@ -1069,6 +1070,7 @@ class BossFilterGUI:
             self,
             font_family=FONT_FAMILY,
         )
+        self.feedback_support = gui_feedback_support.FeedbackSupport(self, font_family=FONT_FAMILY)
 
         # 创建进度状态图标（依赖 self.colors，必须在 setup_styles 之后）
         self._create_status_icons()
@@ -2900,7 +2902,7 @@ class BossFilterGUI:
             "success": f"{target_label}测试通过，点击重新测试",
             "error": f"{target_label}测试失败，点击重试",
         }.get(state, f"测试{target_label}")
-        self._show_tooltip(text, event.x_root + 12, event.y_root + 10, ("model-test", role))
+        self.feedback_support.show_tooltip(text, event.x_root + 12, event.y_root + 10, ("model-test", role))
 
     def _refresh_model_assignment_controls(self):
         """让模型用途选择器与 saved_models 和当前配置保持一致。"""
@@ -3471,11 +3473,11 @@ class BossFilterGUI:
         tooltip_columns = {"#1": 0, "#4": 3, "#5": 4}
         value_index = tooltip_columns.get(column_id)
         if not item_id or value_index is None:
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
         values = tree.item(item_id, "values")
         if len(values) <= value_index:
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
         full_text = str(values[value_index] or "")
         cell_bbox = tree.bbox(item_id, column_id)
@@ -3484,7 +3486,7 @@ class BossFilterGUI:
             or not cell_bbox
             or self._education_tree_font.measure(full_text) <= max(0, cell_bbox[2] - 12)
         ):
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
         tooltip_key = ("education", item_id, column_id)
         if (
@@ -3500,7 +3502,7 @@ class BossFilterGUI:
         x = self.root.winfo_pointerx() + 15
         y = self.root.winfo_pointery() + 10
         self._tooltip_after_id = self.root.after(
-            300, lambda: self._show_tooltip(full_text, x, y, tooltip_key)
+            300, lambda: self.feedback_support.show_tooltip(full_text, x, y, tooltip_key)
         )
 
     def _show_education_queue_context_menu(self, event):
@@ -4634,7 +4636,7 @@ class BossFilterGUI:
         pending = getattr(self, '_result_contact_pending_count', 0)
         if pending <= 0:
             return
-        self._show_tooltip(
+        self.feedback_support.show_tooltip(
             f"{pending} 人发送结果待核实",
             event.x_root + int(12 * self.dpi_scale * self.zoom_factor),
             event.y_root + int(12 * self.dpi_scale * self.zoom_factor),
@@ -4842,7 +4844,7 @@ class BossFilterGUI:
         """显示首页统计详情"""
         try:
             if not CANDIDATES_PATH.exists():
-                self._show_inline_banner(
+                self.feedback_support.show_inline_banner(
                     self.home_page,
                     'info',
                     "暂无候选人数据，请先到运行控制页开始筛选。",
@@ -4900,7 +4902,7 @@ class BossFilterGUI:
                 return
 
             if not filtered:
-                self._show_inline_banner(
+                self.feedback_support.show_inline_banner(
                     self.home_page,
                     'info',
                     f"{title}：暂无数据。",
@@ -4918,7 +4920,7 @@ class BossFilterGUI:
         """显示筛选结果统计详情"""
         try:
             if not CANDIDATES_PATH.exists():
-                self._show_inline_banner(
+                self.feedback_support.show_inline_banner(
                     self.result_page,
                     'info',
                     "暂无候选人数据，请先到运行控制页开始筛选。",
@@ -5001,7 +5003,7 @@ class BossFilterGUI:
                 return
 
             if not filtered:
-                self._show_inline_banner(
+                self.feedback_support.show_inline_banner(
                     self.result_page,
                     'info',
                     f"{title}：暂无数据。",
@@ -7459,7 +7461,7 @@ class BossFilterGUI:
                         self._humanize_ai_parse_warning(w)
                         for w in ai_parse_warnings[:5]
                     ]
-                    self._show_inline_banner(
+                    self.feedback_support.show_inline_banner(
                         self.config_page,
                         "warning",
                         "AI 已补全解析结果，请确认："
@@ -9529,7 +9531,7 @@ class BossFilterGUI:
             messagebox.showerror("状态体检", f"读取候选人数据失败：{exc}", parent=self.root)
             return
         if not candidates:
-            self._show_inline_banner(self.result_page, 'info', f"{scope} 没有候选人数据可检查。")
+            self.feedback_support.show_inline_banner(self.result_page, "info", f"{scope} 没有候选人数据可检查。")
             return
 
         issues = diagnose_candidate_states(candidates)
@@ -9544,11 +9546,11 @@ class BossFilterGUI:
             messagebox.showerror("今日待办", f"读取候选人数据失败：{exc}", parent=self.root)
             return
         if not candidates:
-            self._show_inline_banner(self.result_page, 'info', f"{scope} 没有候选人数据可处理。")
+            self.feedback_support.show_inline_banner(self.result_page, "info", f"{scope} 没有候选人数据可处理。")
             return
         items = build_daily_candidate_actions(candidates)
         if not items:
-            self._show_inline_banner(self.result_page, 'info', f"{scope} 暂无需要优先处理的候选人。")
+            self.feedback_support.show_inline_banner(self.result_page, "info", f"{scope} 暂无需要优先处理的候选人。")
             return
         self._show_daily_candidate_actions_dialog(scope, items)
 
@@ -9972,7 +9974,7 @@ class BossFilterGUI:
         self._tooltip_after_id = None
         self._tooltip_item = None
         self.result_tree.bind('<Motion>', self._on_tree_motion)
-        self.result_tree.bind('<Leave>', self._hide_tooltip)
+        self.result_tree.bind('<Leave>', self.feedback_support.hide_tooltip)
 
     def _select_all_result_rows(self, _event=None):
         """Select every candidate currently visible in the result table."""
@@ -9988,7 +9990,7 @@ class BossFilterGUI:
         item = self.result_tree.identify_row(event.y)
         column_id = self.result_tree.identify_column(event.x)
         if not item or not column_id:
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
 
         try:
@@ -9996,7 +9998,7 @@ class BossFilterGUI:
             column_index = int(column_id[1:]) - 1
             column_name = display_columns[column_index]
         except (IndexError, TypeError, ValueError):
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
 
         cand = self._item_to_candidate.get(item)
@@ -10032,7 +10034,7 @@ class BossFilterGUI:
             show_tooltip = False
 
         if not full or not show_tooltip:
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
 
         tooltip_key = (item, column_name)
@@ -10044,7 +10046,7 @@ class BossFilterGUI:
         x = self.root.winfo_pointerx() + 15
         y = self.root.winfo_pointery() + 10
         self._tooltip_after_id = self.root.after(
-            300, lambda: self._show_tooltip(full, x, y, tooltip_key)
+            300, lambda: self.feedback_support.show_tooltip(full, x, y, tooltip_key)
         )
 
     def _build_empty_state(self, parent, icon_name, title, hint, action_text=None, action_command=None):
@@ -10087,60 +10089,6 @@ class BossFilterGUI:
                 frame.place_forget()
         except tk.TclError:
             pass
-
-    def _show_inline_banner(self, page, kind, text, duration_ms=6000):
-        """在页面顶部展示非模态 inline 横幅（自动消失，可点 ✕ 关闭）。
-
-        kind: info / warning / error / success。用于替代打断流程的纯通知弹窗。
-        """
-        try:
-            if page is None or not page.winfo_exists():
-                return
-        except tk.TclError:
-            return
-        self._hide_inline_banner(page)
-        bg_key, bg_fallback = {
-            'info': ('banner_info_bg', ui_theme.BANNER_INFO_BG),
-            'warning': ('banner_warning_bg', ui_theme.BANNER_WARNING_BG),
-            'error': ('banner_error_bg', ui_theme.BANNER_ERROR_BG),
-            'success': ('banner_success_bg', ui_theme.BANNER_SUCCESS_BG),
-        }.get(kind, ('banner_info_bg', ui_theme.BANNER_INFO_BG))
-        bg = self.colors.get(bg_key, bg_fallback)
-        banner = tk.Frame(page, bg=bg)
-        tk.Label(
-            banner, text=text, bg=bg,
-            fg=self.colors['text_primary'], font=self.font_label,
-            anchor='w', justify='left',
-        ).pack(
-            side='left', fill='x', expand=True,
-            padx=(int(12 * self.dpi_scale), int(8 * self.dpi_scale)),
-            pady=int(8 * self.dpi_scale),
-        )
-        close = tk.Label(
-            banner, text='✕', bg=bg, cursor='hand2',
-            fg=self.colors['text_secondary'], font=self.font_label,
-        )
-        close.pack(side='right', padx=(0, int(12 * self.dpi_scale)))
-        close.bind('<Button-1>', lambda _e: self._hide_inline_banner(page))
-        children = page.winfo_children()
-        if children:
-            banner.pack(side='top', fill='x', before=children[0])
-        else:
-            banner.pack(side='top', fill='x')
-        if not hasattr(self, '_inline_banners'):
-            self._inline_banners = {}
-        self._inline_banners[page] = banner
-        if duration_ms:
-            banner.after(duration_ms, lambda p=page: self._hide_inline_banner(p))
-
-    def _hide_inline_banner(self, page):
-        """关闭指定页面顶部的 inline 横幅（若存在）。"""
-        banner = getattr(self, '_inline_banners', {}).pop(page, None)
-        if banner is not None:
-            try:
-                banner.destroy()
-            except tk.TclError:
-                pass
 
     def _create_switch(self, parent, variable, enabled_variable=None):
         """自绘拨动开关（OFF 灰色圆点居左 / ON 品牌蓝圆点居右），绑定 BooleanVar。
@@ -10226,100 +10174,6 @@ class BossFilterGUI:
             enabled_variable.trace_add('write', lambda *_args: _draw())
         return canvas
 
-    def _styled_tooltip(self, text, x, y, wraplength=None, parent=None):
-        """创建统一深色现代 tooltip（圆角观感、白字、无边框），返回 Toplevel。"""
-        tooltip_parent = parent or self.root
-        tip = tk.Toplevel(tooltip_parent)
-        tip.wm_overrideredirect(True)
-        kwargs = {}
-        if wraplength:
-            kwargs['wraplength'] = wraplength
-            kwargs['justify'] = 'left'
-        label = tk.Label(
-            tip, text=text,
-            background=self.colors.get('tooltip_bg', ui_theme.TOOLTIP_BG),
-            foreground=self.colors.get('tooltip_fg', ui_theme.TOOLTIP_FG),
-            relief='flat', borderwidth=0,
-            font=(FONT_FAMILY, int(10 * self.dpi_scale * self.zoom_factor)),
-            padx=10, pady=6, **kwargs
-        )
-        label.pack()
-        tip.update_idletasks()
-        monitor_area = _get_windows_monitor_area(tip, tooltip_parent)
-        if monitor_area is None:
-            monitor_area = (
-                0,
-                0,
-                int(tip.winfo_screenwidth()),
-                int(tip.winfo_screenheight()),
-            )
-        left, top, area_width, area_height = monitor_area
-        margin = 8
-        max_x = left + area_width - int(tip.winfo_reqwidth()) - margin
-        max_y = top + area_height - int(tip.winfo_reqheight()) - margin
-        safe_x = max(left + margin, min(int(x), max_x))
-        safe_y = max(top + margin, min(int(y), max_y))
-        x_geometry = f"+{safe_x}" if safe_x >= 0 else str(safe_x)
-        y_geometry = f"+{safe_y}" if safe_y >= 0 else str(safe_y)
-        tip.wm_geometry(f'{x_geometry}{y_geometry}')
-        return tip
-
-    def _show_tooltip(self, text, x, y, tooltip_key=None, parent=None, wraplength=None):
-        """显示 tooltip 窗口。"""
-        self._hide_tooltip()
-        tip = self._styled_tooltip(
-            text, x, y, wraplength=wraplength, parent=parent
-        )
-        self._tooltip = tip
-        self._tooltip_item = tooltip_key
-
-    def _hide_tooltip(self, event=None):
-        """隐藏 tooltip 窗口。"""
-        after_id = getattr(self, '_tooltip_after_id', None)
-        if after_id:
-            self.root.after_cancel(after_id)
-            self._tooltip_after_id = None
-        tip = getattr(self, '_tooltip', None)
-        if tip:
-            tip.destroy()
-            self._tooltip = None
-        self._tooltip_item = None
-
-    def _show_model_tooltip(self, text, x, y, tooltip_key=None):
-        """显示模型列表的 Base URL tooltip"""
-        self._hide_model_tooltip()
-        tip = self._styled_tooltip(text, x, y, wraplength=400)
-        self._model_tooltip = tip
-        self._model_tooltip_item = tooltip_key
-
-    def _hide_model_tooltip(self, event=None):
-        """隐藏模型列表的 tooltip"""
-        if self._model_tooltip_after_id:
-            self.root.after_cancel(self._model_tooltip_after_id)
-            self._model_tooltip_after_id = None
-        if self._model_tooltip:
-            self._model_tooltip.destroy()
-            self._model_tooltip = None
-        self._model_tooltip_item = None
-
-    def _create_simple_tooltip(self, text, x, y):
-        """创建简单的浮动 tooltip，返回 Toplevel 对象。"""
-        return self._styled_tooltip(text, x, y, wraplength=500)
-
-    def _hide_skills_tooltip(self, event=None):
-        """隐藏技能表 tooltip"""
-        if self._skills_tooltip:
-            self._skills_tooltip.destroy()
-            self._skills_tooltip = None
-        self._skills_tooltip_item = None
-
-    def _hide_req_tooltip(self, event=None):
-        """隐藏必要条件 tooltip"""
-        if self._req_tooltip:
-            self._req_tooltip.destroy()
-            self._req_tooltip = None
-        self._req_tooltip_idx = None
-
     @staticmethod
     def _find_candidate_in_detail_tree(tree, item, filtered_ref):
         """Resolve a detail-tree row without relying on non-unique display values."""
@@ -10356,7 +10210,7 @@ class BossFilterGUI:
         def _hide_all():
             """取消延迟 + 隐藏已显示的 tooltip + 重置状态。"""
             _cancel_pending()
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             _state['key'] = None
 
         def on_motion(event):
@@ -10394,7 +10248,7 @@ class BossFilterGUI:
             y = tree.winfo_pointery() + 10
             _parent = tree.winfo_toplevel()
             _state['after_id'] = tree.after(
-                300, lambda: self._show_tooltip(full, x, y, tooltip_key, parent=_parent)
+                300, lambda: self.feedback_support.show_tooltip(full, x, y, tooltip_key, parent=_parent)
             )
 
         tree.bind('<Motion>', on_motion)
@@ -12380,7 +12234,7 @@ class BossFilterGUI:
             show_selected_detail=self._show_selected_greet_queue_detail,
             update_action_states=self._update_greet_queue_action_states,
             row_motion=self._on_greet_queue_motion,
-            hide_tooltip=self._hide_tooltip,
+            hide_tooltip=self.feedback_support.hide_tooltip,
             context_menu=self._show_greet_queue_context_menu,
             select_all=self._select_all_greet_queue_rows,
             close=self._close_greet_queue_window,
@@ -13632,14 +13486,14 @@ class BossFilterGUI:
         item_id = tree.identify_row(event.y)
         column_id = tree.identify_column(event.x)
         if not item_id or column_id not in ("#5", "#7"):
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
         queue_item = next(
             (item for item in self.greet_queue_items if item.get('queue_id') == item_id),
             None,
         )
         if queue_item is None:
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
         if column_id == "#5":
             full_text = self._greet_queue_readiness_tooltip(
@@ -13654,7 +13508,7 @@ class BossFilterGUI:
             and self._tooltip.winfo_exists()
         ):
             return
-        self._hide_tooltip()
+        self.feedback_support.hide_tooltip()
         self._tooltip_item = tooltip_key
         x = event.x_root + 12
         y = event.y_root + 12
@@ -13669,7 +13523,7 @@ class BossFilterGUI:
         )
         self._tooltip_after_id = self.root.after(
             250,
-            lambda: self._show_tooltip(
+            lambda: self.feedback_support.show_tooltip(
                 full_text,
                 x,
                 y,
@@ -14390,7 +14244,7 @@ class BossFilterGUI:
     def clear_candidates(self):
         """Show candidate cleanup choices and delegate confirmed persistence."""
         if not CANDIDATES_PATH.exists():
-            self._show_inline_banner(
+            self.feedback_support.show_inline_banner(
                 self.result_page,
                 "info",
                 "暂无候选人数据。",

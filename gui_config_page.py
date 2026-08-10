@@ -574,11 +574,11 @@ def build_config_page_steps(
         item = self.skills_tree.identify_row(event.y)
         column = self.skills_tree.identify_column(event.x)
         if not item or column != "#4":  # evidence 是第4列
-            self._hide_skills_tooltip()
+            self.feedback_support.hide_skills_tooltip()
             return
         values = self.skills_tree.item(item, 'values')
         if not values or len(values) < 4:
-            self._hide_skills_tooltip()
+            self.feedback_support.hide_skills_tooltip()
             return
         # 从 skills_data 获取完整 evidence（Treeview 中可能被截断）
         idx = self.skills_tree.index(item)
@@ -587,19 +587,23 @@ def build_config_page_steps(
         else:
             full_text = str(values[3])
         if not full_text:
-            self._hide_skills_tooltip()
+            self.feedback_support.hide_skills_tooltip()
             return
         tooltip_key = (item, column)
         if tooltip_key == self._skills_tooltip_item and self._skills_tooltip and self._skills_tooltip.winfo_exists():
             return
-        self._hide_skills_tooltip()
+            self.feedback_support.hide_skills_tooltip()
         self._skills_tooltip_item = tooltip_key
         x = self.root.winfo_pointerx() + 15
         y = self.root.winfo_pointery() + 10
-        self._skills_tooltip = self._create_simple_tooltip(full_text, x, y)
+        self._skills_tooltip = self.feedback_support.create_simple_tooltip(
+            full_text,
+            x,
+            y,
+        )
 
     def _on_skills_leave(event):
-        self._hide_skills_tooltip()
+        self.feedback_support.hide_skills_tooltip()
 
     self.skills_tree.bind("<Motion>", _on_skills_motion)
     self.skills_tree.bind("<Leave>", _on_skills_leave)
@@ -726,11 +730,11 @@ def build_config_page_steps(
         """鼠标悬停在必要条件上时显示原文出处"""
         idx = self.required_listbox.nearest(event.y)
         if idx < 0:
-            self._hide_req_tooltip()
+            self.feedback_support.hide_requirement_tooltip()
             return
         if idx == self._req_tooltip_idx and self._req_tooltip and self._req_tooltip.winfo_exists():
             return
-        self._hide_req_tooltip()
+        self.feedback_support.hide_requirement_tooltip()
         evidence = ""
         if idx < len(self.required_conditions_data):
             cond = self.required_conditions_data[idx]
@@ -743,10 +747,14 @@ def build_config_page_steps(
         self._req_tooltip_idx = idx
         x = self.root.winfo_pointerx() + 15
         y = self.root.winfo_pointery() + 10
-        self._req_tooltip = self._create_simple_tooltip(evidence, x, y)
+        self._req_tooltip = self.feedback_support.create_simple_tooltip(
+            evidence,
+            x,
+            y,
+        )
 
     def _on_req_leave(event):
-        self._hide_req_tooltip()
+        self.feedback_support.hide_requirement_tooltip()
 
     self.required_listbox.bind("<Motion>", _on_req_motion)
     self.required_listbox.bind("<Leave>", _on_req_leave)

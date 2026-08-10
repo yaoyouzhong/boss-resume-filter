@@ -42,6 +42,20 @@ class InputSupport(Protocol):
     ) -> None: ...
 
 
+class FeedbackSupport(Protocol):
+    def show_tooltip(
+        self,
+        text: str,
+        x: int,
+        y: int,
+        item_key: object,
+        *,
+        parent: tk.Misc,
+    ) -> None: ...
+
+    def hide_tooltip(self, event: tk.Event | None = None) -> None: ...
+
+
 class CandidateActionsHost(Protocol):
     """Narrow GUI contract required by the daily actions workbench."""
 
@@ -55,6 +69,7 @@ class CandidateActionsHost(Protocol):
     _tooltip: Any
     _tooltip_after_id: Any
     input_support: InputSupport
+    feedback_support: FeedbackSupport
 
     def _format_daily_action_key_info(self, item: DailyActionLike) -> str: ...
 
@@ -77,19 +92,6 @@ class CandidateActionsHost(Protocol):
         refresh_fn: Callable[[], None],
         primary_action: str | None = None,
     ) -> None: ...
-
-    def _show_tooltip(
-        self,
-        text: str,
-        x: int,
-        y: int,
-        item_key: object,
-        *,
-        parent: tk.Misc,
-    ) -> None: ...
-
-    def _hide_tooltip(self, event: tk.Event | None = None) -> None: ...
-
 
 LoadActions = Callable[[], Sequence[DailyActionLike]]
 ExportReport = Callable[[tk.Misc], None]
@@ -560,12 +562,12 @@ def show_daily_candidate_actions_dialog(
         item_id = tree.identify_row(event.y)
         column_id = tree.identify_column(event.x)
         if not item_id or column_id != "#5":
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
         try:
             item = current_items[int(item_id)]
         except (ValueError, IndexError):
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
         full = item.reason
         tooltip_key = ("daily_actions", item_id, column_id)
@@ -583,11 +585,17 @@ def show_daily_candidate_actions_dialog(
         self._tooltip_item = tooltip_key
         self._tooltip_after_id = self.root.after(
             250,
-            lambda: self._show_tooltip(full, x, y, tooltip_key, parent=win),
+            lambda: self.feedback_support.show_tooltip(
+                full,
+                x,
+                y,
+                tooltip_key,
+                parent=win,
+            ),
         )
 
     tree.bind("<Motion>", on_action_motion)
-    tree.bind("<Leave>", self._hide_tooltip)
+    tree.bind("<Leave>", self.feedback_support.hide_tooltip)
     tree.bind("<Button-3>", show_action_context_menu)
     group_tree.bind("<<TreeviewSelect>>", on_group_selected)
     if default_group:

@@ -35,6 +35,20 @@ class InputSupport(Protocol):
     ) -> None: ...
 
 
+class FeedbackSupport(Protocol):
+    def show_tooltip(
+        self,
+        text: str,
+        x: int,
+        y: int,
+        item_key: object,
+        *,
+        parent: tk.Misc,
+    ) -> None: ...
+
+    def hide_tooltip(self, event: tk.Event | None = None) -> None: ...
+
+
 class CandidateDiagnosticsHost(Protocol):
     """Narrow GUI contract required by the diagnostics workbench."""
 
@@ -48,6 +62,7 @@ class CandidateDiagnosticsHost(Protocol):
     _tooltip: Any
     _tooltip_after_id: Any
     input_support: InputSupport
+    feedback_support: FeedbackSupport
 
     def _format_state_issue_key_info(
         self,
@@ -69,19 +84,6 @@ class CandidateDiagnosticsHost(Protocol):
         refresh_fn: Callable[[], None],
         primary_action: str | None = None,
     ) -> None: ...
-
-    def _show_tooltip(
-        self,
-        text: str,
-        x: int,
-        y: int,
-        item_key: object,
-        *,
-        parent: tk.Misc,
-    ) -> None: ...
-
-    def _hide_tooltip(self, event: tk.Event | None = None) -> None: ...
-
 
 Candidate = Mapping[str, Any]
 LoadDiagnostics = Callable[[], tuple[Sequence[Candidate], Sequence[StateIssueLike]]]
@@ -439,7 +441,7 @@ def show_candidate_state_diagnostics_dialog(
         selection_key = issue_group_by_iid.get(item_id, "")
         label = issue_label_by_key.get(selection_key, "")
         if not item_id or column_id != "#0" or not label:
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
         tooltip_key = ("state_check_group", item_id, column_id)
         if (
@@ -456,7 +458,13 @@ def show_candidate_state_diagnostics_dialog(
         self._tooltip_item = tooltip_key
         self._tooltip_after_id = self.root.after(
             250,
-            lambda: self._show_tooltip(label, x, y, tooltip_key, parent=win),
+            lambda: self.feedback_support.show_tooltip(
+                label,
+                x,
+                y,
+                tooltip_key,
+                parent=win,
+            ),
         )
 
     def refresh_current_state_diagnostics() -> None:
@@ -540,12 +548,12 @@ def show_candidate_state_diagnostics_dialog(
         item = tree.identify_row(event.y)
         column_id = tree.identify_column(event.x)
         if not item or column_id not in ("#3", "#4") or not current_issues:
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
         try:
             issue = current_issues[int(item)]
         except (ValueError, IndexError):
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
         if column_id == "#3":
             full = f"{issue.title}\n\n{issue.detail}"
@@ -566,15 +574,21 @@ def show_candidate_state_diagnostics_dialog(
         self._tooltip_item = tooltip_key
         self._tooltip_after_id = self.root.after(
             250,
-            lambda: self._show_tooltip(full, x, y, tooltip_key, parent=win),
+            lambda: self.feedback_support.show_tooltip(
+                full,
+                x,
+                y,
+                tooltip_key,
+                parent=win,
+            ),
         )
 
     tree.bind("<Motion>", on_state_motion)
-    tree.bind("<Leave>", self._hide_tooltip)
+    tree.bind("<Leave>", self.feedback_support.hide_tooltip)
     tree.bind("<Button-3>", show_state_context_menu)
     group_tree.bind("<<TreeviewSelect>>", on_issue_group_selected)
     group_tree.bind("<Motion>", on_issue_group_motion)
-    group_tree.bind("<Leave>", self._hide_tooltip)
+    group_tree.bind("<Leave>", self.feedback_support.hide_tooltip)
     default_group = next(iter(issue_items_by_key), "")
     if default_group:
         default_iid = issue_iid_by_key[default_group]

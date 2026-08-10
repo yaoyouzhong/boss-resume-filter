@@ -1913,7 +1913,9 @@ def test_checkbutton_style_uses_large_checkmark_indicator_but_ai_keeps_switch():
 def test_ai_switch_is_compact_and_supersampled():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     switch_block = source[source.index("def _create_switch("):]
-    switch_block = switch_block[:switch_block.index("\n    def _styled_tooltip")]
+    switch_block = switch_block[
+        :switch_block.index("\n    @staticmethod\n    def _find_candidate_in_detail_tree")
+    ]
 
     assert "int(round(30 * scale))" in switch_block
     assert "int(round(16 * scale))" in switch_block
@@ -3789,15 +3791,14 @@ def test_result_status_tooltip_shows_hidden_review_reason():
     gui.root = Mock()
     gui.root.winfo_pointerx.return_value = 100
     gui.root.winfo_pointery.return_value = 200
-    gui._hide_tooltip = Mock()
-    gui._show_tooltip = Mock()
+    gui.feedback_support = Mock()
 
     gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
 
     gui.root.after.assert_called_once()
     callback = gui.root.after.call_args.args[1]
     callback()
-    gui._show_tooltip.assert_called_once_with(
+    gui.feedback_support.show_tooltip.assert_called_once_with(
         "复核原因：学历形式待确认",
         115,
         210,
@@ -3832,26 +3833,25 @@ def test_result_status_tooltip_shows_confirmed_status_only_when_clipped():
     gui.root = Mock()
     gui.root.winfo_pointerx.return_value = 100
     gui.root.winfo_pointery.return_value = 200
-    gui._hide_tooltip = Mock()
-    gui._show_tooltip = Mock()
+    gui.feedback_support = Mock()
 
     gui._result_tree_font.measure.return_value = 100
     gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
     callback = gui.root.after.call_args.args[1]
     callback()
-    gui._show_tooltip.assert_called_once_with(
+    gui.feedback_support.show_tooltip.assert_called_once_with(
         candidate["_full_status"], 115, 210, ("row-1", "status")
     )
 
     gui.root.after.reset_mock()
-    gui._show_tooltip.reset_mock()
+    gui.feedback_support.show_tooltip.reset_mock()
     gui._tooltip = None
     gui._tooltip_item = None
     gui._result_tree_font.measure.return_value = 60
     gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
     callback = gui.root.after.call_args.args[1]
     callback()
-    gui._show_tooltip.assert_called_once_with(
+    gui.feedback_support.show_tooltip.assert_called_once_with(
         candidate["_full_status"], 115, 210, ("row-1", "status")
     )
 
@@ -3877,25 +3877,24 @@ def test_result_job_status_tooltip_only_shows_when_text_is_clipped():
     gui.root = Mock()
     gui.root.winfo_pointerx.return_value = 100
     gui.root.winfo_pointery.return_value = 200
-    gui._hide_tooltip = Mock()
-    gui._show_tooltip = Mock()
+    gui.feedback_support = Mock()
 
     gui._result_tree_font.measure.return_value = 120
     gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
     callback = gui.root.after.call_args.args[1]
     callback()
-    gui._show_tooltip.assert_called_once_with(
+    gui.feedback_support.show_tooltip.assert_called_once_with(
         "正在考虑机会，合适的话可以到岗", 115, 210, ("row-1", "job_status")
     )
 
     gui.root.after.reset_mock()
-    gui._show_tooltip.reset_mock()
+    gui.feedback_support.show_tooltip.reset_mock()
     gui._tooltip = None
     gui._tooltip_item = None
     gui._result_tree_font.measure.return_value = 80
     gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
     gui.root.after.assert_not_called()
-    gui._show_tooltip.assert_not_called()
+    gui.feedback_support.show_tooltip.assert_not_called()
 
 
 def test_result_school_and_company_tooltips_work_in_non_maximized_table():
@@ -3925,8 +3924,7 @@ def test_result_school_and_company_tooltips_work_in_non_maximized_table():
     gui.root.state.return_value = "normal"
     gui.root.winfo_pointerx.return_value = 100
     gui.root.winfo_pointery.return_value = 200
-    gui._hide_tooltip = Mock()
-    gui._show_tooltip = Mock()
+    gui.feedback_support = Mock()
 
     for column_id, column_name, full_text in (
         ("#13", "school", "南京航空航天大学"),
@@ -3937,12 +3935,12 @@ def test_result_school_and_company_tooltips_work_in_non_maximized_table():
         gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
         callback = gui.root.after.call_args.args[1]
         callback()
-        gui._show_tooltip.assert_called_once_with(
+        gui.feedback_support.show_tooltip.assert_called_once_with(
             full_text, 115, 210, ("row-1", column_name)
         )
 
         gui.root.after.reset_mock()
-        gui._show_tooltip.reset_mock()
+        gui.feedback_support.show_tooltip.reset_mock()
         gui._tooltip = None
         gui._tooltip_item = None
         gui._tooltip_after_id = None
@@ -3951,7 +3949,7 @@ def test_result_school_and_company_tooltips_work_in_non_maximized_table():
     gui._result_tree_font.measure.return_value = 80
     gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
     gui.root.after.assert_not_called()
-    gui._show_tooltip.assert_not_called()
+    gui.feedback_support.show_tooltip.assert_not_called()
 
 
 def test_refresh_results_force_rebuilds_for_transient_ai_status():
@@ -6046,13 +6044,13 @@ def test_greet_queue_dialog_has_status_groups_and_double_click_detail():
 
 
 def test_contact_queue_result_tooltip_wraps_and_stays_screen_bounded():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
+    source = Path("gui_feedback_support.py").read_text(encoding="utf-8")
     tooltip_block = source[source.index("def _styled_tooltip"):]
-    tooltip_block = tooltip_block[:tooltip_block.index("\n    def _hide_tooltip")]
-    queue_motion_block = source[source.index("def _on_greet_queue_motion"):]
+    main_source = Path("gui_main.py").read_text(encoding="utf-8")
+    queue_motion_block = main_source[main_source.index("def _on_greet_queue_motion"):]
     queue_motion_block = queue_motion_block[:queue_motion_block.index("\n    def _show_greet_queue_context_menu")]
 
-    assert "_get_windows_monitor_area(tip, tooltip_parent)" in tooltip_block
+    assert "get_windows_monitor_area(tooltip, tooltip_parent)" in tooltip_block
     assert "safe_x =" in tooltip_block
     assert "safe_y =" in tooltip_block
     assert "tooltip_wraplength = max(" in queue_motion_block
@@ -6588,9 +6586,10 @@ def test_candidate_state_diagnostics_uses_group_summary_and_compact_candidate_ro
     assert "def on_issue_group_motion(" in dialog_block
     assert 'column_id != "#0"' in dialog_block
     assert '("state_check_group", item_id, column_id)' in dialog_block
-    assert 'lambda: self._show_tooltip(label, x, y, tooltip_key, parent=win)' in dialog_block
+    assert "self.feedback_support.show_tooltip(" in dialog_block
+    assert "parent=win," in dialog_block
     assert 'group_tree.bind("<Motion>", on_issue_group_motion)' in dialog_block
-    assert 'group_tree.bind("<Leave>", self._hide_tooltip)' in dialog_block
+    assert 'group_tree.bind("<Leave>", self.feedback_support.hide_tooltip)' in dialog_block
     assert 'ttk.Button(btn_row, text="查看详情", command=show_detail)' not in dialog_block
 
 
