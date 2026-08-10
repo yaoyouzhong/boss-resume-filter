@@ -40,6 +40,39 @@ def test_latest_history_value_prefers_current_entry_and_falls_back_to_summary():
     ) == "备用学校"
 
 
+def test_latest_history_value_uses_latest_end_date_not_list_order():
+    entries = [
+        {"school": "较早学校", "end": "2018.06"},
+        {"school": "最近学校", "end": "2022.06"},
+    ]
+
+    assert candidate_presenter.latest_history_value(
+        entries,
+        "school",
+        "",
+        "教育经历：",
+    ) == "最近学校"
+
+
+def test_latest_history_value_treats_present_as_latest_for_work_history():
+    works = [
+        {"company": "上一家公司", "end": "2024.01"},
+        {"company": "当前公司", "end": "至今"},
+    ]
+    assert candidate_presenter.latest_history_value(
+        works,
+        "company",
+        "",
+        "工作经历：",
+    ) == "当前公司"
+    assert candidate_presenter.latest_history_value(
+        [],
+        "company",
+        "工作经历：摘要公司 高级工程师 2022 至今",
+        "工作经历：",
+    ) == "摘要公司"
+
+
 def test_format_ai_hard_conditions_and_batch_summary_are_bounded():
     conditions = candidate_presenter.format_ai_hard_conditions(
         {

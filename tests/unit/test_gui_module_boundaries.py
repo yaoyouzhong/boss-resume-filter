@@ -15,6 +15,7 @@ import contact_presenter
 import data_maintenance_controller
 import education_controller
 import gui_dialogs
+import gui_app_shell
 import gui_candidate_actions
 import gui_candidate_diagnostics
 import gui_candidate_menus
@@ -24,22 +25,26 @@ import gui_contact_queue
 import gui_config_page
 import gui_data_maintenance_dialogs
 import gui_education_page
+import gui_feedback_support
 import gui_home_page
+import gui_input_support
 import gui_job_review
+import gui_layout_support
 import gui_main
 import gui_model_catalog_dialog
 import gui_result_page
 import gui_run_page
+import gui_scroll_support
 import gui_settings_page
 import gui_stats_detail
 import gui_stats_page
 import gui_style_setup
+import gui_widget_support
 import model_catalog
 import resume_parser
 import resume_import_service
 import result_controller
 import run_controller
-import run_presenter
 import settings_controller
 import stats_presenter
 import ui_windowing
@@ -388,6 +393,348 @@ def test_gui_style_setup_owns_only_global_tk_style_registration():
     assert "def setup_styles(self)" not in source
 
 
+def test_gui_app_shell_excludes_gui_business_storage_browser_and_network_dependencies():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "candidate_workflow",
+        "contact_queue",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("gui_app_shell") & forbidden)
+    assert callable(gui_app_shell.AppShell)
+    assert tuple(gui_app_shell.PAGE_SPECS) == tuple(gui_app_shell.PageIndex)
+
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    gui_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BossFilterGUI"
+    )
+    method_names = {
+        node.name
+        for node in gui_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "self.app_shell = gui_app_shell.AppShell(" in source
+    assert {
+        "create_sidebar",
+        "_request_sidebar_page",
+        "_request_page_first_open",
+        "_schedule_page_width_policy",
+        "_apply_page_width_policy",
+    }.isdisjoint(method_names)
+
+
+def test_gui_scroll_support_excludes_business_storage_browser_and_gui_main_dependencies():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "candidate_workflow",
+        "contact_queue",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("gui_scroll_support") & forbidden)
+    assert callable(gui_scroll_support.ScrollSupport)
+
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    gui_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BossFilterGUI"
+    )
+    method_names = {
+        node.name
+        for node in gui_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "self.scroll_support = gui_scroll_support.ScrollSupport(self)" in source
+    assert {
+        "_delta_to_units",
+        "_bind_bounded_spinbox_mousewheel",
+        "_create_scroll_container",
+        "_bind_mousewheel",
+        "_setup_cocoa_scroll_hook",
+        "_on_mousewheel",
+    }.isdisjoint(method_names)
+    for page_module in (
+        "gui_config_page.py",
+        "gui_run_page.py",
+        "gui_education_page.py",
+        "gui_job_review.py",
+    ):
+        page_source = (ROOT / page_module).read_text(encoding="utf-8")
+        assert ".scroll_support." in page_source
+
+
+def test_gui_input_support_excludes_business_storage_browser_and_gui_main_dependencies():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "candidate_workflow",
+        "contact_queue",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("gui_input_support") & forbidden)
+    assert callable(gui_input_support.InputSupport)
+
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    gui_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BossFilterGUI"
+    )
+    method_names = {
+        node.name
+        for node in gui_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "self.input_support = gui_input_support.InputSupport(" in source
+    assert {
+        "bind_entry_context_menu",
+        "bind_text_context_menu",
+        "_show_text_dialog",
+    }.isdisjoint(method_names)
+    for page_module in (
+        "gui_candidate_actions.py",
+        "gui_candidate_diagnostics.py",
+        "gui_candidate_review.py",
+        "gui_config_page.py",
+        "gui_education_page.py",
+        "gui_run_page.py",
+        "gui_settings_page.py",
+    ):
+        page_source = (ROOT / page_module).read_text(encoding="utf-8")
+        assert ".input_support." in page_source
+
+
+def test_gui_feedback_support_excludes_business_storage_browser_and_gui_main_dependencies():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "candidate_workflow",
+        "contact_queue",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("gui_feedback_support") & forbidden)
+    assert callable(gui_feedback_support.FeedbackSupport)
+    host = type("FeedbackHost", (), {})()
+    gui_feedback_support.FeedbackSupport(host, font_family="Arial")
+    assert host._tooltip is None
+    assert host._model_tooltip is None
+    assert host._skills_tooltip is None
+    assert host._req_tooltip is None
+    assert host._inline_banners == {}
+
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    gui_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BossFilterGUI"
+    )
+    method_names = {
+        node.name
+        for node in gui_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "self.feedback_support = gui_feedback_support.FeedbackSupport(" in source
+    assert {
+        "_styled_tooltip",
+        "_show_tooltip",
+        "_hide_tooltip",
+        "_show_model_tooltip",
+        "_hide_model_tooltip",
+        "_create_simple_tooltip",
+        "_hide_skills_tooltip",
+        "_hide_req_tooltip",
+        "_show_inline_banner",
+        "_hide_inline_banner",
+    }.isdisjoint(method_names)
+    for page_module in (
+        "gui_candidate_actions.py",
+        "gui_candidate_diagnostics.py",
+        "gui_config_page.py",
+        "gui_education_page.py",
+        "gui_result_page.py",
+        "gui_settings_page.py",
+    ):
+        page_source = (ROOT / page_module).read_text(encoding="utf-8")
+        assert ".feedback_support." in page_source
+
+
+def test_gui_widget_support_excludes_business_storage_browser_and_gui_main_dependencies():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "candidate_workflow",
+        "contact_queue",
+        "filtering",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("gui_widget_support") & forbidden)
+    assert callable(gui_widget_support.WidgetSupport)
+    assert callable(gui_widget_support.StatusIconSet)
+
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    gui_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BossFilterGUI"
+    )
+    method_names = {
+        node.name
+        for node in gui_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "self.widget_support = gui_widget_support.WidgetSupport(" in source
+    assert "status_icons = self.widget_support.create_status_icons()" in source
+    assert (
+        "self._icon_status_ok, self._icon_status_fail = status_icons.ok, status_icons.fail"
+        in source
+    )
+    assert {
+        "_create_page_header",
+        "_create_card",
+        "_create_switch",
+        "_build_empty_state",
+        "_create_status_icons",
+    }.isdisjoint(method_names)
+    assert "_toggle_result_empty_state" in method_names
+    for page_module in (
+        "gui_config_page.py",
+        "gui_education_page.py",
+        "gui_home_page.py",
+        "gui_job_review.py",
+        "gui_result_page.py",
+        "gui_run_page.py",
+        "gui_settings_page.py",
+        "gui_stats_page.py",
+    ):
+        page_source = (ROOT / page_module).read_text(encoding="utf-8")
+        assert ".widget_support." in page_source
+
+
+def test_gui_layout_support_owns_responsive_layout_without_host_forwarders():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "candidate_workflow",
+        "contact_queue",
+        "filtering",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("gui_layout_support") & forbidden)
+    assert callable(gui_layout_support.LayoutSupport)
+
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    gui_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BossFilterGUI"
+    )
+    method_names = {
+        node.name
+        for node in gui_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "self.layout_support = gui_layout_support.LayoutSupport(" in source
+    assert {
+        "_update_run_page_dynamic_heights",
+        "_update_result_stats_compact",
+        "_is_window_maximized",
+        "_update_result_tree_columns",
+        "_tree_header_floors",
+        "_distribute_tree_surplus",
+        "_apply_result_tree_column_widths",
+        "_update_stats_tree_columns",
+        "_is_tall_window",
+        "_get_tall_window_extra_rows",
+        "_update_config_page_dynamic_heights",
+        "_get_model_list_max_rows",
+        "_update_model_list_height",
+        "_update_model_list_columns",
+        "_update_education_queue_columns",
+    }.isdisjoint(method_names)
+
+    app_shell_source = (ROOT / "gui_app_shell.py").read_text(encoding="utf-8")
+    settings_source = (ROOT / "gui_settings_page.py").read_text(encoding="utf-8")
+    education_source = (ROOT / "gui_education_page.py").read_text(encoding="utf-8")
+    assert "layout = host.layout_support" in app_shell_source
+    assert "self.layout_support.update_model_list_columns()" in settings_source
+    assert "host.layout_support.update_education_queue_columns()" in education_source
+
+
+def test_gui_main_does_not_restore_unreferenced_compatibility_facades():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    module_functions = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    gui_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BossFilterGUI"
+    )
+    gui_methods = {
+        node.name
+        for node in gui_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert {
+        "delete_api_key",
+        "_filter_candidates_by_result_view",
+    }.isdisjoint(module_functions)
+    assert {
+        "_format_maintenance_time",
+        "_build_job_review_text",
+        "_start_breathing",
+        "_format_terminal_log_text",
+        "_extract_extra_fields",
+        "_latest_history_value",
+        "_get_greet_confirmation_hint",
+        "_set_greet_queue_item_state",
+    }.isdisjoint(gui_methods)
+
+
 def test_gui_compatibility_methods_delegate_to_presenters():
     candidate = {"match_score": 70, "recommend_level": "推荐"}
     BossFilterGUI = gui_main.BossFilterGUI
@@ -396,9 +743,6 @@ def test_gui_compatibility_methods_delegate_to_presenters():
     )
     assert BossFilterGUI._greet_queue_readiness_label(candidate) == (
         contact_presenter.greet_queue_readiness_label(candidate)
-    )
-    assert BossFilterGUI._format_terminal_log_text("[完成] ok") == (
-        run_presenter.format_terminal_log_text("[完成] ok")
     )
     assert BossFilterGUI._stats_time_cutoff("全部") is None
     assert BossFilterGUI._clip_table_text("a" * 10, 5) == (
@@ -639,7 +983,7 @@ def test_result_page_compatibility_method_is_a_thin_builder_delegate():
     assert "gui_result_page.build_result_page(" in block
     assert "ttk.Treeview" not in block
     assert "tk.Menu" not in block
-    assert "self._update_result_tree_columns()" in block
+    assert "self.layout_support.update_result_tree_columns()" in block
     assert "self._refresh_contact_queue_badge()" in block
 
 
@@ -733,7 +1077,7 @@ def test_home_page_compatibility_method_is_a_thin_builder_delegate():
     assert "tk.Canvas" not in block
 
 
-def test_home_page_keeps_data_loading_and_navigation_lifecycle_in_controller():
+def test_home_page_keeps_data_loading_in_host_and_delegates_navigation_to_shell():
     forbidden = {
         "bossmaster",
         "gui_main",
@@ -750,7 +1094,7 @@ def test_home_page_keeps_data_loading_and_navigation_lifecycle_in_controller():
     assert "def refresh_home_stats(self):" not in builder
     assert "def refresh_home_stats(self):" in source
     assert "host.refresh_home_stats()" in builder
-    assert "host._request_sidebar_page(" in builder
+    assert "host.app_shell.request_sidebar_page(" in builder
 
 
 def test_run_page_compatibility_method_is_a_thin_incremental_delegate():
@@ -1505,6 +1849,7 @@ def test_contact_queue_delegate_keeps_refresh_and_business_callbacks_in_gui_main
     gui.greet_queue_window = None
     gui.greet_queue_items = [{"status": "待发送"}]
     gui.greet_queue_selected_group = "待发送"
+    gui.feedback_support = Mock()
     gui._ensure_greet_queue_loaded = Mock()
     gui._refresh_greet_queue_dialog = Mock()
     widgets = Mock()

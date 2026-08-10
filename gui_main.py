@@ -21,9 +21,7 @@ import socket
 import subprocess
 import zipfile
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
 from datetime import datetime, timedelta
-from enum import IntEnum
 from pathlib import Path
 from tkinter import filedialog, font, ttk
 
@@ -53,15 +51,21 @@ import gui_contact_queue
 import gui_config_page
 import gui_data_maintenance_dialogs
 import gui_education_page
+import gui_feedback_support
 import gui_home_page
+import gui_input_support
 import gui_job_review
+import gui_app_shell
+import gui_layout_support
 import gui_result_page
 import gui_run_page
+import gui_scroll_support
 import gui_settings_page
 import gui_model_catalog_dialog
 import gui_stats_page
 import gui_stats_detail
 import gui_style_setup
+import gui_widget_support
 from model_catalog import analyze_model_catalog, fetch_model_catalog
 from result_controller import (
     ResultController,
@@ -70,10 +74,10 @@ from result_controller import (
     result_cache_key,
     result_sort_value,
 )
+from gui_app_shell import PAGE_SPECS, TRAFFIC_LIGHT_BASE_SIZE, PageIndex
 import run_presenter
 import stats_presenter
 import ui_theme
-from ui_layout import result_display_columns
 from ui_windowing import (
     clamp as _clamp,
     get_windows_monitor_area as _get_windows_monitor_area,
@@ -118,7 +122,6 @@ from candidate_workflow import (
     candidate_greet_skip_reason,
     default_next_followup_at,
     derive_candidate_decision,
-    filter_candidates_by_result_view,
     format_followup_due_at,
     normalize_followup_at,
     summarize_daily_candidate_actions,
@@ -354,50 +357,6 @@ def _export_daily_candidate_actions_report(items, parent):
         messagebox.showerror("今日待办", f"导出失败：{exc}", parent=parent)
 
 
-class PageIndex(IntEnum):
-    """Stable sidebar page identities shared by navigation and page logic."""
-
-    HOME = 0
-    CONFIG = 1
-    RUN = 2
-    RESULTS = 3
-    EDUCATION = 4
-    STATS = 5
-    SETTINGS = 6
-
-
-@dataclass(frozen=True)
-class PageSpec:
-    icon_name: str
-    title: str
-    page_attr: str
-    creator_name: str
-    show_name: str
-    full_width: bool = False
-
-
-PAGE_SPECS = {
-    PageIndex.HOME: PageSpec("home", "首页", "home_page", "create_home_page", "show_page_home"),
-    PageIndex.CONFIG: PageSpec(
-        "briefcase", "岗位配置", "config_page", "_create_config_page_steps", "show_page_config"
-    ),
-    PageIndex.RUN: PageSpec("play", "运行控制", "run_page", "_create_run_page_steps", "show_page_run"),
-    PageIndex.RESULTS: PageSpec(
-        "filter", "筛选结果", "result_page", "create_result_page", "show_page_result"
-    ),
-    PageIndex.EDUCATION: PageSpec(
-        "document", "学历核验", "education_page", "create_education_page", "show_page_education"
-    ),
-    PageIndex.STATS: PageSpec(
-        "chart", "数据统计", "stats_page", "create_stats_page", "show_page_stats"
-    ),
-    PageIndex.SETTINGS: PageSpec(
-        "gear", "系统设置", "api_config_page", "_create_api_config_page_steps", "show_page_api"
-    ),
-}
-PRIMARY_NAV_PAGES = tuple(page for page in PageIndex if page is not PageIndex.SETTINGS)
-TRAFFIC_LIGHT_BASE_SIZE = 32
-
 # 服务商显示名称映射（内部键 -> 显示名称）
 PROVIDER_DISPLAY = {
     "qwen": "通义千问 (Qwen)",
@@ -450,12 +409,6 @@ def save_api_key(provider: str, api_key: str, base_url: str | None = None) -> bo
     return _save_api_key(provider, api_key, base_url)
 
 
-def delete_api_key(provider: str, base_url: str | None = None) -> bool:
-    """按需加载系统钥匙串并删除 API Key。"""
-    from security import delete_api_key as _delete_api_key
-    return _delete_api_key(provider, base_url)
-
-
 class TextDateEntry(ttk.Entry):
     """Fallback date entry used when tkcalendar is unavailable."""
 
@@ -502,11 +455,6 @@ def _candidate_has_ai_eval(c: dict) -> bool:
     对已导入简历的候选人再跑一次评估会污染 rule_score（叠加两次调整）。
     """
     return bool(c.get('llm_evaluated')) or c.get('resume_eval_adjustment') is not None
-
-
-def _filter_candidates_by_result_view(candidates, view):
-    """Keep the historical GUI helper while using the shared decision model."""
-    return filter_candidates_by_result_view(list(candidates), view)
 
 
 # _resolve_rule_score 已挪到 llm_eval（evaluate_batch 与撤回流程共用，统一规则分还原逻辑）
@@ -1099,14 +1047,35 @@ class BossFilterGUI:
 
         # 设置 Combobox 下拉列表字体由 gui_style_setup 统一注册
 
+        self.app_shell = gui_app_shell.AppShell(
+            self,
+            ui_config=UI_CONFIG,
+            font_family=FONT_FAMILY,
+            font_family_semibold=FONT_FAMILY_SEMIBOLD,
+            version=__version__,
+        )
+        self.scroll_support = gui_scroll_support.ScrollSupport(self)
+        self.input_support = gui_input_support.InputSupport(
+            self,
+            font_family=FONT_FAMILY,
+        )
+        self.feedback_support = gui_feedback_support.FeedbackSupport(self, font_family=FONT_FAMILY)
+        self.widget_support = gui_widget_support.WidgetSupport(self, ui_config=UI_CONFIG)
+        self.layout_support = gui_layout_support.LayoutSupport(
+            self,
+            ui_config=UI_CONFIG,
+            font_family=FONT_FAMILY,
+        )
+
         # 创建进度状态图标（依赖 self.colors，必须在 setup_styles 之后）
-        self._create_status_icons()
+        status_icons = self.widget_support.create_status_icons()
+        self._icon_status_ok, self._icon_status_fail = status_icons.ok, status_icons.fail
 
         # 创建界面
         if standalone_education:
             self.create_education_main_content()
         else:
-            self.create_sidebar()
+            self.app_shell.create_sidebar()
             self.create_main_content()
 
         # 启动日志更新
@@ -1127,17 +1096,17 @@ class BossFilterGUI:
         self._over_text_widget = False
 
         # 统一绑定滚轮事件 - 根据当前页面分发到对应的 Canvas
-        self.root.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.root.bind_all("<MouseWheel>", self.scroll_support.on_mousewheel)
         # 普通 Frame/Label 不会主动获取焦点；全局点击用于收起结果页搜索框占位状态。
         self.root.bind_all("<Button-1>", self._on_global_left_click, add="+")
         # macOS/Linux 触控板可能生成 Button-4/5 事件
         if sys.platform != 'win32':
-            self.root.bind_all("<Button-4>", self._on_mousewheel)
-            self.root.bind_all("<Button-5>", self._on_mousewheel)
+            self.root.bind_all("<Button-4>", self.scroll_support.on_mousewheel)
+            self.root.bind_all("<Button-5>", self.scroll_support.on_mousewheel)
 
         # macOS Tk 9.0+: Cocoa 层拦截触控板滚动事件并转发给 Tk
         if _NEED_COCOA_SCROLL_HOOK:
-            self.root.after(500, self._setup_cocoa_scroll_hook)
+            self.root.after(500, self.scroll_support.setup_cocoa_scroll_hook)
 
         # 全局快捷键（F5 / Ctrl+F / Delete / Ctrl+1~7）
         if not standalone_education:
@@ -1245,7 +1214,7 @@ class BossFilterGUI:
         for key_number, page_index in enumerate(PageIndex, start=1):
             self.root.bind(
                 f'<Control-Key-{key_number}>',
-                lambda _event, index=page_index: self._request_sidebar_page(index),
+                lambda _event, index=page_index: self.app_shell.request_sidebar_page(index),
             )
 
     def _on_global_left_click(self, event) -> None:
@@ -1305,7 +1274,7 @@ class BossFilterGUI:
                     self.result_search_entry.focus_set()
                     self.result_search_entry.select_range(0, 'end')
 
-            self._request_sidebar_page(PageIndex.RESULTS, on_ready=_focus_search)
+            self.app_shell.request_sidebar_page(PageIndex.RESULTS, on_ready=_focus_search)
         except Exception as exc:
             logger.warning("Ctrl+F 聚焦搜索失败：%s", exc)
 
@@ -1429,193 +1398,6 @@ class BossFilterGUI:
         except tk.TclError:
             pass
 
-    def create_sidebar(self):
-        """创建左侧边栏"""
-        sidebar = ttk.Frame(self.root, style='Sidebar.TFrame', width=int(UI_CONFIG['sidebar_width'] * self.dpi_scale * self.zoom_factor))
-        sidebar.pack(side="left", fill="y")
-        sidebar.pack_propagate(False)
-
-        # Logo 区域 - 上下布局，增加间距
-        logo_frame = ttk.Frame(sidebar, style='Sidebar.TFrame')
-        logo_frame.pack(fill="x", padx=int(20 * self.dpi_scale * self.zoom_factor), pady=(int(30 * self.dpi_scale * self.zoom_factor), int(20 * self.dpi_scale * self.zoom_factor)))
-
-        # 主标题 "BOSS" - 带彩色放大镜图标，大字体
-        title_row = ttk.Frame(logo_frame, style='Sidebar.TFrame')
-        title_row.pack(anchor="center")
-        gap = int(4 * self.dpi_scale * self.zoom_factor)
-        logo_icon = self.icons.logo('search_color', self.colors['text_sidebar_active'], self.colors['bg_sidebar'])
-        logo_icon_label = ttk.Label(title_row, image=logo_icon, background=self.colors['bg_sidebar'])
-        logo_icon_label._icon_ref = logo_icon
-        logo_icon_label.pack(side="left")
-        logo_text = ttk.Label(title_row, text="BOSS",
-                              font=(FONT_FAMILY_SEMIBOLD, int(26 * self.font_scale)),
-                              foreground=self.colors['text_sidebar_active'], background=self.colors['bg_sidebar'])
-        logo_text.pack(side="left", padx=(gap, 0))
-
-        # 副标题 "简历筛选器" - 调大字体，居中
-        subtitle_label = ttk.Label(logo_frame, text="简历筛选器",
-                                   font=(FONT_FAMILY, int(16 * self.font_scale)),
-                                   foreground=self.colors['text_sidebar_subtitle'], background=self.colors['bg_sidebar'])
-        subtitle_label.pack(anchor="center", pady=(int(6 * self.dpi_scale * self.zoom_factor), 0))
-
-        # 分隔线
-        sep = ttk.Separator(sidebar, orient='horizontal')
-        sep.pack(fill="x", padx=0, pady=int(10 * self.dpi_scale * self.zoom_factor))
-
-        # 导航项 - 使用 Frame 容器确保文字对齐（图标固定宽度）
-        nav_items = [(page, PAGE_SPECS[page]) for page in PRIMARY_NAV_PAGES]
-
-        self.nav_labels = []
-        self.nav_components = []  # 保存所有导航组件引用，用于 hover 效果
-        sidebar_nav_font_size = int(15 * self.font_scale)
-
-        # 设置导航项样式（含 pill 选中态与 hover 态）
-        style = ttk.Style()
-        pill_bg = self.colors.get('bg_sidebar_pill', ui_theme.BG_SIDEBAR_PILL)
-        style.configure('SidebarNav.TLabel',
-                       font=(FONT_FAMILY, sidebar_nav_font_size),
-                       foreground=self.colors['text_sidebar'],
-                       background=self.colors['bg_sidebar'])
-        style.configure('SidebarNavSelected.TLabel',
-                       font=(FONT_FAMILY_SEMIBOLD, sidebar_nav_font_size),
-                       foreground=self.colors['text_sidebar_active'],
-                       background=self.colors['bg_sidebar'])
-        style.configure('SidebarPill.TFrame', background=pill_bg)
-        style.configure('SidebarNavPill.TLabel',
-                       font=(FONT_FAMILY, sidebar_nav_font_size),
-                       foreground=self.colors['text_sidebar_active'],
-                       background=pill_bg)
-        style.configure('SidebarNavSelectedPill.TLabel',
-                       font=(FONT_FAMILY_SEMIBOLD, sidebar_nav_font_size),
-                       foreground=self.colors['text_sidebar_active'],
-                       background=pill_bg)
-
-        # 图标容器内边距（固定宽度，确保文字对齐）
-        emoji_padx = int(14 * self.dpi_scale * self.zoom_factor)
-        text_padx = int(10 * self.dpi_scale * self.zoom_factor)
-        nav_outer_padx = int(12 * self.dpi_scale * self.zoom_factor)
-        badge_font = (FONT_FAMILY, int(10 * self.font_scale), 'bold')
-
-        for page_index, page_spec in nav_items:
-            idx = int(page_index)
-            icon_name = page_spec.icon_name
-            text = page_spec.title
-            command = lambda index=page_index: self._request_sidebar_page(index)
-            # 生成两个颜色版本的图标（默认态 / pill 底高亮态）
-            icon_default = self.icons.nav(icon_name, self.colors['text_sidebar'], self.colors['bg_sidebar'])
-            icon_active = self.icons.nav(icon_name, self.colors['text_sidebar_active'], pill_bg)
-
-            # 使用 Frame 容器
-            nav_frame = ttk.Frame(sidebar, style='Sidebar.TFrame')
-            nav_frame.pack(fill="x", padx=nav_outer_padx, pady=1)
-
-            # 左侧选中强调条
-            accent_bar = tk.Frame(nav_frame, width=3, background=self.colors['bg_sidebar'])
-            accent_bar.pack(side="left", fill="y")
-
-            # 图标标签
-            icon_label = ttk.Label(nav_frame, image=icon_default,
-                                   style='SidebarNav.TLabel', cursor="hand2")
-            icon_label._icon_default = icon_default
-            icon_label._icon_active = icon_active
-            icon_label.pack(side="left", padx=(emoji_padx, 0))
-
-            # 文字标签
-            text_label = ttk.Label(nav_frame, text=text,
-                                  style='SidebarNav.TLabel', cursor="hand2",
-                                  padding=(text_padx, int(14 * self.dpi_scale * self.zoom_factor)))
-            text_label.pack(side="left", fill="x", expand=True)
-
-            # 角标（默认隐藏，set_nav_badge 按需显示）
-            badge_label = tk.Label(
-                nav_frame, text="", font=badge_font, cursor="hand2",
-                background=self.colors['danger'], foreground='#FFFFFF',
-                padx=int(5 * self.dpi_scale), pady=0,
-            )
-
-            # 绑定点击和 hover 事件 - 所有子组件绑定到同一个 command
-            for widget in [nav_frame, accent_bar, icon_label, text_label, badge_label]:
-                widget.bind("<Button-1>", lambda e, c=command: c())
-                widget.bind("<Enter>", lambda e, i=idx: self.on_nav_enter(i))
-                widget.bind("<Leave>", lambda e, i=idx: self.on_nav_leave(i))
-
-            # 保存所有组件引用，用于 hover 效果
-            self.nav_components.append({
-                'frame': nav_frame,
-                'accent': accent_bar,
-                'icon': icon_label,
-                'icon_default': icon_default,
-                'icon_active': icon_active,
-                'text': text_label,
-                'badge': badge_label,
-                'command': command,
-                'index': idx
-            })
-
-            self.nav_labels.append(text_label)
-
-        # 分隔线 - 导航与设置之间
-        sep2 = ttk.Separator(sidebar, orient='horizontal')
-        sep2.pack(fill="x", padx=0, pady=int(10 * self.dpi_scale * self.zoom_factor))
-
-        # 系统设置（独立导航项）- 使用 Frame 容器保持一致对齐
-        settings_page = PageIndex.SETTINGS
-        settings_spec = PAGE_SPECS[settings_page]
-        settings_idx = int(settings_page)
-        settings_frame = ttk.Frame(sidebar, style='Sidebar.TFrame')
-        settings_frame.pack(fill="x", padx=nav_outer_padx, pady=1)
-
-        settings_accent = tk.Frame(settings_frame, width=3, background=self.colors['bg_sidebar'])
-        settings_accent.pack(side="left", fill="y")
-
-        settings_icon_default = self.icons.nav(settings_spec.icon_name, self.colors['text_sidebar'], self.colors['bg_sidebar'])
-        settings_icon_active = self.icons.nav(settings_spec.icon_name, self.colors['text_sidebar_active'], pill_bg)
-        settings_icon_label = ttk.Label(settings_frame, image=settings_icon_default,
-                                  style='SidebarNav.TLabel', cursor="hand2")
-        settings_icon_label._icon_default = settings_icon_default
-        settings_icon_label._icon_active = settings_icon_active
-        settings_icon_label.pack(side="left", padx=(emoji_padx, 0))
-
-        settings_text = ttk.Label(settings_frame, text=settings_spec.title,
-                                 style='SidebarNav.TLabel', cursor="hand2",
-                                 padding=(text_padx, int(14 * self.dpi_scale * self.zoom_factor)))
-        settings_text.pack(side="left", fill="x", expand=True)
-
-        settings_badge = tk.Label(
-            settings_frame, text="", font=badge_font, cursor="hand2",
-            background=self.colors['danger'], foreground='#FFFFFF',
-            padx=int(5 * self.dpi_scale), pady=0,
-        )
-
-        for widget in [settings_frame, settings_accent, settings_icon_label, settings_text, settings_badge]:
-            widget.bind("<Button-1>", lambda _event: self._request_sidebar_page(settings_page))
-            widget.bind("<Enter>", lambda e, i=settings_idx: self.on_nav_enter(i))
-            widget.bind("<Leave>", lambda e, i=settings_idx: self.on_nav_leave(i))
-
-        self.nav_components.append({
-            'frame': settings_frame,
-            'accent': settings_accent,
-            'icon': settings_icon_label,
-            'icon_default': settings_icon_default,
-            'icon_active': settings_icon_active,
-            'text': settings_text,
-            'badge': settings_badge,
-            'command': lambda: self._request_sidebar_page(settings_page),
-            'index': settings_idx
-        })
-        self.nav_labels.append(settings_text)
-
-        # 底部信息 - 仅版本号 - 调大字体
-        bottom_frame = ttk.Frame(sidebar, style='Sidebar.TFrame')
-        bottom_frame.pack(side="bottom", fill="x", padx=int(20 * self.dpi_scale * self.zoom_factor), pady=int(20 * self.dpi_scale * self.zoom_factor))
-
-        version_label = ttk.Label(bottom_frame, text=f"v{__version__}",
-                                  font=(FONT_FAMILY, int(12 * self.font_scale)),
-                                  foreground=self.colors['text_sidebar_version'], background=self.colors['bg_sidebar'],
-                                  cursor="hand2")
-        version_label.pack(anchor="w")
-        version_label.bind("<Button-1>", lambda e: self.show_changelog())
-
     def create_main_content(self):
         """创建主内容区域"""
         # 主容器
@@ -1632,7 +1414,11 @@ class BossFilterGUI:
             padx=int(UI_CONFIG['page_padding_x'] * self.dpi_scale * self.zoom_factor),
             pady=int(UI_CONFIG['page_padding_y'] * self.dpi_scale * self.zoom_factor),
         )
-        self.main_frame.bind("<Configure>", lambda _e: self._schedule_page_width_policy(), add="+")
+        self.main_frame.bind(
+            "<Configure>",
+            lambda _event: self.app_shell.schedule_page_width_policy(),
+            add="+",
+        )
 
         self.home_page = None
         self.config_page = None
@@ -1730,132 +1516,6 @@ class BossFilterGUI:
 
         self.root.after_idle(_run)
 
-    def _request_sidebar_page(
-        self,
-        page_index: PageIndex | int,
-        on_ready: Callable[[], None] | None = None,
-    ) -> None:
-        """Navigate to a page, painting feedback before its first build."""
-        try:
-            page = PageIndex(page_index)
-        except (TypeError, ValueError):
-            return
-        if (
-            str(getattr(self, "_data_storage_error", "") or "").strip()
-            and page not in {PageIndex.HOME, PageIndex.SETTINGS}
-        ):
-            self._ensure_data_storage_available(f"打开“{PAGE_SPECS[page].title}”")
-            return
-        page_spec = PAGE_SPECS[page]
-        self._request_page_first_open(
-            page,
-            page_spec.page_attr,
-            page_spec.title,
-            getattr(self, page_spec.creator_name),
-            getattr(self, page_spec.show_name),
-            on_ready=on_ready,
-        )
-
-    def _request_page_first_open(
-        self,
-        page_index: int,
-        page_attr: str,
-        title: str,
-        creator: Callable[[], object | None],
-        show_page: Callable[[], None],
-        on_ready: Callable[[], None] | None = None,
-    ) -> None:
-        """Show a lightweight first frame, then build and cache a missing page."""
-        if not hasattr(self, '_pending_page_builds'):
-            self._pending_page_builds = set()
-        if not hasattr(self, '_pending_page_ready_callbacks'):
-            self._pending_page_ready_callbacks = {}
-        if on_ready is not None:
-            self._pending_page_ready_callbacks.setdefault(page_attr, []).append(on_ready)
-
-        def _run_ready_callbacks() -> None:
-            callbacks = self._pending_page_ready_callbacks.pop(page_attr, [])
-            for callback in callbacks:
-                try:
-                    callback()
-                except Exception:
-                    logger.exception("%s页面就绪回调失败", title)
-
-        def _paint_loading_frame() -> None:
-            self.hide_all_pages()
-            self._page_loading_var.set(f"正在打开{title}…")
-            self._page_loading_frame.pack(fill="both", expand=True)
-            self.current_page_index = page_index
-            self._schedule_page_width_policy()
-            self.update_nav_highlight()
-
-        if page_attr in self._pending_page_builds:
-            _paint_loading_frame()
-            return
-        if getattr(self, page_attr, None) is not None:
-            # 已在当前页且无就绪回调时直接短路，避免重复 hide+pack+刷新
-            if (
-                getattr(self, 'current_page_index', None) == page_index
-                and on_ready is None
-            ):
-                return
-            show_page()
-            _run_ready_callbacks()
-            return
-
-        _paint_loading_frame()
-        self._pending_page_builds.add(page_attr)
-
-        def _discard_partial_page() -> None:
-            partial_page = getattr(self, page_attr, None)
-            if partial_page is not None:
-                try:
-                    partial_page.destroy()
-                except tk.TclError:
-                    pass
-                setattr(self, page_attr, None)
-
-        def _advance(iterator: Iterator[object] | None = None) -> None:
-            if getattr(self, 'current_page_index', None) != page_index:
-                self._pending_page_builds.discard(page_attr)
-                self._pending_page_ready_callbacks.pop(page_attr, None)
-                _discard_partial_page()
-                return
-            self._pending_page_builds.discard(page_attr)
-            try:
-                if iterator is None:
-                    build_result = creator()
-                    if isinstance(build_result, Iterator):
-                        iterator = build_result
-                    else:
-                        show_page()
-                        _run_ready_callbacks()
-                        return
-                next(iterator)
-            except StopIteration:
-                if getattr(self, 'current_page_index', None) == page_index:
-                    show_page()
-                    _run_ready_callbacks()
-                return
-            except Exception as exc:
-                logger.exception("首次创建%s页面失败", title)
-                self._pending_page_ready_callbacks.pop(page_attr, None)
-                _discard_partial_page()
-                if getattr(self, 'current_page_index', None) == page_index:
-                    self._page_loading_var.set(f"{title}打开失败")
-                    messagebox.showerror(
-                        "页面打开失败",
-                        f"{title}页面打开失败：{exc}",
-                        parent=self.root,
-                    )
-                return
-
-            self._pending_page_builds.add(page_attr)
-            self.root.after(1, lambda: _advance(iterator))
-
-        # Give Tk one frame to paint the selected navigation state and loading shell.
-        self.root.after(30, _advance)
-
     def _create_result_date_entry(self, parent, **kwargs):
         """创建结果页日期控件；只在结果页构建时加载 tkcalendar。"""
         try:
@@ -1867,413 +1527,6 @@ class BossFilterGUI:
             return DateEntry(parent, locale='zh_CN', **kwargs)
         except Exception:
             return DateEntry(parent, **kwargs)
-
-    def _schedule_page_width_policy(self):
-        """Debounce width policy recalculation during resize/layout churn."""
-        if self._page_width_policy_after_id is not None:
-            try:
-                self.root.after_cancel(self._page_width_policy_after_id)
-            except tk.TclError:
-                pass
-
-        def _run():
-            self._page_width_policy_after_id = None
-            self._apply_page_width_policy()
-
-        self._page_width_policy_after_id = self.root.after(60, _run)
-
-    def _apply_page_width_policy(self):
-        """Center page content on wide screens unless a page explicitly opts out."""
-        if not hasattr(self, 'pages_frame') or not hasattr(self, 'main_frame'):
-            return
-
-        scale = self.dpi_scale * self.zoom_factor
-        base_pad_x = int(UI_CONFIG['page_padding_x'] * scale)
-        base_pad_y = int(UI_CONFIG['page_padding_y'] * scale)
-        current_page = getattr(self, 'current_page_index', PageIndex.HOME)
-
-        # Pages read more consistently when content stays bounded; exceptional
-        # surfaces can still opt into the full available width through PAGE_SPECS.
-        full_width_pages = {
-            page for page, page_spec in PAGE_SPECS.items() if page_spec.full_width
-        }
-        if current_page in full_width_pages:
-            target_pad_x = base_pad_x
-        else:
-            try:
-                available_width = max(0, self.main_frame.winfo_width())
-            except tk.TclError:
-                available_width = 0
-            max_content_width = int(UI_CONFIG['content_max_width'] * scale)
-            extra_pad = max(0, (available_width - max_content_width) // 2)
-            target_pad_x = max(base_pad_x, extra_pad)
-
-        target_pad_y = (
-            max(0, base_pad_y - int(15 * scale))
-            if current_page == PageIndex.CONFIG
-            else base_pad_y
-        )
-        if (
-            self._last_page_pack_padx != target_pad_x
-            or getattr(self, '_last_page_pack_pady', None) != target_pad_y
-        ):
-            self._last_page_pack_padx = target_pad_x
-            self._last_page_pack_pady = target_pad_y
-            self.pages_frame.pack_configure(
-                padx=target_pad_x,
-                pady=target_pad_y,
-            )
-
-        if current_page == 6:
-            self._update_model_list_height()
-            self._update_model_list_columns()
-        elif current_page == 1:
-            self._update_config_page_dynamic_heights()
-        elif current_page == 2:
-            self._update_run_page_dynamic_heights()
-        elif current_page == 3:
-            self._update_result_tree_columns()
-            self._update_result_stats_compact()
-        elif current_page == 4:
-            self._update_education_queue_columns()
-        elif current_page == 5:
-            self._update_stats_tree_columns()
-
-    def _update_run_page_dynamic_heights(self):
-        """高窗口下让运行日志区域利用多余高度。"""
-        log_text = getattr(self, 'log_text', None)
-        if log_text is None:
-            return
-        extra_rows = self._get_tall_window_extra_rows()
-        try:
-            log_text.configure(height=min(40, 20 + extra_rows))
-        except tk.TclError:
-            return
-
-    def _update_result_stats_compact(self):
-        """矮窗口下隐藏结果页统计卡片的圆形图标，把纵向空间还给候选人表格。"""
-        cards = getattr(self, '_result_stat_icon_canvases', None)
-        if not cards:
-            return
-        try:
-            window_height = int(self.root.winfo_height())
-        except (tk.TclError, ValueError):
-            return
-        if window_height <= 0:
-            return
-        compact = window_height < 820
-        if compact == getattr(self, '_result_stats_compact', False):
-            return
-        self._result_stats_compact = compact
-        icon_pady = (
-            int(12 * self.dpi_scale * self.zoom_factor),
-            int(4 * self.dpi_scale * self.zoom_factor),
-        )
-        for icon_canvas, value_label in cards:
-            try:
-                if compact:
-                    icon_canvas.pack_forget()
-                else:
-                    icon_canvas.pack(anchor="center", pady=icon_pady, before=value_label)
-            except tk.TclError:
-                pass
-
-    def _is_window_maximized(self) -> bool:
-        """Return True when the main window is maximized or effectively fullscreen."""
-        try:
-            if self.root.state() == "zoomed":
-                return True
-            return (
-                self.root.winfo_width() >= self.root.winfo_screenwidth() * 0.9
-                and self.root.winfo_height() >= self.root.winfo_screenheight() * 0.85
-            )
-        except (tk.TclError, ValueError):
-            return False
-
-    def _update_result_tree_columns(self):
-        """Keep every result field available and size it for horizontal scrolling."""
-        if not hasattr(self, 'result_tree'):
-            return
-
-        try:
-            tree_width = int(self.result_tree.winfo_width())
-        except (tk.TclError, ValueError):
-            tree_width = 0
-        display_columns = result_display_columns(
-            tree_width,
-            maximized=self._is_window_maximized(),
-        )
-        self._apply_result_tree_column_widths(display_columns)
-        if tuple(self.result_tree.cget("displaycolumns")) != display_columns:
-            self.result_tree.configure(displaycolumns=display_columns)
-
-    def _tree_header_floors(self, tree, display_columns, min_widths):
-        """每列不被截断的宽度下限：表头文字实测宽度 + 排序/内边距余量，与 minwidth 取大。"""
-        import tkinter.font as tkfont
-        scale = getattr(self, 'dpi_scale', 1.0) * getattr(self, 'zoom_factor', 1.0)
-        overhead = int(30 * scale)
-        try:
-            measure_font = tkfont.Font(
-                font=(FONT_FAMILY, int(12 * getattr(self, 'font_scale', 1.0)), 'bold'))
-            floors = {}
-            for column in display_columns:
-                text = str(tree.heading(column).get('text', '') or '')
-                floors[column] = max(
-                    min_widths[column], measure_font.measure(text) + overhead)
-            return floors
-        except (tk.TclError, RuntimeError, AttributeError):
-            return {column: min_widths[column] for column in display_columns}
-
-    @staticmethod
-    def _distribute_tree_surplus(widths, flexible_columns, floors, base_widths,
-                                 growth_caps, extra):
-        """富余宽度分配：增长上限内按基础宽度权重灌水，全部触顶后余量再按比例摊开。
-
-        ttk 的 stretch 只会收缩不会放大，富余宽度必须显式分配；
-        数值/短文本列设增长上限，避免宽屏下短内容列被拉成空阔巨列、
-        长文本列反而截断。
-        """
-        while extra > 0:
-            eligible = [c for c in flexible_columns
-                        if widths[c] < max(growth_caps[c], floors[c])]
-            if not eligible:
-                break
-            total_weight = sum(base_widths[c] for c in eligible)
-            allocated = 0
-            for column in eligible:
-                share = min(extra * base_widths[column] // total_weight,
-                            max(growth_caps[column], floors[column]) - widths[column])
-                widths[column] += share
-                allocated += share
-            if allocated <= 0:
-                break
-            extra -= allocated
-        if extra > 0:
-            total_weight = sum(base_widths[c] for c in flexible_columns)
-            allocated = 0
-            for column in flexible_columns[:-1]:
-                share = extra * base_widths[column] // total_weight
-                widths[column] += share
-                allocated += share
-            widths[flexible_columns[-1]] += extra - allocated
-
-    def _apply_result_tree_column_widths(self, display_columns):
-        """Keep readable widths; use horizontal overflow before compressing fields."""
-        base_widths = {
-            "name": 80, "gender": 55, "exp": 85, "salary": 85, "skills": 85,
-            "score": 70, "ai_eval": 70, "level": 80, "status": 180,
-            "age": 70, "education": 90, "job_status": 130,
-            "school": 150, "company": 160,
-        }
-        min_widths = {
-            "name": 60, "gender": 48, "exp": 70, "salary": 70, "skills": 70,
-            "score": 60, "ai_eval": 60, "level": 70, "status": 150,
-            "age": 60, "education": 80, "job_status": 90,
-            "school": 120, "company": 125,
-        }
-
-        try:
-            available_width = max(0, int(self.result_tree.winfo_width()) - 2)
-        except (tk.TclError, ValueError):
-            available_width = 0
-
-        # 短画像列保持紧凑；窗口不足时保留可读列宽并交给水平滚动条，
-        # 仅当全部字段已经容纳后，才把富余宽度分配给长文本列。
-        fixed_columns = {"gender", "age", "education"}
-        flexible_columns = [c for c in display_columns if c not in fixed_columns]
-        floors = self._tree_header_floors(self.result_tree, display_columns, min_widths)
-        widths = {
-            column: max(base_widths[column], floors[column])
-            for column in display_columns
-        }
-        stretch = False
-        growth_caps = {
-            "name": 130, "gender": 65, "exp": 115, "salary": 120, "skills": 130,
-            "score": 95, "ai_eval": 95, "level": 120, "status": 260,
-            "age": 80, "education": 110, "job_status": 170,
-            "school": 280, "company": 320,
-        }
-        content_width = sum(widths.values())
-        if available_width > content_width and flexible_columns:
-            self._distribute_tree_surplus(
-                widths, flexible_columns, floors, base_widths, growth_caps,
-                available_width - content_width,
-            )
-
-        for column in display_columns:
-            self.result_tree.column(
-                column,
-                width=widths[column],
-                minwidth=min_widths[column],
-                stretch=stretch,
-            )
-
-    def _update_stats_tree_columns(self):
-        """Rebalance stats detail columns so wide windows fill the table.
-
-        与结果表同一套逻辑：表头实测宽度为下限，富余在增长上限内按
-        基础宽度分配，避免右侧留白或岗位名称等长文本列截断。
-        """
-        tree = getattr(self, 'stats_tree', None)
-        if tree is None:
-            return
-        base_widths = {
-            "job": 200, "filter_dist": 175, "greeted": 100, "feedback": 80,
-            "suitable_rate": 75, "false_positive_rate": 75,
-            "replied": 100, "interviewed": 100, "avg_score": 65,
-        }
-        min_widths = {
-            "job": 150, "filter_dist": 140, "greeted": 80, "feedback": 65,
-            "suitable_rate": 60, "false_positive_rate": 60,
-            "replied": 80, "interviewed": 80, "avg_score": 55,
-        }
-        growth_caps = {
-            "job": 340, "filter_dist": 260, "greeted": 150, "feedback": 120,
-            "suitable_rate": 110, "false_positive_rate": 110,
-            "replied": 150, "interviewed": 150, "avg_score": 100,
-        }
-        columns = list(base_widths)
-        try:
-            available_width = max(0, int(tree.winfo_width()) - 2)
-        except (tk.TclError, ValueError):
-            available_width = 0
-
-        floors = self._tree_header_floors(tree, columns, min_widths)
-        widths = dict(base_widths)
-        stretch = True
-        floor_total = sum(floors.values())
-        if available_width > max(sum(base_widths.values()), floor_total):
-            widths.update(floors)
-            self._distribute_tree_surplus(
-                widths, columns, floors, base_widths, growth_caps,
-                available_width - floor_total)
-            stretch = False
-
-        for column in columns:
-            tree.column(
-                column,
-                width=widths[column],
-                minwidth=min_widths[column],
-                stretch=stretch,
-            )
-
-    def _is_tall_window(self) -> bool:
-        """Return True if the window height exceeds 85% of screen height (min 1000px)."""
-        try:
-            window_height = int(self.root.winfo_height())
-            screen_height = int(self.root.winfo_screenheight())
-        except (tk.TclError, ValueError):
-            return False
-        return window_height >= max(1000, int(screen_height * 0.85))
-
-    def _get_tall_window_extra_rows(self):
-        """Return extra visible rows for pages that can use fullscreen height."""
-        if not self._is_tall_window():
-            return 0
-        try:
-            window_height = int(self.root.winfo_height())
-        except (tk.TclError, ValueError):
-            return 0
-        return max(2, (window_height - UI_CONFIG['window_base_height']) // 70)
-
-    def _update_config_page_dynamic_heights(self):
-        """Increase job-config text/list heights only for tall or fullscreen windows."""
-        extra_rows = self._get_tall_window_extra_rows()
-        requirement_extra_rows = 0 if extra_rows == 0 else max(1, extra_rows // 2)
-        requirement_rows = min(24, UI_CONFIG['text_height_large'] + requirement_extra_rows)
-        skills_rows = min(18, UI_CONFIG['treeview_height'] + extra_rows * 2)
-
-        try:
-            if hasattr(self, 'requirement_text'):
-                self.requirement_text.configure(height=requirement_rows)
-            if hasattr(self, 'skills_tree'):
-                self.skills_tree.configure(height=skills_rows)
-        except tk.TclError:
-            return
-
-    def _create_page_header(self, parent, title, subtitle=None, top_padding=0):
-        """创建页面标题区域：白色背景 + 左侧蓝色竖线，无灰色底色"""
-        _pad = int(16 * self.dpi_scale * self.zoom_factor)
-        _bar_w = int(4 * self.dpi_scale * self.zoom_factor)
-
-        card = ttk.Frame(parent, style='PageHeader.TFrame')
-        card.pack(
-            fill="x",
-            pady=(
-                int(top_padding * self.dpi_scale * self.zoom_factor),
-                int(25 * self.dpi_scale * self.zoom_factor),
-            ),
-        )
-
-        accent_bar = tk.Frame(card, width=_bar_w, bg=self.colors['primary'])
-        accent_bar.pack(side="left", fill="y")
-
-        inner = ttk.Frame(card, style='PageHeaderInner.TFrame')
-        inner.pack(fill="x", padx=(_pad, _pad), pady=(_pad, _pad))
-
-        title_label = ttk.Label(inner, text=title, font=self.font_section,
-                                foreground=self.colors['text_primary'],
-                                background=self.colors['bg_card'])
-        title_label.pack(anchor="w")
-
-        if subtitle:
-            sub = ttk.Label(inner, text=subtitle, font=self.font_label,
-                            foreground=self.colors['text_secondary'],
-                            background=self.colors['bg_card'])
-            sub.pack(anchor="w", pady=(int(8 * self.dpi_scale * self.zoom_factor), 0))
-
-        return inner
-
-    def _create_card(self, parent, title, padding=None, title_trailing_builder=None, **pack_opts):
-        """创建带标题的白色卡片区域。
-
-        替代 ttk.LabelFrame，因为 macOS aqua 主题的 Labelframe.border 元素
-        强制使用 systemWindowBackgroundColor（灰色），无法通过 style 覆盖。
-
-        标题行：左侧 3px 蓝色竖线 + 浅灰背景，与页面标题风格统一。
-
-        返回内部内容 Frame，调用方将子控件放入返回的 Frame 中。
-
-        title_trailing_builder: 可选回调 (title_bar, padding) -> None，
-        用于在标题栏右侧注入附加控件（如操作按钮），不占用内容区空间。
-        """
-        if padding is None:
-            padding = int(UI_CONFIG['label_frame_padding'] * self.dpi_scale * self.zoom_factor)
-        title_font = pack_opts.pop("title_font", self.font_label)
-
-        card = tk.Frame(parent, bg=self.colors['bg_card'],
-                        highlightbackground=self.colors['border'], highlightthickness=1)
-        card.pack(**pack_opts)
-
-        # 标题行 - 左侧蓝色竖线 + 浅灰背景，与页面标题风格一致
-        title_bg = self.colors.get('bg_footer', ui_theme.BG_FOOTER)
-        title_bar = tk.Frame(card, bg=title_bg)
-        title_bar.pack(fill="x")
-
-        # 左侧蓝色竖线（2px，与页面标题的 4px 竖线呼应但更细）
-        accent = tk.Frame(title_bar, width=int(2 * self.dpi_scale * self.zoom_factor),
-                          bg=self.colors['primary'])
-        accent.pack(side="left", fill="y")
-
-        title_label = tk.Label(title_bar, text=f" {title} ",
-                               font=title_font,
-                               fg=self.colors['text_primary'], bg=title_bg)
-
-        # 标题栏右侧附加控件先 pack（side="right" 占右侧），再 pack 标题（side="top" 占顶部剩余空间）
-        # 这样两者共享同一行，避免附加控件把标题栏撑高
-        if title_trailing_builder is not None:
-            title_trailing_builder(title_bar, padding)
-
-        title_label.pack(anchor="w", padx=padding, pady=(int(padding * 0.7), int(padding * 0.7)))
-
-        # 标题下方分隔线
-        sep = tk.Frame(card, bg=self.colors['border'], height=1)
-        sep.pack(fill="x")
-
-        # 内容区（带内边距）
-        content = ttk.Frame(card, style='TFrame')
-        content.pack(fill="both", expand=True, padx=padding, pady=padding)
-        return content
 
     def create_home_page(self):
         """创建首页。"""
@@ -2315,419 +1568,16 @@ class BossFilterGUI:
         self.api_config_page = ttk.Frame(self.pages_frame, style='Page.TFrame')
 
         # 创建可滚动容器（macOS Tk 9.0+ 用 Text，其他用 Canvas）
-        self.api_canvas, self.api_scrollable_frame = self._create_scroll_container(
-            self.api_config_page, self.colors['bg_card'])
+        self.api_canvas, self.api_scrollable_frame = (
+            self.scroll_support.create_scroll_container(
+                self.api_config_page,
+                self.colors['bg_card'],
+            )
+        )
 
         yield
         yield from self._create_api_config_content_steps()
 
-
-    @staticmethod
-    def _delta_to_units(delta):
-        """将鼠标滚轮 delta 转换为滚动单位数。
-
-        Windows 鼠标滚轮每格 delta=±120；macOS 触控板 delta 通常为 ±1。
-        直接除以 120 取整在 macOS 上恒为 0，故按平台分别处理。
-        """
-        if sys.platform == 'darwin':
-            return -1 if delta > 0 else 1
-        return int(-1 * (delta / 120))
-
-    @staticmethod
-    def _bind_bounded_spinbox_mousewheel(spinbox, variable, minimum, maximum):
-        """Adjust a numeric Spinbox with the wheel without scrolling its page."""
-        def _on_wheel(event):
-            delta = getattr(event, 'delta', 0)
-            button = getattr(event, 'num', None)
-            if delta > 0 or button == 4:
-                direction = 1
-            elif delta < 0 or button == 5:
-                direction = -1
-            else:
-                return 'break'
-            try:
-                current = int(variable.get())
-            except (TypeError, ValueError):
-                current = minimum
-            variable.set(str(max(minimum, min(maximum, current + direction))))
-            return 'break'
-
-        spinbox.bind('<MouseWheel>', _on_wheel)
-        if sys.platform != 'win32':
-            spinbox.bind('<Button-4>', _on_wheel)
-            spinbox.bind('<Button-5>', _on_wheel)
-
-    @staticmethod
-    def _create_scroll_container(parent, bg_color, auto_hide_scrollbar=False):
-        """创建可滚动容器，返回 (canvas, container_frame)。
-
-        所有平台统一使用 Canvas + create_window。
-        macOS Tk 9.0+ 触控板滚动通过 _setup_cocoa_scroll_hook() 在 ObjC 层拦截。
-        """
-        canvas = tk.Canvas(parent, bg=bg_color, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        container = ttk.Frame(canvas, style='TFrame')
-
-        canvas_window = canvas.create_window((0, 0), window=container, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        sync_after_id = None
-
-        if auto_hide_scrollbar:
-            def _sync_layout():
-                """Fill the viewport when content is short and scroll only on overflow."""
-                nonlocal sync_after_id
-                sync_after_id = None
-                try:
-                    viewport_height = max(1, canvas.winfo_height())
-                    requested_height = max(1, container.winfo_reqheight())
-                    content_height = max(requested_height, viewport_height)
-                    canvas.itemconfig(canvas_window, height=content_height)
-                    canvas.configure(
-                        scrollregion=(0, 0, canvas.winfo_width(), content_height)
-                    )
-
-                    has_overflow = requested_height > viewport_height + 8
-                    if has_overflow and not scrollbar.winfo_manager():
-                        scrollbar.pack(side="right", fill="y")
-                    elif not has_overflow:
-                        if scrollbar.winfo_manager():
-                            scrollbar.pack_forget()
-                        canvas.yview_moveto(0)
-                except tk.TclError:
-                    return
-
-            def _schedule_sync(_event=None):
-                nonlocal sync_after_id
-                if sync_after_id is not None:
-                    try:
-                        canvas.after_cancel(sync_after_id)
-                    except tk.TclError:
-                        return
-                sync_after_id = canvas.after_idle(_sync_layout)
-
-            container.bind("<Configure>", _schedule_sync)
-            canvas._schedule_overflow_sync = _schedule_sync
-        else:
-            container.bind(
-                "<Configure>",
-                lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
-            )
-
-        # Canvas 宽度变化 → 同步嵌入 Frame 宽度与自适应高度
-        def _on_canvas_configure(event):
-            canvas.itemconfig(canvas_window, width=event.width)
-            if auto_hide_scrollbar:
-                _schedule_sync()
-        canvas.bind("<Configure>", _on_canvas_configure)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        if not auto_hide_scrollbar:
-            scrollbar.pack(side="right", fill="y")
-        return canvas, container
-
-    @staticmethod
-    def _bind_mousewheel(canvas, parent_frame):
-        """在 Canvas 及其所有子控件上绑定滚轮事件（instance binding 优先级最高）。
-
-        macOS 上 ttk 控件的 class binding 会先消费 <MouseWheel> 事件，
-        bind_all 优先级最低无法拦截。必须在每个控件上用 bind() 绑定 instance handler，
-        返回 'break' 阻止后续 class binding。
-
-        macOS 触控板可能生成 <MouseWheel>（delta=±1）或 <Button-4>/<Button-5> 事件，
-        需要同时绑定三种事件类型。
-
-        首次绑定后标记 canvas._mousewheel_bound，后续调用直接跳过，避免页面切换时
-        递归遍历所有子控件重复绑定导致卡顿。
-        """
-        if getattr(canvas, '_mousewheel_bound', False):
-            return
-
-        def _on_wheel(event):
-            """处理滚轮/触控板滚动事件"""
-            # 优先使用 delta（MouseWheel 事件）
-            if hasattr(event, 'delta') and event.delta != 0:
-                units = BossFilterGUI._delta_to_units(event.delta)
-            # 回退到 num（Button-4/5 事件，macOS X11 兼容模式）
-            elif hasattr(event, 'num'):
-                if event.num == 4:
-                    units = -1
-                elif event.num == 5:
-                    units = 1
-                else:
-                    return
-            else:
-                return
-            if units != 0:
-                canvas.yview_scroll(units, "units")
-            return 'break'
-
-        # 跳过自带滚轮的控件类型
-        _skip_types = (ttk.Spinbox, ttk.Combobox, ttk.Scrollbar, tk.Text, tk.Entry, tk.Listbox)
-
-        def _bind_recursive(widget):
-            if isinstance(widget, _skip_types):
-                return
-            # Treeview 也跳过
-            if hasattr(widget, 'identify_region'):
-                return
-            widget.bind("<MouseWheel>", _on_wheel)
-            # macOS/Linux 触控板可能生成 Button-4/5 事件
-            if sys.platform != 'win32':
-                widget.bind("<Button-4>", _on_wheel)
-                widget.bind("<Button-5>", _on_wheel)
-            for child in widget.winfo_children():
-                _bind_recursive(child)
-
-        # Canvas 自身
-        canvas.bind("<MouseWheel>", _on_wheel)
-        if sys.platform != 'win32':
-            canvas.bind("<Button-4>", _on_wheel)
-            canvas.bind("<Button-5>", _on_wheel)
-        # 递归绑定所有子控件
-        _bind_recursive(parent_frame)
-        canvas._mousewheel_bound = True
-
-    # ── macOS Tk 9.0+ Cocoa 触控板滚动 hook ──────────────────────────────
-    # Tk 9.0 的 Cocoa 后端在 NSView.scrollWheel: 中消费触控板事件，
-    # 不向 Canvas 等非原生滚动控件生成 Tk MouseWheel 事件。
-    # 通过 ObjC Runtime swizzle 拦截 scrollWheel:，直接滚动当前页面的 Canvas。
-
-    _cocoa_hook_installed = False
-    _cocoa_refs = {}            # 防止 ObjC 对象/回调被 GC
-
-    def _setup_cocoa_scroll_hook(self):
-        """设置 Cocoa scrollWheel: 拦截（仅 macOS Tk 9.0+）。
-
-        通过 ObjC Runtime swizzle NSView.scrollWheel:，
-        对非 NSScrollView 子视图直接调用当前页面 Canvas 的 yview_scroll。
-        如果设置失败（ctypes/libobjc 不可用），静默降级（触控板不可滚动）。
-        """
-        if BossFilterGUI._cocoa_hook_installed:
-            return
-        try:
-            import ctypes
-            import ctypes.util
-
-            objc_path = ctypes.util.find_library('objc')
-            if not objc_path:
-                return
-            objc = ctypes.cdll.LoadLibrary(objc_path)
-
-            # ── ObjC Runtime 函数签名 ──
-            objc.sel_registerName.restype = ctypes.c_void_p
-            objc.sel_registerName.argtypes = [ctypes.c_char_p]
-            objc.objc_getClass.restype = ctypes.c_void_p
-            objc.objc_getClass.argtypes = [ctypes.c_char_p]
-            objc.class_getInstanceMethod.restype = ctypes.c_void_p
-            objc.class_getInstanceMethod.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-            objc.method_getImplementation.restype = ctypes.c_void_p
-            objc.method_getImplementation.argtypes = [ctypes.c_void_p]
-            objc.method_setImplementation.restype = ctypes.c_void_p
-            objc.method_setImplementation.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-
-            # objc_msgSend 用于方法调用
-            objc.objc_msgSend.restype = ctypes.c_void_p
-            objc.objc_msgSend.argtypes = [
-                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-
-            sel_scroll = objc.sel_registerName(b'scrollWheel:')
-            sel_shared = objc.sel_registerName(b'sharedApplication')
-            sel_keywin = objc.sel_registerName(b'keyWindow')
-            sel_cv = objc.sel_registerName(b'contentView')
-            sel_super = objc.sel_registerName(b'superview')
-            sel_is_kind = objc.sel_registerName(b'isKindOfClass:')
-            sel_delta_y = objc.sel_registerName(b'scrollingDeltaY')
-
-            cls_nsapp = objc.objc_getClass(b'NSApplication')
-            cls_nsview = objc.objc_getClass(b'NSView')
-            cls_nssv = objc.objc_getClass(b'NSScrollView')
-
-            if not all([cls_nsapp, cls_nsview, cls_nssv]):
-                return
-
-            # ── 获取 NSApplication.sharedApplication.keyWindow.contentView ──
-            app = objc.objc_msgSend(cls_nsapp, sel_shared, None)
-            if not app:
-                self.root.after(1000, self._setup_cocoa_scroll_hook)
-                return
-            kw = objc.objc_msgSend(app, sel_keywin, None)
-            if not kw:
-                self.root.after(1000, self._setup_cocoa_scroll_hook)
-                return
-            content_view = objc.objc_msgSend(kw, sel_cv, None)
-            if not content_view:
-                self.root.after(1000, self._setup_cocoa_scroll_hook)
-                return
-
-            # ── scrollingDeltaY 调用函数（处理 x86_64 fpret vs ARM64） ──
-            try:
-                objc.objc_msgSend_fpret.restype = ctypes.c_double
-                objc.objc_msgSend_fpret.argtypes = [
-                    ctypes.c_void_p, ctypes.c_void_p]
-                _msg_send_double = objc.objc_msgSend_fpret
-            except AttributeError:
-                # ARM64 没有 fpret，创建独立的 CFUNCTYPE 避免修改 objc_msgSend 签名
-                _msg_send_double = ctypes.CFUNCTYPE(
-                    ctypes.c_double, ctypes.c_void_p, ctypes.c_void_p
-                )(objc.objc_msgSend)
-
-            # ── isKindOfClass: 调用函数（3 个 c_void_p 参数） ──
-            _msg_send_is_kind = ctypes.CFUNCTYPE(
-                ctypes.c_bool,
-                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
-            )(objc.objc_msgSend)
-
-            # ── 保存引用，防止被 GC ──
-            BossFilterGUI._cocoa_refs['app'] = app
-            BossFilterGUI._cocoa_refs['content_view'] = content_view
-
-            # ── scrollWheel: 替代实现 ──
-            # C 签名: void scrollWheel:(id self, SEL _cmd, id event)
-            SCROLL_CB = ctypes.CFUNCTYPE(
-                None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
-
-            def _cocoa_scroll_impl(view, _cmd, event):
-                """swizzle 后的 scrollWheel: 实现。
-
-                对 NSScrollView 内部视图（Text/Treeview/Listbox）跳过，
-                让 Cocoa 原生滚动处理。对其他视图直接滚动当前页面的 Canvas。
-                """
-                try:
-                    # 鼠标在 Text 控件上时，让 Text 自身处理滚动
-                    if getattr(self, '_over_text_widget', False):
-                        return
-
-                    # 检查 view 是否在 NSScrollView 内部
-                    # （Text/Treeview/Listbox 的 Cocoa 实现是 NSScrollView）
-                    v = view
-                    for _ in range(10):  # 最多向上 10 层
-                        sv = objc.objc_msgSend(v, sel_super, None)
-                        if not sv:
-                            break
-                        if _msg_send_is_kind(sv, sel_is_kind, cls_nssv):
-                            return  # 在 NSScrollView 内部 → 让原生滚动处理
-                        v = sv
-
-                    # 获取 deltaY（浮点数）
-                    delta_y = _msg_send_double(event, sel_delta_y)
-                    if delta_y == 0:
-                        return
-
-                    # Cocoa deltaY > 0 = 向上 → units = -1（内容上移）
-                    # Cocoa deltaY < 0 = 向下 → units = 1（内容下移）
-                    units = -1 if delta_y > 0 else 1
-
-                    # 直接滚动当前页面的 Canvas
-                    page_canvas = {
-                        PageIndex.CONFIG: getattr(self, 'config_canvas', None),
-                        PageIndex.RUN: getattr(self, 'run_canvas', None),
-                        PageIndex.EDUCATION: getattr(self, 'education_canvas', None),
-                        PageIndex.SETTINGS: getattr(self, 'api_canvas', None),
-                    }.get(getattr(self, 'current_page_index', -1))
-
-                    if page_canvas:
-                        page_canvas.yview_scroll(units, "units")
-
-                except Exception:
-                    pass
-
-            # ── Swizzle NSView.scrollWheel: ──
-            scroll_callback = SCROLL_CB(_cocoa_scroll_impl)
-            cb_ptr = ctypes.cast(scroll_callback, ctypes.c_void_p).value
-
-            method = objc.class_getInstanceMethod(cls_nsview, sel_scroll)
-            if not method:
-                return
-
-            # 保存原始实现（用于 fallback）并替换
-            orig_impl = objc.method_getImplementation(method)
-            objc.method_setImplementation(method, cb_ptr)
-
-            # 防止回调和 ObjC 引用被 GC
-            BossFilterGUI._cocoa_refs['callback'] = scroll_callback
-            BossFilterGUI._cocoa_refs['orig_impl'] = orig_impl
-
-            BossFilterGUI._cocoa_hook_installed = True
-
-        except Exception:
-            pass
-
-    def _on_mousewheel(self, event):
-        """统一处理滚轮事件 - 根据当前页面分发到对应的 Canvas
-
-        使用 bind_all（最高优先级），从事件源控件向上遍历找到所属 Canvas，
-        避免 macOS 上 ttk class binding 消费事件的问题。
-        """
-        widget = event.widget
-
-        # 让自带滚轮处理的控件自行处理
-        if isinstance(widget, (tk.Text, tk.Entry, tk.Listbox, ttk.Scrollbar, ttk.Combobox, ttk.Spinbox)):
-            return
-        # Treeview 也需要跳过（自带垂直滚动）
-        if hasattr(widget, 'identify_region'):
-            return
-
-        # 计算滚动量
-        if hasattr(event, 'delta') and event.delta != 0:
-            units = self._delta_to_units(event.delta)
-        elif hasattr(event, 'num'):
-            if event.num == 4:
-                units = -1
-            elif event.num == 5:
-                units = 1
-            else:
-                return
-        else:
-            return
-
-        if units == 0:
-            return
-
-        # 检查事件源是否直接就是目标 Canvas
-        target_canvas = None
-        if hasattr(self, 'config_canvas') and widget is self.config_canvas:
-            target_canvas = self.config_canvas
-        elif hasattr(self, 'api_canvas') and widget is self.api_canvas:
-            target_canvas = self.api_canvas
-        elif hasattr(self, 'run_canvas') and widget is self.run_canvas:
-            target_canvas = self.run_canvas
-        elif hasattr(self, 'education_canvas') and widget is self.education_canvas:
-            target_canvas = self.education_canvas
-        else:
-            # 从事件源控件向上遍历，找到所属的可滚动 Canvas
-            try:
-                w = widget
-                while w is not None:
-                    parent = w.master
-                    if parent is getattr(self, 'config_canvas', None):
-                        target_canvas = self.config_canvas
-                        break
-                    elif parent is getattr(self, 'api_canvas', None):
-                        target_canvas = self.api_canvas
-                        break
-                    elif parent is getattr(self, 'run_canvas', None):
-                        target_canvas = self.run_canvas
-                        break
-                    elif parent is getattr(self, 'education_canvas', None):
-                        target_canvas = self.education_canvas
-                        break
-                    w = parent
-            except Exception:
-                return
-
-        if target_canvas is None:
-            target_canvas = {
-                PageIndex.CONFIG: getattr(self, 'config_canvas', None),
-                PageIndex.RUN: getattr(self, 'run_canvas', None),
-                PageIndex.EDUCATION: getattr(self, 'education_canvas', None),
-            }.get(getattr(self, 'current_page_index', -1))
-
-        if target_canvas is None:
-            return
-
-        target_canvas.yview_scroll(units, "units")
-        return 'break'
 
     def _on_rounds_mousewheel(self, event):
         """滚动轮次 Spinbox 的鼠标滚轮处理"""
@@ -2932,12 +1782,6 @@ class BossFilterGUI:
     def _backup_summary_metrics(result: dict) -> tuple[tuple[str, str], ...]:
         """Return compact, privacy-safe metrics for backup result dialogs."""
         return _DATA_MAINTENANCE_CONTROLLER.backup_summary_metrics(result)
-
-    @staticmethod
-    def _format_maintenance_time(value) -> str:
-        """Format one persisted local activity timestamp for compact UI notes."""
-        return _DATA_MAINTENANCE_CONTROLLER.format_time(value)
-
 
     def _remember_maintenance_success(
         self,
@@ -3712,7 +2556,7 @@ class BossFilterGUI:
             "success": f"{target_label}测试通过，点击重新测试",
             "error": f"{target_label}测试失败，点击重试",
         }.get(state, f"测试{target_label}")
-        self._show_tooltip(text, event.x_root + 12, event.y_root + 10, ("model-test", role))
+        self.feedback_support.show_tooltip(text, event.x_root + 12, event.y_root + 10, ("model-test", role))
 
     def _refresh_model_assignment_controls(self):
         """让模型用途选择器与 saved_models 和当前配置保持一致。"""
@@ -3839,123 +2683,16 @@ class BossFilterGUI:
             )
 
         # 动态调整高度：普通窗口保持原来的最多6行，全屏/高窗口显示更多行。
-        self._update_model_list_height()
+        self.layout_support.update_model_list_height()
         # 根据窗口状态显示/隐藏 Base URL 列
-        self._update_model_list_columns()
+        self.layout_support.update_model_list_columns()
         self._refresh_model_assignment_controls()
 
         # 在所有控件创建完毕后绑定滚轮事件
-        self._bind_mousewheel(self.api_canvas, self.api_scrollable_frame)
-
-    def _get_model_list_max_rows(self):
-        """Return saved-model list max rows for the current window height."""
-        base_rows = 6
-        if not self._is_tall_window():
-            return base_rows
-        try:
-            window_height = int(self.root.winfo_height())
-        except (tk.TclError, ValueError):
-            return base_rows
-        extra_rows = max(0, (window_height - UI_CONFIG['window_base_height']) // 42)
-        return min(18, max(10, base_rows + extra_rows))
-
-    def _update_model_list_height(self):
-        """Resize saved-model Treeview height without changing normal-window layout."""
-        if not hasattr(self, 'model_list_tree'):
-            return
-        try:
-            row_count = len(self.model_list_tree.get_children())
-            max_rows = self._get_model_list_max_rows()
-            self.model_list_tree['height'] = max(1, min(row_count, max_rows))
-        except tk.TclError:
-            return
-
-    def _update_model_list_columns(self):
-        """Fit saved-model columns while preserving the wider 4K layout."""
-        if not hasattr(self, 'model_list_tree'):
-            return
-        display = ("name", "provider", "compat", "base_url")
-        current = tuple(self.model_list_tree.cget("displaycolumns"))
-        if current != display:
-            self.model_list_tree.configure(displaycolumns=display)
-
-        if self._is_window_maximized():
-            base_widths = {
-                "name": 400, "provider": 300, "compat": 220, "base_url": 380,
-            }
-        else:
-            base_widths = {
-                "name": 320, "provider": 260, "compat": 190, "base_url": 360,
-            }
-
-        min_widths = {
-            "name": 180, "provider": 160, "compat": 120, "base_url": 170,
-        }
-        widths = dict(base_widths)
-        try:
-            available_width = max(0, int(self.model_list_tree.winfo_width()) - 24)
-        except (tk.TclError, ValueError):
-            available_width = 0
-
-        overflow = sum(widths.values()) - available_width
-        if available_width > 0 and overflow > 0:
-            for column in ("provider", "base_url", "compat", "name"):
-                reducible = max(0, widths[column] - min_widths[column])
-                reduction = min(reducible, overflow)
-                widths[column] -= reduction
-                overflow -= reduction
-                if overflow <= 0:
-                    break
-            if overflow > 0:
-                widths["base_url"] = max(
-                    min_widths["base_url"], widths["base_url"] - overflow
-                )
-
-        for column in display:
-            self.model_list_tree.column(
-                column,
-                width=widths[column],
-                minwidth=min_widths[column],
-                stretch=column == "base_url",
-            )
-
-    def _update_education_queue_columns(self):
-        """Keep the education queue status column visible on 1080p screens."""
-        if not hasattr(self, 'education_queue_tree'):
-            return
-
-        base_widths = {
-            "file": 230, "name": 120, "number": 160,
-            "school": 175, "major": 210, "status": 140,
-        }
-        min_widths = {
-            "file": 150, "name": 80, "number": 130,
-            "school": 130, "major": 150, "status": 120,
-        }
-        widths = dict(base_widths)
-        try:
-            available_width = max(0, int(self.education_queue_tree.winfo_width()) - 24)
-        except (tk.TclError, ValueError):
-            available_width = 0
-
-        overflow = sum(widths.values()) - available_width
-        if available_width > 0 and overflow > 0:
-            for column in ("major", "file", "school", "name", "number", "status"):
-                reducible = max(0, widths[column] - min_widths[column])
-                reduction = min(reducible, overflow)
-                widths[column] -= reduction
-                overflow -= reduction
-                if overflow <= 0:
-                    break
-
-        for column in ("file", "name", "number", "school", "major", "status"):
-            self.education_queue_tree.column(
-                column,
-                width=widths[column],
-                minwidth=min_widths[column],
-                anchor="w" if column == "file" else "center",
-                stretch=column in ("file", "number", "school", "major"),
-            )
+        self.scroll_support.bind_mousewheel(
+            self.api_canvas,
+            self.api_scrollable_frame,
+        )
 
     def create_run_page(self) -> None:
         """同步创建运行控制页，供需要立即访问控件的内部流程使用。"""
@@ -4057,7 +2794,7 @@ class BossFilterGUI:
         self.result_more_menu_button = widgets.more_menu_button
         self.result_more_menu = widgets.more_menu
 
-        self._update_result_tree_columns()
+        self.layout_support.update_result_tree_columns()
         self._refresh_contact_queue_badge()
 
 
@@ -4280,11 +3017,11 @@ class BossFilterGUI:
         tooltip_columns = {"#1": 0, "#4": 3, "#5": 4}
         value_index = tooltip_columns.get(column_id)
         if not item_id or value_index is None:
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
         values = tree.item(item_id, "values")
         if len(values) <= value_index:
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
         full_text = str(values[value_index] or "")
         cell_bbox = tree.bbox(item_id, column_id)
@@ -4293,7 +3030,7 @@ class BossFilterGUI:
             or not cell_bbox
             or self._education_tree_font.measure(full_text) <= max(0, cell_bbox[2] - 12)
         ):
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
         tooltip_key = ("education", item_id, column_id)
         if (
@@ -4309,7 +3046,7 @@ class BossFilterGUI:
         x = self.root.winfo_pointerx() + 15
         y = self.root.winfo_pointery() + 10
         self._tooltip_after_id = self.root.after(
-            300, lambda: self._show_tooltip(full_text, x, y, tooltip_key)
+            300, lambda: self.feedback_support.show_tooltip(full_text, x, y, tooltip_key)
         )
 
     def _show_education_queue_context_menu(self, event):
@@ -5164,7 +3901,7 @@ class BossFilterGUI:
             if note:
                 lines.append(f"   备注：{note}")
             lines.append("")
-        self._show_text_dialog(
+        self.input_support.show_text_dialog(
             f"反馈候选人 - {job_name}",
             "\n".join(lines).rstrip(),
             width=720,
@@ -5194,7 +3931,7 @@ class BossFilterGUI:
             self.config_job_combo.set(matched_job)
             self.on_job_selected(None)
 
-        self._request_sidebar_page(PageIndex.CONFIG, on_ready=_select_reviewed_job)
+        self.app_shell.request_sidebar_page(PageIndex.CONFIG, on_ready=_select_reviewed_job)
 
     @staticmethod
     def _feedback_reasons(candidate):
@@ -5209,90 +3946,8 @@ class BossFilterGUI:
         """Build the shared job-review model without changing candidate data."""
         return stats_presenter.build_job_review_model(job_name, candidates)
 
-    def _build_job_review_text(self, job_name, candidates):
-        """Build the compatibility text report from the shared review model."""
-        return stats_presenter.build_job_review_text(job_name, candidates)
-
     _REASON_SUGGESTIONS = stats_presenter.REASON_SUGGESTIONS
 
-
-    def _show_text_dialog(
-        self,
-        title,
-        text,
-        width=700,
-        height=520,
-        button_text="关闭",
-        button_align="right",
-        extra_actions=None,
-    ):
-        win = tk.Toplevel(self.root)
-        win.title(title)
-        win.transient(self.root)
-        win.grab_set()
-        win.withdraw()
-        scale = self.dpi_scale * self.zoom_factor
-        win.grid_rowconfigure(0, weight=1)
-        win.grid_columnconfigure(0, weight=1)
-
-        body = ttk.Frame(win, style='Page.TFrame', padding=int(16 * scale))
-        body.grid(row=0, column=0, sticky="nsew")
-        body.grid_rowconfigure(0, weight=1)
-        body.grid_columnconfigure(0, weight=1)
-        text_widget = tk.Text(
-            body,
-            wrap="word",
-            font=self.font_log,
-            bg=self.colors['bg_card'],
-            fg=self.colors['text_primary'],
-            relief="solid",
-            bd=1,
-        )
-        scroll = ttk.Scrollbar(body, orient="vertical", command=text_widget.yview)
-        text_widget.configure(yscrollcommand=scroll.set)
-        text_widget.insert("1.0", text)
-        text_widget.configure(state="disabled")
-        text_widget.grid(row=0, column=0, sticky="nsew")
-        scroll.grid(row=0, column=1, sticky="ns")
-
-        horizontal_padding = int(16 * scale)
-        btn_row = ttk.Frame(
-            win,
-            style='Page.TFrame',
-            padding=(
-                horizontal_padding,
-                0,
-                horizontal_padding,
-                int(12 * scale),
-            ),
-        )
-        btn_row.grid(row=1, column=0, sticky="ew")
-
-        def close():
-            win.grab_release()
-            win.destroy()
-
-        def run_extra_action(command):
-            close()
-            command()
-
-        for action_text, action_command in extra_actions or []:
-            action_button = ttk.Button(
-                btn_row,
-                text=action_text,
-                command=lambda command=action_command: run_extra_action(command),
-            )
-            action_button.pack(side="left", padx=(0, int(8 * scale)))
-
-        button = ttk.Button(btn_row, text=button_text, command=close)
-        if button_align == "center":
-            button.pack()
-        else:
-            button.pack(side="right")
-        win.protocol("WM_DELETE_WINDOW", close)
-        win.bind("<Escape>", lambda _event: close())
-        _place_window_centered(win, int(width * scale), int(height * scale), parent=self.root)
-        win.deiconify()
 
     def refresh_stats(self):
         """刷新数据统计页面 - 按岗位维度聚合"""
@@ -5343,7 +3998,7 @@ class BossFilterGUI:
         self.hide_all_pages()
         self.home_page.pack(fill="both", expand=True)
         self.current_page_index = PageIndex.HOME
-        self._schedule_page_width_policy()
+        self.app_shell.schedule_page_width_policy()
         self.update_nav_highlight()
         # 刷新岗位过滤列表
         try:
@@ -5363,7 +4018,7 @@ class BossFilterGUI:
         self.hide_all_pages()
         self.config_page.pack(fill="both", expand=True)
         self.current_page_index = PageIndex.CONFIG
-        self._schedule_page_width_policy()
+        self.app_shell.schedule_page_width_policy()
         # 刷新技能树和必要条件列表
         if self.job_rules:
             self._defer_ui_work(
@@ -5375,7 +4030,10 @@ class BossFilterGUI:
         self.result_detail_frame.pack(fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
         self.update_nav_highlight()
         # 重新绑定滚轮事件（覆盖动态创建的控件）
-        self._bind_mousewheel(self.config_canvas, self.config_scrollable_frame)
+        self.scroll_support.bind_mousewheel(
+            self.config_canvas,
+            self.config_scrollable_frame,
+        )
 
     def show_page_run(self):
         """显示运行页面"""
@@ -5384,7 +4042,7 @@ class BossFilterGUI:
         self.hide_all_pages()
         self.run_page.pack(fill="both", expand=True)
         self.current_page_index = PageIndex.RUN
-        self._schedule_page_width_policy()
+        self.app_shell.schedule_page_width_policy()
         self.update_nav_highlight()
         # 恢复浏览器自动检测（仅检测连接，不启动浏览器）
         self._start_browser_auto_check()
@@ -5395,7 +4053,10 @@ class BossFilterGUI:
         except Exception:
             pass
         # 重新绑定滚轮事件（覆盖动态创建的控件）
-        self._bind_mousewheel(self.run_canvas, self.run_scrollable_frame)
+        self.scroll_support.bind_mousewheel(
+            self.run_canvas,
+            self.run_scrollable_frame,
+        )
 
     def show_page_result(self):
         """显示结果页面"""
@@ -5404,7 +4065,7 @@ class BossFilterGUI:
         self.hide_all_pages()
         self.result_page.pack(fill="both", expand=True)
         self.current_page_index = PageIndex.RESULTS
-        self._schedule_page_width_policy()
+        self.app_shell.schedule_page_width_policy()
         self.update_nav_highlight()
         # 刷新岗位过滤列表
         try:
@@ -5424,7 +4085,7 @@ class BossFilterGUI:
         self.hide_all_pages()
         self.stats_page.pack(fill="both", expand=True)
         self.current_page_index = PageIndex.STATS
-        self._schedule_page_width_policy()
+        self.app_shell.schedule_page_width_policy()
         self.update_nav_highlight()
         # 刷新岗位过滤列表
         try:
@@ -5444,9 +4105,12 @@ class BossFilterGUI:
         self.hide_all_pages()
         self.education_page.pack(fill="both", expand=True)
         self.current_page_index = PageIndex.EDUCATION
-        self._schedule_page_width_policy()
+        self.app_shell.schedule_page_width_policy()
         self.update_nav_highlight()
-        self._bind_mousewheel(self.education_canvas, self.education_scrollable_frame)
+        self.scroll_support.bind_mousewheel(
+            self.education_canvas,
+            self.education_scrollable_frame,
+        )
 
     def show_page_api(self):
         """显示 API 配置页面（系统设置）"""
@@ -5458,85 +4122,22 @@ class BossFilterGUI:
         self.hide_all_pages()
         self.api_config_page.pack(fill="both", expand=True)
         self.current_page_index = PageIndex.SETTINGS
-        self._schedule_page_width_policy()
+        self.app_shell.schedule_page_width_policy()
         self.update_nav_highlight()
         # 重新绑定滚轮事件（覆盖动态创建的控件）
-        self._bind_mousewheel(self.api_canvas, self.api_scrollable_frame)
+        self.scroll_support.bind_mousewheel(
+            self.api_canvas,
+            self.api_scrollable_frame,
+        )
         self._schedule_api_key_resolution()
 
     def hide_all_pages(self):
-        """隐藏所有页面"""
-        self._stop_browser_auto_check()
-        for page in [
-            getattr(self, '_page_loading_frame', None),
-            self.home_page,
-            self.config_page,
-            self.api_config_page,
-            self.run_page,
-            self.result_page,
-            self.stats_page,
-            self.education_page,
-        ]:
-            if page is not None:
-                page.pack_forget()
+        """Compatibility facade for scripts that hide all pages."""
+        self.app_shell.hide_all_pages()
 
     def update_nav_highlight(self):
-        """只更新前后两个导航项，避免每次切页重绘整条侧边栏。"""
-        current_index = self.current_page_index
-        previous_index = getattr(self, '_highlighted_page_index', None)
-        if previous_index == current_index:
-            return
-
-        if previous_index is not None and 0 <= previous_index < len(self.nav_components):
-            self._apply_nav_state(self.nav_components[previous_index], 'default')
-        if 0 <= current_index < len(self.nav_components):
-            self._apply_nav_state(self.nav_components[current_index], 'selected')
-        self._highlighted_page_index = current_index
-
-    def _apply_nav_state(self, comp, state):
-        """应用导航项视觉状态：default / hover / selected（pill 背景 + 左侧强调条）。"""
-        pill_bg = self.colors.get('bg_sidebar_pill', ui_theme.BG_SIDEBAR_PILL)
-        active = state in ('hover', 'selected')
-        selected = state == 'selected'
-        comp['frame'].configure(style='SidebarPill.TFrame' if active else 'Sidebar.TFrame')
-        label_style = (
-            ('SidebarNavSelectedPill.TLabel' if selected else 'SidebarNavPill.TLabel')
-            if active else 'SidebarNav.TLabel'
-        )
-        comp['icon'].configure(
-            image=comp['icon_active'] if active else comp['icon_default'],
-            style=label_style,
-        )
-        comp['text'].configure(style=label_style)
-        if 'accent' in comp:
-            comp['accent'].configure(
-                background=(self.colors['primary_light'] if selected
-                            else (pill_bg if active else self.colors['bg_sidebar']))
-            )
-
-    def on_nav_enter(self, index):
-        """鼠标移入导航项时 pill 高亮（当前页面保持选中态）"""
-        if index != self.current_page_index:
-            self._apply_nav_state(self.nav_components[index], 'hover')
-
-    def on_nav_leave(self, index):
-        """鼠标移出导航项时恢复样式（当前页面除外）"""
-        if index != self.current_page_index:
-            self._apply_nav_state(self.nav_components[index], 'default')
-
-    def set_nav_badge(self, page_index, count):
-        """设置导航角标数字；0 或负数时隐藏。"""
-        if not (0 <= page_index < len(self.nav_components)):
-            return
-        badge = self.nav_components[page_index].get('badge')
-        if badge is None:
-            return
-        if count and count > 0:
-            badge.configure(text=str(count if count < 100 else '99+'))
-            if not badge.winfo_ismapped():
-                badge.pack(side="right", padx=(0, int(12 * self.dpi_scale * self.zoom_factor)))
-        else:
-            badge.pack_forget()
+        """Compatibility facade for scripts that refresh sidebar selection."""
+        self.app_shell.update_nav_highlight()
 
     def _set_result_contact_badge(self, count):
         """在“联系候选人”按钮右上角显示发送结果待核实数。"""
@@ -5565,7 +4166,7 @@ class BossFilterGUI:
                 pending = count_pending_contact_queue(self.greet_queue_items)
             else:
                 pending = load_pending_contact_queue_count(CONTACT_QUEUE_PATH)
-            self.set_nav_badge(PageIndex.RESULTS, 0)
+            self.app_shell.set_nav_badge(PageIndex.RESULTS, 0)
             self._set_result_contact_badge(pending)
         except Exception as exc:
             logger.warning("刷新联系清单角标失败：%s", exc)
@@ -5575,98 +4176,12 @@ class BossFilterGUI:
         pending = getattr(self, '_result_contact_pending_count', 0)
         if pending <= 0:
             return
-        self._show_tooltip(
+        self.feedback_support.show_tooltip(
             f"{pending} 人发送结果待核实",
             event.x_root + int(12 * self.dpi_scale * self.zoom_factor),
             event.y_root + int(12 * self.dpi_scale * self.zoom_factor),
             ("result_contact_pending",),
         )
-
-    # ===== 右键菜单功能 =====
-    def bind_entry_context_menu(self, entry_widget):
-        """为 Entry/Combobox 控件绑定右键复制/粘贴/全选菜单"""
-        menu_font = (FONT_FAMILY, int(12 * self.font_scale))
-        menu = tk.Menu(entry_widget, tearoff=0, font=menu_font)
-        self._context_menus.append(menu)
-
-        def do_cut():
-            try:
-                entry_widget.event_generate('<<Cut>>')
-            except tk.TclError:
-                pass
-
-        def do_copy():
-            try:
-                entry_widget.event_generate('<<Copy>>')
-            except tk.TclError:
-                pass
-
-        def do_paste():
-            try:
-                entry_widget.event_generate('<<Paste>>')
-            except tk.TclError:
-                pass
-
-        def do_select_all():
-            try:
-                entry_widget.select_range(0, 'end')
-                entry_widget.icursor('end')
-            except tk.TclError:
-                pass
-
-        menu.add_command(label="剪切(T)", command=do_cut)
-        menu.add_command(label="复制(C)", command=do_copy)
-        menu.add_command(label="粘贴(P)", command=do_paste)
-        menu.add_separator()
-        menu.add_command(label="全选(A)", command=do_select_all)
-
-        def show_menu(event):
-            menu.tk_popup(event.x_root, event.y_root)
-
-        entry_widget.bind("<Button-3>", show_menu)
-
-    def bind_text_context_menu(self, text_widget, editable=True):
-        """为 Text 控件绑定右键复制/粘贴/全选菜单"""
-        menu_font = (FONT_FAMILY, int(12 * self.font_scale))
-        menu = tk.Menu(text_widget, tearoff=0, font=menu_font)
-        self._context_menus.append(menu)
-
-        def do_cut():
-            try:
-                text_widget.event_generate('<<Cut>>')
-            except tk.TclError:
-                pass
-
-        def do_copy():
-            try:
-                text_widget.event_generate('<<Copy>>')
-            except tk.TclError:
-                pass
-
-        def do_paste():
-            try:
-                text_widget.event_generate('<<Paste>>')
-            except tk.TclError:
-                pass
-
-        def do_select_all():
-            try:
-                text_widget.tag_add('sel', '1.0', 'end')
-            except tk.TclError:
-                pass
-
-        if editable:
-            menu.add_command(label="剪切(T)", command=do_cut)
-        menu.add_command(label="复制(C)", command=do_copy)
-        if editable:
-            menu.add_command(label="粘贴(P)", command=do_paste)
-        menu.add_separator()
-        menu.add_command(label="全选(A)", command=do_select_all)
-
-        def show_menu(event):
-            menu.tk_popup(event.x_root, event.y_root)
-
-        text_widget.bind("<Button-3>", show_menu)
 
     def refresh_home_stats(self):
         """刷新首页统计"""
@@ -5732,37 +4247,6 @@ class BossFilterGUI:
     def _center_window(self, window, width, height):
         """将子窗口相对于主窗口居中"""
         _place_window_centered(window, width, height, parent=self.root)
-
-    def _create_status_icons(self):
-        """创建进度状态图标（Canvas 自绘彩色圆形+符号）"""
-        from PIL import Image, ImageDraw, ImageTk
-
-        size = int(18 * self.dpi_scale * self.zoom_factor)
-
-        def make_icon(bg_color, symbol_type):
-            img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(img)
-            draw.ellipse([0, 0, size - 1, size - 1], fill=bg_color)
-            # 白色符号线条宽度
-            lw = max(2, size // 8)
-            if symbol_type == 'check':
-                # 勾号：三个点构成折线
-                pts = [
-                    (size * 0.25, size * 0.50),
-                    (size * 0.42, size * 0.68),
-                    (size * 0.75, size * 0.32),
-                ]
-                draw.line([pts[0], pts[1]], fill='white', width=lw)
-                draw.line([pts[1], pts[2]], fill='white', width=lw)
-            else:
-                # 叉号：两条对角线
-                p = size * 0.3
-                draw.line([(p, p), (size - p, size - p)], fill='white', width=lw)
-                draw.line([(size - p, p), (p, size - p)], fill='white', width=lw)
-            return ImageTk.PhotoImage(img)
-
-        self._icon_status_ok = make_icon(self.colors['success'], 'check')
-        self._icon_status_fail = make_icon(self.colors['danger'], 'cross')
 
     def _set_window_icon(self):
         """设置窗口图标，替换 tkinter 默认羽毛图标"""
@@ -5869,7 +4353,7 @@ class BossFilterGUI:
         """显示首页统计详情"""
         try:
             if not CANDIDATES_PATH.exists():
-                self._show_inline_banner(
+                self.feedback_support.show_inline_banner(
                     self.home_page,
                     'info',
                     "暂无候选人数据，请先到运行控制页开始筛选。",
@@ -5927,7 +4411,7 @@ class BossFilterGUI:
                 return
 
             if not filtered:
-                self._show_inline_banner(
+                self.feedback_support.show_inline_banner(
                     self.home_page,
                     'info',
                     f"{title}：暂无数据。",
@@ -5945,7 +4429,7 @@ class BossFilterGUI:
         """显示筛选结果统计详情"""
         try:
             if not CANDIDATES_PATH.exists():
-                self._show_inline_banner(
+                self.feedback_support.show_inline_banner(
                     self.result_page,
                     'info',
                     "暂无候选人数据，请先到运行控制页开始筛选。",
@@ -6028,7 +4512,7 @@ class BossFilterGUI:
                 return
 
             if not filtered:
-                self._show_inline_banner(
+                self.feedback_support.show_inline_banner(
                     self.result_page,
                     'info',
                     f"{title}：暂无数据。",
@@ -6919,7 +5403,7 @@ class BossFilterGUI:
                     if detail_type == "new"
                     else "\n\n如正在使用这些模型，请尽快切换。"
                 )
-                self._show_text_dialog(
+                self.input_support.show_text_dialog(
                     title,
                     "\n".join(f"• {model}" for model in sorted(values)) + suffix,
                     width=640,
@@ -8002,35 +6486,6 @@ class BossFilterGUI:
             pass
         return start_str, end_str
 
-    def _start_breathing(self, label, color_key='success', bg_key='bg_card'):
-        """启动呼吸渐变动画（与 btn_add_hint 风格一致）"""
-        def hex_to_rgb(h):
-            h = h.lstrip('#')
-            return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
-
-        def rgb_to_hex(r, g, b):
-            return f'#{int(r):02x}{int(g):02x}{int(b):02x}'
-
-        color_rgb = hex_to_rgb(self.colors[color_key])
-        bg_rgb = hex_to_rgb(self.colors[bg_key])
-
-        def _fade(label=label, color=color_rgb, bg=bg_rgb, step=[0]):
-            if not label.winfo_exists():
-                return
-            try:
-                phase = step[0] / 60.0 * 2 * math.pi
-                alpha = 0.15 + 0.85 * (0.5 + 0.5 * math.sin(phase))
-                r = color[0] * alpha + bg[0] * (1 - alpha)
-                g = color[1] * alpha + bg[1] * (1 - alpha)
-                b = color[2] * alpha + bg[2] * (1 - alpha)
-                label.config(foreground=rgb_to_hex(r, g, b))
-                step[0] = (step[0] + 1) % 60
-                self.root.after(50, _fade)
-            except tk.TclError:
-                pass
-
-        _fade()
-
     def _bind_requirement_header_interaction(self):
         """Make the full recruitment-requirement header act as one disclosure row."""
         title_bar = getattr(self, 'requirement_title_bar', None)
@@ -8486,7 +6941,7 @@ class BossFilterGUI:
                         self._humanize_ai_parse_warning(w)
                         for w in ai_parse_warnings[:5]
                     ]
-                    self._show_inline_banner(
+                    self.feedback_support.show_inline_banner(
                         self.config_page,
                         "warning",
                         "AI 已补全解析结果，请确认："
@@ -9870,11 +8325,6 @@ class BossFilterGUI:
         """Keep the progress line short; full terminal details belong in the summary."""
         return run_presenter.format_terminal_progress_text(final_desc)
 
-    @staticmethod
-    def _format_terminal_log_text(final_desc):
-        """Return one terminal log line without repeating the business summary."""
-        return run_presenter.format_terminal_log_text(final_desc)
-
     def _set_run_summary(self, final_desc):
         """Show the final run summary in the fixed run-page summary area."""
         if not getattr(self, 'run_summary_text_label', None):
@@ -10556,7 +9006,7 @@ class BossFilterGUI:
             messagebox.showerror("状态体检", f"读取候选人数据失败：{exc}", parent=self.root)
             return
         if not candidates:
-            self._show_inline_banner(self.result_page, 'info', f"{scope} 没有候选人数据可检查。")
+            self.feedback_support.show_inline_banner(self.result_page, "info", f"{scope} 没有候选人数据可检查。")
             return
 
         issues = diagnose_candidate_states(candidates)
@@ -10571,11 +9021,11 @@ class BossFilterGUI:
             messagebox.showerror("今日待办", f"读取候选人数据失败：{exc}", parent=self.root)
             return
         if not candidates:
-            self._show_inline_banner(self.result_page, 'info', f"{scope} 没有候选人数据可处理。")
+            self.feedback_support.show_inline_banner(self.result_page, "info", f"{scope} 没有候选人数据可处理。")
             return
         items = build_daily_candidate_actions(candidates)
         if not items:
-            self._show_inline_banner(self.result_page, 'info', f"{scope} 暂无需要优先处理的候选人。")
+            self.feedback_support.show_inline_banner(self.result_page, "info", f"{scope} 暂无需要优先处理的候选人。")
             return
         self._show_daily_candidate_actions_dialog(scope, items)
 
@@ -10999,7 +9449,7 @@ class BossFilterGUI:
         self._tooltip_after_id = None
         self._tooltip_item = None
         self.result_tree.bind('<Motion>', self._on_tree_motion)
-        self.result_tree.bind('<Leave>', self._hide_tooltip)
+        self.result_tree.bind('<Leave>', self.feedback_support.hide_tooltip)
 
     def _select_all_result_rows(self, _event=None):
         """Select every candidate currently visible in the result table."""
@@ -11015,7 +9465,7 @@ class BossFilterGUI:
         item = self.result_tree.identify_row(event.y)
         column_id = self.result_tree.identify_column(event.x)
         if not item or not column_id:
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
 
         try:
@@ -11023,7 +9473,7 @@ class BossFilterGUI:
             column_index = int(column_id[1:]) - 1
             column_name = display_columns[column_index]
         except (IndexError, TypeError, ValueError):
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
 
         cand = self._item_to_candidate.get(item)
@@ -11059,7 +9509,7 @@ class BossFilterGUI:
             show_tooltip = False
 
         if not full or not show_tooltip:
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
 
         tooltip_key = (item, column_name)
@@ -11071,35 +9521,8 @@ class BossFilterGUI:
         x = self.root.winfo_pointerx() + 15
         y = self.root.winfo_pointery() + 10
         self._tooltip_after_id = self.root.after(
-            300, lambda: self._show_tooltip(full, x, y, tooltip_key)
+            300, lambda: self.feedback_support.show_tooltip(full, x, y, tooltip_key)
         )
-
-    def _build_empty_state(self, parent, icon_name, title, hint, action_text=None, action_command=None):
-        """构建可复用空态引导层（覆盖在父容器上，place 管理，初始隐藏）。"""
-        frame = ttk.Frame(parent, style='TFrame')
-        inner = ttk.Frame(frame, style='TFrame')
-        inner.place(relx=0.5, rely=0.42, anchor='center')
-        icon_img = self.icons.get(
-            icon_name, int(56 * self.dpi_scale * self.zoom_factor),
-            self.colors.get('text_muted', ui_theme.TEXT_MUTED), self.colors['bg_card'],
-        )
-        icon_label = ttk.Label(inner, image=icon_img, background=self.colors['bg_card'])
-        icon_label._icon_ref = icon_img
-        icon_label.pack(anchor='center')
-        ttk.Label(
-            inner, text=title, font=self.font_section,
-            foreground=self.colors['text_primary'], background=self.colors['bg_card'],
-        ).pack(anchor='center', pady=(int(12 * self.dpi_scale), 0))
-        ttk.Label(
-            inner, text=hint, font=self.font_label,
-            foreground=self.colors['text_secondary'], background=self.colors['bg_card'],
-            justify='center',
-        ).pack(anchor='center', pady=(int(6 * self.dpi_scale), 0))
-        if action_text and action_command:
-            ttk.Button(
-                inner, text=action_text, style='Accent.TButton', command=action_command,
-            ).pack(anchor='center', pady=(int(16 * self.dpi_scale), 0))
-        return frame
 
     def _toggle_result_empty_state(self, show):
         """按可见候选人数切换结果页空态引导层。"""
@@ -11114,238 +9537,6 @@ class BossFilterGUI:
                 frame.place_forget()
         except tk.TclError:
             pass
-
-    def _show_inline_banner(self, page, kind, text, duration_ms=6000):
-        """在页面顶部展示非模态 inline 横幅（自动消失，可点 ✕ 关闭）。
-
-        kind: info / warning / error / success。用于替代打断流程的纯通知弹窗。
-        """
-        try:
-            if page is None or not page.winfo_exists():
-                return
-        except tk.TclError:
-            return
-        self._hide_inline_banner(page)
-        bg_key, bg_fallback = {
-            'info': ('banner_info_bg', ui_theme.BANNER_INFO_BG),
-            'warning': ('banner_warning_bg', ui_theme.BANNER_WARNING_BG),
-            'error': ('banner_error_bg', ui_theme.BANNER_ERROR_BG),
-            'success': ('banner_success_bg', ui_theme.BANNER_SUCCESS_BG),
-        }.get(kind, ('banner_info_bg', ui_theme.BANNER_INFO_BG))
-        bg = self.colors.get(bg_key, bg_fallback)
-        banner = tk.Frame(page, bg=bg)
-        tk.Label(
-            banner, text=text, bg=bg,
-            fg=self.colors['text_primary'], font=self.font_label,
-            anchor='w', justify='left',
-        ).pack(
-            side='left', fill='x', expand=True,
-            padx=(int(12 * self.dpi_scale), int(8 * self.dpi_scale)),
-            pady=int(8 * self.dpi_scale),
-        )
-        close = tk.Label(
-            banner, text='✕', bg=bg, cursor='hand2',
-            fg=self.colors['text_secondary'], font=self.font_label,
-        )
-        close.pack(side='right', padx=(0, int(12 * self.dpi_scale)))
-        close.bind('<Button-1>', lambda _e: self._hide_inline_banner(page))
-        children = page.winfo_children()
-        if children:
-            banner.pack(side='top', fill='x', before=children[0])
-        else:
-            banner.pack(side='top', fill='x')
-        if not hasattr(self, '_inline_banners'):
-            self._inline_banners = {}
-        self._inline_banners[page] = banner
-        if duration_ms:
-            banner.after(duration_ms, lambda p=page: self._hide_inline_banner(p))
-
-    def _hide_inline_banner(self, page):
-        """关闭指定页面顶部的 inline 横幅（若存在）。"""
-        banner = getattr(self, '_inline_banners', {}).pop(page, None)
-        if banner is not None:
-            try:
-                banner.destroy()
-            except tk.TclError:
-                pass
-
-    def _create_switch(self, parent, variable, enabled_variable=None):
-        """自绘拨动开关（OFF 灰色圆点居左 / ON 品牌蓝圆点居右），绑定 BooleanVar。
-
-        clam 下 ttk.Checkbutton 的 indicator 尺寸配置会放大成粗大灰框，
-        启用类语义用开关控件更准确；点击或空格切换，可聚焦。
-        """
-        from PIL import Image, ImageDraw, ImageTk
-
-        scale = self.dpi_scale * self.zoom_factor
-        width = max(28, int(round(30 * scale)))
-        height = max(14, int(round(16 * scale)))
-        canvas = tk.Canvas(
-            parent, width=width, height=height,
-            bg=self.colors['bg_card'], highlightthickness=1,
-            highlightbackground=self.colors['bg_card'], bd=0,
-            cursor='hand2', takefocus=1,
-        )
-
-        def _is_enabled():
-            return enabled_variable is None or bool(enabled_variable.get())
-
-        def _draw():
-            try:
-                if not canvas.winfo_exists():
-                    return
-            except tk.TclError:
-                return
-            canvas.delete('all')
-            enabled = _is_enabled()
-            canvas.configure(
-                cursor='hand2' if enabled else 'arrow',
-                takefocus=1 if enabled else 0,
-            )
-            on = bool(variable.get())
-            track = (self.colors['primary'] if on
-                     else self.colors.get('border_strong', ui_theme.BORDER_STRONG))
-            render_scale = 4
-            render_width = width * render_scale
-            render_height = height * render_scale
-            image = Image.new('RGBA', (render_width, render_height), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(image)
-            draw.rounded_rectangle(
-                (0, 0, render_width - 1, render_height - 1),
-                radius=render_height // 2,
-                fill=track,
-            )
-            margin = max(2, int(round(2 * scale)))
-            knob_d = height - margin * 2
-            knob_x = width - knob_d - margin if on else margin
-            draw.ellipse(
-                (
-                    knob_x * render_scale,
-                    margin * render_scale,
-                    (knob_x + knob_d) * render_scale,
-                    (margin + knob_d) * render_scale,
-                ),
-                fill='#FFFFFF',
-            )
-            image = image.resize((width, height), Image.Resampling.LANCZOS)
-            photo = ImageTk.PhotoImage(image)
-            canvas._switch_photo = photo
-            canvas.create_image(width // 2, height // 2, image=photo)
-
-        def _toggle(_event=None):
-            if not _is_enabled():
-                variable.set(False)
-                return 'break'
-            variable.set(not variable.get())
-            return 'break'
-
-        canvas.bind('<Button-1>', _toggle)
-        canvas.bind('<space>', _toggle)
-        canvas.bind('<FocusIn>', lambda _e: canvas.configure(
-            highlightbackground=self.colors.get('primary_light', ui_theme.PRIMARY_LIGHT),
-        ))
-        canvas.bind('<FocusOut>', lambda _e: canvas.configure(
-            highlightbackground=self.colors['bg_card'],
-        ))
-        _draw()
-        variable.trace_add('write', lambda *_args: _draw())
-        if enabled_variable is not None:
-            enabled_variable.trace_add('write', lambda *_args: _draw())
-        return canvas
-
-    def _styled_tooltip(self, text, x, y, wraplength=None, parent=None):
-        """创建统一深色现代 tooltip（圆角观感、白字、无边框），返回 Toplevel。"""
-        tooltip_parent = parent or self.root
-        tip = tk.Toplevel(tooltip_parent)
-        tip.wm_overrideredirect(True)
-        kwargs = {}
-        if wraplength:
-            kwargs['wraplength'] = wraplength
-            kwargs['justify'] = 'left'
-        label = tk.Label(
-            tip, text=text,
-            background=self.colors.get('tooltip_bg', ui_theme.TOOLTIP_BG),
-            foreground=self.colors.get('tooltip_fg', ui_theme.TOOLTIP_FG),
-            relief='flat', borderwidth=0,
-            font=(FONT_FAMILY, int(10 * self.dpi_scale * self.zoom_factor)),
-            padx=10, pady=6, **kwargs
-        )
-        label.pack()
-        tip.update_idletasks()
-        monitor_area = _get_windows_monitor_area(tip, tooltip_parent)
-        if monitor_area is None:
-            monitor_area = (
-                0,
-                0,
-                int(tip.winfo_screenwidth()),
-                int(tip.winfo_screenheight()),
-            )
-        left, top, area_width, area_height = monitor_area
-        margin = 8
-        max_x = left + area_width - int(tip.winfo_reqwidth()) - margin
-        max_y = top + area_height - int(tip.winfo_reqheight()) - margin
-        safe_x = max(left + margin, min(int(x), max_x))
-        safe_y = max(top + margin, min(int(y), max_y))
-        x_geometry = f"+{safe_x}" if safe_x >= 0 else str(safe_x)
-        y_geometry = f"+{safe_y}" if safe_y >= 0 else str(safe_y)
-        tip.wm_geometry(f'{x_geometry}{y_geometry}')
-        return tip
-
-    def _show_tooltip(self, text, x, y, tooltip_key=None, parent=None, wraplength=None):
-        """显示 tooltip 窗口。"""
-        self._hide_tooltip()
-        tip = self._styled_tooltip(
-            text, x, y, wraplength=wraplength, parent=parent
-        )
-        self._tooltip = tip
-        self._tooltip_item = tooltip_key
-
-    def _hide_tooltip(self, event=None):
-        """隐藏 tooltip 窗口。"""
-        after_id = getattr(self, '_tooltip_after_id', None)
-        if after_id:
-            self.root.after_cancel(after_id)
-            self._tooltip_after_id = None
-        tip = getattr(self, '_tooltip', None)
-        if tip:
-            tip.destroy()
-            self._tooltip = None
-        self._tooltip_item = None
-
-    def _show_model_tooltip(self, text, x, y, tooltip_key=None):
-        """显示模型列表的 Base URL tooltip"""
-        self._hide_model_tooltip()
-        tip = self._styled_tooltip(text, x, y, wraplength=400)
-        self._model_tooltip = tip
-        self._model_tooltip_item = tooltip_key
-
-    def _hide_model_tooltip(self, event=None):
-        """隐藏模型列表的 tooltip"""
-        if self._model_tooltip_after_id:
-            self.root.after_cancel(self._model_tooltip_after_id)
-            self._model_tooltip_after_id = None
-        if self._model_tooltip:
-            self._model_tooltip.destroy()
-            self._model_tooltip = None
-        self._model_tooltip_item = None
-
-    def _create_simple_tooltip(self, text, x, y):
-        """创建简单的浮动 tooltip，返回 Toplevel 对象。"""
-        return self._styled_tooltip(text, x, y, wraplength=500)
-
-    def _hide_skills_tooltip(self, event=None):
-        """隐藏技能表 tooltip"""
-        if self._skills_tooltip:
-            self._skills_tooltip.destroy()
-            self._skills_tooltip = None
-        self._skills_tooltip_item = None
-
-    def _hide_req_tooltip(self, event=None):
-        """隐藏必要条件 tooltip"""
-        if self._req_tooltip:
-            self._req_tooltip.destroy()
-            self._req_tooltip = None
-        self._req_tooltip_idx = None
 
     @staticmethod
     def _find_candidate_in_detail_tree(tree, item, filtered_ref):
@@ -11383,7 +9574,7 @@ class BossFilterGUI:
         def _hide_all():
             """取消延迟 + 隐藏已显示的 tooltip + 重置状态。"""
             _cancel_pending()
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             _state['key'] = None
 
         def on_motion(event):
@@ -11421,7 +9612,7 @@ class BossFilterGUI:
             y = tree.winfo_pointery() + 10
             _parent = tree.winfo_toplevel()
             _state['after_id'] = tree.after(
-                300, lambda: self._show_tooltip(full, x, y, tooltip_key, parent=_parent)
+                300, lambda: self.feedback_support.show_tooltip(full, x, y, tooltip_key, parent=_parent)
             )
 
         tree.bind('<Motion>', on_motion)
@@ -11664,25 +9855,11 @@ class BossFilterGUI:
             return self._find_candidate_by_tree_item(item)
         return None
 
-    def _extract_extra_fields(self, candidate):
-        """Keep the historical GUI entry point as a presenter delegate."""
-        return candidate_presenter.extract_candidate_extra_fields(candidate)
-
     @staticmethod
     def _candidate_gender_display(candidate):
         """Return normalized candidate gender from current or legacy records."""
         return candidate_presenter.candidate_gender_display(candidate)
 
-
-    @staticmethod
-    def _latest_history_value(entries, field, summary, summary_prefix):
-        """按结束时间取最近一段经历的字段，缺失时从摘要对应行降级提取。"""
-        return candidate_presenter.latest_history_value(
-            entries,
-            field,
-            summary,
-            summary_prefix,
-        )
 
     def _format_candidate_status(self, candidate):
         """Keep the historical GUI entry point as a presenter delegate."""
@@ -11699,19 +9876,6 @@ class BossFilterGUI:
                 None,
             )
         return status.display
-
-    @staticmethod
-    def _get_greet_confirmation_hint(candidate):
-        """根据内部上下文状态生成面向普通用户的操作提示。"""
-        if (candidate.get('greet_context') or {}).get('chat_start'):
-            return (
-                "已准备好该候选人的沟通信息，可直接发起打招呼，"
-                "无需停留在原推荐页面。"
-            )
-        return (
-            "程序将尝试在当前推荐页面定位该候选人并打招呼。"
-            "请确认浏览器已打开该岗位的推荐牛人页面。"
-        )
 
     def _open_blacklist_reason_dialog(self, candidate, parent, on_confirm):
         """打开加入黑名单原因弹窗。"""
@@ -13335,7 +11499,7 @@ class BossFilterGUI:
             skip_text = self._format_greet_queue_skip_summary(skipped_reasons)
             self.append_log(f"[联系候选人] 已加入 {added} 人" + (f"，已跳过 {sum(skipped_reasons.values())} 人" if skipped_reasons else ""))
             if skip_text:
-                self._show_text_dialog(
+                self.input_support.show_text_dialog(
                     "联系候选人",
                     f"已加入联系清单：{added} 人\n\n已跳过：\n{skip_text}",
                     width=500,
@@ -13344,7 +11508,7 @@ class BossFilterGUI:
                     button_align="center",
                 )
         elif skipped_reasons:
-            self._show_text_dialog(
+            self.input_support.show_text_dialog(
                 "联系候选人",
                 f"没有可加入联系清单的候选人。\n\n已跳过：\n{self._format_greet_queue_skip_summary(skipped_reasons)}",
                 width=500,
@@ -13407,7 +11571,7 @@ class BossFilterGUI:
             show_selected_detail=self._show_selected_greet_queue_detail,
             update_action_states=self._update_greet_queue_action_states,
             row_motion=self._on_greet_queue_motion,
-            hide_tooltip=self._hide_tooltip,
+            hide_tooltip=self.feedback_support.hide_tooltip,
             context_menu=self._show_greet_queue_context_menu,
             select_all=self._select_all_greet_queue_rows,
             close=self._close_greet_queue_window,
@@ -13609,11 +11773,6 @@ class BossFilterGUI:
     def _greet_queue_selection_text(selected):
         """Summarize the selected scope with candidate names and status."""
         return contact_presenter.greet_queue_selection_text(selected)
-
-    def _set_greet_queue_item_state(self, item, status, message=""):
-        _CONTACT_CONTROLLER.set_item_state(item, status, message)
-        self._persist_greet_queue()
-        self.run_on_ui(self._refresh_greet_queue_dialog)
 
     def _update_greet_queue_action_states(self):
         selected = self._selected_greet_queue_items()
@@ -14659,14 +12818,14 @@ class BossFilterGUI:
         item_id = tree.identify_row(event.y)
         column_id = tree.identify_column(event.x)
         if not item_id or column_id not in ("#5", "#7"):
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
         queue_item = next(
             (item for item in self.greet_queue_items if item.get('queue_id') == item_id),
             None,
         )
         if queue_item is None:
-            self._hide_tooltip()
+            self.feedback_support.hide_tooltip()
             return
         if column_id == "#5":
             full_text = self._greet_queue_readiness_tooltip(
@@ -14681,7 +12840,7 @@ class BossFilterGUI:
             and self._tooltip.winfo_exists()
         ):
             return
-        self._hide_tooltip()
+        self.feedback_support.hide_tooltip()
         self._tooltip_item = tooltip_key
         x = event.x_root + 12
         y = event.y_root + 12
@@ -14696,7 +12855,7 @@ class BossFilterGUI:
         )
         self._tooltip_after_id = self.root.after(
             250,
-            lambda: self._show_tooltip(
+            lambda: self.feedback_support.show_tooltip(
                 full_text,
                 x,
                 y,
@@ -15417,7 +13576,7 @@ class BossFilterGUI:
     def clear_candidates(self):
         """Show candidate cleanup choices and delegate confirmed persistence."""
         if not CANDIDATES_PATH.exists():
-            self._show_inline_banner(
+            self.feedback_support.show_inline_banner(
                 self.result_page,
                 "info",
                 "暂无候选人数据。",

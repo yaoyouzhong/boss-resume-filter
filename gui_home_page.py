@@ -8,6 +8,19 @@ from tkinter import ttk
 from typing import Any, Protocol
 
 
+class NavigationShell(Protocol):
+    def request_sidebar_page(self, page_index: int) -> None: ...
+
+
+class WidgetSupport(Protocol):
+    def create_card(
+        self,
+        parent: tk.Misc,
+        title: str,
+        **kwargs: Any,
+    ) -> tk.Misc: ...
+
+
 class HomePageHost(Protocol):
     """Narrow host contract required to build the home page."""
 
@@ -20,19 +33,12 @@ class HomePageHost(Protocol):
     font_stat: Any
     font_stat_label: Any
     icons: Any
+    app_shell: NavigationShell
+    widget_support: WidgetSupport
 
     def refresh_home_stats(self) -> None: ...
 
     def show_stat_detail(self, stat_type: str) -> None: ...
-
-    def _request_sidebar_page(self, page_index: int) -> None: ...
-
-    def _create_card(
-        self,
-        parent: tk.Misc,
-        title: str,
-        **kwargs: Any,
-    ) -> tk.Misc: ...
 
 
 @dataclass(frozen=True)
@@ -193,7 +199,7 @@ def build_home_page(
             background=host.colors["bg_card"],
         ).pack(anchor="center", pady=(0, int(20 * scale)))
 
-    quick_frame = host._create_card(
+    quick_frame = host.widget_support.create_card(
         page,
         "快速操作",
         padding=int(ui_config["card_padding"] * scale),
@@ -210,7 +216,7 @@ def build_home_page(
         image=play_icon,
         text=" 开始筛选",
         compound=tk.LEFT,
-        command=lambda: host._request_sidebar_page(run_page_index),
+        command=lambda: host.app_shell.request_sidebar_page(run_page_index),
         style="Accent.TButton",
     )
     run_button._icon_ref = play_icon
@@ -221,7 +227,7 @@ def build_home_page(
         image=result_icon,
         text=" 查看结果",
         compound=tk.LEFT,
-        command=lambda: host._request_sidebar_page(result_page_index),
+        command=lambda: host.app_shell.request_sidebar_page(result_page_index),
         style="TButton",
     )
     result_button._icon_ref = result_icon
@@ -232,7 +238,7 @@ def build_home_page(
         image=config_icon,
         text=" 配置岗位",
         compound=tk.LEFT,
-        command=lambda: host._request_sidebar_page(config_page_index),
+        command=lambda: host.app_shell.request_sidebar_page(config_page_index),
         style="TButton",
     )
     config_button._icon_ref = config_icon

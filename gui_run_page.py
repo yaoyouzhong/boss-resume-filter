@@ -33,8 +33,10 @@ def build_run_page_steps(
     scroll_frame = ttk.Frame(host.run_page, style='Page.TFrame')
     scroll_frame.pack(fill="both", expand=True)
 
-    host.run_canvas, scrollable_frame = host._create_scroll_container(
-        scroll_frame, host.colors['bg_card'])
+    host.run_canvas, scrollable_frame = host.scroll_support.create_scroll_container(
+        scroll_frame,
+        host.colors['bg_card'],
+    )
 
     host.run_scrollable_frame = scrollable_frame  # 保存引用，供 mousewheel 绑定使用
 
@@ -42,7 +44,7 @@ def build_run_page_steps(
     content = scrollable_frame
 
     # 页面标题
-    host._create_page_header(content, "运行控制")
+    host.widget_support.create_page_header(content, "运行控制")
 
     yield
 
@@ -74,7 +76,7 @@ def build_run_page_steps(
         return label
 
     # === 浏览器连接状态检测 ===
-    browser_frame = host._create_card(control_container, "浏览器状态",
+    browser_frame = host.widget_support.create_card(control_container, "浏览器状态",
         fill="x", padx=int(25 * host.dpi_scale * host.zoom_factor), pady=int(20 * host.dpi_scale * host.zoom_factor))
 
     browser_status_row = ttk.Frame(browser_frame, style='TFrame')
@@ -186,7 +188,7 @@ def build_run_page_steps(
     host.ai_eval_var = tk.BooleanVar(value=False)
     host.ai_eval_available_var = tk.BooleanVar(value=False)
     # 拨动开关 + 可点击文字（替代 clam 下 oversized 的勾选框）
-    ai_switch = host._create_switch(
+    ai_switch = host.widget_support.create_switch(
         row_ai, host.ai_eval_var,
         enabled_variable=host.ai_eval_available_var,
     )
@@ -406,7 +408,7 @@ def build_run_page_steps(
         sticky="w",
         pady=(_advanced_row_pady, 0),
     )
-    api_switch = host._create_switch(
+    api_switch = host.widget_support.create_switch(
         row_api_controls, host.api_direct_enabled_var
     )
     api_switch.pack(side="left")
@@ -462,7 +464,7 @@ def build_run_page_steps(
         sticky="w",
         pady=(_advanced_row_pady, 0),
     )
-    contact_prepare_switch = host._create_switch(
+    contact_prepare_switch = host.widget_support.create_switch(
         row_contact_controls, host.greet_context_capture_enabled_var
     )
     contact_prepare_switch.pack(side="left")
@@ -879,7 +881,7 @@ def build_run_page_steps(
     yield
 
     # 日志区域 — 与浏览器状态卡片一致的卡片式设计
-    log_card = host._create_card(content, "运行日志",
+    log_card = host.widget_support.create_card(content, "运行日志",
         fill="both", expand=True, padx=int(25 * host.dpi_scale * host.zoom_factor), pady=int(15 * host.dpi_scale * host.zoom_factor))
 
     log_container = ttk.Frame(log_card, style='TFrame')
@@ -890,7 +892,7 @@ def build_run_page_steps(
                            font=host.font_log, bg=host.colors['bg_input'], borderwidth=0,
                            highlightthickness=0, height=20)
     host.log_text.pack(side="left", fill="both", expand=True)
-    host.bind_text_context_menu(host.log_text, editable=False)
+    host.input_support.bind_text_context_menu(host.log_text, editable=False)
 
     log_scroll = ttk.Scrollbar(log_container, orient="vertical", command=host.log_text.yview)
     log_scroll.pack(side="right", fill="y")
@@ -912,4 +914,7 @@ def build_run_page_steps(
     host.update_progress()
 
     # 在所有控件创建完毕后绑定滚轮事件
-    host._bind_mousewheel(host.run_canvas, host.run_scrollable_frame)
+    host.scroll_support.bind_mousewheel(
+        host.run_canvas,
+        host.run_scrollable_frame,
+    )

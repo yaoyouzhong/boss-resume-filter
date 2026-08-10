@@ -76,3 +76,33 @@ show_stats r1: 4 ms
 命令退出码为 0，但关键数字全部明显偏高，不能视为正常测量抖动。任务书明确规定“命令不存在或对不上就停，证据写 `BLOCKED.md` 最上面”，因此已停止任务 0；尚未运行 `tests/run_unit_tests.py`、`tests/test_import.py`，也未创建控件树基线、修改 GUI 代码或开始任何修改-验证循环。
 
 裁决结果：原任务书绝对毫秒基线作废。后续统一采用同一会话内“1 次冷跑丢弃 + 连跑 3 次取中位数”，以终值与会话基线的比率判定。原停止处置合格，阻塞已解除。
+
+# GUI Controller 拆分待裁决记录
+
+> 当前任务：`codex/gui-controller-modularization-03`。
+
+## 最终硬指标受当前模块边界和文件范围阻塞
+
+- 实测终值：`gui_main.py` 15,479 行，`BossFilterGUI` 508 方法；硬目标仍差 4,979 行和 158 方法。
+- 全仓引用审计只发现 20 个可安全删除的无调用方法，均已删除；剩余方法存在真实调用或承担 Tk 页面、弹窗、导航、生命周期和兼容职责。
+- Controller 明确禁止导入 Tk；把剩余 UI 代码搬进 Controller 会破坏本任务刚建立并反向验证过的依赖边界。
+- 达标需要新增 GUI mixin/page/workbench 模块，或授权继续修改既有 `gui_*` 页面模块并迁移相应调用方；这超出本任务文件范围。
+- 7 个 checkpoint 上限已用完。当前实现和全部验证保持可交付，但 10,500/350 不能宣称完成。
+
+## 第 7 个 checkpoint 存在一项白名单越界
+
+- `f7f7dcd` 为配合 `gui_style_setup.py` 的样式迁移，修改了 `tests/unit/test_ui_messagebox.py`；任务书只允许追加 `test_gui_job_config.py`、`test_gui_module_boundaries.py`、`test_gui_browser_matrix.py`，因此该文件属于越界修改。
+- 当前分支其余已提交文件均在白名单内；`gui_style_setup.py` 符合“业务 Controller 拆分后仍超行数才允许拆纯样式”的条件。
+- 若恢复该测试文件，必须把消息框字体注册的可验证实现留回 `gui_main.py`，然后重跑完整验收；这需要修改第 7 个 checkpoint。
+- 任务书禁止超过 7 个 checkpoint；`git commit --amend` 又会改写本地提交历史，未获得单独授权前不执行。需要管理者明确授权“允许一次纠偏提交”或“允许 amend 第 7 个 checkpoint”。
+
+### 已解除
+
+- 管理者已明确授权 amend 第 7 个 checkpoint。
+- `tests/unit/test_ui_messagebox.py` 已恢复为与 `master` 完全一致，消息框字体注册回到白名单内的 `gui_main.py`；指定 `pack_venv` 完整验收全绿。
+- 本项白名单阻塞解除；上方 10,500 行/350 方法硬指标与当前文件范围冲突仍未解除。
+
+## GUI Host 下一阶段授权
+
+- 管理者已授权创建 `codex/gui-host-modularization-04` 并继续拆分；允许新增 `gui_app_shell.py` 及后续 GUI 工作流模块、修改相应 `gui_*` 调用方，上一阶段“文件范围不足”阻塞解除。
+- 当前无新的外部阻塞；真实 BOSS 扫描、联系发送、正式发布仍不在本阶段范围内。

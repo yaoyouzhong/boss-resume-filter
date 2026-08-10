@@ -11,6 +11,44 @@ import ui_theme
 from ui_layout import result_display_columns
 
 
+class NavigationShell(Protocol):
+    def request_sidebar_page(self, page_index: int) -> None: ...
+
+    def schedule_page_width_policy(self) -> None: ...
+
+
+class FeedbackSupport(Protocol):
+    def show_tooltip(
+        self,
+        text: str,
+        x: int,
+        y: int,
+        tooltip_key: object,
+    ) -> None: ...
+
+    def hide_tooltip(self, event: tk.Event | None = None) -> None: ...
+
+
+class WidgetSupport(Protocol):
+    def create_page_header(
+        self,
+        parent: tk.Misc,
+        title: str,
+        subtitle: str | None = None,
+        top_padding: int = 0,
+    ) -> tk.Misc: ...
+
+    def build_empty_state(
+        self,
+        parent: tk.Misc,
+        icon_name: str,
+        title: str,
+        hint: str,
+        action_text: str | None = None,
+        action_command: Any = None,
+    ) -> tk.Misc: ...
+
+
 class ResultPageHost(Protocol):
     """Narrow host contract required to build the result page."""
 
@@ -28,14 +66,9 @@ class ResultPageHost(Protocol):
     _result_search_placeholder: str
     _result_search_placeholder_active: bool
     _result_search_focused: bool
-
-    def _create_page_header(
-        self,
-        parent: tk.Misc,
-        title: str,
-        subtitle: str | None = None,
-        top_padding: int = 0,
-    ) -> tk.Misc: ...
+    app_shell: NavigationShell
+    feedback_support: FeedbackSupport
+    widget_support: WidgetSupport
 
     def refresh_results(self, force: bool = False) -> None: ...
 
@@ -49,32 +82,7 @@ class ResultPageHost(Protocol):
 
     def _refresh_results_and_reset_sort(self) -> None: ...
 
-    def _show_tooltip(
-        self,
-        text: str,
-        x: int,
-        y: int,
-        source_key: tuple[str, ...],
-    ) -> None: ...
-
-    def _hide_tooltip(self, event: tk.Event | None = None) -> None: ...
-
-    def _schedule_page_width_policy(self) -> None: ...
-
     def _update_result_review_button_state(self, event: tk.Event | None = None) -> None: ...
-
-    def _build_empty_state(
-        self,
-        parent: tk.Misc,
-        icon_name: str,
-        title: str,
-        subtitle: str,
-        *,
-        action_text: str,
-        action_command: Any,
-    ) -> tk.Misc: ...
-
-    def _request_sidebar_page(self, page_index: int) -> None: ...
 
     def show_daily_candidate_actions(self) -> None: ...
 
@@ -133,7 +141,7 @@ def build_result_page(
     """Build the result page without reading or mutating candidate data."""
     scale = host.dpi_scale * host.zoom_factor
     page = ttk.Frame(host.pages_frame, style="Page.TFrame")
-    host._create_page_header(page, "筛选结果")
+    host.widget_support.create_page_header(page, "筛选结果")
 
     filter_frame = ttk.Frame(page, style="Page.TFrame")
     filter_frame.pack(fill="x", pady=(0, int(10 * scale)))
@@ -405,14 +413,14 @@ def build_result_page(
     )
     refresh_icon.bind(
         "<Enter>",
-        lambda event: host._show_tooltip(
+        lambda event: host.feedback_support.show_tooltip(
             "刷新结果并恢复默认排序",
             event.x_root + int(12 * scale),
             event.y_root + int(12 * scale),
             ("result_refresh",),
         ),
     )
-    refresh_icon.bind("<Leave>", host._hide_tooltip)
+    refresh_icon.bind("<Leave>", host.feedback_support.hide_tooltip)
     refresh_icon.pack(side="right", padx=(int(6 * scale), int(12 * scale)))
     blacklist_check.pack(side="right", padx=(0, int(6 * scale)))
 
@@ -510,7 +518,7 @@ def build_result_page(
     tree.pack(side="left", fill="both", expand=True, padx=(pad_x, 0), pady=pad_y)
     tree.bind(
         "<Configure>",
-        lambda _event: host._schedule_page_width_policy(),
+        lambda _event: host.app_shell.schedule_page_width_policy(),
         add="+",
     )
     tree.bind(
@@ -518,13 +526,13 @@ def build_result_page(
         host._update_result_review_button_state,
         add="+",
     )
-    empty_state = host._build_empty_state(
+    empty_state = host.widget_support.build_empty_state(
         table_container,
         "filter",
         "暂无候选人",
         "调整岗位或时间范围，或到运行控制页开始新一轮筛选",
         action_text="开始筛选",
-        action_command=lambda: host._request_sidebar_page(run_page_index),
+        action_command=lambda: host.app_shell.request_sidebar_page(run_page_index),
     )
 
     button_frame = ttk.Frame(page, style="Page.TFrame")
@@ -585,7 +593,7 @@ def build_result_page(
         lambda _event: host._open_greet_queue_from_result(),
     )
     greet_queue_badge.bind("<Enter>", host._show_result_contact_badge_tooltip)
-    greet_queue_badge.bind("<Leave>", host._hide_tooltip)
+    greet_queue_badge.bind("<Leave>", host.feedback_support.hide_tooltip)
 
     state_check_icon = host.icons.button("health_shield", host.colors["primary"])
     export_icon = host.icons.button("export", host.colors["text_primary"])

@@ -13,8 +13,14 @@ from pathlib import Path
 from unittest.mock import Mock, call, patch
 
 import gui_main
+import gui_app_shell
+import gui_layout_support
+import gui_scroll_support
 import icons
 import bossmaster
+import run_presenter
+from candidate_workflow import filter_candidates_by_result_view
+from data_maintenance_controller import DataMaintenanceController
 from gui_main import (
     BossFilterGUI,
     PAGE_SPECS,
@@ -24,12 +30,38 @@ from gui_main import (
     _optional_int_to_entry,
     _parse_optional_int_entry,
     _candidate_has_ai_eval,
-    _filter_candidates_by_result_view,
     _format_storage_bytes,
 )
 from job_config_diagnostics import summarize_job_config_diagnostics
 from llm_eval import _resolve_rule_score
 from storage import load_candidates_all, save_candidates_all
+
+
+def _make_app_shell(host):
+    if not hasattr(host, "layout_support"):
+        host.layout_support = Mock()
+    shell = gui_app_shell.AppShell(
+        host,
+        ui_config=gui_main.UI_CONFIG,
+        font_family="Test Font",
+        font_family_semibold="Test Font Semibold",
+        version="test",
+    )
+    shell.hide_all_pages = Mock()
+    shell.update_nav_highlight = Mock()
+    shell.schedule_page_width_policy = Mock()
+    return shell
+
+
+def _make_layout_support(host):
+    host.dpi_scale = getattr(host, "dpi_scale", 1.0)
+    host.zoom_factor = getattr(host, "zoom_factor", 1.0)
+    host.font_scale = getattr(host, "font_scale", 1.0)
+    return gui_layout_support.LayoutSupport(
+        host,
+        ui_config=gui_main.UI_CONFIG,
+        font_family="Test Font",
+    )
 
 
 def test_optional_max_age_none_displays_as_blank():
@@ -96,15 +128,15 @@ def test_result_view_separates_recommended_review_and_rejected_without_limit():
         {"geek_id": "rejected", "qualification_status": "rejected", "match_score": 0},
     ]
 
-    assert len(_filter_candidates_by_result_view(candidates, "推荐候选人")) == 128
+    assert len(filter_candidates_by_result_view(candidates, "推荐候选人")) == 128
     assert {
-        c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "待复核")
+        c["geek_id"] for c in filter_candidates_by_result_view(candidates, "待复核")
     } == {"pending", "manual"}
     assert {
-        c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "复核通过")
+        c["geek_id"] for c in filter_candidates_by_result_view(candidates, "复核通过")
     } == {"approved", "hard-passed"}
-    assert [c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "淘汰记录")] == ["rejected"]
-    assert len(_filter_candidates_by_result_view(candidates, "全部记录")) == 132
+    assert [c["geek_id"] for c in filter_candidates_by_result_view(candidates, "淘汰记录")] == ["rejected"]
+    assert len(filter_candidates_by_result_view(candidates, "全部记录")) == 132
 
 
 def test_run_job_config_warning_is_acknowledged_until_diagnostics_change():
@@ -836,7 +868,12 @@ def test_bounded_spinbox_mousewheel_adjusts_one_step_and_clamps_range():
     spinbox = Mock()
     variable = _FakeVar("2")
 
-    BossFilterGUI._bind_bounded_spinbox_mousewheel(spinbox, variable, 1, 3)
+    gui_scroll_support.ScrollSupport.bind_bounded_spinbox_mousewheel(
+        spinbox,
+        variable,
+        1,
+        3,
+    )
 
     wheel_handler = spinbox.bind.call_args_list[0].args[1]
     assert wheel_handler(types.SimpleNamespace(delta=120)) == "break"
@@ -1446,10 +1483,11 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     """All fields stay addressable; narrow tables overflow into horizontal scroll."""
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot()
+    layout = _make_layout_support(gui)
 
     # 窄窗口保留所有字段及可读宽度，列宽总和大于视口以启用水平滚动。
     gui.result_tree = _FakeTree(700)
-    gui._update_result_tree_columns()
+    layout.update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 14
     assert gui.result_tree.displaycolumns[:2] == ("name", "gender")
     assert gui.result_tree.column_options["skills"]["width"] == 85
@@ -1460,7 +1498,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
 
     # 较窄窗口仍不隐藏后续画像字段。
     gui.result_tree = _FakeTree(1099)
-    gui._update_result_tree_columns()
+    layout.update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 14
     assert gui.result_tree.displaycolumns[-2:] == ("school", "company")
     assert gui.result_tree.column_options["skills"]["stretch"] is False
@@ -1470,7 +1508,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
 
     # 默认 1080P 宽度仍保留可读列宽，由水平滚动查看后续字段。
     gui.result_tree = _FakeTree(1249)
-    gui._update_result_tree_columns()
+    layout.update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 14
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
@@ -1485,7 +1523,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
         screen_height=2160,
     )
     gui.result_tree = _FakeTree(1600)
-    gui._update_result_tree_columns()
+    layout.update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 14
     assert sum(
         options["width"] for options in gui.result_tree.column_options.values()
@@ -1494,7 +1532,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     # 1080P 高 DPI 最大化仍保持全部 14 列。
     gui.root = _FakeRoot(state="zoomed")
     gui.result_tree = _FakeTree(1250)
-    gui._update_result_tree_columns()
+    layout.update_result_tree_columns()
     assert len(gui.result_tree.displaycolumns) == 14
     assert gui.result_tree.displaycolumns[-2:] == ("school", "company")
     assert gui.result_tree.column_options["school"]["width"] >= 120
@@ -1515,7 +1553,7 @@ def test_result_tree_columns_expand_only_when_space_is_available():
     ) > 1248
 
     gui.result_tree = _FakeTree(0)
-    gui._apply_result_tree_column_widths((
+    layout.apply_result_tree_column_widths((
         "name", "gender", "exp", "salary", "skills", "score", "ai_eval",
         "level", "status", "age", "education", "job_status", "school", "company",
     ))
@@ -1528,14 +1566,15 @@ def test_stats_tree_columns_expand_with_available_width():
     宽窗口显式分配富余填满表格（ttk stretch 只会收缩不会放大）。"""
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot()
+    layout = _make_layout_support(gui)
 
     gui.stats_tree = _FakeTree(900)
-    gui._update_stats_tree_columns()
+    layout.update_stats_tree_columns()
     assert gui.stats_tree.column_options["job"]["width"] == 200
     assert gui.stats_tree.column_options["job"]["stretch"] is True
 
     gui.stats_tree = _FakeTree(1400)
-    gui._update_stats_tree_columns()
+    layout.update_stats_tree_columns()
     assert gui.stats_tree.column_options["job"]["width"] > 200
     assert gui.stats_tree.column_options["job"]["width"] <= 340
     assert gui.stats_tree.column_options["avg_score"]["width"] <= 105
@@ -1549,8 +1588,9 @@ def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot(state="zoomed", width=3840, height=2000)
     gui.model_list_tree = _FakeTree(1800)
+    layout = _make_layout_support(gui)
 
-    gui._update_model_list_columns()
+    layout.update_model_list_columns()
 
     assert gui.model_list_tree.column_options["name"]["width"] == 400
     assert gui.model_list_tree.column_options["provider"]["width"] == 300
@@ -1560,7 +1600,7 @@ def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
 
     gui.root = _FakeRoot(width=1920, height=1040)
     gui.model_list_tree = _FakeTree(920)
-    gui._update_model_list_columns()
+    layout.update_model_list_columns()
 
     widths_1080p = {
         column: options["width"]
@@ -1573,7 +1613,7 @@ def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
 
     gui.root = _FakeRoot(width=2560, height=1400)
     gui.model_list_tree = _FakeTree(980)
-    gui._update_model_list_columns()
+    layout.update_model_list_columns()
 
     widths_2k = {
         column: options["width"]
@@ -1583,13 +1623,82 @@ def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
     assert widths_2k["provider"] < 240
 
 
+def test_layout_support_expands_page_widgets_only_for_tall_windows():
+    class _HeightTree:
+        def __init__(self):
+            self.height = None
+
+        def get_children(self):
+            return tuple(range(12))
+
+        def __setitem__(self, key, value):
+            assert key == "height"
+            self.height = value
+
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = _FakeRoot(height=1200, screen_height=1080)
+    gui.requirement_text = Mock()
+    gui.skills_tree = Mock()
+    gui.log_text = Mock()
+    gui.model_list_tree = _HeightTree()
+    layout = _make_layout_support(gui)
+
+    extra_rows = layout.get_tall_window_extra_rows()
+    assert layout.is_tall_window() is True
+    assert extra_rows >= 2
+
+    layout.update_config_page_dynamic_heights()
+    layout.update_run_page_dynamic_heights()
+    layout.update_model_list_height()
+
+    gui.requirement_text.configure.assert_called_once_with(
+        height=min(
+            24,
+            gui_main.UI_CONFIG["text_height_large"] + max(1, extra_rows // 2),
+        )
+    )
+    gui.skills_tree.configure.assert_called_once_with(
+        height=min(18, gui_main.UI_CONFIG["treeview_height"] + extra_rows * 2)
+    )
+    gui.log_text.configure.assert_called_once_with(height=min(40, 20 + extra_rows))
+    assert gui.model_list_tree.height == min(12, layout.get_model_list_max_rows())
+
+    gui.root = _FakeRoot(height=900, screen_height=1080)
+    assert layout.is_tall_window() is False
+    assert layout.get_tall_window_extra_rows() == 0
+    assert layout.get_model_list_max_rows() == 6
+
+
+def test_layout_support_compacts_and_restores_result_stat_icons_by_height():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = _FakeRoot(height=700)
+    gui._result_stats_compact = False
+    icon = Mock()
+    value_label = object()
+    gui._result_stat_icon_canvases = [(icon, value_label)]
+    layout = _make_layout_support(gui)
+
+    layout.update_result_stats_compact()
+    assert gui._result_stats_compact is True
+    icon.pack_forget.assert_called_once_with()
+
+    gui.root = _FakeRoot(height=900)
+    layout.update_result_stats_compact()
+    assert gui._result_stats_compact is False
+    icon.pack.assert_called_once_with(
+        anchor="center",
+        pady=(12, 4),
+        before=value_label,
+    )
+
+
 def test_saved_model_list_keeps_library_fields_and_removes_derived_purpose_column():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
     list_block = settings_source[settings_source.index("# 模型列表 Treeview"):]
     list_block = list_block[:list_block.index("# 滚动条（垂直 + 水平）")]
     load_block = source[source.index("def load_saved_models_to_tree"):]
-    load_block = load_block[:load_block.index("\n    def _get_model_list_max_rows")]
+    load_block = load_block[:load_block.index("\n    def create_run_page")]
 
     assert 'model_columns = ("name", "provider", "compat", "base_url")' in list_block
     assert 'heading("edu_ref"' not in list_block
@@ -1634,10 +1743,9 @@ def test_saved_model_list_marks_active_models_with_role_colors():
         ],
     }
     gui.model_list_tree = _FakeResultTree()
-    gui._update_model_list_height = Mock()
-    gui._update_model_list_columns = Mock()
+    gui.layout_support = Mock()
     gui._refresh_model_assignment_controls = Mock()
-    gui._bind_mousewheel = Mock()
+    gui.scroll_support = Mock()
     gui.api_canvas = Mock()
     gui.api_scrollable_frame = Mock()
 
@@ -1675,15 +1783,16 @@ def test_saved_model_list_marks_shared_default_and_education_model():
 def test_education_queue_columns_keep_status_visible_on_narrow_screens():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.education_queue_tree = _FakeTree(1300)
+    layout = _make_layout_support(gui)
 
-    gui._update_education_queue_columns()
+    layout.update_education_queue_columns()
 
     assert gui.education_queue_tree.column_options["file"]["width"] == 230
     assert gui.education_queue_tree.column_options["major"]["width"] == 210
     assert gui.education_queue_tree.column_options["status"]["width"] == 140
 
     gui.education_queue_tree = _FakeTree(950)
-    gui._update_education_queue_columns()
+    layout.update_education_queue_columns()
 
     widths_1080p = {
         column: options["width"]
@@ -1694,7 +1803,7 @@ def test_education_queue_columns_keep_status_visible_on_narrow_screens():
     assert widths_1080p["major"] < 210
 
     gui.education_queue_tree = _FakeTree(1030)
-    gui._update_education_queue_columns()
+    layout.update_education_queue_columns()
 
     widths_2k = {
         column: options["width"]
@@ -1890,9 +1999,9 @@ def test_checkbutton_style_uses_large_checkmark_indicator_but_ai_keeps_switch():
 
 
 def test_ai_switch_is_compact_and_supersampled():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    switch_block = source[source.index("def _create_switch("):]
-    switch_block = switch_block[:switch_block.index("\n    def _styled_tooltip")]
+    source = Path("gui_widget_support.py").read_text(encoding="utf-8")
+    switch_block = source[source.index("def _render_switch_photo("):]
+    switch_block = switch_block[:switch_block.index("\n    def build_empty_state")]
 
     assert "int(round(30 * scale))" in switch_block
     assert "int(round(16 * scale))" in switch_block
@@ -1901,7 +2010,7 @@ def test_ai_switch_is_compact_and_supersampled():
     assert "ImageTk.PhotoImage(image)" in switch_block
     assert "canvas.create_image" in switch_block
     assert "canvas.create_oval" not in switch_block
-    assert "if not _is_enabled():" in switch_block
+    assert "if not is_enabled():" in switch_block
     assert "variable.set(False)" in switch_block
     assert "enabled_variable.trace_add" in switch_block
 
@@ -2297,7 +2406,7 @@ def test_sidebar_first_open_paints_loading_frame_before_building_page():
     creator = Mock(side_effect=lambda: setattr(gui, "config_page", object()))
     show_page = Mock()
 
-    gui._request_page_first_open(
+    _make_app_shell(gui).request_page_first_open(
         1, "config_page", "岗位配置", creator, show_page
     )
 
@@ -2342,7 +2451,7 @@ def test_sidebar_first_open_advances_staged_page_one_chunk_per_callback():
         yield
         events.append("complete")
 
-    gui._request_page_first_open(
+    _make_app_shell(gui).request_page_first_open(
         1, "config_page", "岗位配置", staged_creator, show_page, on_ready=on_ready
     )
 
@@ -2398,7 +2507,7 @@ def test_sidebar_first_open_cancels_staged_page_after_navigation():
         yield
         events.append("must-not-run")
 
-    gui._request_page_first_open(
+    _make_app_shell(gui).request_page_first_open(
         2, "run_page", "运行控制", staged_creator, show_page
     )
     gui.root.scheduled.pop(0)[1]()
@@ -2432,7 +2541,7 @@ def test_sidebar_first_open_skips_stale_build_after_navigation():
     creator = Mock()
     show_page = Mock()
 
-    gui._request_page_first_open(
+    _make_app_shell(gui).request_page_first_open(
         3, "result_page", "筛选结果", creator, show_page
     )
     gui.current_page_index = 0
@@ -2466,8 +2575,8 @@ def test_sidebar_first_open_cleans_partial_page_after_build_failure():
         gui.run_page = partial_page
         raise RuntimeError("broken widget")
 
-    with patch("gui_main.messagebox.showerror") as show_error:
-        gui._request_page_first_open(
+    with patch("gui_app_shell.messagebox.showerror") as show_error:
+        _make_app_shell(gui).request_page_first_open(
             2, "run_page", "运行控制", fail_build, Mock()
         )
         gui.root.callback()
@@ -2484,7 +2593,7 @@ def test_sidebar_cached_page_is_shown_without_loading_frame():
     show_page = Mock()
     on_ready = Mock()
 
-    gui._request_page_first_open(
+    _make_app_shell(gui).request_page_first_open(
         5, "stats_page", "数据统计", Mock(), show_page, on_ready=on_ready
     )
 
@@ -2572,7 +2681,8 @@ def test_ctrl_f_waits_for_result_page_before_focusing_search():
         gui.result_search_entry.focus_set.assert_not_called()
         on_ready()
 
-    gui._request_sidebar_page = Mock(side_effect=request_page)
+    gui.app_shell = Mock()
+    gui.app_shell.request_sidebar_page.side_effect = request_page
 
     gui._shortcut_focus_search()
 
@@ -2632,13 +2742,13 @@ def test_contact_button_badge_uses_queue_module_before_runtime_queue_is_loaded(m
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui._greet_queue_loaded = False
     gui.greet_queue_items = []
-    gui.set_nav_badge = Mock()
+    gui.app_shell = Mock()
     gui._set_result_contact_badge = Mock()
 
     gui._refresh_contact_queue_badge()
 
     mock_load_count.assert_called_once_with(gui_main.CONTACT_QUEUE_PATH)
-    gui.set_nav_badge.assert_called_once_with(PageIndex.RESULTS, 0)
+    gui.app_shell.set_nav_badge.assert_called_once_with(PageIndex.RESULTS, 0)
     gui._set_result_contact_badge.assert_called_once_with(3)
 
 
@@ -2651,13 +2761,13 @@ def test_contact_button_badge_uses_memory_after_runtime_queue_is_loaded(mock_loa
         {"status": "发送失败"},
         {"status": "发送中"},
     ]
-    gui.set_nav_badge = Mock()
+    gui.app_shell = Mock()
     gui._set_result_contact_badge = Mock()
 
     gui._refresh_contact_queue_badge()
 
     mock_load_count.assert_not_called()
-    gui.set_nav_badge.assert_called_once_with(PageIndex.RESULTS, 0)
+    gui.app_shell.set_nav_badge.assert_called_once_with(PageIndex.RESULTS, 0)
     gui._set_result_contact_badge.assert_called_once_with(2)
 
 
@@ -2701,10 +2811,10 @@ def test_home_and_result_empty_state_use_staged_navigation_entrypoint():
     home_block = Path("gui_home_page.py").read_text(encoding="utf-8")
     result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
-    assert "command=lambda: host._request_sidebar_page(run_page_index)" in home_block
-    assert "command=lambda: host._request_sidebar_page(result_page_index)" in home_block
-    assert "command=lambda: host._request_sidebar_page(config_page_index)" in home_block
-    assert "action_command=lambda: host._request_sidebar_page(run_page_index)" in result_block
+    assert "command=lambda: host.app_shell.request_sidebar_page(run_page_index)" in home_block
+    assert "command=lambda: host.app_shell.request_sidebar_page(result_page_index)" in home_block
+    assert "command=lambda: host.app_shell.request_sidebar_page(config_page_index)" in home_block
+    assert "action_command=lambda: host.app_shell.request_sidebar_page(run_page_index)" in result_block
     assert "command=host.show_page_run" not in home_block
     assert "command=host.show_page_config" not in home_block
 
@@ -2714,12 +2824,14 @@ def test_navigation_highlight_updates_only_previous_and_current_items():
     gui.nav_components = [object() for _ in range(7)]
     gui.current_page_index = 3
     gui._highlighted_page_index = 1
-    gui._apply_nav_state = Mock()
+    shell = _make_app_shell(gui)
+    shell.apply_nav_state = Mock()
 
-    gui.update_nav_highlight()
-    gui.update_nav_highlight()
+    shell.update_nav_highlight = gui_app_shell.AppShell.update_nav_highlight.__get__(shell)
+    shell.update_nav_highlight()
+    shell.update_nav_highlight()
 
-    assert gui._apply_nav_state.call_args_list == [
+    assert shell.apply_nav_state.call_args_list == [
         call(gui.nav_components[1], "default"),
         call(gui.nav_components[3], "selected"),
     ]
@@ -2862,8 +2974,11 @@ def test_stats_page_uses_centered_width_policy():
     gui.zoom_factor = 1.0
     gui.current_page_index = 5
     gui._last_page_pack_padx = None
+    gui._last_page_pack_pady = None
+    gui.layout_support = Mock()
 
-    gui._apply_page_width_policy()
+    shell = _make_app_shell(gui)
+    gui_app_shell.AppShell.apply_page_width_policy(shell)
 
     assert gui.pages_frame.pack_configure.call_args.kwargs["padx"] == max(
         int(gui_main.UI_CONFIG["page_padding_x"]),
@@ -2876,7 +2991,7 @@ def test_stats_tree_reflows_after_its_rendered_width_changes():
     stats_block = Path("gui_stats_page.py").read_text(encoding="utf-8")
 
     assert 'tree.bind(\n        "<Configure>",' in stats_block
-    assert "lambda _event: host._schedule_page_width_policy()" in stats_block
+    assert "lambda _event: host.app_shell.schedule_page_width_policy()" in stats_block
 
 
 def test_job_config_page_releases_bottom_padding_but_preserves_header_position():
@@ -2889,15 +3004,17 @@ def test_job_config_page_releases_bottom_padding_but_preserves_header_position()
     gui.current_page_index = PageIndex.CONFIG
     gui._last_page_pack_padx = None
     gui._last_page_pack_pady = None
-    gui._update_config_page_dynamic_heights = Mock()
+    gui.layout_support = Mock()
 
-    gui._apply_page_width_policy()
+    shell = _make_app_shell(gui)
+    gui_app_shell.AppShell.apply_page_width_policy(shell)
 
     assert gui.pages_frame.pack_configure.call_args.kwargs["pady"] == (
         gui_main.UI_CONFIG["page_padding_y"] - 15
     )
     config_block = Path("gui_config_page.py").read_text(encoding="utf-8")
-    assert 'self._create_page_header(self.config_page, "岗位配置", top_padding=15)' in config_block
+    assert "self.widget_support.create_page_header(" in config_block
+    assert 'self.config_page, "岗位配置", top_padding=15' in config_block
 
 
 def test_job_config_page_builder_is_ui_only_and_main_keeps_business_actions():
@@ -3301,11 +3418,13 @@ def test_traffic_light_icons_are_registered_without_pulse_check():
 
 def test_run_and_settings_traffic_lights_share_one_base_size():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    shell_source = Path("gui_app_shell.py").read_text(encoding="utf-8")
     settings_block = Path("gui_settings_page.py").read_text(encoding="utf-8")
     lamp_block = source[source.index("def _get_lamp_icon"):]
     lamp_block = lamp_block[:lamp_block.index("\n    def _apply_lamp_status")]
 
-    assert "TRAFFIC_LIGHT_BASE_SIZE = 32" in source
+    assert "TRAFFIC_LIGHT_BASE_SIZE = 32" in shell_source
+    assert "from gui_app_shell import PAGE_SPECS, TRAFFIC_LIGHT_BASE_SIZE, PageIndex" in source
     assert "traffic_light_base_size * self.dpi_scale * self.zoom_factor" in settings_block
     assert "TRAFFIC_LIGHT_BASE_SIZE" in lamp_block
     assert "int(16 *" not in lamp_block
@@ -3659,31 +3778,6 @@ def test_activate_saved_model_uses_the_full_selected_connection_identity():
     assert 'self.api_config["base_url"] = base_url' in use_block
 
 
-def test_latest_history_value_uses_latest_end_date_not_list_order():
-    entries = [
-        {"school": "较早学校", "end": "2018.06"},
-        {"school": "最近学校", "end": "2022.06"},
-    ]
-
-    value = BossFilterGUI._latest_history_value(entries, "school", "", "教育经历：")
-
-    assert value == "最近学校"
-
-
-def test_latest_history_value_treats_present_as_latest_and_falls_back_to_summary():
-    works = [
-        {"company": "上一家公司", "end": "2024.01"},
-        {"company": "当前公司", "end": "至今"},
-    ]
-    assert BossFilterGUI._latest_history_value(
-        works, "company", "", "工作经历："
-    ) == "当前公司"
-
-    assert BossFilterGUI._latest_history_value(
-        [], "company", "工作经历：摘要公司 高级工程师 2022 至今", "工作经历："
-    ) == "摘要公司"
-
-
 def test_candidate_status_hides_internal_greet_context_capability():
     """状态栏只展示业务状态，不暴露打招呼上下文等内部实现。"""
     gui = BossFilterGUI.__new__(BossFilterGUI)
@@ -3759,15 +3853,14 @@ def test_result_status_tooltip_shows_hidden_review_reason():
     gui.root = Mock()
     gui.root.winfo_pointerx.return_value = 100
     gui.root.winfo_pointery.return_value = 200
-    gui._hide_tooltip = Mock()
-    gui._show_tooltip = Mock()
+    gui.feedback_support = Mock()
 
     gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
 
     gui.root.after.assert_called_once()
     callback = gui.root.after.call_args.args[1]
     callback()
-    gui._show_tooltip.assert_called_once_with(
+    gui.feedback_support.show_tooltip.assert_called_once_with(
         "复核原因：学历形式待确认",
         115,
         210,
@@ -3802,26 +3895,25 @@ def test_result_status_tooltip_shows_confirmed_status_only_when_clipped():
     gui.root = Mock()
     gui.root.winfo_pointerx.return_value = 100
     gui.root.winfo_pointery.return_value = 200
-    gui._hide_tooltip = Mock()
-    gui._show_tooltip = Mock()
+    gui.feedback_support = Mock()
 
     gui._result_tree_font.measure.return_value = 100
     gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
     callback = gui.root.after.call_args.args[1]
     callback()
-    gui._show_tooltip.assert_called_once_with(
+    gui.feedback_support.show_tooltip.assert_called_once_with(
         candidate["_full_status"], 115, 210, ("row-1", "status")
     )
 
     gui.root.after.reset_mock()
-    gui._show_tooltip.reset_mock()
+    gui.feedback_support.show_tooltip.reset_mock()
     gui._tooltip = None
     gui._tooltip_item = None
     gui._result_tree_font.measure.return_value = 60
     gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
     callback = gui.root.after.call_args.args[1]
     callback()
-    gui._show_tooltip.assert_called_once_with(
+    gui.feedback_support.show_tooltip.assert_called_once_with(
         candidate["_full_status"], 115, 210, ("row-1", "status")
     )
 
@@ -3847,25 +3939,24 @@ def test_result_job_status_tooltip_only_shows_when_text_is_clipped():
     gui.root = Mock()
     gui.root.winfo_pointerx.return_value = 100
     gui.root.winfo_pointery.return_value = 200
-    gui._hide_tooltip = Mock()
-    gui._show_tooltip = Mock()
+    gui.feedback_support = Mock()
 
     gui._result_tree_font.measure.return_value = 120
     gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
     callback = gui.root.after.call_args.args[1]
     callback()
-    gui._show_tooltip.assert_called_once_with(
+    gui.feedback_support.show_tooltip.assert_called_once_with(
         "正在考虑机会，合适的话可以到岗", 115, 210, ("row-1", "job_status")
     )
 
     gui.root.after.reset_mock()
-    gui._show_tooltip.reset_mock()
+    gui.feedback_support.show_tooltip.reset_mock()
     gui._tooltip = None
     gui._tooltip_item = None
     gui._result_tree_font.measure.return_value = 80
     gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
     gui.root.after.assert_not_called()
-    gui._show_tooltip.assert_not_called()
+    gui.feedback_support.show_tooltip.assert_not_called()
 
 
 def test_result_school_and_company_tooltips_work_in_non_maximized_table():
@@ -3895,8 +3986,7 @@ def test_result_school_and_company_tooltips_work_in_non_maximized_table():
     gui.root.state.return_value = "normal"
     gui.root.winfo_pointerx.return_value = 100
     gui.root.winfo_pointery.return_value = 200
-    gui._hide_tooltip = Mock()
-    gui._show_tooltip = Mock()
+    gui.feedback_support = Mock()
 
     for column_id, column_name, full_text in (
         ("#13", "school", "南京航空航天大学"),
@@ -3907,12 +3997,12 @@ def test_result_school_and_company_tooltips_work_in_non_maximized_table():
         gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
         callback = gui.root.after.call_args.args[1]
         callback()
-        gui._show_tooltip.assert_called_once_with(
+        gui.feedback_support.show_tooltip.assert_called_once_with(
             full_text, 115, 210, ("row-1", column_name)
         )
 
         gui.root.after.reset_mock()
-        gui._show_tooltip.reset_mock()
+        gui.feedback_support.show_tooltip.reset_mock()
         gui._tooltip = None
         gui._tooltip_item = None
         gui._tooltip_after_id = None
@@ -3921,7 +4011,7 @@ def test_result_school_and_company_tooltips_work_in_non_maximized_table():
     gui._result_tree_font.measure.return_value = 80
     gui._on_tree_motion(types.SimpleNamespace(x=10, y=10))
     gui.root.after.assert_not_called()
-    gui._show_tooltip.assert_not_called()
+    gui.feedback_support.show_tooltip.assert_not_called()
 
 
 def test_refresh_results_force_rebuilds_for_transient_ai_status():
@@ -3958,7 +4048,6 @@ def test_refresh_results_force_rebuilds_for_transient_ai_status():
         stat = candidates_path.stat()
         gui._result_tree_fingerprint = (stat.st_mtime, stat.st_size)
         gui._parse_salary_exp = Mock(return_value=("", ""))
-        gui._extract_extra_fields = Mock(return_value=("", "", "", "", ""))
         gui._sort_bound = True
         gui.append_log = Mock()
 
@@ -4027,7 +4116,6 @@ def test_refresh_results_keeps_below_pass_ai_records_in_rejected_scope():
         gui._result_last_dates = None
         gui._result_last_show_blacklist = False
         gui._parse_salary_exp = Mock(return_value=("", ""))
-        gui._extract_extra_fields = Mock(return_value=("", "", "", "", ""))
         gui._sort_bound = True
         gui.append_log = Mock()
 
@@ -4099,7 +4187,6 @@ def test_refresh_results_keeps_full_dataset_and_uses_stable_metric_scope():
         gui._result_last_dates = None
         gui._result_last_show_blacklist = False
         gui._parse_salary_exp = Mock(return_value=("", ""))
-        gui._extract_extra_fields = Mock(return_value=("", "", "", "", ""))
         gui._sort_bound = True
         gui.append_log = Mock()
 
@@ -4269,11 +4356,11 @@ def test_clear_manual_review_is_scoped_to_candidate_job():
         assert "review_passed_at" not in saved[1]
         assert [
             candidate["job_name"]
-            for candidate in _filter_candidates_by_result_view(saved, "复核通过")
+            for candidate in filter_candidates_by_result_view(saved, "复核通过")
         ] == ["Java 工程师"]
         assert [
             candidate["job_name"]
-            for candidate in _filter_candidates_by_result_view(saved, "推荐候选人")
+            for candidate in filter_candidates_by_result_view(saved, "推荐候选人")
         ] == ["Java 工程师"]
 
 
@@ -5156,25 +5243,6 @@ def test_show_ai_eval_batch_summary_uses_warning_when_batch_has_failures():
     assert gui._ai_eval_batch_summary is None
 
 
-def test_greet_confirmation_hint_explains_prepared_path_without_technical_terms():
-    candidate = {
-        "greet_context": {"chat_start": {"jid": "job-1", "lid": "list-1"}},
-    }
-
-    hint = BossFilterGUI._get_greet_confirmation_hint(candidate)
-
-    assert "无需停留在原推荐页面" in hint
-    assert "上下文" not in hint
-    assert "API" not in hint
-
-
-def test_greet_confirmation_hint_explains_current_page_fallback():
-    hint = BossFilterGUI._get_greet_confirmation_hint({})
-
-    assert "当前推荐页面定位" in hint
-    assert "该岗位的推荐牛人页面" in hint
-
-
 def test_update_log_waits_until_lazy_run_page_creates_log_widget():
     """未进入运行控制页时保留扫描日志，不能因控件尚未创建而丢失。"""
     class FakeRoot:
@@ -5572,7 +5640,7 @@ def test_greet_queue_add_filters_before_enqueue():
     assert 'reason = "已在队列"' in controller_block
     assert "items.append(build_item(candidate, source=source))" in controller_block
     assert "没有可加入联系清单的候选人" in add_block
-    assert "self._show_text_dialog(" in add_block
+    assert "self.input_support.show_text_dialog(" in add_block
     assert "messagebox.showinfo" not in add_block
 
 
@@ -5599,24 +5667,19 @@ def test_greet_queue_item_builds_only_sendable_pending_items():
 
 def test_text_dialog_keeps_scrollbar_buttons_and_horizontal_inset_visible():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    block = source[source.index("def _show_text_dialog"):]
-    block = block[:block.index("\n    def refresh_stats")]
+    support = Path("gui_input_support.py").read_text(encoding="utf-8")
+    block = support[support.index("def show_text_dialog"):]
     add_block = source[source.index("def _add_candidates_to_greet_queue"):]
     add_block = add_block[:add_block.index("\n    @staticmethod\n    def _format_greet_queue_skip_summary")]
 
     assert 'body.grid(row=0, column=0, sticky="nsew")' in block
-    assert 'scroll.grid(row=0, column=1, sticky="ns")' in block
-    assert 'btn_row.grid(row=1, column=0, sticky="ew")' in block
+    assert 'scrollbar.grid(row=0, column=1, sticky="ns")' in block
+    assert 'button_row.grid(row=1, column=0, sticky="ew")' in block
     assert 'text=button_text' in block
     assert add_block.count('button_text="确定"') == 2
     assert add_block.count('button_align="center"') == 2
     assert 'horizontal_padding if button_align == "center" else 0' not in block
-    assert (
-        'padding=(\n'
-        '                horizontal_padding,\n'
-        '                0,\n'
-        '                horizontal_padding,'
-    ) in block
+    assert "padding=(horizontal_padding, 0, horizontal_padding, int(12 * scale))" in block
     assert 'if button_align == "center":' in block
     assert "button.pack()" in block
 
@@ -5972,7 +6035,9 @@ def test_greet_queue_dialog_has_status_groups_and_double_click_detail():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     dialog_block = Path("gui_contact_queue.py").read_text(encoding="utf-8")
     refresh_block = source[source.index("def _refresh_greet_queue_dialog"):]
-    refresh_block = refresh_block[:refresh_block.index("\n    def _set_greet_queue_item_state")]
+    refresh_block = refresh_block[
+        :refresh_block.index("\n    def _update_greet_queue_action_states")
+    ]
 
     assert "按状态筛选" in dialog_block
     assert "group_tree = ttk.Treeview(" in dialog_block
@@ -6021,13 +6086,13 @@ def test_greet_queue_dialog_has_status_groups_and_double_click_detail():
 
 
 def test_contact_queue_result_tooltip_wraps_and_stays_screen_bounded():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
+    source = Path("gui_feedback_support.py").read_text(encoding="utf-8")
     tooltip_block = source[source.index("def _styled_tooltip"):]
-    tooltip_block = tooltip_block[:tooltip_block.index("\n    def _hide_tooltip")]
-    queue_motion_block = source[source.index("def _on_greet_queue_motion"):]
+    main_source = Path("gui_main.py").read_text(encoding="utf-8")
+    queue_motion_block = main_source[main_source.index("def _on_greet_queue_motion"):]
     queue_motion_block = queue_motion_block[:queue_motion_block.index("\n    def _show_greet_queue_context_menu")]
 
-    assert "_get_windows_monitor_area(tip, tooltip_parent)" in tooltip_block
+    assert "get_windows_monitor_area(tooltip, tooltip_parent)" in tooltip_block
     assert "safe_x =" in tooltip_block
     assert "safe_y =" in tooltip_block
     assert "tooltip_wraplength = max(" in queue_motion_block
@@ -6126,11 +6191,6 @@ def _contact_worker_gui(candidate):
     gui._refresh_greet_queue_dialog = Mock()
     gui._show_greet_queue_run_result = Mock()
 
-    def set_state(queue_item, status, message=""):
-        queue_item["status"] = status
-        queue_item["message"] = message
-
-    gui._set_greet_queue_item_state = Mock(side_effect=set_state)
     return gui, item
 
 
@@ -6563,9 +6623,10 @@ def test_candidate_state_diagnostics_uses_group_summary_and_compact_candidate_ro
     assert "def on_issue_group_motion(" in dialog_block
     assert 'column_id != "#0"' in dialog_block
     assert '("state_check_group", item_id, column_id)' in dialog_block
-    assert 'lambda: self._show_tooltip(label, x, y, tooltip_key, parent=win)' in dialog_block
+    assert "self.feedback_support.show_tooltip(" in dialog_block
+    assert "parent=win," in dialog_block
     assert 'group_tree.bind("<Motion>", on_issue_group_motion)' in dialog_block
-    assert 'group_tree.bind("<Leave>", self._hide_tooltip)' in dialog_block
+    assert 'group_tree.bind("<Leave>", self.feedback_support.hide_tooltip)' in dialog_block
     assert 'ttk.Button(btn_row, text="查看详情", command=show_detail)' not in dialog_block
 
 
@@ -8097,7 +8158,7 @@ def test_terminal_log_keeps_one_status_line_without_repeating_summary():
         "扫描范围\n达到 30 轮上限"
     )
 
-    assert BossFilterGUI._format_terminal_log_text(final_desc) == (
+    assert run_presenter.format_terminal_log_text(final_desc) == (
         "本轮处理完成，扫描达到轮次上限"
     )
 
@@ -8224,47 +8285,6 @@ def test_feedback_dialog_height_expands_to_keep_buttons_visible():
     assert "int(440 * scale), int(485 * scale)" not in feedback_block
 
 
-def test_job_review_text_aggregates_structured_feedback_reasons():
-    gui = BossFilterGUI.__new__(BossFilterGUI)
-    candidates = [
-        {
-            "job_name": "Java",
-            "match_score": 80,
-            "greet_sent": True,
-            "followup_status": "已回复",
-            "feedback_status": "误推",
-            "feedback_reasons": ["技能不匹配", "规则过宽"],
-        },
-        {
-            "job_name": "Java",
-            "match_score": 40,
-            "qualification_status": "rejected",
-            "feedback_status": "误杀",
-            "feedback_reasons": ["规则过窄", "AI 低估"],
-        },
-        {
-            "job_name": "Java",
-            "match_score": 60,
-            "feedback_status": "合适",
-            "feedback_reasons": ["行业经验不符"],
-        },
-    ]
-
-    text = gui._build_job_review_text("Java", candidates)
-
-    assert "Java 岗位复盘" in text
-    assert "- 已反馈：3 人" in text
-    assert "- 技能不匹配: 1" in text
-    assert "- 规则过宽: 1" in text
-    assert "- 规则过窄: 1" in text
-    assert "- 误杀: 1" in text
-    assert "- 反馈覆盖：3/3 人" in text
-    assert "误推占比较高" not in text
-    assert "规则过宽" in text
-    assert "样本不足 5 条" in text
-    assert "多人反馈" not in text
-
-
 def test_job_review_dialog_opens_structured_workbench_with_shared_model():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     candidates = [{
@@ -8338,7 +8358,7 @@ def test_job_review_model_keeps_low_score_false_negative_as_evidence():
 
 def test_job_review_feedback_drilldown_keeps_low_score_feedback_evidence():
     gui = BossFilterGUI.__new__(BossFilterGUI)
-    gui._show_text_dialog = Mock()
+    gui.input_support = Mock()
 
     gui._show_job_review_feedback_candidates("Java", [{
         "name": "候选人甲",
@@ -8348,7 +8368,7 @@ def test_job_review_feedback_drilldown_keeps_low_score_feedback_evidence():
         "feedback_note": "完整简历符合要求",
     }])
 
-    text = gui._show_text_dialog.call_args.args[1]
+    text = gui.input_support.show_text_dialog.call_args.args[1]
     assert "候选人甲｜40 分｜误杀" in text
     assert "规则过窄、AI 低估" in text
     assert "完整简历符合要求" in text
@@ -8365,32 +8385,14 @@ def test_job_review_can_navigate_to_matching_saved_job_config():
         assert page_index == 1
         on_ready()
 
-    gui._request_sidebar_page = Mock(side_effect=request_page)
+    gui.app_shell = Mock()
+    gui.app_shell.request_sidebar_page.side_effect = request_page
 
     gui._open_job_config_from_review("  Java   工程师 ")
 
-    gui._request_sidebar_page.assert_called_once()
+    gui.app_shell.request_sidebar_page.assert_called_once()
     assert gui.config_job_combo.get() == "Java 工程师"
     gui.on_job_selected.assert_called_once_with(None)
-
-
-def test_job_review_only_reports_trends_after_minimum_feedback_sample():
-    gui = BossFilterGUI.__new__(BossFilterGUI)
-    candidates = [
-        {
-            "job_name": "Java",
-            "match_score": 80 - index,
-            "feedback_status": "误推" if index < 3 else "合适",
-            "feedback_reasons": ["规则过宽"] if index < 3 else ["其他"],
-        }
-        for index in range(5)
-    ]
-
-    text = gui._build_job_review_text("Java", candidates)
-
-    assert "误推占比较高" in text
-    assert "规则过宽：3/5 条" in text
-    assert "样本不足" not in text
 
 
 def test_education_browser_reuses_live_page():
@@ -8568,16 +8570,16 @@ def test_education_page_has_scroll_container_and_conditional_queue():
         source.index("def _save_current_education_fields")
     ]
 
-    assert "canvas, scrollable_frame = host._create_scroll_container" in create_block
-    assert 'host._create_page_header(\n        page,' in create_block
+    assert "host.scroll_support.create_scroll_container(" in create_block
+    assert "host.widget_support.create_page_header(" in create_block
     assert 'scroll_frame = ttk.Frame(page' in create_block
-    assert '_create_scroll_container(\n        scroll_frame,' in create_block
+    assert 'create_scroll_container(\n        scroll_frame,' in create_block
     assert "auto_hide_scrollbar=True" in create_block
-    assert create_block.index("host._create_page_header(") < create_block.index(
-        "host._create_scroll_container("
+    assert create_block.index("host.widget_support.create_page_header(") < create_block.index(
+        "host.scroll_support.create_scroll_container("
     )
     scroll_content = create_block[create_block.index("content = scrollable_frame"):]
-    assert "host._create_page_header(" not in scroll_content
+    assert "host.widget_support.create_page_header(" not in scroll_content
     assert "queue_card.pack_forget()" in create_block
     queue_card_block = create_block[
         create_block.index('"\u5f85\u6838\u9a8c\u961f\u5217"'):
@@ -8603,14 +8605,15 @@ def test_education_page_has_scroll_container_and_conditional_queue():
 
 
 def test_mousewheel_routes_education_and_api_pages_to_correct_canvas():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
+    source = Path("gui_scroll_support.py").read_text(encoding="utf-8")
     cocoa_block = source[
-        source.index("page_canvas = {"):
-        source.index("}.get(getattr(self, 'current_page_index', -1))")
+        source.index("page_canvases = {"):
+        source.index("return page_canvases.get(")
     ]
 
-    assert "PageIndex.EDUCATION: getattr(self, 'education_canvas', None)" in cocoa_block
-    assert "PageIndex.SETTINGS: getattr(self, 'api_canvas', None)" in cocoa_block
+    assert 'PageIndex.EDUCATION: getattr(self.host, "education_canvas", None)' in cocoa_block
+    assert 'page_canvases[PageIndex.SETTINGS] = getattr(' in cocoa_block
+    assert '"api_canvas"' in cocoa_block
 
 
 def test_education_queue_context_menu_uses_smaller_font():
@@ -8870,10 +8873,10 @@ def test_education_queue_scrollbar_returns_after_delete_and_reimport():
 
 
 def test_education_scrollbar_is_visible_only_when_content_overflows():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
+    source = Path("gui_scroll_support.py").read_text(encoding="utf-8")
     helper_block = source[
-        source.index("def _create_scroll_container"):
-        source.index("def _bind_mousewheel")
+        source.index("def create_scroll_container"):
+        source.index("def bind_mousewheel")
     ]
 
     assert "max(requested_height, viewport_height)" in helper_block
@@ -8881,7 +8884,7 @@ def test_education_scrollbar_is_visible_only_when_content_overflows():
     assert 'scrollbar.pack(side="right", fill="y")' in helper_block
     assert "scrollbar.pack_forget()" in helper_block
     assert "canvas.yview_moveto(0)" in helper_block
-    assert "canvas._schedule_overflow_sync = _schedule_sync" in helper_block
+    assert "canvas._schedule_overflow_sync = schedule_sync" in helper_block
 
 
 def test_education_queue_scrollbar_has_visible_local_style():
@@ -9677,7 +9680,7 @@ def test_remember_maintenance_success_preserves_other_local_preferences():
     with patch.object(gui_main, "_save_run_preferences") as save:
         value = gui._remember_maintenance_success("backup", when=when)
 
-    assert BossFilterGUI._format_maintenance_time(value) == "2026-07-31 09:05"
+    assert DataMaintenanceController.format_time(value) == "2026-07-31 09:05"
     assert gui._run_preferences["last_run_job_name"] == "Java 工程师"
     assert gui._run_preferences["last_data_backup_at"] == value
     save.assert_called_once_with(gui._run_preferences)
@@ -10019,8 +10022,8 @@ def test_data_maintenance_multisection_dialogs_use_structured_templates():
 def test_resume_storage_audit_button_is_in_data_maintenance_card():
     settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
     data_card = settings_source[
-        settings_source.index('data_card = self._create_card('):
-        settings_source.index('diagnostic_card = self._create_card(')
+        settings_source.index('data_card = self.widget_support.create_card('):
+        settings_source.index('diagnostic_card = self.widget_support.create_card(')
     ]
 
     assert 'text=" 简历存储体检"' in data_card

@@ -10,6 +10,19 @@ from typing import Any, Protocol
 from ui_windowing import get_windows_monitor_area, place_window_centered
 
 
+class ScrollSupport(Protocol):
+    def bind_mousewheel(self, canvas: tk.Canvas, content: tk.Misc) -> None: ...
+
+
+class WidgetSupport(Protocol):
+    def create_card(
+        self,
+        parent: tk.Misc,
+        title: str,
+        **kwargs: Any,
+    ) -> tk.Misc: ...
+
+
 class JobReviewHost(Protocol):
     """Narrow UI contract used by the job review builder."""
 
@@ -18,15 +31,8 @@ class JobReviewHost(Protocol):
     dpi_scale: float
     zoom_factor: float
     font_scale: float
-
-    def _create_card(
-        self,
-        parent: tk.Misc,
-        title: str,
-        **kwargs: Any,
-    ) -> tk.Misc: ...
-
-    def _bind_mousewheel(self, canvas: tk.Canvas, content: tk.Misc) -> None: ...
+    scroll_support: ScrollSupport
+    widget_support: WidgetSupport
 
 
 @dataclass(frozen=True)
@@ -143,7 +149,7 @@ def _add_funnel(
     font_family: str,
     scale: float,
 ) -> None:
-    funnel = host._create_card(
+    funnel = host.widget_support.create_card(
         parent,
         "筛选转化",
         fill="x",
@@ -254,7 +260,7 @@ def _add_feedback(
     scale: float,
     show_feedback_candidates: Callable[[], Any],
 ) -> None:
-    feedback = host._create_card(
+    feedback = host.widget_support.create_card(
         parent,
         "反馈质量",
         fill="x",
@@ -320,7 +326,7 @@ def _add_insights(
     insight_sections = [item for item in insight_sections if item[1]]
     if not insight_sections:
         return
-    insights = host._create_card(
+    insights = host.widget_support.create_card(
         parent,
         "问题洞察",
         fill="x",
@@ -405,7 +411,7 @@ def _add_suggestions(
             pady=max(4, int(padding * 0.45)),
         )
 
-    suggestions = host._create_card(
+    suggestions = host.widget_support.create_card(
         parent,
         "建议调整",
         fill="x",
@@ -588,7 +594,7 @@ def build_job_review_workbench(
     footer.grid(row=1, column=0, sticky="ew")
     ttk.Button(footer, text="关闭", command=close).pack(side="right")
 
-    host._bind_mousewheel(canvas, content)
+    host.scroll_support.bind_mousewheel(canvas, content)
     window.protocol("WM_DELETE_WINDOW", close)
     window.bind("<Escape>", lambda _event: close())
     _place_workbench(host, window, scale)

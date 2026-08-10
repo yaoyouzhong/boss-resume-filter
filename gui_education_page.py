@@ -8,6 +8,47 @@ from tkinter import font, ttk
 from typing import Any, Protocol
 
 
+class ScrollSupport(Protocol):
+    def create_scroll_container(
+        self,
+        parent: tk.Misc,
+        bg_color: str,
+        *,
+        auto_hide_scrollbar: bool = False,
+    ) -> tuple[tk.Canvas, ttk.Frame]: ...
+
+    def bind_mousewheel(self, canvas: tk.Canvas, frame: tk.Misc) -> None: ...
+
+
+class InputSupport(Protocol):
+    def bind_entry_context_menu(self, entry: tk.Misc) -> None: ...
+
+
+class FeedbackSupport(Protocol):
+    def hide_tooltip(self, event: tk.Event | None = None) -> None: ...
+
+
+class WidgetSupport(Protocol):
+    def create_page_header(
+        self,
+        parent: tk.Misc,
+        title: str,
+        subtitle: str | None = None,
+        top_padding: int = 0,
+    ) -> tk.Misc: ...
+
+    def create_card(
+        self,
+        parent: tk.Misc,
+        title: str,
+        **kwargs: Any,
+    ) -> tk.Misc: ...
+
+
+class LayoutSupport(Protocol):
+    def update_education_queue_columns(self) -> None: ...
+
+
 class EducationPageHost(Protocol):
     """Narrow host contract required to build the education page."""
 
@@ -20,29 +61,11 @@ class EducationPageHost(Protocol):
     font_label: Any
     icons: Any
     _context_menus: list[tk.Menu]
-
-    def _create_page_header(
-        self,
-        parent: tk.Misc,
-        title: str,
-        subtitle: str | None = None,
-        top_padding: int = 0,
-    ) -> tk.Misc: ...
-
-    def _create_scroll_container(
-        self,
-        parent: tk.Misc,
-        bg_color: str,
-        *,
-        auto_hide_scrollbar: bool = False,
-    ) -> tuple[tk.Canvas, ttk.Frame]: ...
-
-    def _create_card(
-        self,
-        parent: tk.Misc,
-        title: str,
-        **kwargs: Any,
-    ) -> tk.Misc: ...
+    scroll_support: ScrollSupport
+    input_support: InputSupport
+    feedback_support: FeedbackSupport
+    widget_support: WidgetSupport
+    layout_support: LayoutSupport
 
     def _remove_current_education_image(self) -> None: ...
 
@@ -52,11 +75,7 @@ class EducationPageHost(Protocol):
 
     def _on_education_queue_motion(self, event: tk.Event) -> None: ...
 
-    def _hide_tooltip(self, event: tk.Event | None = None) -> None: ...
-
     def _show_education_queue_context_menu(self, event: tk.Event) -> None: ...
-
-    def _update_education_queue_columns(self) -> None: ...
 
     def _recognize_education_image(self) -> None: ...
 
@@ -66,13 +85,9 @@ class EducationPageHost(Protocol):
 
     def _schedule_education_preview_render(self) -> None: ...
 
-    def bind_entry_context_menu(self, entry: ttk.Entry) -> None: ...
-
     def _fill_chsi_page(self) -> None: ...
 
     def _solve_captcha(self) -> None: ...
-
-    def _bind_mousewheel(self, canvas: tk.Canvas, frame: ttk.Frame) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -116,7 +131,7 @@ def build_education_page(
     """Build the education page without reading certificates or accessing AI/browser services."""
     scale = host.dpi_scale * host.zoom_factor
     page = ttk.Frame(host.pages_frame, style="Page.TFrame")
-    host._create_page_header(
+    host.widget_support.create_page_header(
         page,
         "学历核验",
         "导入毕业证书图片/PDF，识别姓名和证书编号；验证码与手机扫码由 HR 人工完成。",
@@ -124,14 +139,14 @@ def build_education_page(
 
     scroll_frame = ttk.Frame(page, style="Page.TFrame")
     scroll_frame.pack(fill="both", expand=True)
-    canvas, scrollable_frame = host._create_scroll_container(
+    canvas, scrollable_frame = host.scroll_support.create_scroll_container(
         scroll_frame,
         host.colors["bg_main"],
         auto_hide_scrollbar=True,
     )
     content = scrollable_frame
 
-    toolbar = host._create_card(
+    toolbar = host.widget_support.create_card(
         content,
         "毕业证书",
         fill="x",
@@ -166,7 +181,7 @@ def build_education_page(
     select_button._icon_ref = select_icon
     select_button.pack(side="right")
 
-    queue_content = host._create_card(
+    queue_content = host.widget_support.create_card(
         content,
         "待核验队列",
         fill="x",
@@ -244,11 +259,11 @@ def build_education_page(
     queue_scrollbar.grid_remove()
     queue_tree.bind("<<TreeviewSelect>>", host._on_education_queue_select)
     queue_tree.bind("<Motion>", host._on_education_queue_motion, add="+")
-    queue_tree.bind("<Leave>", host._hide_tooltip, add="+")
+    queue_tree.bind("<Leave>", host.feedback_support.hide_tooltip, add="+")
     queue_tree.bind("<Button-3>", host._show_education_queue_context_menu)
     queue_tree.bind(
         "<Configure>",
-        lambda _event: host._update_education_queue_columns(),
+        lambda _event: host.layout_support.update_education_queue_columns(),
         add="+",
     )
     queue_menu = tk.Menu(
@@ -293,7 +308,7 @@ def build_education_page(
             lambda _event: host._rotate_education_image_cw90(),
         )
 
-    preview = host._create_card(
+    preview = host.widget_support.create_card(
         workspace,
         "证书预览",
         fill="both",
@@ -318,7 +333,7 @@ def build_education_page(
     )
     preview_label.pack(fill="both", expand=True)
 
-    form = host._create_card(
+    form = host.widget_support.create_card(
         workspace,
         "识别结果",
         fill="both",
@@ -334,11 +349,11 @@ def build_education_page(
     ttk.Label(form, text="姓名", font=host.font_label).pack(anchor="w")
     name_entry = ttk.Entry(form, textvariable=name_var, font=host.font_label)
     name_entry.pack(fill="x", pady=(6, 16))
-    host.bind_entry_context_menu(name_entry)
+    host.input_support.bind_entry_context_menu(name_entry)
     ttk.Label(form, text="证书编号", font=host.font_label).pack(anchor="w")
     number_entry = ttk.Entry(form, textvariable=number_var, font=host.font_label)
     number_entry.pack(fill="x", pady=(6, 16))
-    host.bind_entry_context_menu(number_entry)
+    host.input_support.bind_entry_context_menu(number_entry)
 
     ttk.Label(
         form,
@@ -399,7 +414,7 @@ def build_education_page(
         justify="left",
     ).pack(anchor="w", fill="x", pady=(20, 0))
     queue_card.pack_forget()
-    host._bind_mousewheel(canvas, scrollable_frame)
+    host.scroll_support.bind_mousewheel(canvas, scrollable_frame)
 
     return EducationPageWidgets(
         page=page,

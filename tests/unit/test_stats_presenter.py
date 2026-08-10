@@ -92,3 +92,61 @@ def test_job_review_suggestions_require_enough_feedback():
     )
     assert title == "规则过宽"
     assert detail == "补充硬性约束。"
+
+
+def test_job_review_text_aggregates_structured_feedback_reasons():
+    candidates = [
+        {
+            "job_name": "Java",
+            "match_score": 80,
+            "greet_sent": True,
+            "followup_status": "已回复",
+            "feedback_status": "误推",
+            "feedback_reasons": ["技能不匹配", "规则过宽"],
+        },
+        {
+            "job_name": "Java",
+            "match_score": 40,
+            "qualification_status": "rejected",
+            "feedback_status": "误杀",
+            "feedback_reasons": ["规则过窄", "AI 低估"],
+        },
+        {
+            "job_name": "Java",
+            "match_score": 60,
+            "feedback_status": "合适",
+            "feedback_reasons": ["行业经验不符"],
+        },
+    ]
+
+    text = stats_presenter.build_job_review_text("Java", candidates)
+
+    assert "Java 岗位复盘" in text
+    assert "- 已反馈：3 人" in text
+    assert "- 技能不匹配: 1" in text
+    assert "- 规则过宽: 1" in text
+    assert "- 规则过窄: 1" in text
+    assert "- 误杀: 1" in text
+    assert "- 反馈覆盖：3/3 人" in text
+    assert "误推占比较高" not in text
+    assert "规则过宽" in text
+    assert "样本不足 5 条" in text
+    assert "多人反馈" not in text
+
+
+def test_job_review_only_reports_trends_after_minimum_feedback_sample():
+    candidates = [
+        {
+            "job_name": "Java",
+            "match_score": 80 - index,
+            "feedback_status": "误推" if index < 3 else "合适",
+            "feedback_reasons": ["规则过宽"] if index < 3 else ["其他"],
+        }
+        for index in range(5)
+    ]
+
+    text = stats_presenter.build_job_review_text("Java", candidates)
+
+    assert "误推占比较高" in text
+    assert "规则过宽：3/5 条" in text
+    assert "样本不足" not in text
