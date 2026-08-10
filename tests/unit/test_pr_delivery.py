@@ -1,6 +1,7 @@
 import importlib.util
 import subprocess
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
@@ -41,6 +42,65 @@ def test_delivery_rejects_master_and_invalid_topic_branches():
     for branch in ("master", "feature/test", "codex/../master", "codex/"):
         with _raises(pr_delivery.PRDeliveryError, "分支"):
             pr_delivery.validate_branch_name(branch)
+
+
+def test_remote_command_timeout_becomes_retryable_completed_process():
+    command = ["gh", "pr", "view", "61"]
+    timeout = subprocess.TimeoutExpired(command, 30)
+    with patch.object(pr_delivery.subprocess, "run", side_effect=timeout):
+        result = pr_delivery._run(
+            command,
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+
+    assert result.returncode == 124
+    assert "timed out after 30s" in result.stderr
+    assert pr_delivery.release_retry.is_retryable_cli_failure(result)
+
+
+def test_remote_json_query_uses_read_timeout_and_reports_attempt_duration():
+    output = StringIO()
+    with (
+        patch.object(
+            pr_delivery,
+            "_run",
+            return_value=_completed('{"state":"OPEN"}'),
+        ) as run,
+        patch.object(pr_delivery.time, "perf_counter", side_effect=[10.0, 11.25]),
+        redirect_stdout(output),
+    ):
+        result = pr_delivery._run_remote_json_query(
+            ["gh", "pr", "view", "61"],
+            "读取 PR #61 状态",
+        )
+
+    assert result == {"state": "OPEN"}
+    assert run.call_args.kwargs["timeout"] == (
+        pr_delivery.REMOTE_READ_TIMEOUT_SECONDS
+    )
+    assert "读取 PR #61 状态（第 1 次" in output.getvalue()
+    assert "1.25s" in output.getvalue()
+
+
+def test_output_streams_are_line_buffered_for_live_delivery_progress():
+    stdout = Mock()
+    stderr = Mock()
+    with (
+        patch.object(pr_delivery.sys, "stdout", stdout),
+        patch.object(pr_delivery.sys, "stderr", stderr),
+    ):
+        pr_delivery._configure_output_streams()
+
+    expected = {
+        "encoding": "utf-8",
+        "errors": "replace",
+        "line_buffering": True,
+        "write_through": True,
+    }
+    stdout.reconfigure.assert_called_once_with(**expected)
+    stderr.reconfigure.assert_called_once_with(**expected)
 
 
 def test_check_rollup_distinguishes_pending_success_and_failure():
@@ -570,7 +630,7 @@ def test_pr_creation_retries_transient_new_branch_propagation_failure():
         _completed("https://github.example/pr/10\n"),
     ]
     with (
-        patch.object(pr_delivery, "_run", side_effect=run_results),
+        patch.object(pr_delivery, "_run", side_effect=run_results) as run,
         patch.object(pr_delivery, "_find_delivery_pr", side_effect=[None, None, pr]),
         patch.object(pr_delivery, "_default_pr_title", return_value="Title"),
         patch.object(pr_delivery, "_default_pr_body", return_value="Body"),
@@ -580,6 +640,15 @@ def test_pr_creation_retries_transient_new_branch_propagation_failure():
 
     assert result == pr
     sleep.assert_called_once_with(2)
+    assert run.call_args_list[0].kwargs["timeout"] == (
+        pr_delivery.REMOTE_WRITE_TIMEOUT_SECONDS
+    )
+    assert run.call_args_list[1].kwargs["timeout"] == (
+        pr_delivery.GITHUB_WRITE_TIMEOUT_SECONDS
+    )
+    assert run.call_args_list[2].kwargs["timeout"] == (
+        pr_delivery.GITHUB_WRITE_TIMEOUT_SECONDS
+    )
 
 
 def test_existing_open_pr_is_reused_even_when_head_ref_is_stale():
