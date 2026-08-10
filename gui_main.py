@@ -26,9 +26,9 @@ from datetime import datetime, timedelta
 from enum import IntEnum
 from pathlib import Path
 from tkinter import filedialog, font, ttk
-from urllib.parse import urlparse
 
 import icons
+from api_connectivity import probe_api_connectivity, probe_model_capability
 from candidate_cleanup import clear_candidates_in_place
 import candidate_presenter
 import candidate_diagnostics_presenter
@@ -158,7 +158,6 @@ from constants import (
     SCORE_THRESHOLD_PASS,
     SCORE_THRESHOLD_RECOMMEND,
     SCORE_THRESHOLD_STRONG,
-    USER_AGENT,
     GREET_UNCERTAIN_LIMIT,
 )
 from storage import (
@@ -7181,21 +7180,20 @@ class BossFilterGUI:
             elif not entry["base_url"]:
                 result = {"status": "error", "msg": "Base URL 未配置"}
             else:
-                try:
-                    from llm_eval import probe_model_compatibility
-                    config = dict(entry["model_config"])
-                    config["api_provider"] = entry["provider_key"]
-                    capability = probe_model_compatibility(config, api_key, force=True)
-                    if capability.get("status") in ("compatible", "limited"):
-                        result = {
-                            "status": "success",
-                            "time": capability.get("response_time", 0),
-                            "capability": capability,
-                        }
-                    else:
-                        result = {"status": "error", "msg": capability.get("message", "模型不兼容")}
-                except Exception as e:
-                    result = {"status": "error", "msg": f"异常: {str(e)[:80]}"}
+                config = dict(entry["model_config"])
+                config["api_provider"] = entry["provider_key"]
+                connectivity = probe_model_capability(config, api_key)
+                if connectivity.successful:
+                    result = {
+                        "status": "success",
+                        "time": connectivity.elapsed_seconds,
+                        "capability": dict(connectivity.capability),
+                    }
+                else:
+                    result = {
+                        "status": "error",
+                        "msg": connectivity.message or "模型不兼容",
+                    }
 
             self.run_on_ui(
                 lambda entry=entry, result=result: self._apply_model_connectivity_result(
@@ -7903,338 +7901,127 @@ class BossFilterGUI:
         self.api_key_toggle_btn.configure(image=self.api_key_toggle_btn._icon_eye)
         self.api_key_show_var.set(False)
 
+    def _apply_api_connectivity_result(self, result, model):
+        """Render one deterministic API connectivity result on the Tk thread."""
+        parent = (
+            getattr(self, "api_config_page", None)
+            or getattr(self, "root", None)
+        )
+        if result.status == "dns_error":
+            hostname = result.hostname or "当前服务地址"
+            self._update_api_status(
+                text="✗ DNS 解析失败",
+                foreground=self.colors["danger"],
+            )
+            messagebox.show_failure(
+                "DNS 解析失败",
+                headline=f"无法解析域名 {hostname}",
+                message="请检查 Base URL、DNS 设置或 hosts 配置。",
+                detail=f"DNS 检查耗时 {result.elapsed_seconds:.1f} 秒",
+                parent=parent,
+            )
+            return
+
+        if result.successful:
+            compatibility = (
+                "完整兼容"
+                if result.status == "compatible"
+                else "兼容模式"
+            )
+            self._update_api_status(
+                text=(
+                    f"✓ {compatibility} "
+                    f"({result.elapsed_seconds:.1f}s)"
+                ),
+                foreground=self.colors["success"],
+            )
+            self._status_flash(f"{model} 连接正常，可用于 AI 评估")
+            return
+
+        if result.status == "incompatible":
+            self._update_api_status(
+                text="✗ 验证未通过",
+                foreground=self.colors["danger"],
+            )
+            messagebox.show_failure(
+                "连接测试失败",
+                headline="模型不能用于 AI 评估",
+                message="连接或兼容性验证未通过。",
+                detail=result.message,
+                parent=parent,
+            )
+            return
+
+        self._update_api_status(
+            text="✗ 能力验证失败",
+            foreground=self.colors["danger"],
+        )
+        messagebox.show_failure(
+            "连接测试失败",
+            headline="模型能力验证异常",
+            message="连接测试没有得到可用结论。",
+            detail=result.message,
+            parent=parent,
+        )
+
     def test_api_connection(self):
-        """测试 API 连接 - 高可用版本：每次全新连接 + 并行双策略 + 宽松超时"""
+        """Validate DNS and the model's application-level response capability."""
         api_key = self.api_key_var.get().strip()
         base_url = self.api_base_url_var.get().strip()
         model = self.api_model_var.get().strip()
         provider_display = self.api_provider_var.get().strip()
-        provider_key = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
+        provider_key = self.DISPLAY_TO_KEY.get(
+            provider_display,
+            provider_display,
+        )
 
         if not api_key:
             self._update_api_status(
                 text="⚠ 请先输入 API Key",
-                foreground=self.colors['warning'],
+                foreground=self.colors["warning"],
             )
             return
-
         if not base_url:
             self._update_api_status(
                 text="⚠ 请先输入 Base URL",
-                foreground=self.colors['warning'],
+                foreground=self.colors["warning"],
             )
             return
-
         if not model:
             self._update_api_status(
                 text="⚠ 请先输入模型名称",
-                foreground=self.colors['warning'],
+                foreground=self.colors["warning"],
             )
             return
 
-
-        normalized_base_url = normalize_api_base_url({
-            "api_provider": provider_key,
-            "base_url": base_url,
-        })
+        normalized_base_url = normalize_api_base_url(
+            {
+                "api_provider": provider_key,
+                "base_url": base_url,
+            }
+        )
         if normalized_base_url != base_url.rstrip("/"):
             base_url = normalized_base_url
             self.api_base_url_var.set(base_url)
-        # 显示测试中状态
-        self._update_api_status(text="⏳ 正在验证...", foreground=self.colors['warning'])
+        self._update_api_status(
+            text="⏳ 正在验证...",
+            foreground=self.colors["warning"],
+        )
+        config = {
+            "api_provider": provider_key,
+            "base_url": base_url,
+            "model": model,
+        }
 
         def test_thread():
-            import socket
-            start_time = time.time()
+            result = probe_api_connectivity(config, api_key)
+            self.run_on_ui(
+                lambda result=result: self._apply_api_connectivity_result(
+                    result,
+                    model,
+                )
+            )
 
-            # 关键优化：每次测试使用全新 Session，避免 stale connection
-            # 这是 50% 失败率的根本原因
-            import requests
-            import certifi
-
-            # 解析 URL 获取主机，用于 DNS 预检查
-            parsed = urlparse(base_url)
-            hostname = parsed.hostname
-
-            # === 阶段 1: DNS 解析检查（快速失败）===
-            try:
-                socket.gethostbyname(hostname)
-                # DNS 解析成功，继续
-            except socket.gaierror:
-                elapsed = time.time() - start_time
-                self.root.after(0, lambda: self._update_api_status(text="✗ DNS 解析失败", foreground=self.colors['danger']))
-                self.root.after(0, lambda: messagebox.show_failure(
-                    "DNS 解析失败",
-                    headline=f"无法解析域名 {hostname}",
-                    message="请检查 Base URL、DNS 设置或 hosts 配置。",
-                    detail=f"DNS 检查耗时 {elapsed:.1f} 秒",
-                    parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                ))
-                return
-
-            # 连通不等于可用：真实验证该模型能否生成程序可解析的评估结果。
-            try:
-                from llm_eval import probe_model_compatibility
-                capability = probe_model_compatibility({
-                    "api_provider": provider_key,
-                    "base_url": base_url,
-                    "model": model,
-                }, api_key, force=True)
-                elapsed = time.time() - start_time
-                if capability.get("status") in ("compatible", "limited"):
-                    compatibility = "完整兼容" if capability.get("status") == "compatible" else "兼容模式"
-                    self.root.after(0, lambda: self._update_api_status(
-                        text=f"✓ {compatibility} ({elapsed:.1f}s)",
-                        foreground=self.colors['success'],
-                    ))
-                    self.root.after(
-                        0,
-                        lambda: self._status_flash(
-                            f"{model} 连接正常，可用于 AI 评估"
-                        ),
-                    )
-                else:
-                    error_message = capability.get("message", "模型无法生成程序所需评估格式")
-                    self.root.after(0, lambda: self._update_api_status(
-                        text="✗ 验证未通过",
-                        foreground=self.colors['danger'],
-                    ))
-                    self.root.after(0, lambda: messagebox.show_failure(
-                        "连接测试失败",
-                        headline="模型不能用于 AI 评估",
-                        message="连接或兼容性验证未通过。",
-                        detail=error_message,
-                        parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                    ))
-                return
-            except Exception as e:
-                error_message = str(e)[:120]
-                self.root.after(0, lambda: self._update_api_status(
-                    text="✗ 能力验证失败",
-                    foreground=self.colors['danger'],
-                ))
-                self.root.after(0, lambda: messagebox.show_failure(
-                    "连接测试失败",
-                    headline="模型能力验证异常",
-                    message="连接测试没有得到可用结论。",
-                    detail=error_message,
-                    parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
-                ))
-                return
-
-            # === 阶段 3: HTTPS 请求（宽松超时）===
-            # 关键：每次使用全新 Session + 禁用 keep-alive，确保连接新鲜
-            session = requests.Session()
-
-            # 不配置 HTTPAdapter，让 requests 使用默认行为（每次新建连接）
-            # 这样可以避免连接池中的 stale connection 问题
-
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-                "User-Agent": USER_AGENT,
-                "Connection": "close"  # 强制关闭连接，不复用
-            }
-
-            data = {
-                "model": model,
-                "messages": [{"role": "user", "content": "1"}],  # 最小请求
-                "max_tokens": 1,
-                "stream": False
-            }
-
-            url = f"{base_url.rstrip('/')}/chat/completions"
-
-            # 宽松超时：连接 5 秒 + 读取 25 秒 = 总 30 秒
-            # 宁可慢，也要成功，避免假阳性失败
-            timeout = (8, 30)
-
-            max_retries = 3  # 增加重试次数
-            last_error = None
-            last_status = None
-
-            for attempt in range(max_retries):
-                try:
-                    # 每次重试都使用全新 Session（关键！）
-                    if attempt > 0:
-                        session.close()
-                        session = requests.Session()
-
-                    response = session.post(
-                        url,
-                        json=data,
-                        headers=headers,
-                        timeout=timeout,
-                        verify=certifi.where()
-                    )
-                    elapsed = time.time() - start_time
-                    last_status = response.status_code
-
-                    if response.status_code == 200:
-                        session.close()
-                        self.root.after(0, lambda: self._update_api_status(
-                            text=f"✓ 验证成功 ({elapsed:.1f}s)",
-                            foreground=self.colors['success']
-                        ))
-                        self.root.after(
-                            0,
-                            lambda: self._status_flash(
-                                f"API 连接正常，响应时间 {elapsed:.1f} 秒"
-                            ),
-                        )
-                        return
-                    elif response.status_code == 401:
-                        session.close()
-                        self.root.after(0, lambda: self._update_api_status(text="✗ 认证失败", foreground=self.colors['danger']))
-                        self.root.after(0, lambda: messagebox.show_failure(
-                            "认证失败",
-                            headline="API Key 无效或已过期",
-                            message="请检查 API Key 是否正确后重新测试。",
-                            detail="HTTP 401",
-                            parent=(
-                                getattr(self, "api_config_page", None)
-                                or getattr(self, "root", None)
-                            ),
-                        ))
-                        return
-                    elif response.status_code == 429:
-                        session.close()
-                        self.root.after(0, lambda: self._update_api_status(text="⚠ 请求受限", foreground=self.colors['warning']))
-                        self.root.after(0, lambda: messagebox.show_notice(
-                            "请求暂时受限",
-                            headline="API 请求已达到限额",
-                            message="请稍后再试。",
-                            metrics=(("状态码", "HTTP 429"),),
-                            parent=(
-                                getattr(self, "api_config_page", None)
-                                or getattr(self, "root", None)
-                            ),
-                        ))
-                        return
-                    else:
-                        # 其他状态码，解析响应内容
-                        session.close()
-                        last_status = response.status_code
-                        err_msg = response.text[:500] if response.text else "无响应内容"
-
-                        # 识别常见业务错误
-                        friendly = None
-                        try:
-                            err_json = response.json()
-                            code = err_json.get("error", {}).get("code", "")
-                            msg_text = err_json.get("error", {}).get("message", "")
-                            if "not activated" in msg_text.lower():
-                                friendly = "模型未开通\n\n请在服务商控制台开通该模型后再试"
-                            elif "quota" in msg_text.lower() or "limit" in msg_text.lower():
-                                friendly = "配额超限\n\n" + msg_text
-                            elif "free tier" in msg_text.lower() or "allocationquota" in code.lower():
-                                friendly = "免费额度已用完\n\n如需继续使用，请在服务商控制台关闭「仅使用免费额度」选项，切换到付费模式"
-                        except Exception:
-                            pass
-
-                        if attempt < max_retries - 1 and not friendly:
-                            time.sleep(0.5)
-                            self.root.after(0, lambda a=attempt+2: self._update_api_status(
-                                text=f"⏳ 重试中 ({a}/{max_retries})...",
-                                foreground=self.colors['warning']
-                            ))
-                            continue
-
-                        # 重试耗尽或业务错误
-                        self.root.after(0, lambda: self._update_api_status(text="✗ 验证失败", foreground=self.colors['danger']))
-                        failure_message = friendly or "无法连接到 API 服务。"
-                        failure_detail = (
-                            f"HTTP {response.status_code}"
-                            if friendly
-                            else f"HTTP {response.status_code}\n\n{err_msg}"
-                        )
-                        self.root.after(
-                            0,
-                            lambda msg=failure_message, detail=failure_detail: (
-                                messagebox.show_failure(
-                                    "连接测试失败",
-                                    headline="API 验证未通过",
-                                    message=msg,
-                                    detail=detail,
-                                    parent=(
-                                        getattr(self, "api_config_page", None)
-                                        or getattr(self, "root", None)
-                                    ),
-                                )
-                            ),
-                        )
-                        return
-
-                except requests.exceptions.Timeout as e:
-                    last_error = "连接超时"
-                    if attempt < max_retries - 1:
-                        # 超时后重试，指数退避
-                        wait_time = 1.0 * (attempt + 1)
-                        time.sleep(wait_time)
-                        self.root.after(0, lambda a=attempt+2: self._update_api_status(
-                            text=f"⏳ 重试中 ({a}/{max_retries})...",
-                            foreground=self.colors['warning']
-                        ))
-                        continue
-                    # 重试耗尽
-                    self.root.after(0, lambda: self._update_api_status(text="✗ 连接超时", foreground=self.colors['danger']))
-                    self.root.after(0, lambda: messagebox.showerror(
-                        "连接测试失败",
-                        "连接超时，请检查网络连接"
-                    ))
-                    return
-                except requests.exceptions.ConnectionError as e:
-                    last_error = "无法连接服务器"
-                    if attempt < max_retries - 1:
-                        wait_time = 0.5 * (attempt + 1)
-                        time.sleep(wait_time)
-                        self.root.after(0, lambda a=attempt+2: self._update_api_status(
-                            text=f"⏳ 重试中 ({a}/{max_retries})...",
-                            foreground=self.colors['warning']
-                        ))
-                        continue
-                    # 重试耗尽
-                    self.root.after(0, lambda: self._update_api_status(text="✗ 无法连接", foreground=self.colors['danger']))
-                    self.root.after(0, lambda: messagebox.showerror(
-                        "连接测试失败",
-                        "无法连接到服务器，请检查网络和 Base URL"
-                    ))
-                    return
-                except requests.exceptions.SSLError as e:
-                    # SSL 错误不重试，直接提示警告
-                    last_error = "SSL 证书错误"
-                    self.root.after(0, lambda: self._update_api_status(text="⚠ SSL 错误", foreground=self.colors['warning']))
-                    self.root.after(0, lambda: messagebox.showwarning(
-                        "SSL 证书错误",
-                        "SSL 证书验证失败，可忽略此错误，保存配置后尝试实际使用"
-                    ))
-                    return
-                except Exception as e:
-                    last_error = f"{type(e).__name__}: {str(e)[:100]}"
-                    if attempt < max_retries - 1:
-                        time.sleep(0.5)
-                        continue
-
-            # 所有重试失败
-            session.close()
-            self.root.after(0, lambda: self._update_api_status(text="✗ 验证失败", foreground=self.colors['danger']))
-
-            # 根据最后错误类型给出针对性建议
-            if last_status == 401:
-                msg = "API Key 无效或已过期，请检查 API Key 是否正确"
-            elif "超时" in str(last_error):
-                msg = "连接超时，请检查网络连接"
-            elif "无法连接" in str(last_error):
-                msg = "无法连接到服务器，请检查网络和 Base URL"
-            else:
-                msg = "连接测试失败，请稍后重试"
-
-            self.root.after(0, lambda: messagebox.showerror(
-                "连接测试失败",
-                msg
-            ))
-
-        # 启动测试线程
         threading.Thread(target=test_thread, daemon=True).start()
 
     def save_config(self):

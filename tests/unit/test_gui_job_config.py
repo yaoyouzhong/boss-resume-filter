@@ -3144,6 +3144,99 @@ def test_assigned_model_connectivity_status_uses_role_and_model_name():
     assert 'f"✓ {assigned_target_label}测试通过"' in result_block
 
 
+def test_api_connection_delegates_probe_and_returns_result_on_ui_thread():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.DISPLAY_TO_KEY = gui_main.DISPLAY_TO_KEY
+    gui.api_key_var = Mock()
+    gui.api_key_var.get.return_value = "secret"
+    gui.api_base_url_var = Mock()
+    gui.api_base_url_var.get.return_value = "https://api.example.test/v1"
+    gui.api_model_var = Mock()
+    gui.api_model_var.get.return_value = "model-a"
+    gui.api_provider_var = Mock()
+    gui.api_provider_var.get.return_value = "通义千问 (Qwen)"
+    gui.colors = {"warning": "warning"}
+    gui._update_api_status = Mock()
+    gui._apply_api_connectivity_result = Mock()
+    gui.run_on_ui = Mock(side_effect=lambda callback: callback())
+    result = types.SimpleNamespace(status="compatible", successful=True)
+
+    def immediate_thread(*_args, **kwargs):
+        return types.SimpleNamespace(start=kwargs["target"])
+
+    with (
+        patch.object(
+            gui_main,
+            "probe_api_connectivity",
+            return_value=result,
+        ) as probe,
+        patch.object(
+            gui_main.threading,
+            "Thread",
+            side_effect=immediate_thread,
+        ),
+    ):
+        gui.test_api_connection()
+
+    config = probe.call_args.args[0]
+    assert config == {
+        "api_provider": "qwen",
+        "base_url": "https://api.example.test/v1",
+        "model": "model-a",
+    }
+    assert probe.call_args.args[1] == "secret"
+    gui._apply_api_connectivity_result.assert_called_once_with(
+        result,
+        "model-a",
+    )
+
+
+def test_api_connectivity_result_renders_limited_and_dns_outcomes():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.colors = {
+        "success": "success",
+        "danger": "danger",
+    }
+    gui._update_api_status = Mock()
+    gui._status_flash = Mock()
+    limited = types.SimpleNamespace(
+        status="limited",
+        successful=True,
+        elapsed_seconds=1.25,
+        hostname="api.example.test",
+        message="",
+    )
+
+    gui._apply_api_connectivity_result(limited, "model-a")
+
+    gui._update_api_status.assert_called_with(
+        text="✓ 兼容模式 (1.2s)",
+        foreground="success",
+    )
+    gui._status_flash.assert_called_once_with(
+        "model-a 连接正常，可用于 AI 评估"
+    )
+
+    dns_error = types.SimpleNamespace(
+        status="dns_error",
+        successful=False,
+        elapsed_seconds=0.2,
+        hostname="missing.example.test",
+        message="域名解析失败",
+    )
+    with patch.object(gui_main.messagebox, "show_failure") as show_failure:
+        gui._apply_api_connectivity_result(dns_error, "model-a")
+
+    show_failure.assert_called_once_with(
+        "DNS 解析失败",
+        headline="无法解析域名 missing.example.test",
+        message="请检查 Base URL、DNS 设置或 hosts 配置。",
+        detail="DNS 检查耗时 0.2 秒",
+        parent=gui.root,
+    )
+
+
 def test_assigned_model_test_result_is_ignored_after_model_switch():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     default_button = _FakeWidget()

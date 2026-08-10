@@ -6,6 +6,7 @@ boss-resume-filter/
 ├── filtering.py          # 纯筛选规则模块（评分、硬条件、薪资/经验/城市解析）
 ├── llm_eval.py           # LLM 辅助评估模块（prompt 构建、API 调用、批量评估）
 ├── ai_adapter.py         # 多服务商接口适配与模型能力验证
+├── api_connectivity.py   # DNS 与模型能力连通性探测及结果分类服务
 ├── model_catalog.py      # 模型目录获取、聊天模型过滤与端点隔离差异分析
 ├── job_ai_parser.py      # 岗位需求 AI 增强解析模块（基于正则初稿补充优化）
 ├── job_config_diagnostics.py # 岗位配置保存前体检模块
@@ -150,6 +151,7 @@ boss-resume-filter/
 - `gui_main.py` 保留版本号、Tk 窗口生命周期、导航、页面按需创建和兼容门面；新的纯格式化或业务转换不得继续加入 `BossFilterGUI`。
 - `*_presenter.py` 只接收普通 Python 数据并返回文本或结构化展示结果；不得导入 `tkinter`、`gui_main`、候选人存储或网络模块，不得读写文件。
 - `candidate_cleanup.py` 只在调用方提供的候选人列表上执行按岗位/全部范围的清理与保留策略并返回统计；不得读写文件、导入 GUI、存储或网络模块。
+- `api_connectivity.py` 只执行 DNS 预检、模型能力探测和结果分类；不得导入 `tkinter`、`gui_main`、密钥存储或配置文件模块，API Key 必须由调用方显式传入。
 - `gui_main.py` 可以向新模块单向委托；新模块禁止反向导入 `gui_main.py`。迁移期保留原 `BossFilterGUI` 方法作为薄兼容层，待调用方和测试迁移后再删除。
 - `gui_*_page.py` 只负责指定页面的 Tk 控件构建和页面局部引用；不得读写业务数据、访问网络或导入 `gui_main`。迁移期通过显式 Host 协议注入回调，并由 `gui_main.py` 保留原页面属性别名。
 - `gui_candidate_*.py` 只负责候选人工作台弹窗的 Tk 控件、局部选择状态和事件绑定；候选人加载、状态诊断、业务动作和报告写盘必须通过显式回调留在 `gui_main.py`，不得导入存储、网络或 `gui_main`。

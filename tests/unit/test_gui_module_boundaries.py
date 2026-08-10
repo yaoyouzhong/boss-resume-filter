@@ -2,6 +2,7 @@ import ast
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import api_connectivity
 import candidate_diagnostics_presenter
 import candidate_cleanup
 import candidate_presenter
@@ -132,6 +133,19 @@ def test_resume_import_service_excludes_gui_parser_and_network_dependencies():
     }
     assert not (_top_level_imports("resume_import_service") & forbidden)
     assert callable(resume_import_service.persist_candidate_resume)
+
+
+def test_api_connectivity_service_excludes_gui_secrets_and_persistence():
+    forbidden = {
+        "gui_main",
+        "tkinter",
+        "security",
+        "storage",
+        "paths",
+    }
+    assert not (_top_level_imports("api_connectivity") & forbidden)
+    assert callable(api_connectivity.probe_api_connectivity)
+    assert callable(api_connectivity.probe_model_capability)
 
 
 def test_candidate_cleanup_does_not_import_gui_storage_or_network_modules():
@@ -621,6 +635,22 @@ def test_settings_page_keeps_secrets_network_and_data_actions_in_main_controller
     ):
         assert f"def {method_name}" not in builder
         assert f"def {method_name}" in source
+
+
+def test_api_connectivity_controllers_delegate_network_probes():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    direct = source[source.index("def test_api_connection"):]
+    direct = direct[:direct.index("\n    def save_config")]
+    saved = source[source.index("def test_saved_model_connectivity"):]
+    saved = saved[:saved.index("\n    def _set_model_list_item_status")]
+
+    assert "probe_api_connectivity(config, api_key)" in direct
+    assert "self.run_on_ui(" in direct
+    assert "requests.Session" not in direct
+    assert "certifi" not in direct
+    assert "time.sleep" not in direct
+    assert "probe_model_capability(config, api_key)" in saved
+    assert "from llm_eval import probe_model_compatibility" not in saved
 
 
 def test_model_catalog_dialog_does_not_import_controller_storage_or_http_clients():
