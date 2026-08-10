@@ -44,7 +44,7 @@ def build_run_page_steps(
     content = scrollable_frame
 
     # 页面标题
-    host._create_page_header(content, "运行控制")
+    host.widget_support.create_page_header(content, "运行控制")
 
     yield
 
@@ -76,7 +76,7 @@ def build_run_page_steps(
         return label
 
     # === 浏览器连接状态检测 ===
-    browser_frame = host._create_card(control_container, "浏览器状态",
+    browser_frame = host.widget_support.create_card(control_container, "浏览器状态",
         fill="x", padx=int(25 * host.dpi_scale * host.zoom_factor), pady=int(20 * host.dpi_scale * host.zoom_factor))
 
     browser_status_row = ttk.Frame(browser_frame, style='TFrame')
@@ -188,7 +188,7 @@ def build_run_page_steps(
     host.ai_eval_var = tk.BooleanVar(value=False)
     host.ai_eval_available_var = tk.BooleanVar(value=False)
     # 拨动开关 + 可点击文字（替代 clam 下 oversized 的勾选框）
-    ai_switch = host._create_switch(
+    ai_switch = host.widget_support.create_switch(
         row_ai, host.ai_eval_var,
         enabled_variable=host.ai_eval_available_var,
     )
@@ -408,7 +408,7 @@ def build_run_page_steps(
         sticky="w",
         pady=(_advanced_row_pady, 0),
     )
-    api_switch = host._create_switch(
+    api_switch = host.widget_support.create_switch(
         row_api_controls, host.api_direct_enabled_var
     )
     api_switch.pack(side="left")
@@ -464,7 +464,7 @@ def build_run_page_steps(
         sticky="w",
         pady=(_advanced_row_pady, 0),
     )
-    contact_prepare_switch = host._create_switch(
+    contact_prepare_switch = host.widget_support.create_switch(
         row_contact_controls, host.greet_context_capture_enabled_var
     )
     contact_prepare_switch.pack(side="left")
@@ -881,7 +881,7 @@ def build_run_page_steps(
     yield
 
     # 日志区域 — 与浏览器状态卡片一致的卡片式设计
-    log_card = host._create_card(content, "运行日志",
+    log_card = host.widget_support.create_card(content, "运行日志",
         fill="both", expand=True, padx=int(25 * host.dpi_scale * host.zoom_factor), pady=int(15 * host.dpi_scale * host.zoom_factor))
 
     log_container = ttk.Frame(log_card, style='TFrame')

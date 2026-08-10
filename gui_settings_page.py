@@ -22,7 +22,7 @@ def build_settings_content_steps(
     api_container = self.api_scrollable_frame
 
     # 系统设置页面标题
-    self._create_page_header(api_container, "系统设置")
+    self.widget_support.create_page_header(api_container, "系统设置")
 
     # 新电脑提示：检测到已保存配置但 API Key 丢失
     self.reconfig_card = None
@@ -46,7 +46,7 @@ def build_settings_content_steps(
     yield
 
     # 模型用途分配
-    assignment_card = self._create_card(api_container, "使用中的模型",
+    assignment_card = self.widget_support.create_card(api_container, "使用中的模型",
         fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(20 * self.dpi_scale * self.zoom_factor))
     assignment_frame = ttk.Frame(assignment_card, style='TFrame')
     assignment_frame.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor),
@@ -156,7 +156,7 @@ def build_settings_content_steps(
     yield
 
     # 模型接入配置
-    config_card = self._create_card(api_container, "模型接入",
+    config_card = self.widget_support.create_card(api_container, "模型接入",
         fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
 
     # API 配置输入区（服务商、Key、URL、模型名称）
@@ -279,7 +279,7 @@ def build_settings_content_steps(
     yield
 
     # 已保存模型列表
-    model_list_card = self._create_card(api_container, "已保存模型",
+    model_list_card = self.widget_support.create_card(api_container, "已保存模型",
         fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
 
     # 模型列表 Treeview
@@ -408,7 +408,7 @@ def build_settings_content_steps(
 
     yield
 
-    data_card = self._create_card(
+    data_card = self.widget_support.create_card(
         api_container,
         "数据备份与恢复",
         fill="x",
@@ -489,7 +489,7 @@ def build_settings_content_steps(
 
     yield
 
-    diagnostic_card = self._create_card(
+    diagnostic_card = self.widget_support.create_card(
         api_container,
         "故障诊断",
         fill="x",

@@ -30,7 +30,9 @@ def build_config_page_steps(
     self._ai_enhance_pending = False
 
     # 页面标题
-    self._create_page_header(self.config_page, "岗位配置", top_padding=15)
+    self.widget_support.create_page_header(
+        self.config_page, "岗位配置", top_padding=15
+    )
 
     # 配置容器 - 支持垂直滚动（macOS Tk 9.0+ 用 Text，其他用 Canvas）
     scroll_frame = ttk.Frame(self.config_page, style='Card.TFrame')
@@ -175,7 +177,7 @@ def build_config_page_steps(
         )
         self.requirement_header_status_label.pack(side="right")
 
-    parse_frame = self._create_card(
+    parse_frame = self.widget_support.create_card(
         config_container,
         "招聘需求",
         title_trailing_builder=_build_requirement_toggle,
@@ -274,7 +276,7 @@ def build_config_page_steps(
     # 先隐藏，等 show_page_config 或 on_job_selected 时再显示
 
     # 基本信息区
-    basic_frame = self._create_card(self.result_detail_frame, "基础筛选条件",
+    basic_frame = self.widget_support.create_card(self.result_detail_frame, "基础筛选条件",
         fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
 
     # 岗位名称
@@ -506,7 +508,7 @@ def build_config_page_steps(
     yield
 
     # 技能关键词区域（带权重显示）- 左右分栏布局
-    skills_frame = self._create_card(self.result_detail_frame, "技能评分条件",
+    skills_frame = self.widget_support.create_card(self.result_detail_frame, "技能评分条件",
         fill="both", side="top", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
 
     # 左右分栏容器
@@ -611,7 +613,7 @@ def build_config_page_steps(
     yield
 
     # 选中技能编辑区
-    edit_card = self._create_card(skills_right, "编辑选中技能",
+    edit_card = self.widget_support.create_card(skills_right, "编辑选中技能",
         padding=int(12 * self.dpi_scale * self.zoom_factor),
         fill="x", padx=int(10 * self.dpi_scale * self.zoom_factor), pady=(int(10 * self.dpi_scale * self.zoom_factor), int(15 * self.dpi_scale * self.zoom_factor)))
 
@@ -658,7 +660,7 @@ def build_config_page_steps(
     btn_del_skill.pack(fill="x")
 
     # 添加新技能区
-    add_card = self._create_card(skills_right, "添加新技能",
+    add_card = self.widget_support.create_card(skills_right, "添加新技能",
         padding=int(12 * self.dpi_scale * self.zoom_factor),
         fill="x", padx=int(10 * self.dpi_scale * self.zoom_factor), pady=int(10 * self.dpi_scale * self.zoom_factor))
 
@@ -702,7 +704,7 @@ def build_config_page_steps(
     yield
 
     # 必要条件区域
-    required_frame = self._create_card(self.result_detail_frame, "必要条件",
+    required_frame = self.widget_support.create_card(self.result_detail_frame, "必要条件",
         fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
 
     # 使用说明

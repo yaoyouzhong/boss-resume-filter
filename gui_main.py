@@ -64,6 +64,7 @@ import gui_model_catalog_dialog
 import gui_stats_page
 import gui_stats_detail
 import gui_style_setup
+import gui_widget_support
 from model_catalog import analyze_model_catalog, fetch_model_catalog
 from result_controller import (
     ResultController,
@@ -1071,9 +1072,11 @@ class BossFilterGUI:
             font_family=FONT_FAMILY,
         )
         self.feedback_support = gui_feedback_support.FeedbackSupport(self, font_family=FONT_FAMILY)
+        self.widget_support = gui_widget_support.WidgetSupport(self, ui_config=UI_CONFIG)
 
         # 创建进度状态图标（依赖 self.colors，必须在 setup_styles 之后）
-        self._create_status_icons()
+        status_icons = self.widget_support.create_status_icons()
+        self._icon_status_ok, self._icon_status_fail = status_icons.ok, status_icons.fail
 
         # 创建界面
         if standalone_education:
@@ -1783,90 +1786,6 @@ class BossFilterGUI:
                 self.skills_tree.configure(height=skills_rows)
         except tk.TclError:
             return
-
-    def _create_page_header(self, parent, title, subtitle=None, top_padding=0):
-        """创建页面标题区域：白色背景 + 左侧蓝色竖线，无灰色底色"""
-        _pad = int(16 * self.dpi_scale * self.zoom_factor)
-        _bar_w = int(4 * self.dpi_scale * self.zoom_factor)
-
-        card = ttk.Frame(parent, style='PageHeader.TFrame')
-        card.pack(
-            fill="x",
-            pady=(
-                int(top_padding * self.dpi_scale * self.zoom_factor),
-                int(25 * self.dpi_scale * self.zoom_factor),
-            ),
-        )
-
-        accent_bar = tk.Frame(card, width=_bar_w, bg=self.colors['primary'])
-        accent_bar.pack(side="left", fill="y")
-
-        inner = ttk.Frame(card, style='PageHeaderInner.TFrame')
-        inner.pack(fill="x", padx=(_pad, _pad), pady=(_pad, _pad))
-
-        title_label = ttk.Label(inner, text=title, font=self.font_section,
-                                foreground=self.colors['text_primary'],
-                                background=self.colors['bg_card'])
-        title_label.pack(anchor="w")
-
-        if subtitle:
-            sub = ttk.Label(inner, text=subtitle, font=self.font_label,
-                            foreground=self.colors['text_secondary'],
-                            background=self.colors['bg_card'])
-            sub.pack(anchor="w", pady=(int(8 * self.dpi_scale * self.zoom_factor), 0))
-
-        return inner
-
-    def _create_card(self, parent, title, padding=None, title_trailing_builder=None, **pack_opts):
-        """创建带标题的白色卡片区域。
-
-        替代 ttk.LabelFrame，因为 macOS aqua 主题的 Labelframe.border 元素
-        强制使用 systemWindowBackgroundColor（灰色），无法通过 style 覆盖。
-
-        标题行：左侧 3px 蓝色竖线 + 浅灰背景，与页面标题风格统一。
-
-        返回内部内容 Frame，调用方将子控件放入返回的 Frame 中。
-
-        title_trailing_builder: 可选回调 (title_bar, padding) -> None，
-        用于在标题栏右侧注入附加控件（如操作按钮），不占用内容区空间。
-        """
-        if padding is None:
-            padding = int(UI_CONFIG['label_frame_padding'] * self.dpi_scale * self.zoom_factor)
-        title_font = pack_opts.pop("title_font", self.font_label)
-
-        card = tk.Frame(parent, bg=self.colors['bg_card'],
-                        highlightbackground=self.colors['border'], highlightthickness=1)
-        card.pack(**pack_opts)
-
-        # 标题行 - 左侧蓝色竖线 + 浅灰背景，与页面标题风格一致
-        title_bg = self.colors.get('bg_footer', ui_theme.BG_FOOTER)
-        title_bar = tk.Frame(card, bg=title_bg)
-        title_bar.pack(fill="x")
-
-        # 左侧蓝色竖线（2px，与页面标题的 4px 竖线呼应但更细）
-        accent = tk.Frame(title_bar, width=int(2 * self.dpi_scale * self.zoom_factor),
-                          bg=self.colors['primary'])
-        accent.pack(side="left", fill="y")
-
-        title_label = tk.Label(title_bar, text=f" {title} ",
-                               font=title_font,
-                               fg=self.colors['text_primary'], bg=title_bg)
-
-        # 标题栏右侧附加控件先 pack（side="right" 占右侧），再 pack 标题（side="top" 占顶部剩余空间）
-        # 这样两者共享同一行，避免附加控件把标题栏撑高
-        if title_trailing_builder is not None:
-            title_trailing_builder(title_bar, padding)
-
-        title_label.pack(anchor="w", padx=padding, pady=(int(padding * 0.7), int(padding * 0.7)))
-
-        # 标题下方分隔线
-        sep = tk.Frame(card, bg=self.colors['border'], height=1)
-        sep.pack(fill="x")
-
-        # 内容区（带内边距）
-        content = ttk.Frame(card, style='TFrame')
-        content.pack(fill="both", expand=True, padx=padding, pady=padding)
-        return content
 
     def create_home_page(self):
         """创建首页。"""
@@ -4707,37 +4626,6 @@ class BossFilterGUI:
     def _center_window(self, window, width, height):
         """将子窗口相对于主窗口居中"""
         _place_window_centered(window, width, height, parent=self.root)
-
-    def _create_status_icons(self):
-        """创建进度状态图标（Canvas 自绘彩色圆形+符号）"""
-        from PIL import Image, ImageDraw, ImageTk
-
-        size = int(18 * self.dpi_scale * self.zoom_factor)
-
-        def make_icon(bg_color, symbol_type):
-            img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(img)
-            draw.ellipse([0, 0, size - 1, size - 1], fill=bg_color)
-            # 白色符号线条宽度
-            lw = max(2, size // 8)
-            if symbol_type == 'check':
-                # 勾号：三个点构成折线
-                pts = [
-                    (size * 0.25, size * 0.50),
-                    (size * 0.42, size * 0.68),
-                    (size * 0.75, size * 0.32),
-                ]
-                draw.line([pts[0], pts[1]], fill='white', width=lw)
-                draw.line([pts[1], pts[2]], fill='white', width=lw)
-            else:
-                # 叉号：两条对角线
-                p = size * 0.3
-                draw.line([(p, p), (size - p, size - p)], fill='white', width=lw)
-                draw.line([(size - p, p), (p, size - p)], fill='white', width=lw)
-            return ImageTk.PhotoImage(img)
-
-        self._icon_status_ok = make_icon(self.colors['success'], 'check')
-        self._icon_status_fail = make_icon(self.colors['danger'], 'cross')
 
     def _set_window_icon(self):
         """设置窗口图标，替换 tkinter 默认羽毛图标"""
@@ -10049,33 +9937,6 @@ class BossFilterGUI:
             300, lambda: self.feedback_support.show_tooltip(full, x, y, tooltip_key)
         )
 
-    def _build_empty_state(self, parent, icon_name, title, hint, action_text=None, action_command=None):
-        """构建可复用空态引导层（覆盖在父容器上，place 管理，初始隐藏）。"""
-        frame = ttk.Frame(parent, style='TFrame')
-        inner = ttk.Frame(frame, style='TFrame')
-        inner.place(relx=0.5, rely=0.42, anchor='center')
-        icon_img = self.icons.get(
-            icon_name, int(56 * self.dpi_scale * self.zoom_factor),
-            self.colors.get('text_muted', ui_theme.TEXT_MUTED), self.colors['bg_card'],
-        )
-        icon_label = ttk.Label(inner, image=icon_img, background=self.colors['bg_card'])
-        icon_label._icon_ref = icon_img
-        icon_label.pack(anchor='center')
-        ttk.Label(
-            inner, text=title, font=self.font_section,
-            foreground=self.colors['text_primary'], background=self.colors['bg_card'],
-        ).pack(anchor='center', pady=(int(12 * self.dpi_scale), 0))
-        ttk.Label(
-            inner, text=hint, font=self.font_label,
-            foreground=self.colors['text_secondary'], background=self.colors['bg_card'],
-            justify='center',
-        ).pack(anchor='center', pady=(int(6 * self.dpi_scale), 0))
-        if action_text and action_command:
-            ttk.Button(
-                inner, text=action_text, style='Accent.TButton', command=action_command,
-            ).pack(anchor='center', pady=(int(16 * self.dpi_scale), 0))
-        return frame
-
     def _toggle_result_empty_state(self, show):
         """按可见候选人数切换结果页空态引导层。"""
         frame = getattr(self, 'result_empty_state', None)
@@ -10089,90 +9950,6 @@ class BossFilterGUI:
                 frame.place_forget()
         except tk.TclError:
             pass
-
-    def _create_switch(self, parent, variable, enabled_variable=None):
-        """自绘拨动开关（OFF 灰色圆点居左 / ON 品牌蓝圆点居右），绑定 BooleanVar。
-
-        clam 下 ttk.Checkbutton 的 indicator 尺寸配置会放大成粗大灰框，
-        启用类语义用开关控件更准确；点击或空格切换，可聚焦。
-        """
-        from PIL import Image, ImageDraw, ImageTk
-
-        scale = self.dpi_scale * self.zoom_factor
-        width = max(28, int(round(30 * scale)))
-        height = max(14, int(round(16 * scale)))
-        canvas = tk.Canvas(
-            parent, width=width, height=height,
-            bg=self.colors['bg_card'], highlightthickness=1,
-            highlightbackground=self.colors['bg_card'], bd=0,
-            cursor='hand2', takefocus=1,
-        )
-
-        def _is_enabled():
-            return enabled_variable is None or bool(enabled_variable.get())
-
-        def _draw():
-            try:
-                if not canvas.winfo_exists():
-                    return
-            except tk.TclError:
-                return
-            canvas.delete('all')
-            enabled = _is_enabled()
-            canvas.configure(
-                cursor='hand2' if enabled else 'arrow',
-                takefocus=1 if enabled else 0,
-            )
-            on = bool(variable.get())
-            track = (self.colors['primary'] if on
-                     else self.colors.get('border_strong', ui_theme.BORDER_STRONG))
-            render_scale = 4
-            render_width = width * render_scale
-            render_height = height * render_scale
-            image = Image.new('RGBA', (render_width, render_height), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(image)
-            draw.rounded_rectangle(
-                (0, 0, render_width - 1, render_height - 1),
-                radius=render_height // 2,
-                fill=track,
-            )
-            margin = max(2, int(round(2 * scale)))
-            knob_d = height - margin * 2
-            knob_x = width - knob_d - margin if on else margin
-            draw.ellipse(
-                (
-                    knob_x * render_scale,
-                    margin * render_scale,
-                    (knob_x + knob_d) * render_scale,
-                    (margin + knob_d) * render_scale,
-                ),
-                fill='#FFFFFF',
-            )
-            image = image.resize((width, height), Image.Resampling.LANCZOS)
-            photo = ImageTk.PhotoImage(image)
-            canvas._switch_photo = photo
-            canvas.create_image(width // 2, height // 2, image=photo)
-
-        def _toggle(_event=None):
-            if not _is_enabled():
-                variable.set(False)
-                return 'break'
-            variable.set(not variable.get())
-            return 'break'
-
-        canvas.bind('<Button-1>', _toggle)
-        canvas.bind('<space>', _toggle)
-        canvas.bind('<FocusIn>', lambda _e: canvas.configure(
-            highlightbackground=self.colors.get('primary_light', ui_theme.PRIMARY_LIGHT),
-        ))
-        canvas.bind('<FocusOut>', lambda _e: canvas.configure(
-            highlightbackground=self.colors['bg_card'],
-        ))
-        _draw()
-        variable.trace_add('write', lambda *_args: _draw())
-        if enabled_variable is not None:
-            enabled_variable.trace_add('write', lambda *_args: _draw())
-        return canvas
 
     @staticmethod
     def _find_candidate_in_detail_tree(tree, item, filtered_ref):

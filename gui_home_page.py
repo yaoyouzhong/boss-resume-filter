@@ -12,6 +12,15 @@ class NavigationShell(Protocol):
     def request_sidebar_page(self, page_index: int) -> None: ...
 
 
+class WidgetSupport(Protocol):
+    def create_card(
+        self,
+        parent: tk.Misc,
+        title: str,
+        **kwargs: Any,
+    ) -> tk.Misc: ...
+
+
 class HomePageHost(Protocol):
     """Narrow host contract required to build the home page."""
 
@@ -25,17 +34,11 @@ class HomePageHost(Protocol):
     font_stat_label: Any
     icons: Any
     app_shell: NavigationShell
+    widget_support: WidgetSupport
 
     def refresh_home_stats(self) -> None: ...
 
     def show_stat_detail(self, stat_type: str) -> None: ...
-
-    def _create_card(
-        self,
-        parent: tk.Misc,
-        title: str,
-        **kwargs: Any,
-    ) -> tk.Misc: ...
 
 
 @dataclass(frozen=True)
@@ -196,7 +199,7 @@ def build_home_page(
             background=host.colors["bg_card"],
         ).pack(anchor="center", pady=(0, int(20 * scale)))
 
-    quick_frame = host._create_card(
+    quick_frame = host.widget_support.create_card(
         page,
         "快速操作",
         padding=int(ui_config["card_padding"] * scale),

@@ -41,6 +41,7 @@ boss-resume-filter/
 ├── gui_scroll_support.py # 跨平台滚动容器、滚轮路由与 Cocoa 触控板生命周期模块
 ├── gui_input_support.py # Entry/Text 右键编辑菜单与通用只读文本弹窗模块
 ├── gui_feedback_support.py # Tooltip 窗口与页面 inline 横幅生命周期模块
+├── gui_widget_support.py # 页面标题、卡片、开关、空态与状态图标控件原语模块
 ├── gui_config_page.py   # 岗位配置页分步 Tk 构建、表单控件装配与事件绑定模块
 ├── gui_settings_page.py # 系统设置页分步 Tk 构建、模型控件与数据工具入口装配模块
 ├── gui_education_page.py # 学历核验页 Tk 控件构建、队列列表与事件绑定模块
@@ -188,6 +189,7 @@ boss-resume-filter/
 - `gui_scroll_support.py` 只负责通用 Canvas 滚动容器、滚轮增量归一化、控件级滚轮绑定、当前页面 Canvas 路由和 macOS Cocoa 触控板 hook；允许导入 Tk、`ctypes` 和页面身份，但不得读取业务数据、访问存储/浏览器/网络或导入 `gui_main`。页面模块统一调用 `host.scroll_support`，不得把滚动实现或同名转发方法留在 `BossFilterGUI`；Cocoa hook 失败只允许保持原有静默降级，不得影响非 macOS 启动。
 - `gui_input_support.py` 只负责 Entry/Combobox/Text 的剪切、复制、粘贴、全选右键菜单，以及接收普通标题/文本/按钮回调的通用只读文本弹窗；允许导入 Tk 和窗口定位模块，但不得解释候选人/岗位内容、读取业务数据、访问存储/浏览器/网络或导入 `gui_main`。页面和工作台统一调用 `host.input_support`，`BossFilterGUI` 不保留同名转发方法；具体业务动作只能作为显式回调注入。
 - `gui_feedback_support.py` 只负责 Tooltip 窗口的创建/定位/销毁、不同 Tooltip 槽位的生命周期，以及页面顶部 inline 横幅的创建/自动关闭；允许导入 Tk、主题和窗口定位模块，但不得判断候选人字段、解释提示文本、读取业务数据、访问存储/浏览器/网络或导入 `gui_main`。页面和工作台决定“显示什么、何时显示”并调用 `host.feedback_support`，`BossFilterGUI` 不保留同名转发方法。
+- `gui_widget_support.py` 只负责页面标题、通用卡片、自绘开关、通用空态和状态图标等无业务语义的 Tk 控件原语；允许读取宿主显式提供的主题、字体、缩放、图标缓存和 UI 尺寸配置，但不得决定页面布局流程、候选人/岗位/联系状态、读取业务数据、访问存储/浏览器/网络或导入 `gui_main`。页面直接调用 `host.widget_support`；结果页空态显隐、表格列宽和业务回调仍留在对应页面或宿主，`BossFilterGUI` 不保留同名控件工厂转发方法。
 - `gui_education_page.py` 只负责学历核验页的 Tk 控件、队列列表、页面局部状态和事件绑定；证书读取与识别、模型调用、学信网填写、验证码和浏览器操作必须通过显式 Host 回调留在 `gui_main.py`，不得导入存储、AI、浏览器、网络或 `gui_main`。
 - `gui_home_page.py` 只负责首页标题、岗位筛选控件、统计卡和快速入口的 Tk 构建与事件绑定；岗位加载、统计口径和候选人明细必须通过显式 Host 回调留在 `gui_main.py`，页面导航统一调用 `host.app_shell`；不得读取存储或导入网络、浏览器、`gui_main`。首页仍是启动时唯一立即创建的业务页，不得因拆分引入隐藏页预构建。
 - `resume_parser.py` 只把本地 PDF、DOCX、TXT、MD、RTF 或 HTML 简历转为文本并抛出可预期的分类异常；不得导入 `tkinter`、`gui_main`、候选人存储或网络模块，不得修改候选人数据或受管简历引用。

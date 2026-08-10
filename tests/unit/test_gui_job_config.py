@@ -1911,11 +1911,9 @@ def test_checkbutton_style_uses_large_checkmark_indicator_but_ai_keeps_switch():
 
 
 def test_ai_switch_is_compact_and_supersampled():
-    source = Path("gui_main.py").read_text(encoding="utf-8")
-    switch_block = source[source.index("def _create_switch("):]
-    switch_block = switch_block[
-        :switch_block.index("\n    @staticmethod\n    def _find_candidate_in_detail_tree")
-    ]
+    source = Path("gui_widget_support.py").read_text(encoding="utf-8")
+    switch_block = source[source.index("def _render_switch_photo("):]
+    switch_block = switch_block[:switch_block.index("\n    def build_empty_state")]
 
     assert "int(round(30 * scale))" in switch_block
     assert "int(round(16 * scale))" in switch_block
@@ -1924,7 +1922,7 @@ def test_ai_switch_is_compact_and_supersampled():
     assert "ImageTk.PhotoImage(image)" in switch_block
     assert "canvas.create_image" in switch_block
     assert "canvas.create_oval" not in switch_block
-    assert "if not _is_enabled():" in switch_block
+    assert "if not is_enabled():" in switch_block
     assert "variable.set(False)" in switch_block
     assert "enabled_variable.trace_add" in switch_block
 
@@ -2927,7 +2925,8 @@ def test_job_config_page_releases_bottom_padding_but_preserves_header_position()
         gui_main.UI_CONFIG["page_padding_y"] - 15
     )
     config_block = Path("gui_config_page.py").read_text(encoding="utf-8")
-    assert 'self._create_page_header(self.config_page, "岗位配置", top_padding=15)' in config_block
+    assert "self.widget_support.create_page_header(" in config_block
+    assert 'self.config_page, "岗位配置", top_padding=15' in config_block
 
 
 def test_job_config_page_builder_is_ui_only_and_main_keeps_business_actions():
@@ -8594,15 +8593,15 @@ def test_education_page_has_scroll_container_and_conditional_queue():
     ]
 
     assert "host.scroll_support.create_scroll_container(" in create_block
-    assert 'host._create_page_header(\n        page,' in create_block
+    assert "host.widget_support.create_page_header(" in create_block
     assert 'scroll_frame = ttk.Frame(page' in create_block
     assert 'create_scroll_container(\n        scroll_frame,' in create_block
     assert "auto_hide_scrollbar=True" in create_block
-    assert create_block.index("host._create_page_header(") < create_block.index(
+    assert create_block.index("host.widget_support.create_page_header(") < create_block.index(
         "host.scroll_support.create_scroll_container("
     )
     scroll_content = create_block[create_block.index("content = scrollable_frame"):]
-    assert "host._create_page_header(" not in scroll_content
+    assert "host.widget_support.create_page_header(" not in scroll_content
     assert "queue_card.pack_forget()" in create_block
     queue_card_block = create_block[
         create_block.index('"\u5f85\u6838\u9a8c\u961f\u5217"'):
@@ -10045,8 +10044,8 @@ def test_data_maintenance_multisection_dialogs_use_structured_templates():
 def test_resume_storage_audit_button_is_in_data_maintenance_card():
     settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
     data_card = settings_source[
-        settings_source.index('data_card = self._create_card('):
-        settings_source.index('diagnostic_card = self._create_card(')
+        settings_source.index('data_card = self.widget_support.create_card('):
+        settings_source.index('diagnostic_card = self.widget_support.create_card(')
     ]
 
     assert 'text=" 简历存储体检"' in data_card

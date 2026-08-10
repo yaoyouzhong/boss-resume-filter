@@ -38,6 +38,7 @@ import gui_settings_page
 import gui_stats_detail
 import gui_stats_page
 import gui_style_setup
+import gui_widget_support
 import model_catalog
 import resume_parser
 import resume_import_service
@@ -583,6 +584,64 @@ def test_gui_feedback_support_excludes_business_storage_browser_and_gui_main_dep
     ):
         page_source = (ROOT / page_module).read_text(encoding="utf-8")
         assert ".feedback_support." in page_source
+
+
+def test_gui_widget_support_excludes_business_storage_browser_and_gui_main_dependencies():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "candidate_workflow",
+        "contact_queue",
+        "filtering",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("gui_widget_support") & forbidden)
+    assert callable(gui_widget_support.WidgetSupport)
+    assert callable(gui_widget_support.StatusIconSet)
+
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    gui_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BossFilterGUI"
+    )
+    method_names = {
+        node.name
+        for node in gui_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "self.widget_support = gui_widget_support.WidgetSupport(" in source
+    assert "status_icons = self.widget_support.create_status_icons()" in source
+    assert (
+        "self._icon_status_ok, self._icon_status_fail = status_icons.ok, status_icons.fail"
+        in source
+    )
+    assert {
+        "_create_page_header",
+        "_create_card",
+        "_create_switch",
+        "_build_empty_state",
+        "_create_status_icons",
+    }.isdisjoint(method_names)
+    assert "_toggle_result_empty_state" in method_names
+    for page_module in (
+        "gui_config_page.py",
+        "gui_education_page.py",
+        "gui_home_page.py",
+        "gui_job_review.py",
+        "gui_result_page.py",
+        "gui_run_page.py",
+        "gui_settings_page.py",
+        "gui_stats_page.py",
+    ):
+        page_source = (ROOT / page_module).read_text(encoding="utf-8")
+        assert ".widget_support." in page_source
 
 
 def test_gui_compatibility_methods_delegate_to_presenters():
