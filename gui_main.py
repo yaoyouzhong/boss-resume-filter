@@ -122,7 +122,6 @@ from candidate_workflow import (
     candidate_greet_skip_reason,
     default_next_followup_at,
     derive_candidate_decision,
-    filter_candidates_by_result_view,
     format_followup_due_at,
     normalize_followup_at,
     summarize_daily_candidate_actions,
@@ -410,12 +409,6 @@ def save_api_key(provider: str, api_key: str, base_url: str | None = None) -> bo
     return _save_api_key(provider, api_key, base_url)
 
 
-def delete_api_key(provider: str, base_url: str | None = None) -> bool:
-    """按需加载系统钥匙串并删除 API Key。"""
-    from security import delete_api_key as _delete_api_key
-    return _delete_api_key(provider, base_url)
-
-
 class TextDateEntry(ttk.Entry):
     """Fallback date entry used when tkcalendar is unavailable."""
 
@@ -462,11 +455,6 @@ def _candidate_has_ai_eval(c: dict) -> bool:
     对已导入简历的候选人再跑一次评估会污染 rule_score（叠加两次调整）。
     """
     return bool(c.get('llm_evaluated')) or c.get('resume_eval_adjustment') is not None
-
-
-def _filter_candidates_by_result_view(candidates, view):
-    """Keep the historical GUI helper while using the shared decision model."""
-    return filter_candidates_by_result_view(list(candidates), view)
 
 
 # _resolve_rule_score 已挪到 llm_eval（evaluate_batch 与撤回流程共用，统一规则分还原逻辑）
@@ -1794,12 +1782,6 @@ class BossFilterGUI:
     def _backup_summary_metrics(result: dict) -> tuple[tuple[str, str], ...]:
         """Return compact, privacy-safe metrics for backup result dialogs."""
         return _DATA_MAINTENANCE_CONTROLLER.backup_summary_metrics(result)
-
-    @staticmethod
-    def _format_maintenance_time(value) -> str:
-        """Format one persisted local activity timestamp for compact UI notes."""
-        return _DATA_MAINTENANCE_CONTROLLER.format_time(value)
-
 
     def _remember_maintenance_success(
         self,
@@ -3963,10 +3945,6 @@ class BossFilterGUI:
     def _build_job_review_model(self, job_name, candidates):
         """Build the shared job-review model without changing candidate data."""
         return stats_presenter.build_job_review_model(job_name, candidates)
-
-    def _build_job_review_text(self, job_name, candidates):
-        """Build the compatibility text report from the shared review model."""
-        return stats_presenter.build_job_review_text(job_name, candidates)
 
     _REASON_SUGGESTIONS = stats_presenter.REASON_SUGGESTIONS
 
@@ -6508,35 +6486,6 @@ class BossFilterGUI:
             pass
         return start_str, end_str
 
-    def _start_breathing(self, label, color_key='success', bg_key='bg_card'):
-        """启动呼吸渐变动画（与 btn_add_hint 风格一致）"""
-        def hex_to_rgb(h):
-            h = h.lstrip('#')
-            return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
-
-        def rgb_to_hex(r, g, b):
-            return f'#{int(r):02x}{int(g):02x}{int(b):02x}'
-
-        color_rgb = hex_to_rgb(self.colors[color_key])
-        bg_rgb = hex_to_rgb(self.colors[bg_key])
-
-        def _fade(label=label, color=color_rgb, bg=bg_rgb, step=[0]):
-            if not label.winfo_exists():
-                return
-            try:
-                phase = step[0] / 60.0 * 2 * math.pi
-                alpha = 0.15 + 0.85 * (0.5 + 0.5 * math.sin(phase))
-                r = color[0] * alpha + bg[0] * (1 - alpha)
-                g = color[1] * alpha + bg[1] * (1 - alpha)
-                b = color[2] * alpha + bg[2] * (1 - alpha)
-                label.config(foreground=rgb_to_hex(r, g, b))
-                step[0] = (step[0] + 1) % 60
-                self.root.after(50, _fade)
-            except tk.TclError:
-                pass
-
-        _fade()
-
     def _bind_requirement_header_interaction(self):
         """Make the full recruitment-requirement header act as one disclosure row."""
         title_bar = getattr(self, 'requirement_title_bar', None)
@@ -8376,11 +8325,6 @@ class BossFilterGUI:
         """Keep the progress line short; full terminal details belong in the summary."""
         return run_presenter.format_terminal_progress_text(final_desc)
 
-    @staticmethod
-    def _format_terminal_log_text(final_desc):
-        """Return one terminal log line without repeating the business summary."""
-        return run_presenter.format_terminal_log_text(final_desc)
-
     def _set_run_summary(self, final_desc):
         """Show the final run summary in the fixed run-page summary area."""
         if not getattr(self, 'run_summary_text_label', None):
@@ -9911,25 +9855,11 @@ class BossFilterGUI:
             return self._find_candidate_by_tree_item(item)
         return None
 
-    def _extract_extra_fields(self, candidate):
-        """Keep the historical GUI entry point as a presenter delegate."""
-        return candidate_presenter.extract_candidate_extra_fields(candidate)
-
     @staticmethod
     def _candidate_gender_display(candidate):
         """Return normalized candidate gender from current or legacy records."""
         return candidate_presenter.candidate_gender_display(candidate)
 
-
-    @staticmethod
-    def _latest_history_value(entries, field, summary, summary_prefix):
-        """按结束时间取最近一段经历的字段，缺失时从摘要对应行降级提取。"""
-        return candidate_presenter.latest_history_value(
-            entries,
-            field,
-            summary,
-            summary_prefix,
-        )
 
     def _format_candidate_status(self, candidate):
         """Keep the historical GUI entry point as a presenter delegate."""
@@ -9946,19 +9876,6 @@ class BossFilterGUI:
                 None,
             )
         return status.display
-
-    @staticmethod
-    def _get_greet_confirmation_hint(candidate):
-        """根据内部上下文状态生成面向普通用户的操作提示。"""
-        if (candidate.get('greet_context') or {}).get('chat_start'):
-            return (
-                "已准备好该候选人的沟通信息，可直接发起打招呼，"
-                "无需停留在原推荐页面。"
-            )
-        return (
-            "程序将尝试在当前推荐页面定位该候选人并打招呼。"
-            "请确认浏览器已打开该岗位的推荐牛人页面。"
-        )
 
     def _open_blacklist_reason_dialog(self, candidate, parent, on_confirm):
         """打开加入黑名单原因弹窗。"""
@@ -11856,11 +11773,6 @@ class BossFilterGUI:
     def _greet_queue_selection_text(selected):
         """Summarize the selected scope with candidate names and status."""
         return contact_presenter.greet_queue_selection_text(selected)
-
-    def _set_greet_queue_item_state(self, item, status, message=""):
-        _CONTACT_CONTROLLER.set_item_state(item, status, message)
-        self._persist_greet_queue()
-        self.run_on_ui(self._refresh_greet_queue_dialog)
 
     def _update_greet_queue_action_states(self):
         selected = self._selected_greet_queue_items()

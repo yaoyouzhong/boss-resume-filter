@@ -45,7 +45,6 @@ import resume_parser
 import resume_import_service
 import result_controller
 import run_controller
-import run_presenter
 import settings_controller
 import stats_presenter
 import ui_windowing
@@ -701,6 +700,41 @@ def test_gui_layout_support_owns_responsive_layout_without_host_forwarders():
     assert "host.layout_support.update_education_queue_columns()" in education_source
 
 
+def test_gui_main_does_not_restore_unreferenced_compatibility_facades():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    module_functions = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    gui_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BossFilterGUI"
+    )
+    gui_methods = {
+        node.name
+        for node in gui_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert {
+        "delete_api_key",
+        "_filter_candidates_by_result_view",
+    }.isdisjoint(module_functions)
+    assert {
+        "_format_maintenance_time",
+        "_build_job_review_text",
+        "_start_breathing",
+        "_format_terminal_log_text",
+        "_extract_extra_fields",
+        "_latest_history_value",
+        "_get_greet_confirmation_hint",
+        "_set_greet_queue_item_state",
+    }.isdisjoint(gui_methods)
+
+
 def test_gui_compatibility_methods_delegate_to_presenters():
     candidate = {"match_score": 70, "recommend_level": "推荐"}
     BossFilterGUI = gui_main.BossFilterGUI
@@ -709,9 +743,6 @@ def test_gui_compatibility_methods_delegate_to_presenters():
     )
     assert BossFilterGUI._greet_queue_readiness_label(candidate) == (
         contact_presenter.greet_queue_readiness_label(candidate)
-    )
-    assert BossFilterGUI._format_terminal_log_text("[完成] ok") == (
-        run_presenter.format_terminal_log_text("[完成] ok")
     )
     assert BossFilterGUI._stats_time_cutoff("全部") is None
     assert BossFilterGUI._clip_table_text("a" * 10, 5) == (

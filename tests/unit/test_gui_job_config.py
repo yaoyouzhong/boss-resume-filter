@@ -18,6 +18,9 @@ import gui_layout_support
 import gui_scroll_support
 import icons
 import bossmaster
+import run_presenter
+from candidate_workflow import filter_candidates_by_result_view
+from data_maintenance_controller import DataMaintenanceController
 from gui_main import (
     BossFilterGUI,
     PAGE_SPECS,
@@ -27,7 +30,6 @@ from gui_main import (
     _optional_int_to_entry,
     _parse_optional_int_entry,
     _candidate_has_ai_eval,
-    _filter_candidates_by_result_view,
     _format_storage_bytes,
 )
 from job_config_diagnostics import summarize_job_config_diagnostics
@@ -126,15 +128,15 @@ def test_result_view_separates_recommended_review_and_rejected_without_limit():
         {"geek_id": "rejected", "qualification_status": "rejected", "match_score": 0},
     ]
 
-    assert len(_filter_candidates_by_result_view(candidates, "推荐候选人")) == 128
+    assert len(filter_candidates_by_result_view(candidates, "推荐候选人")) == 128
     assert {
-        c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "待复核")
+        c["geek_id"] for c in filter_candidates_by_result_view(candidates, "待复核")
     } == {"pending", "manual"}
     assert {
-        c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "复核通过")
+        c["geek_id"] for c in filter_candidates_by_result_view(candidates, "复核通过")
     } == {"approved", "hard-passed"}
-    assert [c["geek_id"] for c in _filter_candidates_by_result_view(candidates, "淘汰记录")] == ["rejected"]
-    assert len(_filter_candidates_by_result_view(candidates, "全部记录")) == 132
+    assert [c["geek_id"] for c in filter_candidates_by_result_view(candidates, "淘汰记录")] == ["rejected"]
+    assert len(filter_candidates_by_result_view(candidates, "全部记录")) == 132
 
 
 def test_run_job_config_warning_is_acknowledged_until_diagnostics_change():
@@ -3776,31 +3778,6 @@ def test_activate_saved_model_uses_the_full_selected_connection_identity():
     assert 'self.api_config["base_url"] = base_url' in use_block
 
 
-def test_latest_history_value_uses_latest_end_date_not_list_order():
-    entries = [
-        {"school": "较早学校", "end": "2018.06"},
-        {"school": "最近学校", "end": "2022.06"},
-    ]
-
-    value = BossFilterGUI._latest_history_value(entries, "school", "", "教育经历：")
-
-    assert value == "最近学校"
-
-
-def test_latest_history_value_treats_present_as_latest_and_falls_back_to_summary():
-    works = [
-        {"company": "上一家公司", "end": "2024.01"},
-        {"company": "当前公司", "end": "至今"},
-    ]
-    assert BossFilterGUI._latest_history_value(
-        works, "company", "", "工作经历："
-    ) == "当前公司"
-
-    assert BossFilterGUI._latest_history_value(
-        [], "company", "工作经历：摘要公司 高级工程师 2022 至今", "工作经历："
-    ) == "摘要公司"
-
-
 def test_candidate_status_hides_internal_greet_context_capability():
     """状态栏只展示业务状态，不暴露打招呼上下文等内部实现。"""
     gui = BossFilterGUI.__new__(BossFilterGUI)
@@ -4071,7 +4048,6 @@ def test_refresh_results_force_rebuilds_for_transient_ai_status():
         stat = candidates_path.stat()
         gui._result_tree_fingerprint = (stat.st_mtime, stat.st_size)
         gui._parse_salary_exp = Mock(return_value=("", ""))
-        gui._extract_extra_fields = Mock(return_value=("", "", "", "", ""))
         gui._sort_bound = True
         gui.append_log = Mock()
 
@@ -4140,7 +4116,6 @@ def test_refresh_results_keeps_below_pass_ai_records_in_rejected_scope():
         gui._result_last_dates = None
         gui._result_last_show_blacklist = False
         gui._parse_salary_exp = Mock(return_value=("", ""))
-        gui._extract_extra_fields = Mock(return_value=("", "", "", "", ""))
         gui._sort_bound = True
         gui.append_log = Mock()
 
@@ -4212,7 +4187,6 @@ def test_refresh_results_keeps_full_dataset_and_uses_stable_metric_scope():
         gui._result_last_dates = None
         gui._result_last_show_blacklist = False
         gui._parse_salary_exp = Mock(return_value=("", ""))
-        gui._extract_extra_fields = Mock(return_value=("", "", "", "", ""))
         gui._sort_bound = True
         gui.append_log = Mock()
 
@@ -4382,11 +4356,11 @@ def test_clear_manual_review_is_scoped_to_candidate_job():
         assert "review_passed_at" not in saved[1]
         assert [
             candidate["job_name"]
-            for candidate in _filter_candidates_by_result_view(saved, "复核通过")
+            for candidate in filter_candidates_by_result_view(saved, "复核通过")
         ] == ["Java 工程师"]
         assert [
             candidate["job_name"]
-            for candidate in _filter_candidates_by_result_view(saved, "推荐候选人")
+            for candidate in filter_candidates_by_result_view(saved, "推荐候选人")
         ] == ["Java 工程师"]
 
 
@@ -5269,25 +5243,6 @@ def test_show_ai_eval_batch_summary_uses_warning_when_batch_has_failures():
     assert gui._ai_eval_batch_summary is None
 
 
-def test_greet_confirmation_hint_explains_prepared_path_without_technical_terms():
-    candidate = {
-        "greet_context": {"chat_start": {"jid": "job-1", "lid": "list-1"}},
-    }
-
-    hint = BossFilterGUI._get_greet_confirmation_hint(candidate)
-
-    assert "无需停留在原推荐页面" in hint
-    assert "上下文" not in hint
-    assert "API" not in hint
-
-
-def test_greet_confirmation_hint_explains_current_page_fallback():
-    hint = BossFilterGUI._get_greet_confirmation_hint({})
-
-    assert "当前推荐页面定位" in hint
-    assert "该岗位的推荐牛人页面" in hint
-
-
 def test_update_log_waits_until_lazy_run_page_creates_log_widget():
     """未进入运行控制页时保留扫描日志，不能因控件尚未创建而丢失。"""
     class FakeRoot:
@@ -6080,7 +6035,9 @@ def test_greet_queue_dialog_has_status_groups_and_double_click_detail():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     dialog_block = Path("gui_contact_queue.py").read_text(encoding="utf-8")
     refresh_block = source[source.index("def _refresh_greet_queue_dialog"):]
-    refresh_block = refresh_block[:refresh_block.index("\n    def _set_greet_queue_item_state")]
+    refresh_block = refresh_block[
+        :refresh_block.index("\n    def _update_greet_queue_action_states")
+    ]
 
     assert "按状态筛选" in dialog_block
     assert "group_tree = ttk.Treeview(" in dialog_block
@@ -6234,11 +6191,6 @@ def _contact_worker_gui(candidate):
     gui._refresh_greet_queue_dialog = Mock()
     gui._show_greet_queue_run_result = Mock()
 
-    def set_state(queue_item, status, message=""):
-        queue_item["status"] = status
-        queue_item["message"] = message
-
-    gui._set_greet_queue_item_state = Mock(side_effect=set_state)
     return gui, item
 
 
@@ -8206,7 +8158,7 @@ def test_terminal_log_keeps_one_status_line_without_repeating_summary():
         "扫描范围\n达到 30 轮上限"
     )
 
-    assert BossFilterGUI._format_terminal_log_text(final_desc) == (
+    assert run_presenter.format_terminal_log_text(final_desc) == (
         "本轮处理完成，扫描达到轮次上限"
     )
 
@@ -8333,47 +8285,6 @@ def test_feedback_dialog_height_expands_to_keep_buttons_visible():
     assert "int(440 * scale), int(485 * scale)" not in feedback_block
 
 
-def test_job_review_text_aggregates_structured_feedback_reasons():
-    gui = BossFilterGUI.__new__(BossFilterGUI)
-    candidates = [
-        {
-            "job_name": "Java",
-            "match_score": 80,
-            "greet_sent": True,
-            "followup_status": "已回复",
-            "feedback_status": "误推",
-            "feedback_reasons": ["技能不匹配", "规则过宽"],
-        },
-        {
-            "job_name": "Java",
-            "match_score": 40,
-            "qualification_status": "rejected",
-            "feedback_status": "误杀",
-            "feedback_reasons": ["规则过窄", "AI 低估"],
-        },
-        {
-            "job_name": "Java",
-            "match_score": 60,
-            "feedback_status": "合适",
-            "feedback_reasons": ["行业经验不符"],
-        },
-    ]
-
-    text = gui._build_job_review_text("Java", candidates)
-
-    assert "Java 岗位复盘" in text
-    assert "- 已反馈：3 人" in text
-    assert "- 技能不匹配: 1" in text
-    assert "- 规则过宽: 1" in text
-    assert "- 规则过窄: 1" in text
-    assert "- 误杀: 1" in text
-    assert "- 反馈覆盖：3/3 人" in text
-    assert "误推占比较高" not in text
-    assert "规则过宽" in text
-    assert "样本不足 5 条" in text
-    assert "多人反馈" not in text
-
-
 def test_job_review_dialog_opens_structured_workbench_with_shared_model():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     candidates = [{
@@ -8482,25 +8393,6 @@ def test_job_review_can_navigate_to_matching_saved_job_config():
     gui.app_shell.request_sidebar_page.assert_called_once()
     assert gui.config_job_combo.get() == "Java 工程师"
     gui.on_job_selected.assert_called_once_with(None)
-
-
-def test_job_review_only_reports_trends_after_minimum_feedback_sample():
-    gui = BossFilterGUI.__new__(BossFilterGUI)
-    candidates = [
-        {
-            "job_name": "Java",
-            "match_score": 80 - index,
-            "feedback_status": "误推" if index < 3 else "合适",
-            "feedback_reasons": ["规则过宽"] if index < 3 else ["其他"],
-        }
-        for index in range(5)
-    ]
-
-    text = gui._build_job_review_text("Java", candidates)
-
-    assert "误推占比较高" in text
-    assert "规则过宽：3/5 条" in text
-    assert "样本不足" not in text
 
 
 def test_education_browser_reuses_live_page():
@@ -9788,7 +9680,7 @@ def test_remember_maintenance_success_preserves_other_local_preferences():
     with patch.object(gui_main, "_save_run_preferences") as save:
         value = gui._remember_maintenance_success("backup", when=when)
 
-    assert BossFilterGUI._format_maintenance_time(value) == "2026-07-31 09:05"
+    assert DataMaintenanceController.format_time(value) == "2026-07-31 09:05"
     assert gui._run_preferences["last_run_job_name"] == "Java 工程师"
     assert gui._run_preferences["last_data_backup_at"] == value
     save.assert_called_once_with(gui._run_preferences)
