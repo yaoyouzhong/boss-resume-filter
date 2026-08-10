@@ -10,6 +10,7 @@ import gui_dialogs
 import gui_candidate_actions
 import gui_candidate_diagnostics
 import gui_candidate_review
+import gui_candidate_state_dialogs
 import gui_contact_queue
 import gui_config_page
 import gui_education_page
@@ -129,6 +130,7 @@ def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():
         "gui_candidate_actions",
         "gui_candidate_diagnostics",
         "gui_candidate_review",
+        "gui_candidate_state_dialogs",
         "gui_candidate_workbench",
         "gui_contact_queue",
         "gui_config_page",
@@ -758,6 +760,44 @@ def test_candidate_review_builder_exposes_an_explicit_widget_bundle():
         "summary_text",
         "detail_text",
     }
+
+
+def test_candidate_blacklist_dialog_exposes_widgets_and_controller_callback():
+    assert (
+        gui_candidate_state_dialogs.BlacklistReasonDialogWidgets
+        .__dataclass_fields__.keys()
+    ) == {
+        "window",
+        "reason_text",
+        "save_button",
+        "cancel_button",
+    }
+    source = (ROOT / "gui_candidate_state_dialogs.py").read_text(encoding="utf-8")
+    assert "on_confirm(reason)" in source
+    assert "update_candidate_records" not in source
+    assert "CANDIDATES_PATH" not in source
+
+
+def test_candidate_blacklist_dialog_compatibility_method_is_a_thin_delegate():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _open_blacklist_reason_dialog"):]
+    block = block[:block.index("\n    def _update_candidate_blacklist")]
+
+    assert "gui_candidate_state_dialogs.show_blacklist_reason_dialog(" in block
+    assert "parent or self.root" in block
+    assert "tk.Toplevel" not in block
+    assert "ttk.Button" not in block
+
+
+def test_candidate_blacklist_persistence_remains_in_main_controller():
+    builder = (ROOT / "gui_candidate_state_dialogs.py").read_text(encoding="utf-8")
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    assert "def _update_candidate_blacklist" not in builder
+    assert "def _update_candidate_blacklist" in source
+    assert "update_candidate_records(" in source[
+        source.index("def _update_candidate_blacklist"):
+        source.index("\n    def _import_resume")
+    ]
 
 
 def test_candidate_review_compatibility_method_delegates_window_construction():

@@ -35,6 +35,7 @@ import contact_presenter
 import gui_candidate_actions
 import gui_candidate_diagnostics
 import gui_candidate_review
+import gui_candidate_state_dialogs
 import gui_candidate_workbench
 import gui_contact_queue
 import gui_config_page
@@ -13540,152 +13541,12 @@ class BossFilterGUI:
 
     def _open_blacklist_reason_dialog(self, candidate, parent, on_confirm):
         """打开加入黑名单原因弹窗。"""
-        parent = parent or self.root
-        name = candidate.get('name') or "该候选人"
-        job_name = candidate.get('job_name') or "未标记岗位"
-        existing_reason = candidate.get('blacklist_reason') or ""
-        reason_placeholder = "简历造假/性格原因/信用差/其它恶劣行为"
-        dialog_scale = self.dpi_scale * self.zoom_factor
-        width = max(500, int(500 * dialog_scale))
-        height = max(320, int(320 * dialog_scale))
-        pad = int(20 * dialog_scale)
-
-        win = tk.Toplevel(parent)
-        win.title("加入黑名单")
-        win.withdraw()
-        win.transient(parent)
-        win.grab_set()
-        win.configure(bg=self.colors['bg_main'])
-        win.resizable(False, False)
-        _place_window_centered(win, width, height, parent=parent)
-
-        container = ttk.Frame(win, style='Page.TFrame', padding=pad)
-        container.pack(fill="both", expand=True)
-
-        ttk.Label(
-            container,
-            text="加入黑名单",
-            font=self.font_section,
-            foreground=self.colors['text_primary'],
-            background=self.colors['bg_main']
-        ).pack(anchor="w")
-
-        info = f"{name}｜{job_name}"
-        ttk.Label(
-            container,
-            text=info,
-            font=self.font_label,
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_main'],
-            wraplength=width - pad * 2
-        ).pack(anchor="w", pady=(int(6 * dialog_scale), int(16 * dialog_scale)))
-
-        ttk.Label(
-            container,
-            text="屏蔽原因",
-            font=self.font_label,
-            foreground=self.colors['text_primary'],
-            background=self.colors['bg_main']
-        ).pack(anchor="w", pady=(0, int(6 * dialog_scale)))
-
-        reason_text = tk.Text(
-            container,
-            height=4,
-            wrap="word",
-            font=self.font_label,
-            bg=self.colors['bg_card'],
-            fg=self.colors['text_primary'],
-            insertbackground=self.colors['text_primary'],
-            relief="solid",
-            bd=1,
-            padx=int(10 * dialog_scale),
-            pady=int(8 * dialog_scale)
+        gui_candidate_state_dialogs.show_blacklist_reason_dialog(
+            self,
+            candidate,
+            parent or self.root,
+            on_confirm,
         )
-        reason_text.pack(fill="x")
-        placeholder_active = {'value': False}
-
-        def show_placeholder():
-            placeholder_active['value'] = True
-            reason_text.config(fg=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
-            reason_text.delete("1.0", "end")
-            reason_text.insert("1.0", reason_placeholder)
-
-        def hide_placeholder():
-            if placeholder_active['value']:
-                placeholder_active['value'] = False
-                reason_text.config(fg=self.colors['text_primary'])
-                reason_text.delete("1.0", "end")
-
-        if existing_reason:
-            reason_text.insert("1.0", existing_reason)
-        else:
-            show_placeholder()
-
-        ttk.Label(
-            container,
-            text="后续扫描、统计和导出会跳过此候选人。",
-            font=self.font_log,
-            foreground=self.colors['text_secondary'],
-            background=self.colors['bg_main']
-        ).pack(anchor="w", pady=(int(8 * dialog_scale), 0))
-
-        button_frame = tk.Frame(container, bg=self.colors['bg_main'])
-        button_frame.pack(anchor='center', pady=(int(16 * dialog_scale), 0))
-
-        def close():
-            try:
-                win.grab_release()
-            except tk.TclError:
-                pass
-            win.destroy()
-
-        def save():
-            reason = "" if placeholder_active['value'] else reason_text.get("1.0", "end").strip()
-            close()
-            on_confirm(reason)
-
-        icon_check = self.icons.button('check', self.colors['primary'])
-        icon_close = self.icons.button('close', self.colors['text_secondary'])
-        button_pad = int(8 * dialog_scale)
-        dialog_button_style = ttk.Style(win)
-        dialog_button_style.configure(
-            'BlacklistDialog.TButton',
-            font=self.font_label,
-            padding=(int(12 * dialog_scale), int(5 * dialog_scale)),
-        )
-        save_button = ttk.Button(
-            button_frame,
-            image=icon_check,
-            text=" 确认加入",
-            compound=tk.LEFT,
-            command=save,
-            style='BlacklistDialog.TButton',
-        )
-        save_button._icon_ref = icon_check
-        save_button.pack(side="left", padx=button_pad)
-        cancel_button = ttk.Button(
-            button_frame,
-            image=icon_close,
-            text=" 取消",
-            compound=tk.LEFT,
-            command=close,
-            style='BlacklistDialog.TButton',
-        )
-        cancel_button._icon_ref = icon_close
-        cancel_button.pack(side="left", padx=button_pad)
-
-        win.protocol("WM_DELETE_WINDOW", close)
-        reason_text.bind("<FocusIn>", lambda _event: hide_placeholder())
-        reason_text.bind("<FocusOut>", lambda _event: show_placeholder() if not reason_text.get("1.0", "end").strip() else None)
-        win.bind("<Escape>", lambda _event: close())
-        win.bind("<Control-Return>", lambda _event: save())
-        win.deiconify()
-        win.lift(parent)
-        if existing_reason:
-            reason_text.focus_set()
-            reason_text.tag_add("sel", "1.0", "end-1c")
-        else:
-            win.focus_set()
 
     def _update_candidate_blacklist(self, geek_id, reason, timestamp=None):
         """按 geek_id 标记候选人黑名单，跨岗位生效。"""

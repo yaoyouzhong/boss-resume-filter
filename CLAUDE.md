@@ -34,6 +34,7 @@ boss-resume-filter/
 ├── gui_candidate_review.py # 候选人查看与复核工作台的 Tk 构建与视图切换模块
 ├── gui_candidate_actions.py # 今日待办弹窗的 Tk 构建、分组导航与局部选择状态模块
 ├── gui_candidate_workbench.py # 候选人工作台共用标题、指标条与导航树 UI 原语
+├── gui_candidate_state_dialogs.py # 候选人屏蔽、跟进与人工反馈表单弹窗模块
 ├── gui_contact_queue.py # 联系候选人工作台的 Tk 构建与控件引用模块
 ├── gui_main.py           # 图形界面主程序（v2.27）
 ├── gui_dialogs.py / ui_messagebox.py # 独立对话框与统一居中提示
@@ -147,6 +148,7 @@ boss-resume-filter/
 - `gui_main.py` 可以向新模块单向委托；新模块禁止反向导入 `gui_main.py`。迁移期保留原 `BossFilterGUI` 方法作为薄兼容层，待调用方和测试迁移后再删除。
 - `gui_*_page.py` 只负责指定页面的 Tk 控件构建和页面局部引用；不得读写业务数据、访问网络或导入 `gui_main`。迁移期通过显式 Host 协议注入回调，并由 `gui_main.py` 保留原页面属性别名。
 - `gui_candidate_*.py` 只负责候选人工作台弹窗的 Tk 控件、局部选择状态和事件绑定；候选人加载、状态诊断、业务动作和报告写盘必须通过显式回调留在 `gui_main.py`，不得导入存储、网络或 `gui_main`。
+- `gui_candidate_state_dialogs.py` 只构建候选人屏蔽理由、跟进和人工反馈表单，并将用户输入交给显式回调；候选人定位、字段更新、原子持久化、联系清单同步、Excel 再生成和页面刷新必须留在 `gui_main.py`。
 - `gui_contact_queue.py` 只构建联系清单窗口并绑定显式回调；清单持久化、浏览器预检、发送、暂停恢复、失败重试和状态复核必须留在 `gui_main.py`，不得导入存储、浏览器、网络或 `gui_main`。
 - `gui_result_page.py` 只构建筛选结果页控件、样式和事件绑定，并通过显式引用包交还 `gui_main.py`；候选人读取、过滤、排序、复核、联系、导出和状态持久化必须留在 `gui_main.py`，不得导入存储、网络或 `gui_main`。
 - `gui_stats_detail.py` 只构建首页/结果页统计候选人明细弹窗及列表交互；统计筛选口径、候选人读取、删除持久化、页面刷新和候选人业务动作必须由 `gui_main.py` 通过显式回调提供，不得导入存储、网络或 `gui_main`。
