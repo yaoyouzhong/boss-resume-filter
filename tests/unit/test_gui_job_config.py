@@ -5571,12 +5571,16 @@ def test_clear_candidates_controller_keeps_greeted_blacklisted_and_other_jobs():
 
 def test_greet_queue_add_filters_before_enqueue():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    controller_source = Path("contact_controller.py").read_text(encoding="utf-8")
     add_block = source[source.index("def _add_candidates_to_greet_queue"):]
     add_block = add_block[:add_block.index("\n    @staticmethod\n    def _format_greet_queue_skip_summary")]
+    controller_block = controller_source[controller_source.index("    def add_candidates("):]
+    controller_block = controller_block[:controller_block.index("\n    @staticmethod\n    def set_item_state")]
 
-    assert "self._greet_queue_skip_reason(candidate)" in add_block
-    assert 'skip_reason = "已在队列"' in add_block
-    assert "self._build_greet_queue_item(candidate" in add_block
+    assert "_CONTACT_CONTROLLER.add_candidates(" in add_block
+    assert "reason = skip_reason(candidate)" in controller_block
+    assert 'reason = "已在队列"' in controller_block
+    assert "items.append(build_item(candidate, source=source))" in controller_block
     assert "没有可加入联系清单的候选人" in add_block
     assert "self._show_text_dialog(" in add_block
     assert "messagebox.showinfo" not in add_block
@@ -6057,6 +6061,7 @@ def test_contact_queue_group_hints_explain_the_selected_status_action():
 
 def test_contact_queue_persists_intent_and_revalidates_before_each_send():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    controller_source = Path("contact_controller.py").read_text(encoding="utf-8")
     load_block = source[source.index("def _ensure_greet_queue_loaded"):]
     load_block = load_block[:load_block.index("\n    @staticmethod\n    def _has_direct_send_context")]
     worker_block = source[source.index("def _run_greet_queue_worker"):]
@@ -6064,20 +6069,25 @@ def test_contact_queue_persists_intent_and_revalidates_before_each_send():
     resolve_block = source[source.index("def _resolve_selected_greet_queue_pending"):]
     resolve_block = resolve_block[:resolve_block.index("\n    def _pause_greet_queue")]
 
-    assert "load_contact_queue(candidates, CONTACT_QUEUE_PATH)" in load_block
+    assert "_CONTACT_CONTROLLER.load_and_revalidate(" in load_block
+    assert "load_candidates=load_candidates_all" in load_block
+    assert "load_queue=load_contact_queue" in load_block
     assert "save_contact_queue(self.greet_queue_items, CONTACT_QUEUE_PATH)" in load_block
-    assert worker_block.index("self._reload_greet_queue_candidate(item)") < worker_block.index(
-        "self._revalidate_greet_queue_candidate(candidate)"
+    run_block = controller_source[controller_source.index("    def run_queue("):]
+    run_block = run_block[:run_block.index("\n    @classmethod\n    def finalize_interrupted")]
+    assert "_CONTACT_CONTROLLER.run_queue(" in worker_block
+    assert run_block.index("candidate, reload_error = reload_candidate(item)") < run_block.index(
+        "status, message = revalidate(candidate)"
     )
-    assert worker_block.index("self._revalidate_greet_queue_candidate(candidate)") < worker_block.index(
-        'self._set_greet_queue_item_state(item, "发送中", "")'
+    assert run_block.index("status, message = revalidate(candidate)") < run_block.index(
+        'cls.set_item_state(item, "发送中", "")'
     )
-    assert worker_block.count("self._reload_greet_queue_candidate(item)") == 2
-    assert worker_block.count("self._ensure_greet_queue_candidate_page_ready(") >= 2
+    assert run_block.count("candidate = load_ready_candidate(item)") == 2
+    assert run_block.count("page_ready, page_message = ensure_page_ready(candidate)") == 2
     assert "job_mismatch_decisions = {}" in worker_block
-    assert "resolve_candidate_greeting_confirmation(" in resolve_block
-    assert 'item[\'status\'] = "已发送"' in resolve_block
-    assert 'item[\'status\'] = "待发送"' in resolve_block
+    assert "resolver=resolve_candidate_greeting_confirmation" in resolve_block
+    assert "_CONTACT_CONTROLLER.resolve_pending(" in resolve_block
+    assert '"已发送" if sent else "待发送"' in controller_source
 
 
 def test_pending_verification_cannot_be_discarded_without_resolution():
@@ -6105,6 +6115,7 @@ def _contact_worker_gui(candidate):
     gui.greet_queue_items = [item]
     gui.greet_queue_window = None
     gui.root = Mock()
+    gui.run_on_ui = lambda callback: gui.root.after(0, callback)
     gui.browser_page = object()
     gui.stop_event = threading.Event()
     gui.greet_queue_running = True
@@ -7198,6 +7209,7 @@ def test_browser_preflight_waits_for_login_before_showing_confirmation():
     pending = [{"status": "待发送", "candidate": {"geek_id": "g1"}}]
     gui.greet_queue_window = None
     gui.root = Mock()
+    gui.run_on_ui = lambda callback: gui.root.after(0, callback)
     gui.browser_page = Mock()
     gui.stop_event = threading.Event()
     gui._browser_connection_lock = threading.Lock()
@@ -7228,6 +7240,7 @@ def test_browser_preflight_navigates_existing_chrome_to_recommend_page():
     pending = [{"status": "待发送", "candidate": {"geek_id": "g1"}}]
     gui.greet_queue_window = None
     gui.root = Mock()
+    gui.run_on_ui = lambda callback: gui.root.after(0, callback)
     gui.browser_page = Mock()
     gui.stop_event = threading.Event()
     gui._browser_connection_lock = threading.Lock()
@@ -7255,6 +7268,7 @@ def test_browser_preflight_cooldown_performs_no_browser_action():
     pending = [{"status": "待发送", "candidate": {"geek_id": "g1"}}]
     gui.greet_queue_window = None
     gui.root = Mock()
+    gui.run_on_ui = lambda callback: gui.root.after(0, callback)
     gui.browser_page = Mock()
     gui.stop_event = threading.Event()
     gui._browser_connection_lock = threading.Lock()

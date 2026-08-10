@@ -10,6 +10,7 @@ import candidate_diagnostics_presenter
 import candidate_cleanup
 import candidate_presenter
 import changelog_renderer
+import contact_controller
 import contact_presenter
 import data_maintenance_controller
 import education_controller
@@ -203,6 +204,34 @@ def test_browser_controller_excludes_tk_gui_storage_and_business_workflows():
     assert not (_top_level_imports("browser_controller") & forbidden)
     assert callable(browser_controller.BrowserController)
     assert callable(browser_controller.BrowserRuntime)
+
+
+def test_contact_controller_excludes_tk_gui_storage_browser_and_network_dependencies():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "tkinter",
+        "urllib",
+    }
+    assert not (_top_level_imports("contact_controller") & forbidden)
+    assert callable(contact_controller.ContactController)
+    assert callable(contact_controller.ContactRunCounters)
+
+
+def test_contact_worker_delegates_state_machine_and_queues_all_tk_updates():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _run_greet_queue_worker"):]
+    block = block[:block.index("\n    @staticmethod\n    def _build_greet_queue_run_feedback")]
+
+    assert "_CONTACT_CONTROLLER.run_queue(" in block
+    assert "_CONTACT_CONTROLLER.finalize_interrupted(" in block
+    assert "self.run_on_ui(" in block
+    assert "self.root.after(" not in block
 
 
 def test_result_controller_excludes_tk_gui_and_storage_dependencies():
