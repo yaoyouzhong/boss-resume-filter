@@ -37,6 +37,7 @@ import model_catalog
 import resume_parser
 import resume_import_service
 import result_controller
+import run_controller
 import run_presenter
 import settings_controller
 import stats_presenter
@@ -232,6 +233,39 @@ def test_contact_worker_delegates_state_machine_and_queues_all_tk_updates():
     assert "_CONTACT_CONTROLLER.finalize_interrupted(" in block
     assert "self.run_on_ui(" in block
     assert "self.root.after(" not in block
+
+
+def test_run_controller_excludes_tk_gui_storage_browser_and_network_dependencies():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "contact_queue",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "tkinter",
+        "urllib",
+    }
+    assert not (_top_level_imports("run_controller") & forbidden)
+    assert callable(run_controller.RunController)
+    assert callable(run_controller.RunRequest)
+    assert callable(run_controller.RunProgressEvent)
+    assert callable(run_controller.RunTerminalEvent)
+
+
+def test_run_worker_consumes_snapshot_and_routes_tk_work_to_ui_queue():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    worker = source[source.index("def run_worker"):]
+    worker = worker[:worker.index("\n    def _apply_run_terminal_event")]
+
+    assert "request = self._pending_run_request" in worker
+    assert "_RUN_CONTROLLER.execute(" in worker
+    assert "_RUN_CONTROLLER.terminal_event(" in worker
+    assert "self.run_on_ui(" in worker
+    assert ".get()" not in worker
+    assert "self.root.after(" not in worker
 
 
 def test_result_controller_excludes_tk_gui_and_storage_dependencies():

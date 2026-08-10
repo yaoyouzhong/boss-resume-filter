@@ -7323,6 +7323,7 @@ def test_browser_reconnect_rechecks_cooldown_before_launch():
 
 def test_gui_run_builds_contact_list_without_direct_sending():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    controller_source = Path("run_controller.py").read_text(encoding="utf-8")
     run_page_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     worker_block = source[source.index("def run_worker"):]
     worker_block = worker_block[:worker_block.index("\n        # 启动后台线程")]
@@ -7330,8 +7331,8 @@ def test_gui_run_builds_contact_list_without_direct_sending():
     assert 'value="仅保存筛选结果"' in run_page_block
     assert '"将强烈推荐加入联系清单"' in run_page_block
     assert '"将推荐及以上加入联系清单"' in run_page_block
-    assert "greet=False" in worker_block
-    assert "scanned_candidates = run_smart_scan(" in worker_block
+    assert "greet=False" in controller_source
+    assert "scanned_candidates = scan(" in controller_source
     assert "self._add_scan_candidates_to_contact_queue(" in worker_block
     assert "def greet_confirm_callback(message):" not in worker_block
     assert "job_config_callback=job_config_callback" in worker_block
@@ -7347,6 +7348,7 @@ def test_run_page_describes_actual_ai_score_adjustment_range():
 
 def test_run_page_exposes_user_friendly_advanced_scan_settings():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    controller_source = Path("run_controller.py").read_text(encoding="utf-8")
     run_page_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     worker_block = source[source.index("def run_worker"):]
     worker_block = worker_block[:worker_block.index("\n    def on_closing")]
@@ -7375,7 +7377,7 @@ def test_run_page_exposes_user_friendly_advanced_scan_settings():
     assert "textvariable=host.greet_context_capture_limit_var" in run_page_block
     assert "读取越多越慢" not in run_page_block
     assert "准备人数越多耗时越长" not in run_page_block
-    assert "api_direct_pages * 20" in worker_block
+    assert "self.api_direct_pages * 20" in controller_source
 
     ai_row_index = run_page_block.index("# AI 辅助评估开关")
     advanced_index = run_page_block.index("# 高级运行设置：位于 AI 评估行下方")
@@ -7416,10 +7418,10 @@ def test_run_page_exposes_user_friendly_advanced_scan_settings():
     assert "host.greet_context_risk_label" in advanced_block
     assert '"访问量和耗时会明显增加"' in advanced_block
     assert advanced_block.count('"继续调高会增加触发风控的风险"') == 2
-    assert "listener_first=not api_direct_enabled" in worker_block
-    assert "greet_context_capture=greet_context_capture_enabled" in worker_block
-    assert "greet_context_limit=greet_context_capture_limit" in worker_block
-    assert '"提取链路"' in worker_block
+    assert "listener_first=not self.api_direct_enabled" in controller_source
+    assert "greet_context_capture=self.greet_context_capture_enabled" in controller_source
+    assert "greet_context_limit=self.greet_context_capture_limit" in controller_source
+    assert '"提取链路"' in controller_source
     assert 'self.append_run_log(f"扫描增强：' not in worker_block
     assert 'self.append_run_log(f"后续联系：' not in worker_block
 
@@ -7851,21 +7853,22 @@ def test_silent_browser_poll_does_not_log_missing_debug_port():
 
 def test_run_worker_preserves_scan_completion_state():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    controller_source = Path("run_controller.py").read_text(encoding="utf-8")
     run_block = source[source.index("def run_worker"):]
     run_block = run_block[:run_block.index("\n    def on_closing")]
     create_block = Path("gui_run_page.py").read_text(encoding="utf-8")
     start_block = source[source.index("def start_run"):]
     start_block = start_block[:start_block.index("\n    def stop_run")]
 
-    assert 'final_desc.startswith(("[达到轮次上限]", "[可能未扫完]"))' in run_block
-    assert 'final_desc.startswith("[扫描中断]")' in run_block
-    assert "str(description).startswith('[')" in run_block
+    assert 'final_desc.startswith(("[达到轮次上限]", "[可能未扫完]"))' in controller_source
+    assert 'final_desc.startswith("[扫描中断]")' in controller_source
+    assert 'desc.startswith("[")' in controller_source
     assert "job_match_callback=job_match_callback" in run_block
     assert "job_config_callback=job_config_callback" in run_block
     assert 'context="run"' in run_block
-    assert 'self.progress_var.set(100)' in run_block
-    assert 'self._replace_run_summary_contact_queue_count(final_desc, 0)' in run_block
-    assert 'self._set_run_summary(summary_desc)' in run_block
+    assert 'self.progress_var.set(100)' in source
+    assert 'self._replace_run_summary_contact_queue_count(' in source
+    assert 'self._set_run_summary(summary_desc)' in source
     assert 'self._reset_run_summary()' in start_block
     assert 'host.run_summary_text_label' in create_block
     assert '本轮结果摘要' in create_block
@@ -8112,10 +8115,12 @@ def test_terminal_log_keeps_one_status_line_without_repeating_summary():
     )
 
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    controller_source = Path("run_controller.py").read_text(encoding="utf-8")
     run_block = source[source.index("def run_worker"):]
     run_block = run_block[:run_block.index("\n    def on_closing")]
-    assert "terminal_log = self._format_terminal_log_text(final_desc)" in run_block
-    assert "LogRedirector(self.append_run_log)" in run_block
+    assert "terminal = _RUN_CONTROLLER.terminal_event(" in run_block
+    assert "terminal.terminal_log" in run_block
+    assert "TimestampedLogRedirector(log)" in controller_source
     assert "self.append_log(" not in run_block
 
 

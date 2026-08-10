@@ -199,6 +199,7 @@ from contact_controller import (
     ContactRunCounters,
     SendExceptionDecision,
 )
+from run_controller import RunController, RunTuning
 from resume_import_service import (
     ResumeCandidateNotFoundError,
     ResumeCopyError,
@@ -244,6 +245,7 @@ _SETTINGS_CONTROLLER = SettingsController()
 _DATA_MAINTENANCE_CONTROLLER = DataMaintenanceController()
 _EDUCATION_CONTROLLER = EducationController()
 _CONTACT_CONTROLLER = ContactController()
+_RUN_CONTROLLER = RunController()
 
 
 def _candidate_controller_for(host) -> CandidateController:
@@ -966,6 +968,7 @@ class BossFilterGUI:
 
         # 运行状态
         self.is_running = False
+        self._pending_run_request = None
         self.log_queue = queue.Queue()
         self.progress_queue = queue.Queue()  # 进度条队列
         self.confirm_queue = queue.Queue()  # 岗位切换确认队列
@@ -10312,7 +10315,9 @@ class BossFilterGUI:
         try:
             # 处理进度队列
             while True:
-                progress_data = self.progress_queue.get_nowait()
+                progress_data = _RUN_CONTROLLER.progress_payload(
+                    self.progress_queue.get_nowait()
+                )
                 current = progress_data.get('current', 0)
                 total = progress_data.get('total', 100)
                 percentage = min(100, int((current / total) * 100)) if total > 0 else 0
@@ -10390,6 +10395,92 @@ class BossFilterGUI:
         """将子窗口相对于屏幕居中（不依赖父窗口位置）"""
         _place_window_centered(window, width, height)
 
+    def _capture_run_request(self):
+        """Snapshot every Tk-owned run value before starting the worker thread."""
+        def value(name, default):
+            variable = getattr(self, name, None)
+            if variable is None:
+                return default
+            try:
+                return variable.get()
+            except (AttributeError, tk.TclError):
+                return default
+
+        contact_policy = value("contact_after_scan_var", "仅保存筛选结果")
+        selected_job = value("job_select_var", "全部岗位")
+        if selected_job != "全部岗位":
+            self._remember_run_job_selection(selected_job)
+
+        ai_requested = bool(value("ai_eval_var", False))
+        api_config = getattr(self, "api_config", {})
+        read_timeout = value(
+            "llm_read_timeout_var",
+            api_config.get("llm_read_timeout", 120),
+        )
+        if ai_requested and api_config.get("llm_read_timeout") != read_timeout:
+            api_config["llm_read_timeout"] = read_timeout
+            try:
+                with open(
+                    get_api_config_path(for_write=True),
+                    "w",
+                    encoding="utf-8",
+                ) as config_file:
+                    json.dump(
+                        self._sanitize_config_for_save(api_config),
+                        config_file,
+                        ensure_ascii=False,
+                        indent=4,
+                    )
+            except Exception:
+                pass
+
+        api_key = None
+        setup_logs = []
+        if ai_requested:
+            try:
+                api_key = self._get_api_key_cached(
+                    api_config.get("api_provider", ""),
+                    api_config.get("base_url", ""),
+                )
+            except Exception as exc:
+                setup_logs.append(f"加载 API 配置失败：{exc}，跳过 AI 评估")
+
+        tuning = RunTuning(
+            API_CANDIDATE_LIMIT_DEFAULT,
+            GREET_CONTEXT_CAPTURE_LIMIT,
+            DOM_SCROLL_DELAY_CENTER,
+            DOM_SCROLL_DELAY_SPREAD,
+            DOM_SCROLL_BATCH_MIN,
+            DOM_SCROLL_BATCH_MAX,
+            DOM_SCROLL_BATCH_PAUSE_CENTER,
+            DOM_SCROLL_BATCH_PAUSE_SPREAD,
+        )
+        return _RUN_CONTROLLER.prepare_request(
+            version=__version__,
+            rounds=value("rounds_var", MAX_ROUNDS_DEFAULT),
+            contact_policy=contact_policy,
+            selected_job=selected_job,
+            api_direct_enabled=value("api_direct_enabled_var", True),
+            api_direct_pages=value(
+                "api_direct_pages_var",
+                max(1, (API_CANDIDATE_LIMIT_DEFAULT + 19) // 20),
+            ),
+            greet_context_capture_enabled=value(
+                "greet_context_capture_enabled_var",
+                True,
+            ),
+            greet_context_capture_limit=value(
+                "greet_context_capture_limit_var",
+                GREET_CONTEXT_CAPTURE_LIMIT,
+            ),
+            ai_eval_enabled=ai_requested,
+            ai_api_config=dict(api_config),
+            ai_api_key=api_key,
+            llm_read_timeout=read_timeout,
+            tuning=tuning,
+            setup_logs=setup_logs,
+        )
+
     def start_run(self):
         """开始运行"""
         if self.is_running:
@@ -10442,6 +10533,7 @@ class BossFilterGUI:
             self.start_btn.config(state="normal")
             return
 
+        self._pending_run_request = self._capture_run_request()
         self.is_running = True
         self.stop_event.clear()
         self._apply_lamp_status(self.status_label, "● 运行中...", self.colors['warning'])
@@ -10506,351 +10598,176 @@ class BossFilterGUI:
         return result[0]
 
     def run_worker(self):
-        """运行工作线程"""
-        import sys
-        from datetime import datetime
+        """Run one prepared scan session without reading Tk state from this thread."""
+        from bossmaster import run_smart_scan
 
-        old_stdout = sys.stdout
-        final_progress = {'desc': ''}
-        scanned_candidates = []
-        contact_policy_text = self.contact_after_scan_var.get()
-        try:
-            class LogRedirector:
-                def __init__(self, callback):
-                    self.callback = callback
-                    self.buffer = ""
-
-                def write(self, text):
-                    self.buffer += text
-                    while '\n' in self.buffer:
-                        line, self.buffer = self.buffer.split('\n', 1)
-                        if line.strip():
-                            self.callback(f"[{datetime.now().strftime('%H:%M:%S')}] {line}")
-
-                def flush(self):
-                    if self.buffer.strip():
-                        self.callback(f"[{datetime.now().strftime('%H:%M:%S')}] {self.buffer}")
-                    self.buffer = ""
-
-            log_redirector = LogRedirector(self.append_run_log)
-            sys.stdout = log_redirector
-
-            rounds = int(self.rounds_var.get())
-            default_api_pages = max(1, (API_CANDIDATE_LIMIT_DEFAULT + 19) // 20)
-            api_direct_enabled = (
-                bool(self.api_direct_enabled_var.get())
-                if hasattr(self, 'api_direct_enabled_var') else True
+        request = self._pending_run_request
+        if request is None:
+            self.is_running = False
+            self.append_run_log("运行出错：未取得启动参数快照")
+            self.run_on_ui(
+                lambda: self._apply_lamp_status(
+                    self.status_label,
+                    "● 运行出错",
+                    self.colors["danger"],
+                )
             )
-            api_direct_pages = self._coerce_int_setting(
-                self.api_direct_pages_var.get() if hasattr(self, 'api_direct_pages_var') else default_api_pages,
-                default_api_pages,
-                1,
-                20,
-            )
-            effective_max_candidates = api_direct_pages * 20 if api_direct_enabled else 0
-            greet_context_capture_enabled = (
-                bool(self.greet_context_capture_enabled_var.get())
-                if hasattr(self, 'greet_context_capture_enabled_var') else True
-            )
-            greet_context_capture_limit = self._coerce_int_setting(
-                (
-                    self.greet_context_capture_limit_var.get()
-                    if hasattr(self, 'greet_context_capture_limit_var')
-                    else GREET_CONTEXT_CAPTURE_LIMIT
-                ),
-                GREET_CONTEXT_CAPTURE_LIMIT,
-                1,
-                100,
-            )
-            greet_level = (
-                "strong"
-                if contact_policy_text == "将强烈推荐加入联系清单"
-                else "normal"
-            )
+            return
 
-            from bossmaster import load_job_config, ChromiumPage, time, run_smart_scan
-            import argparse
+        def confirm_callback(current_idx, total, next_job_name):
+            event = threading.Event()
+            event.result = False
+            self.confirm_queue.put({
+                "event": event,
+                "current_idx": current_idx,
+                "total": total,
+                "next_job_name": next_job_name,
+            })
+            while not event.is_set():
+                if self.stop_event.is_set():
+                    event.result = False
+                    break
+                event.wait(timeout=0.5)
+            return event.result
 
-            self.append_run_log(f">>> BOSS 直聘候选人智能提取工具 v{__version__} [图形界面模式]")
+        def captcha_callback(detail):
+            result = [False]
+            done = threading.Event()
 
-            # 获取选择的岗位
-            selected_job = self.job_select_var.get()
-            job_arg = None if selected_job == "全部岗位" else selected_job
-            if job_arg:
-                self._remember_run_job_selection(job_arg)
-
-            # 构造命令行参数
-            ai_eval_enabled = self.ai_eval_var.get()
-            dom_delay_min = DOM_SCROLL_DELAY_CENTER - DOM_SCROLL_DELAY_SPREAD / 2
-            dom_delay_max = DOM_SCROLL_DELAY_CENTER + DOM_SCROLL_DELAY_SPREAD / 2
-            dom_pause_min = DOM_SCROLL_BATCH_PAUSE_CENTER - DOM_SCROLL_BATCH_PAUSE_SPREAD / 2
-            dom_pause_max = DOM_SCROLL_BATCH_PAUSE_CENTER + DOM_SCROLL_BATCH_PAUSE_SPREAD / 2
-            self._append_run_settings_snapshot([
-                ("滚动轮次", rounds),
-                ("DOM滚动间隔", f"{dom_delay_min:g}-{dom_delay_max:g} 秒"),
-                ("DOM长暂停", f"每 {DOM_SCROLL_BATCH_MIN}-{DOM_SCROLL_BATCH_MAX} 轮暂停 {dom_pause_min:g}-{dom_pause_max:g} 秒"),
-                ("筛选完成后", contact_policy_text),
-                ("选择岗位", selected_job),
-                ("扫描增强", "自动补全候选人详情" if api_direct_enabled else "关闭"),
-                ("最多读取页数", api_direct_pages if api_direct_enabled else "未启用"),
-                ("后续联系", "扫描后准备联系信息" if greet_context_capture_enabled else "关闭"),
-                ("最多准备人数", greet_context_capture_limit if greet_context_capture_enabled else "未启用"),
-                ("AI 辅助评估", "启用" if ai_eval_enabled else "关闭"),
-                ("AI 模型", self.api_config.get("model", "") if ai_eval_enabled else "未启用"),
-                (
-                    "AI 响应超时",
-                    f"{self.llm_read_timeout_var.get()} 秒"
-                    if ai_eval_enabled and hasattr(self, 'llm_read_timeout_var')
-                    else "未启用",
-                ),
-                ("打招呼等级", greet_level),
-                ("提取链路", "先读取页面已有信息；再滚动确认可见候选人；必要时按设置补全候选人详情"),
-            ])
-            ai_api_config = None
-            ai_api_key = None
-            if ai_eval_enabled:
-                try:
-                    # 同步运行页超时设置到 api_config
-                    _timeout_changed = False
-                    if hasattr(self, 'llm_read_timeout_var'):
-                        _new_rt = self.llm_read_timeout_var.get()
-                        if self.api_config.get("llm_read_timeout") != _new_rt:
-                            self.api_config["llm_read_timeout"] = _new_rt
-                            _timeout_changed = True
-                    # 超时值变更时持久化到 api_config.json
-                    if _timeout_changed:
-                        try:
-                            with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as _f:
-                                json.dump(self._sanitize_config_for_save(self.api_config), _f, ensure_ascii=False, indent=4)
-                        except Exception:
-                            pass
-                    ai_api_config = self.api_config
-                    ai_api_key = self._get_api_key_cached(
-                        self.api_config.get('api_provider', ''),
-                        self.api_config.get('base_url', ''),
-                    )
-                    if not ai_api_key:
-                        self.append_run_log("AI 评估需要 API Key，但未配置，将跳过")
-                        ai_eval_enabled = False
-                    else:
-                        model_name = self.api_config.get('model', 'unknown')
-                        self.append_run_log(f"AI 辅助评估已启用（模型：{model_name}）")
-                except Exception as e:
-                    self.append_run_log(f"加载 API 配置失败：{e}，跳过 AI 评估")
-                    ai_eval_enabled = False
-
-            args = argparse.Namespace(
-                clear=False,
-                job=job_arg,
-                greet=False,
-                re_greet=False,
-                greet_level=greet_level,
-                greet_names=None,
-                list_candidates=False,
-                rounds=rounds,
-                max_candidates=effective_max_candidates,
-                dom_only=False,
-                listener_first=not api_direct_enabled,
-                verbose=False,
-                ai_eval=ai_eval_enabled,
-                api_config=ai_api_config,
-                api_key=ai_api_key,
-                greet_context_capture=greet_context_capture_enabled,
-                greet_context_limit=greet_context_capture_limit,
-            )
-
-            if job_arg:
-                self.append_run_log(f"[初次扫描模式] 指定岗位：{job_arg}")
-            else:
-                self.append_run_log("[初次扫描模式] 处理全部岗位")
-            self.append_run_log("开始扫描候选人...")
-
-            # 进度回调 — 将 bossmaster 的进度报告送入队列
-            def on_progress(percentage, description):
-                if percentage >= 100 and str(description).startswith('['):
-                    final_progress['desc'] = description
-                self.progress_queue.put({
-                    'current': percentage,
-                    'total': 100,
-                    'desc': description,
-                })
-
-            def confirm_callback(current_idx, total, next_job_name):
-                """岗位切换确认 — 阻塞工作线程直到用户在 GUI 中确认"""
-                event = threading.Event()
-                event.result = False
-                self.confirm_queue.put({
-                    'event': event,
-                    'current_idx': current_idx,
-                    'total': total,
-                    'next_job_name': next_job_name,
-                })
-                # 轮询等待，支持 stop_event 中断
-                while not event.is_set():
-                    if self.stop_event.is_set():
-                        event.result = False
-                        break
-                    event.wait(timeout=0.5)
-                return event.result
-
-            def captcha_callback(detail):
-                """验证码弹窗通知 — 阻塞工作线程直到用户在 GUI 中响应
-
-                返回:
-                    True: 用户选择继续等待验证完成
-                    False: 用户选择跳过验证等待（中止当前操作）
-                """
-                result = [False]
-                done = threading.Event()
-
-                def show_dialog():
-                    answer = messagebox.ask_confirmation(
-                        "检测到安全验证弹窗",
-                        headline="需要在浏览器中完成人工验证",
-                        message="程序已暂停后续访问，请先处理 BOSS 安全验证。",
-                        detail=str(detail),
-                        notice="继续等待不会自动绕过验证；停止将结束当前操作。",
-                        yes_label="继续等待验证",
-                        no_label="停止当前操作",
-                        parent=self.root,
-                    )
-                    result[0] = answer
-                    done.set()
-
-                self.root.after(0, show_dialog)
-                # 轮询等待，支持 stop_event 中断
-                while not done.is_set():
-                    if self.stop_event.is_set():
-                        result[0] = False
-                        done.set()
-                        break
-                    done.wait(timeout=0.5)
-                return result[0]
-
-            def notice_callback(title, message):
-                self.root.after(0, lambda: messagebox.showinfo(title, message, parent=self.root))
-
-            def blocking_notice_callback(title, message):
-                """阻塞式通知弹窗 — 等待用户点击确定后返回"""
-                done = threading.Event()
-
-                def show_dialog():
-                    messagebox.showinfo(title, message, parent=self.root)
-                    done.set()
-
-                self.root.after(0, show_dialog)
-                while not done.is_set():
-                    if self.stop_event.is_set():
-                        done.set()
-                        break
-                    done.wait(timeout=0.5)
-
-            def job_match_callback(expected_job_name, actual_job_name):
-                """岗位不一致确认 — 用户明确选择后工作线程才继续。"""
-                return self._confirm_job_name_mismatch(
-                    expected_job_name,
-                    actual_job_name,
-                    context="run",
+            def show_dialog():
+                result[0] = messagebox.ask_confirmation(
+                    "检测到安全验证弹窗",
+                    headline="需要在浏览器中完成人工验证",
+                    message="程序已暂停后续访问，请先处理 BOSS 安全验证。",
+                    detail=str(detail),
+                    notice="继续等待不会自动绕过验证；停止将结束当前操作。",
+                    yes_label="继续等待验证",
+                    no_label="停止当前操作",
                     parent=self.root,
                 )
+                done.set()
 
-            def job_config_callback(text, has_error):
-                """运行前岗位配置体检 — 在 UI 线程展示并等待用户决定。"""
-                if not self._should_prompt_run_job_config(text, has_error):
-                    self.append_run_log("岗位配置未变化，沿用本次启动中已确认的体检提醒")
-                    return True
-                event = threading.Event()
-                result = [False]
+            self.run_on_ui(show_dialog)
+            while not done.is_set():
+                if self.stop_event.is_set():
+                    result[0] = False
+                    done.set()
+                    break
+                done.wait(timeout=0.5)
+            return result[0]
 
-                def show_dialog():
-                    result[0] = self._show_job_config_diagnostics_dialog(
-                        text, has_error=has_error, context="run"
-                    )
-                    event.set()
-
-                self.run_on_ui(show_dialog)
-                while not event.is_set():
-                    if self.stop_event.is_set():
-                        break
-                    event.wait(timeout=0.5)
-                self._remember_run_job_config_warning(text, has_error, result[0])
-                return result[0]
-
-            # 调用 run_smart_scan 并传入参数和进度回调
-            scanned_candidates = run_smart_scan(
-                args,
-                progress_callback=on_progress,
-                confirm_callback=confirm_callback,
-                stop_event=self.stop_event,
-                existing_page=self.browser_page,
-                captcha_callback=captcha_callback,
-                notice_callback=notice_callback,
-                blocking_notice_callback=blocking_notice_callback,
-                job_match_callback=job_match_callback,
-                job_config_callback=job_config_callback,
-            ) or []
-
-        except KeyboardInterrupt:
-            if not final_progress['desc']:
-                final_progress['desc'] = "[已停止] 用户取消岗位切换"
-            self.append_run_log("用户取消岗位切换，已停止")
-        except Exception as e:
-            final_progress['desc'] = f"[出错] {str(e)[:30]}"
-            self.append_run_log(f"运行出错：{e}")
-            import traceback
-            self.append_run_log(traceback.format_exc())
-        finally:
-            sys.stdout = old_stdout
-            self.is_running = False
-            final_desc = final_progress['desc'] or "[出错] 未取得最终运行状态"
-            terminal_log = self._format_terminal_log_text(final_desc)
-            self.append_run_log(f"[{datetime.now().strftime('%H:%M:%S')}] {terminal_log}")
-
-            if final_desc.startswith("[完成]"):
-                status_text, status_color = "● 已完成", self.colors['success']
-            elif final_desc.startswith(("[达到轮次上限]", "[可能未扫完]")):
-                status_text, status_color = "● 本轮处理完成", self.colors['success']
-            elif final_desc.startswith("[扫描中断]"):
-                status_text, status_color = "● 扫描中断", self.colors['warning']
-            elif final_desc.startswith("[已停止]"):
-                status_text, status_color = "● 已停止", self.colors['danger']
-            else:
-                status_text, status_color = "● 运行出错", self.colors['danger']
-            progress_text = self._format_terminal_progress_text(final_desc)
-            should_build_contact_list = bool(
-                contact_policy_text != "仅保存筛选结果"
-                and scanned_candidates
-                and final_desc.startswith((
-                    "[完成]",
-                    "[达到轮次上限]",
-                    "[可能未扫完]",
-                ))
+        def notice_callback(title, message):
+            self.run_on_ui(
+                lambda: messagebox.showinfo(title, message, parent=self.root)
             )
 
-            def finish_ui():
-                self._apply_lamp_status(self.status_label, status_text, status_color)
-                self.start_btn.config(state="normal")
-                self.stop_btn.config(state="disabled")
-                self.progress_var.set(100)
-                self.progress_label.config(
-                    text=f"100%  {progress_text}", image='', compound='text'
+        def blocking_notice_callback(title, message):
+            done = threading.Event()
+
+            def show_dialog():
+                messagebox.showinfo(title, message, parent=self.root)
+                done.set()
+
+            self.run_on_ui(show_dialog)
+            while not done.is_set():
+                if self.stop_event.is_set():
+                    done.set()
+                    break
+                done.wait(timeout=0.5)
+
+        def job_match_callback(expected_job_name, actual_job_name):
+            return self._confirm_job_name_mismatch(
+                expected_job_name,
+                actual_job_name,
+                context="run",
+                parent=self.root,
+            )
+
+        def job_config_callback(text, has_error):
+            if not self._should_prompt_run_job_config(text, has_error):
+                self.append_run_log(
+                    "岗位配置未变化，沿用本次启动中已确认的体检提醒"
                 )
-                summary_desc = self._replace_run_summary_contact_queue_count(final_desc, 0)
-                self._set_run_summary(summary_desc)
-                self.root.after(100, self.refresh_results)
-                if should_build_contact_list:
-                    added_count = self._add_scan_candidates_to_contact_queue(
-                        scanned_candidates,
-                        contact_policy_text,
-                    )
-                    summary_desc = self._replace_run_summary_contact_queue_count(
-                        final_desc,
-                        added_count,
-                    )
-                    self._set_run_summary(summary_desc)
+                return True
+            event = threading.Event()
+            result = [False]
 
-            self.run_on_ui(finish_ui)
+            def show_dialog():
+                result[0] = self._show_job_config_diagnostics_dialog(
+                    text,
+                    has_error=has_error,
+                    context="run",
+                )
+                event.set()
 
+            self.run_on_ui(show_dialog)
+            while not event.is_set():
+                if self.stop_event.is_set():
+                    break
+                event.wait(timeout=0.5)
+            self._remember_run_job_config_warning(text, has_error, result[0])
+            return result[0]
+
+        outcome = _RUN_CONTROLLER.execute(
+            request,
+            scan=run_smart_scan,
+            log=self.append_run_log,
+            settings_sink=self._append_run_settings_snapshot,
+            progress_sink=self.progress_queue.put,
+            stop_event=self.stop_event,
+            existing_page=self.browser_page,
+            confirm_callback=confirm_callback,
+            captcha_callback=captcha_callback,
+            notice_callback=notice_callback,
+            blocking_notice_callback=blocking_notice_callback,
+            job_match_callback=job_match_callback,
+            job_config_callback=job_config_callback,
+        )
+        terminal = _RUN_CONTROLLER.terminal_event(
+            outcome,
+            request.contact_policy,
+        )
+        self.is_running = False
+        self._pending_run_request = None
+        self.append_run_log(
+            f"[{datetime.now().strftime('%H:%M:%S')}] {terminal.terminal_log}"
+        )
+        self.run_on_ui(
+            lambda: self._apply_run_terminal_event(terminal, outcome, request)
+        )
+
+    def _apply_run_terminal_event(self, terminal, outcome, request):
+        """Render one plain terminal event on the Tk main thread."""
+        self._apply_lamp_status(
+            self.status_label,
+            terminal.status_text,
+            self.colors[terminal.status_tone],
+        )
+        self.start_btn.config(state="normal")
+        self.stop_btn.config(state="disabled")
+        self.progress_var.set(100)
+        self.progress_label.config(
+            text=f"100%  {terminal.progress_text}",
+            image="",
+            compound="text",
+        )
+        summary_desc = self._replace_run_summary_contact_queue_count(
+            terminal.final_desc,
+            0,
+        )
+        self._set_run_summary(summary_desc)
+        self.root.after(100, self.refresh_results)
+        if terminal.should_build_contact_list:
+            added_count = self._add_scan_candidates_to_contact_queue(
+                outcome.scanned_candidates,
+                request.contact_policy,
+            )
+            self._set_run_summary(
+                self._replace_run_summary_contact_queue_count(
+                    terminal.final_desc,
+                    added_count,
+                )
+            )
     def on_closing(self):
         """窗口关闭处理 - 安全等待工作线程结束"""
         active_scan = self.is_running
