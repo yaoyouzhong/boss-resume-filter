@@ -4828,20 +4828,81 @@ def test_candidate_review_actions_keep_stable_two_row_layout_and_button_style():
 
 def test_candidate_context_menu_uses_review_workbench_wording():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    menus = Path("gui_candidate_menus.py").read_text(encoding="utf-8")
     block = source[source.index("def _build_candidate_context_menu"):]
     block = block[:block.index("\n    def _find_candidate_by_tree_item")]
 
-    assert 'label=" 查看与复核"' in block
-    assert "self.icons.button('candidate_review', self.colors['primary'])" in block
-    assert "self.icons.button('ai_spark', self.colors['primary'])" in block
-    assert 'label=" 查看详情"' not in block
-    assert 'label=" 加入联系清单"' in block
-    assert 'label=" 确认并加入联系清单"' in block
-    assert 'label=" 打招呼"' not in block
+    assert 'label="查看与复核"' in menus
+    assert '("candidate_review", "primary")' in menus
+    assert '("ai_spark", "primary")' in menus
+    assert 'label="查看详情"' not in menus
+    assert 'label="加入联系清单"' in menus
+    assert 'label="确认并加入联系清单"' in menus
+    assert 'label="打招呼"' not in menus
     assert "candidate_greet_skip_reason(candidate)" in block
-    assert "not _candidate_has_ai_eval(candidate)" in block
-    assert "candidate.get('qualification_status') == 'manual_review'" in block
-    assert 'label=" 导出选中"' not in block
+    assert "has_ai_evaluation=_candidate_has_ai_eval(candidate)" in block
+    assert 'candidate.get("qualification_status") == "manual_review"' in block
+    single_menu = menus[menus.index("def show_candidate_context_menu"):]
+    single_menu = single_menu[:single_menu.index("\ndef show_candidate_batch_menu")]
+    assert 'label="导出选中"' not in single_menu
+
+
+def test_candidate_context_menu_controller_passes_business_eligibility_state():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._greet_queue_item_for_candidate = Mock(return_value=None)
+    gui._ai_eval_selected_candidates = Mock()
+    gui._import_resume = Mock()
+    gui._revert_resume_eval = Mock()
+    gui._confirm_manual_review = Mock()
+    gui._confirm_review_rejection = Mock()
+    gui._add_candidates_to_greet_queue = Mock()
+    gui._focus_candidate_in_greet_queue = Mock()
+    gui._approve_candidate_contact_and_queue = Mock()
+    gui._mark_candidate_followup = Mock()
+    gui._mark_candidate_feedback = Mock()
+    gui._blacklist_candidate = Mock()
+    gui._unblacklist_candidate = Mock()
+    candidate = {
+        "geek_id": "g1",
+        "qualification_status": "manual_review",
+        "manual_review_required": True,
+        "resume_eval_adjustment": 5,
+    }
+
+    with (
+        patch.object(
+            gui_main,
+            "derive_candidate_decision",
+            return_value=types.SimpleNamespace(review_status="pending"),
+        ),
+        patch.object(gui_main, "candidate_greet_skip_reason", return_value="待复核"),
+        patch.object(
+            gui_main,
+            "candidate_can_manual_approve_contact",
+            return_value=True,
+        ),
+        patch.object(
+            gui_main.gui_candidate_menus,
+            "show_candidate_context_menu",
+        ) as show_menu,
+    ):
+        gui._build_candidate_context_menu(
+            Mock(),
+            Mock(),
+            "row-1",
+            candidate,
+            Mock(),
+            Mock(),
+            100,
+            200,
+        )
+
+    state = show_menu.call_args.kwargs["state"]
+    assert state.needs_review is True
+    assert state.can_confirm_review is True
+    assert state.has_resume_adjustment is True
+    assert state.queue_action == "approve"
+    assert state.blacklisted is False
 
 
 def test_candidate_detail_explains_ai_failure_and_retained_rule_score():
@@ -5296,9 +5357,10 @@ def test_result_page_hides_technical_json_button():
 def test_batch_greet_context_menu_adds_to_queue_instead_of_direct_send():
     """多选右键只加入队列，不再直接启动批量发送黑盒流程。"""
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    menus = Path("gui_candidate_menus.py").read_text(encoding="utf-8")
 
-    assert 'label=" 加入联系清单"' in source
-    assert 'menu.add_command(label=" 批量打招呼"' not in source
+    assert 'label="加入联系清单"' in menus
+    assert 'label="批量打招呼"' not in menus
     assert "_collect_selected_candidates_for_queue" in source
     assert "_add_candidates_to_greet_queue" in source
 
@@ -6390,6 +6452,7 @@ def test_daily_action_due_uses_explicit_immediate_and_unscheduled_labels():
 def test_daily_resume_action_promotes_resume_context_menu_entry():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     action_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
+    menus = Path("gui_candidate_menus.py").read_text(encoding="utf-8")
     menu_block = source[source.index("def _show_candidate_workflow_context_menu"):]
     menu_block = menu_block[:menu_block.index("\n    def _bind_treeview_sorting")]
     result_menu_block = source[source.index("def _build_candidate_context_menu"):]
@@ -6397,26 +6460,28 @@ def test_daily_resume_action_promotes_resume_context_menu_entry():
 
     assert 'item.group == "待完成简历评估"' in action_block
     assert '"resume"' in action_block
-    assert 'label=" 导入简历 / 二次评估"' in menu_block
-    assert 'label=" 导入简历 / 二次评估"' in result_menu_block
-    assert 'elif primary_action == "resume":' in menu_block
+    assert 'label="导入简历 / 二次评估"' in menus
+    assert "import_resume=lambda:" in menu_block
+    assert "import_resume=lambda:" in result_menu_block
+    assert 'elif state.primary_action == "resume":' in menus
 
 
 def test_workflow_context_menu_opens_review_and_uses_shared_decision_rules():
     source = Path("gui_main.py").read_text(encoding="utf-8")
+    menus = Path("gui_candidate_menus.py").read_text(encoding="utf-8")
     menu_block = source[source.index("def _show_candidate_workflow_context_menu"):]
     menu_block = menu_block[:menu_block.index("\n    def _bind_treeview_sorting")]
 
-    assert 'label=" 查看与复核"' in menu_block
-    assert "self.icons.button('candidate_review', self.colors['primary'])" in menu_block
-    assert 'label=" 查看详情"' not in menu_block
+    assert 'label="查看与复核"' in menus
+    assert '("candidate_review", "primary")' in menus
+    assert 'label="查看详情"' not in menus
     assert "self._open_candidate_review_workbench(candidate)" in menu_block
     assert "candidate_greet_skip_reason(candidate)" in menu_block
     assert "candidate_can_manual_approve_contact(candidate)" in menu_block
-    assert 'label=" 确认并加入联系清单"' in menu_block
-    assert 'label=" 确认不通过"' in menu_block
-    assert "candidate.get('qualification_status') == 'manual_review'" in menu_block
-    assert 'label=" 核实发送结果"' in menu_block
+    assert 'label="确认并加入联系清单"' in menus
+    assert 'label="确认不通过"' in menus
+    assert 'candidate.get("qualification_status") == "manual_review"' in menu_block
+    assert 'label="核实发送结果"' in menus
     assert "self._focus_candidate_in_greet_queue(candidate)" in menu_block
 
 
@@ -6551,16 +6616,18 @@ def test_focus_candidate_in_greet_queue_uses_actual_status_group():
 def test_daily_followup_action_promotes_followup_context_menu_entry():
     source = Path("gui_main.py").read_text(encoding="utf-8")
     action_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
+    menus = Path("gui_candidate_menus.py").read_text(encoding="utf-8")
     menu_block = source[source.index("def _show_candidate_workflow_context_menu"):]
     menu_block = menu_block[:menu_block.index("\n    def _bind_treeview_sorting")]
 
     assert '"待约面待推进"' in action_block
     assert '"面试后待反馈"' in action_block
-    assert 'label=" 更新跟进"' in menu_block
-    assert 'elif primary_action == "followup":' in menu_block
-    assert 'label=" 标记已回复"' in menu_block
-    assert 'label=" 推进到待约面"' in menu_block
-    assert 'label=" 明天再跟进"' in menu_block
+    assert 'label="更新跟进"' in menus
+    assert 'elif state.primary_action == "followup":' in menus
+    assert 'label="标记已回复"' in menus
+    assert 'label="推进到待约面"' in menus
+    assert 'label="明天再跟进"' in menus
+    assert "follow_up_tomorrow=lambda:" in menu_block
 
 
 def test_followup_dialog_supports_due_date_quick_choices_and_persistence():

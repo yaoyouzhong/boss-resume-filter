@@ -9,6 +9,7 @@ import contact_presenter
 import gui_dialogs
 import gui_candidate_actions
 import gui_candidate_diagnostics
+import gui_candidate_menus
 import gui_candidate_review
 import gui_candidate_state_dialogs
 import gui_contact_queue
@@ -129,6 +130,7 @@ def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():
     for module_name in (
         "gui_candidate_actions",
         "gui_candidate_diagnostics",
+        "gui_candidate_menus",
         "gui_candidate_review",
         "gui_candidate_state_dialogs",
         "gui_candidate_workbench",
@@ -887,6 +889,133 @@ def test_candidate_feedback_persistence_and_state_sync_remain_in_controller():
     assert "self._update_candidate_feedback(" in controller
     assert "candidate.pop(\"contact_approved_at\", None)" in controller
     assert "self._sync_greet_queue_candidate_state(candidate)" in controller
+
+
+def test_candidate_menu_builders_only_consume_explicit_state_and_callbacks():
+    source = (ROOT / "gui_candidate_menus.py").read_text(encoding="utf-8")
+
+    assert "derive_candidate_decision" not in source
+    assert "candidate_greet_skip_reason" not in source
+    assert "candidate_can_manual_approve_contact" not in source
+    assert "candidate.get(" not in source
+    assert "CANDIDATES_PATH" not in source
+
+
+def test_candidate_menu_compatibility_methods_delegate_tk_construction():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    workflow = source[source.index("def _show_candidate_workflow_context_menu"):]
+    workflow = workflow[:workflow.index("\n    def _bind_treeview_sorting")]
+    batch = source[source.index("def _show_context_menu"):]
+    batch = batch[:batch.index("\n    def _build_candidate_context_menu")]
+    single = source[source.index("def _build_candidate_context_menu"):]
+    single = single[:single.index("\n    def _find_candidate_by_tree_item")]
+
+    assert "gui_candidate_menus.show_workflow_candidate_menu(" in workflow
+    assert "gui_candidate_menus.show_candidate_batch_menu(" in batch
+    assert "gui_candidate_menus.show_candidate_context_menu(" in single
+    assert "tk.Menu" not in workflow + batch + single
+    assert "menu.add_command" not in workflow + batch + single
+    assert "derive_candidate_decision(candidate)" in workflow
+    assert "derive_candidate_decision(candidate)" in single
+    assert "candidate_greet_skip_reason(candidate)" in workflow
+    assert "candidate_greet_skip_reason(candidate)" in single
+
+
+def test_workflow_candidate_menu_preserves_primary_and_quick_action_order():
+    host = Mock()
+    host.font_scale = 1.0
+    host.colors = {
+        "primary": "primary",
+        "success": "success",
+        "danger": "danger",
+        "text_primary": "text",
+    }
+    host.icons.button.side_effect = lambda name, color: (name, color)
+    menu = Mock()
+    callback_values = {
+        name: Mock()
+        for name in (
+            gui_candidate_menus.WorkflowCandidateMenuCallbacks
+            .__dataclass_fields__
+        )
+    }
+    callbacks = gui_candidate_menus.WorkflowCandidateMenuCallbacks(
+        **callback_values
+    )
+    state = gui_candidate_menus.WorkflowCandidateMenuState(
+        primary_action="followup",
+        needs_review=False,
+        can_confirm_review=False,
+        needs_send_verification=False,
+        has_active_queue_item=False,
+        can_queue=True,
+        can_approve_queue=False,
+        greet_sent=True,
+        followup_status="已打招呼",
+        blacklisted=False,
+    )
+
+    with patch.object(gui_candidate_menus.tk, "Menu", return_value=menu):
+        result = gui_candidate_menus.show_workflow_candidate_menu(
+            host,
+            Mock(),
+            100,
+            200,
+            font_family="Microsoft YaHei UI",
+            state=state,
+            callbacks=callbacks,
+        )
+
+    labels = [item.kwargs["label"] for item in menu.add_command.call_args_list]
+    assert result is menu
+    assert labels[0] == " 更新跟进"
+    assert labels.count(" 更新跟进") == 1
+    assert " 查看与复核" in labels
+    assert " 加入联系清单" in labels
+    assert " 标记已回复" in labels
+    assert " 推进到待约面" in labels
+    assert " 明天再跟进" in labels
+    assert labels[-1] == " 加入黑名单"
+    menu.tk_popup.assert_called_once_with(100, 200)
+
+
+def test_candidate_batch_menu_keeps_one_icon_alignment_prefix():
+    host = Mock()
+    host.font_scale = 1.0
+    host.colors = {
+        "primary": "primary",
+        "success": "success",
+        "text_primary": "text",
+    }
+    host.icons.button.side_effect = lambda name, color: (name, color)
+    menu = Mock()
+    callbacks = gui_candidate_menus.CandidateBatchMenuCallbacks(
+        **{
+            name: Mock()
+            for name in (
+                gui_candidate_menus.CandidateBatchMenuCallbacks
+                .__dataclass_fields__
+            )
+        }
+    )
+
+    with patch.object(gui_candidate_menus.tk, "Menu", return_value=menu):
+        gui_candidate_menus.show_candidate_batch_menu(
+            host,
+            Mock(),
+            10,
+            20,
+            font_family="Microsoft YaHei UI",
+            state=gui_candidate_menus.CandidateBatchMenuState(
+                ai_label=" 批量AI评估（2人）",
+                can_confirm_review=False,
+            ),
+            callbacks=callbacks,
+        )
+
+    labels = [item.kwargs["label"] for item in menu.add_command.call_args_list]
+    assert " 批量AI评估（2人）" in labels
+    assert "  批量AI评估（2人）" not in labels
 
 
 def test_candidate_review_compatibility_method_delegates_window_construction():

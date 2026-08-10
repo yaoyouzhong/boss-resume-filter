@@ -34,6 +34,7 @@ import candidate_diagnostics_presenter
 import contact_presenter
 import gui_candidate_actions
 import gui_candidate_diagnostics
+import gui_candidate_menus
 import gui_candidate_review
 import gui_candidate_state_dialogs
 import gui_candidate_workbench
@@ -12258,236 +12259,131 @@ class BossFilterGUI:
         """Show candidate actions inside diagnostics/action dialogs."""
         if not candidate:
             return
-        context_menu_font = (FONT_FAMILY, int(11 * self.font_scale))
-        menu = tk.Menu(parent, tearoff=0, font=context_menu_font)
-
-        icon_detail = self.icons.button('candidate_review', self.colors['primary'])
-        icon_queue = self.icons.button('chat', self.colors['success'])
-        icon_confirm = self.icons.button('stamp_check', self.colors['success'])
-        icon_followup = self.icons.button('pencil', self.colors['primary'])
-        icon_feedback = self.icons.button('check', self.colors['primary'])
-        icon_document = self.icons.button('document', self.colors['primary'])
-        icon_blacklist = self.icons.button('close', self.colors['danger'])
-        icon_unblacklist = self.icons.button('check', self.colors['success'])
-        menu._icon_refs = [
-            icon_detail, icon_queue, icon_confirm, icon_followup,
-            icon_feedback, icon_document, icon_blacklist, icon_unblacklist,
-        ]
 
         def refresh_later():
             if refresh_fn:
                 parent.after(150, refresh_fn)
 
-        def add_confirm():
-            menu.add_command(
-                label=" 确认通过",
-                image=icon_confirm,
-                compound=tk.LEFT,
-                command=lambda: self._confirm_manual_review(
-                    None, candidate=candidate, parent=parent, on_saved=refresh_later
-                ),
-            )
-
-        def add_queue():
-            menu.add_command(
-                label=" 加入联系清单",
-                image=icon_queue,
-                compound=tk.LEFT,
-                command=lambda: (
-                    self._add_candidates_to_greet_queue([candidate], parent=parent),
-                    refresh_later(),
-                ),
-            )
-
-        def add_reject():
-            menu.add_command(
-                label=" 确认不通过",
-                image=icon_blacklist,
-                compound=tk.LEFT,
-                command=lambda: self._confirm_review_rejection(
-                    None, candidate=candidate, parent=parent, on_saved=refresh_later
-                ),
-            )
-
-        def add_focus_queue():
-            menu.add_command(
-                label=" 查看联系清单",
-                image=icon_queue,
-                compound=tk.LEFT,
-                command=lambda: self._focus_candidate_in_greet_queue(candidate),
-            )
-
-        def add_approve_queue():
-            menu.add_command(
-                label=" 确认并加入联系清单",
-                image=icon_queue,
-                compound=tk.LEFT,
-                command=lambda: self._approve_candidate_contact_and_queue(
-                    candidate,
-                    parent=parent,
-                    on_saved=refresh_later,
-                ),
-            )
-
-        def add_verify_sent():
-            menu.add_command(
-                label=" 核实发送结果",
-                image=icon_confirm,
-                compound=tk.LEFT,
-                command=lambda: self._focus_candidate_in_greet_queue(candidate),
-            )
-
-        def add_resume():
-            menu.add_command(
-                label=" 导入简历 / 二次评估",
-                image=icon_document,
-                compound=tk.LEFT,
-                command=lambda: (
-                    self._import_resume(None, candidate=candidate, parent=parent),
-                    refresh_later(),
-                ),
-            )
-
-        def add_followup():
-            menu.add_command(
-                label=" 更新跟进",
-                image=icon_followup,
-                compound=tk.LEFT,
-                command=lambda: self._mark_candidate_followup(
-                    None, candidate=candidate, parent=parent, on_saved=refresh_later
-                ),
-            )
-
-        def add_quick_followup_actions():
-            current_status = str(
-                candidate.get('followup_status')
-                or ("已打招呼" if candidate.get('greet_sent') else "未沟通")
-            )
-            if current_status not in ("已回复", "待约面", "已约面", "不合适", "已归档"):
-                menu.add_command(
-                    label=" 标记已回复",
-                    image=icon_followup,
-                    compound=tk.LEFT,
-                    command=lambda: self._quick_update_candidate_followup(
-                        candidate, "已回复", parent, refresh_later
-                    ),
-                )
-            if current_status not in ("待约面", "已约面", "不合适", "已归档"):
-                menu.add_command(
-                    label=" 推进到待约面",
-                    image=icon_confirm,
-                    compound=tk.LEFT,
-                    command=lambda: self._quick_update_candidate_followup(
-                        candidate, "待约面", parent, refresh_later
-                    ),
-                )
-            if current_status in ("已打招呼", "待约面", "已约面"):
-                menu.add_command(
-                    label=" 明天再跟进",
-                    image=icon_followup,
-                    compound=tk.LEFT,
-                    command=lambda: self._quick_update_candidate_followup(
-                        candidate,
-                        current_status,
-                        parent,
-                        refresh_later,
-                        days=1,
-                    ),
-                )
-
-        needs_review = derive_candidate_decision(candidate).review_status == "pending"
+        decision = derive_candidate_decision(candidate)
+        needs_review = decision.review_status == "pending"
         can_confirm_review = needs_review and (
-            candidate.get('manual_review_required')
-            or candidate.get('qualification_status') == 'manual_review'
+            candidate.get("manual_review_required")
+            or candidate.get("qualification_status") == "manual_review"
         )
-        needs_send_verification = bool(candidate.get('greet_confirmation_pending'))
         active_queue_item = self._greet_queue_item_for_candidate(
-            candidate, active_only=True
+            candidate,
+            active_only=True,
         )
-        can_queue = (
-            active_queue_item is None
-            and not candidate_greet_skip_reason(candidate)
+        followup_status = str(
+            candidate.get("followup_status")
+            or ("已打招呼" if candidate.get("greet_sent") else "未沟通")
         )
-        can_approve_queue = candidate_can_manual_approve_contact(candidate)
-
-        if needs_send_verification:
-            add_verify_sent()
-            menu.add_separator()
-        elif primary_action == "confirm" and can_confirm_review:
-            add_confirm()
-            menu.add_separator()
-        elif primary_action == "confirm" and can_approve_queue:
-            add_approve_queue()
-            menu.add_separator()
-        elif primary_action == "queue" and can_queue:
-            add_queue()
-            menu.add_separator()
-        elif primary_action == "resume":
-            add_resume()
-            menu.add_separator()
-        elif primary_action == "followup":
-            add_followup()
-            menu.add_separator()
-
-        menu.add_command(
-            label=" 查看与复核",
-            image=icon_detail,
-            compound=tk.LEFT,
-            command=lambda: self._open_candidate_review_workbench(candidate),
+        state = gui_candidate_menus.WorkflowCandidateMenuState(
+            primary_action=primary_action,
+            needs_review=needs_review,
+            can_confirm_review=can_confirm_review,
+            needs_send_verification=bool(
+                candidate.get("greet_confirmation_pending")
+            ),
+            has_active_queue_item=active_queue_item is not None,
+            can_queue=(
+                active_queue_item is None
+                and not candidate_greet_skip_reason(candidate)
+            ),
+            can_approve_queue=candidate_can_manual_approve_contact(candidate),
+            greet_sent=bool(candidate.get("greet_sent")),
+            followup_status=followup_status,
+            blacklisted=bool(candidate.get("blacklisted")),
         )
-
-        if can_confirm_review and primary_action != "confirm":
-            add_confirm()
-        if needs_review:
-            add_reject()
-
-        if active_queue_item is not None:
-            add_focus_queue()
-        elif can_queue and primary_action != "queue":
-            add_queue()
-        elif can_approve_queue and not (
-            primary_action == "confirm" and not can_confirm_review
-        ):
-            add_approve_queue()
-
-        if primary_action != "followup":
-            add_followup()
-        if candidate.get('greet_sent') or candidate.get('followup_status') in (
-            "已回复", "待约面", "已约面"
-        ):
-            menu.add_separator()
-            add_quick_followup_actions()
-        menu.add_command(
-            label=" 标记反馈",
-            image=icon_feedback,
-            compound=tk.LEFT,
-            command=lambda: self._mark_candidate_feedback(
-                None, candidate=candidate, parent=parent, on_saved=refresh_later
+        callbacks = gui_candidate_menus.WorkflowCandidateMenuCallbacks(
+            view_detail=lambda: self._open_candidate_review_workbench(candidate),
+            confirm_review=lambda: self._confirm_manual_review(
+                None,
+                candidate=candidate,
+                parent=parent,
+                on_saved=refresh_later,
+            ),
+            reject_review=lambda: self._confirm_review_rejection(
+                None,
+                candidate=candidate,
+                parent=parent,
+                on_saved=refresh_later,
+            ),
+            add_queue=lambda: (
+                self._add_candidates_to_greet_queue(
+                    [candidate],
+                    parent=parent,
+                ),
+                refresh_later(),
+            ),
+            focus_queue=lambda: self._focus_candidate_in_greet_queue(candidate),
+            approve_queue=lambda: self._approve_candidate_contact_and_queue(
+                candidate,
+                parent=parent,
+                on_saved=refresh_later,
+            ),
+            verify_sent=lambda: self._focus_candidate_in_greet_queue(candidate),
+            import_resume=lambda: (
+                self._import_resume(
+                    None,
+                    candidate=candidate,
+                    parent=parent,
+                ),
+                refresh_later(),
+            ),
+            update_followup=lambda: self._mark_candidate_followup(
+                None,
+                candidate=candidate,
+                parent=parent,
+                on_saved=refresh_later,
+            ),
+            mark_replied=lambda: self._quick_update_candidate_followup(
+                candidate,
+                "已回复",
+                parent,
+                refresh_later,
+            ),
+            advance_to_interview=lambda: self._quick_update_candidate_followup(
+                candidate,
+                "待约面",
+                parent,
+                refresh_later,
+            ),
+            follow_up_tomorrow=lambda: self._quick_update_candidate_followup(
+                candidate,
+                followup_status,
+                parent,
+                refresh_later,
+                days=1,
+            ),
+            mark_feedback=lambda: self._mark_candidate_feedback(
+                None,
+                candidate=candidate,
+                parent=parent,
+                on_saved=refresh_later,
+            ),
+            add_blacklist=lambda: self._blacklist_candidate(
+                None,
+                candidate=candidate,
+                parent=parent,
+                on_saved=refresh_later,
+            ),
+            remove_blacklist=lambda: self._unblacklist_candidate(
+                None,
+                candidate=candidate,
+                parent=parent,
+                on_saved=refresh_later,
             ),
         )
-        if primary_action != "resume":
-            add_resume()
-
-        if candidate.get('blacklisted'):
-            menu.add_command(
-                label=" 移出黑名单",
-                image=icon_unblacklist,
-                compound=tk.LEFT,
-                command=lambda: self._unblacklist_candidate(
-                    None, candidate=candidate, parent=parent, on_saved=refresh_later
-                ),
-            )
-        else:
-            menu.add_command(
-                label=" 加入黑名单",
-                image=icon_blacklist,
-                compound=tk.LEFT,
-                command=lambda: self._blacklist_candidate(
-                    None, candidate=candidate, parent=parent, on_saved=refresh_later
-                ),
-            )
-
-        menu.tk_popup(x_root, y_root)
+        gui_candidate_menus.show_workflow_candidate_menu(
+            self,
+            parent,
+            x_root,
+            y_root,
+            font_family=FONT_FAMILY,
+            state=state,
+            callbacks=callbacks,
+        )
 
     def _bind_treeview_sorting(self):
         """绑定 Treeview 表头排序功能"""
@@ -13188,57 +13084,51 @@ class BossFilterGUI:
         item = self.result_tree.identify_row(event.y)
         if not item:
             return
-        # 右键点击的行已在多选集合内时，保持现有选区
         if item not in self.result_tree.selection():
             self.result_tree.selection_set(item)
 
         selection = self.result_tree.selection()
-        # 多选时显示批量操作功能
         if len(selection) > 1:
-            context_menu_font = (FONT_FAMILY, int(11 * self.font_scale))
-            menu = tk.Menu(self.root, tearoff=0, font=context_menu_font)
-            icon_export_menu = self.icons.button('export', self.colors['text_primary'])
-            icon_trash_menu = self.icons.button('trash', self.colors['text_primary'])
-            icon_greet = self.icons.button('chat', self.colors['success'])
-            menu._icon_refs = [icon_export_menu, icon_trash_menu, icon_greet]
-
-            def remove_selected():
-                self._remove_selected_candidates()
-
-            menu.add_command(
-                label=" 加入联系清单",
-                image=icon_greet,
-                compound=tk.LEFT,
-                command=lambda: self._add_candidates_to_greet_queue(
-                    self._collect_selected_candidates_for_queue(selection, [self.result_tree_data], self.result_tree),
-                    parent=self.root,
+            selected_candidates = []
+            for selected_item in selection:
+                candidate = self._find_candidate_by_tree_item(selected_item)
+                if candidate:
+                    selected_candidates.append(candidate)
+            state = gui_candidate_menus.CandidateBatchMenuState(
+                ai_label=self._batch_ai_eval_menu_label(selected_candidates),
+                can_confirm_review=any(
+                    candidate.get("manual_review_required")
+                    for candidate in selected_candidates
                 ),
             )
-
-            # 批量AI评估选项
-            selected_candidates = []
-            for sel_item in selection:
-                c = self._find_candidate_by_tree_item(sel_item)
-                if c:
-                    selected_candidates.append(c)
-            ai_label = self._batch_ai_eval_menu_label(selected_candidates)
-            if ai_label:
-                icon_ai_eval = self.icons.button('ai_spark', self.colors['primary'])
-                menu._icon_refs.append(icon_ai_eval)
-                menu.add_command(label=ai_label, image=icon_ai_eval, compound=tk.LEFT,
-                                 command=lambda: self._ai_eval_selected_candidates(selected_candidates))
-            if any(c.get('manual_review_required') for c in selected_candidates):
-                icon_confirm = self.icons.button('stamp_check', self.colors['success'])
-                menu._icon_refs.append(icon_confirm)
-                menu.add_command(label=" 批量确认通过", image=icon_confirm, compound=tk.LEFT,
-                                 command=lambda: self._batch_confirm_manual_review(selected_candidates, parent=self.root))
-
-            menu.add_command(label=" 移除选中", image=icon_trash_menu, compound=tk.LEFT,
-                             command=remove_selected)
-            menu.add_separator()
-            menu.add_command(label=" 导出选中", image=icon_export_menu, compound=tk.LEFT,
-                             command=lambda: self._export_selected())
-            menu.tk_popup(event.x_root, event.y_root)
+            callbacks = gui_candidate_menus.CandidateBatchMenuCallbacks(
+                add_queue=lambda: self._add_candidates_to_greet_queue(
+                    self._collect_selected_candidates_for_queue(
+                        selection,
+                        [self.result_tree_data],
+                        self.result_tree,
+                    ),
+                    parent=self.root,
+                ),
+                evaluate_ai=lambda: self._ai_eval_selected_candidates(
+                    selected_candidates
+                ),
+                confirm_review=lambda: self._batch_confirm_manual_review(
+                    selected_candidates,
+                    parent=self.root,
+                ),
+                remove_selected=self._remove_selected_candidates,
+                export_selected=self._export_selected,
+            )
+            gui_candidate_menus.show_candidate_batch_menu(
+                self,
+                self.root,
+                event.x_root,
+                event.y_root,
+                font_family=FONT_FAMILY,
+                state=state,
+                callbacks=callbacks,
+            )
             return
 
         candidate = self._find_candidate_by_tree_item(item)
@@ -13255,122 +13145,114 @@ class BossFilterGUI:
             y_root=event.y_root,
         )
 
-    def _build_candidate_context_menu(self, parent, tree, tree_item, candidate,
-                                       show_detail_fn, remove_fn, x_root, y_root):
+    def _build_candidate_context_menu(
+        self,
+        parent,
+        tree,
+        tree_item,
+        candidate,
+        show_detail_fn,
+        remove_fn,
+        x_root,
+        y_root,
+    ):
         """构建候选人右键菜单（筛选结果页和详细列表窗口共用）。"""
-        context_menu_font = (FONT_FAMILY, int(11 * self.font_scale))
-        menu = tk.Menu(parent, tearoff=0, font=context_menu_font)
-
-        icon_detail = self.icons.button('candidate_review', self.colors['primary'])
-        icon_document = self.icons.button('document', self.colors['primary'])
-        icon_greet = self.icons.button('chat', self.colors['success'])
-        icon_followup = self.icons.button('pencil', self.colors['primary'])
-        icon_feedback = self.icons.button('check', self.colors['primary'])
-        icon_blacklist = self.icons.button('close', self.colors['danger'])
-        icon_unblacklist = self.icons.button('check', self.colors['success'])
-        icon_trash_menu = self.icons.button('trash', self.colors['text_primary'])
-        icon_undo = self.icons.button('refresh', self.colors['text_primary'])
-
-        icon_refs = [icon_detail, icon_document, icon_greet, icon_followup,
-                     icon_feedback, icon_blacklist, icon_unblacklist,
-                     icon_trash_menu, icon_undo]
-        menu._icon_refs = icon_refs
-
-        menu.add_command(label=" 查看与复核", image=icon_detail, compound=tk.LEFT,
-                         command=show_detail_fn)
-
-        # 任意一轮 AI 评估完成后都不再提供一次评估入口。
-        if not _candidate_has_ai_eval(candidate):
-            icon_ai_eval = self.icons.button('ai_spark', self.colors['primary'])
-            menu._icon_refs.append(icon_ai_eval)
-            menu.add_command(label=" AI评估", image=icon_ai_eval, compound=tk.LEFT,
-                             command=lambda: self._ai_eval_selected_candidates([candidate]))
-
-        menu.add_command(label=" 导入简历 / 二次评估", image=icon_document, compound=tk.LEFT,
-                         command=lambda: self._import_resume(
-                             None, candidate=candidate, parent=parent,
-                             tree=tree, tree_item=tree_item))
-
-        if candidate.get('resume_eval_adjustment') is not None:
-            menu.add_command(label=" 撤销简历评估", image=icon_undo, compound=tk.LEFT,
-                             command=lambda: self._revert_resume_eval(
-                                 None, candidate=candidate, parent=parent))
-
         decision = derive_candidate_decision(candidate)
-        if (
+        can_confirm_review = (
             decision.review_status == "pending"
             and (
-                candidate.get('manual_review_required')
-                or candidate.get('qualification_status') == 'manual_review'
+                candidate.get("manual_review_required")
+                or candidate.get("qualification_status") == "manual_review"
             )
-        ):
-            icon_confirm = self.icons.button('stamp_check', self.colors['success'])
-            menu._icon_refs.append(icon_confirm)
-            menu.add_command(label=" 确认通过", image=icon_confirm, compound=tk.LEFT,
-                             command=lambda: self._confirm_manual_review(
-                                 None, candidate=candidate, parent=parent))
-        if decision.review_status == "pending":
-            icon_reject = self.icons.button('close', self.colors['danger'])
-            menu._icon_refs.append(icon_reject)
-            menu.add_command(
-                label=" 确认不通过",
-                image=icon_reject,
-                compound=tk.LEFT,
-                command=lambda: self._confirm_review_rejection(
-                    None, candidate=candidate, parent=parent
-                ),
-            )
-
+        )
         active_queue_item = self._greet_queue_item_for_candidate(
-            candidate, active_only=True
+            candidate,
+            active_only=True,
         )
         if active_queue_item is not None:
-            menu.add_command(
-                label=" 查看联系清单",
-                image=icon_greet,
-                compound=tk.LEFT,
-                command=lambda: self._focus_candidate_in_greet_queue(candidate),
-            )
+            queue_action = "focus"
         elif not candidate_greet_skip_reason(candidate):
-            menu.add_command(
-                label=" 加入联系清单",
-                image=icon_greet,
-                compound=tk.LEFT,
-                command=lambda: self._add_candidates_to_greet_queue(
-                    [candidate], parent=parent
-                ),
-            )
+            queue_action = "add"
         elif candidate_can_manual_approve_contact(candidate):
-            menu.add_command(
-                label=" 确认并加入联系清单",
-                image=icon_greet,
-                compound=tk.LEFT,
-                command=lambda: self._approve_candidate_contact_and_queue(
-                    candidate,
-                    parent=parent,
-                ),
-            )
-
-        menu.add_command(label=" 更新跟进", image=icon_followup, compound=tk.LEFT,
-                         command=lambda: self._mark_candidate_followup(
-                             None, candidate=candidate, parent=parent))
-        menu.add_command(label=" 标记反馈", image=icon_feedback, compound=tk.LEFT,
-                         command=lambda: self._mark_candidate_feedback(
-                             None, candidate=candidate, parent=parent))
-
-        if candidate.get('blacklisted'):
-            menu.add_command(label=" 移出黑名单", image=icon_unblacklist, compound=tk.LEFT,
-                             command=lambda: self._unblacklist_candidate(
-                                 None, candidate=candidate, parent=parent))
+            queue_action = "approve"
         else:
-            menu.add_command(label=" 加入黑名单", image=icon_blacklist, compound=tk.LEFT,
-                             command=lambda: self._blacklist_candidate(
-                                 None, candidate=candidate, parent=parent))
+            queue_action = "none"
 
-        menu.add_command(label=" 移除此人", image=icon_trash_menu, compound=tk.LEFT,
-                         command=remove_fn)
-
-        menu.tk_popup(x_root, y_root)
+        state = gui_candidate_menus.CandidateContextMenuState(
+            has_ai_evaluation=_candidate_has_ai_eval(candidate),
+            has_resume_adjustment=(
+                candidate.get("resume_eval_adjustment") is not None
+            ),
+            needs_review=decision.review_status == "pending",
+            can_confirm_review=can_confirm_review,
+            queue_action=queue_action,
+            blacklisted=bool(candidate.get("blacklisted")),
+        )
+        callbacks = gui_candidate_menus.CandidateContextMenuCallbacks(
+            view_detail=show_detail_fn,
+            evaluate_ai=lambda: self._ai_eval_selected_candidates([candidate]),
+            import_resume=lambda: self._import_resume(
+                None,
+                candidate=candidate,
+                parent=parent,
+                tree=tree,
+                tree_item=tree_item,
+            ),
+            revert_resume_evaluation=lambda: self._revert_resume_eval(
+                None,
+                candidate=candidate,
+                parent=parent,
+            ),
+            confirm_review=lambda: self._confirm_manual_review(
+                None,
+                candidate=candidate,
+                parent=parent,
+            ),
+            reject_review=lambda: self._confirm_review_rejection(
+                None,
+                candidate=candidate,
+                parent=parent,
+            ),
+            add_queue=lambda: self._add_candidates_to_greet_queue(
+                [candidate],
+                parent=parent,
+            ),
+            focus_queue=lambda: self._focus_candidate_in_greet_queue(candidate),
+            approve_queue=lambda: self._approve_candidate_contact_and_queue(
+                candidate,
+                parent=parent,
+            ),
+            update_followup=lambda: self._mark_candidate_followup(
+                None,
+                candidate=candidate,
+                parent=parent,
+            ),
+            mark_feedback=lambda: self._mark_candidate_feedback(
+                None,
+                candidate=candidate,
+                parent=parent,
+            ),
+            add_blacklist=lambda: self._blacklist_candidate(
+                None,
+                candidate=candidate,
+                parent=parent,
+            ),
+            remove_blacklist=lambda: self._unblacklist_candidate(
+                None,
+                candidate=candidate,
+                parent=parent,
+            ),
+            remove_candidate=remove_fn,
+        )
+        gui_candidate_menus.show_candidate_context_menu(
+            self,
+            parent,
+            x_root,
+            y_root,
+            font_family=FONT_FAMILY,
+            state=state,
+            callbacks=callbacks,
+        )
 
     def _find_candidate_by_tree_item(self, item):
         """按结果表选中行定位候选人记录。"""
