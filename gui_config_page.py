@@ -249,7 +249,7 @@ def build_config_page_steps(
     self.requirement_text.bind('<Enter>', lambda e: setattr(self, '_over_text_widget', True))
     self.requirement_text.bind('<Leave>', lambda e: setattr(self, '_over_text_widget', False))
 
-    self.bind_text_context_menu(self.requirement_text)
+    self.input_support.bind_text_context_menu(self.requirement_text)
 
     # 解析按钮
     self._parse_btn_frame = ttk.Frame(parse_frame, style='TFrame')
@@ -285,7 +285,7 @@ def build_config_page_steps(
     self.job_name_var = tk.StringVar()
     self.job_name_entry = ttk.Entry(row1, textvariable=self.job_name_var, width=22, font=self.font_label)
     self.job_name_entry.pack(side="left", padx=int(15 * self.dpi_scale * self.zoom_factor))
-    self.bind_entry_context_menu(self.job_name_entry)
+    self.input_support.bind_entry_context_menu(self.job_name_entry)
 
     basic_filter_input_width = 6
     secondary_filter_gap = int(30 * self.dpi_scale * self.zoom_factor)
@@ -451,7 +451,7 @@ def build_config_page_steps(
         side="left",
         padx=(int(15 * self.dpi_scale * self.zoom_factor), 0),
     )
-    self.bind_entry_context_menu(salary_min_entry)
+    self.input_support.bind_entry_context_menu(salary_min_entry)
     self.salary_min_entry = salary_min_entry
     ttk.Label(
         row_salary,
@@ -472,7 +472,7 @@ def build_config_page_steps(
         font=self.font_label,
     )
     salary_max_entry.pack(side="left")
-    self.bind_entry_context_menu(salary_max_entry)
+    self.input_support.bind_entry_context_menu(salary_max_entry)
     self.salary_max_entry = salary_max_entry
     ttk.Label(
         row_salary,
@@ -498,7 +498,7 @@ def build_config_page_steps(
     work_location_entry.pack(
         side="left", padx=(int(15 * self.dpi_scale * self.zoom_factor), 0)
     )
-    self.bind_entry_context_menu(work_location_entry)
+    self.input_support.bind_entry_context_menu(work_location_entry)
     ttk.Label(row_location, text="留空表示不限   多地点用 / 分隔，如：南京/上海",
               font=(font_family, int(10 * self.font_scale)),
               foreground=self.colors['text_secondary'], background=self.colors['bg_card']).pack(side="left", padx=(self.inline_note_gap, 0))
@@ -638,7 +638,7 @@ def build_config_page_steps(
         justify='left',
     )
     self.skill_weight_spinbox.pack(side="left")
-    self.bind_entry_context_menu(self.skill_weight_spinbox)
+    self.input_support.bind_entry_context_menu(self.skill_weight_spinbox)
     self.scroll_support.bind_bounded_spinbox_mousewheel(
         self.skill_weight_spinbox, self.new_skill_weight_var, 1, 3
     )
@@ -663,7 +663,7 @@ def build_config_page_steps(
     self.new_skill_var = tk.StringVar()
     skill_entry = ttk.Entry(add_card, textvariable=self.new_skill_var, font=self.font_label)
     skill_entry.pack(fill="x", pady=(0, int(8 * self.dpi_scale * self.zoom_factor)))
-    self.bind_entry_context_menu(skill_entry)
+    self.input_support.bind_entry_context_menu(skill_entry)
 
     # 权重输入框（标签和输入框同一行）
     weight_row = ttk.Frame(add_card, style='TFrame')
@@ -682,7 +682,7 @@ def build_config_page_steps(
         justify='left',
     )
     self.add_skill_weight_spinbox.pack(side="left")
-    self.bind_entry_context_menu(self.add_skill_weight_spinbox)
+    self.input_support.bind_entry_context_menu(self.add_skill_weight_spinbox)
     self.scroll_support.bind_bounded_spinbox_mousewheel(
         self.add_skill_weight_spinbox, self.new_skill_add_weight_var, 1, 3
     )
@@ -766,7 +766,7 @@ def build_config_page_steps(
     self.new_required_var = tk.StringVar()
     required_edit = ttk.Entry(required_edit_frame, textvariable=self.new_required_var, font=self.font_label)
     required_edit.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor), fill="x", expand=True)
-    self.bind_entry_context_menu(required_edit)
+    self.input_support.bind_entry_context_menu(required_edit)
     ttk.Button(required_edit_frame, text="添加", command=self.add_required_condition).pack(side="left", padx=(int(8 * self.dpi_scale * self.zoom_factor), int(3 * self.dpi_scale * self.zoom_factor)))
     ttk.Button(required_edit_frame, text="删除选中", command=self.delete_required_condition).pack(side="left", padx=(int(3 * self.dpi_scale * self.zoom_factor), 0))
 

@@ -31,6 +31,17 @@ class DailyActionLike(Protocol):
     due_at: str
 
 
+class InputSupport(Protocol):
+    def show_text_dialog(
+        self,
+        title: str,
+        text: str,
+        *,
+        width: int,
+        height: int,
+    ) -> None: ...
+
+
 class CandidateActionsHost(Protocol):
     """Narrow GUI contract required by the daily actions workbench."""
 
@@ -43,6 +54,7 @@ class CandidateActionsHost(Protocol):
     _tooltip_item: Any
     _tooltip: Any
     _tooltip_after_id: Any
+    input_support: InputSupport
 
     def _format_daily_action_key_info(self, item: DailyActionLike) -> str: ...
 
@@ -53,15 +65,6 @@ class CandidateActionsHost(Protocol):
     def _open_candidate_review_workbench(
         self,
         candidate: Mapping[str, Any],
-    ) -> None: ...
-
-    def _show_text_dialog(
-        self,
-        title: str,
-        text: str,
-        *,
-        width: int,
-        height: int,
     ) -> None: ...
 
     def _show_candidate_workflow_context_menu(
@@ -503,7 +506,12 @@ def show_daily_candidate_actions_dialog(
             f"为什么处理：{item.reason}",
             f"下一步：{item.action}",
         ])
-        self._show_text_dialog("今日待办详情", detail, width=620, height=360)
+        self.input_support.show_text_dialog(
+            "今日待办详情",
+            detail,
+            width=620,
+            height=360,
+        )
 
     tree.bind("<Double-Button-1>", show_detail)
     tree.bind("<<TreeviewSelect>>", update_selection_context)

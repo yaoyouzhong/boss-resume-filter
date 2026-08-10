@@ -20,6 +20,10 @@ class ScrollSupport(Protocol):
     def bind_mousewheel(self, canvas: tk.Canvas, frame: tk.Misc) -> None: ...
 
 
+class InputSupport(Protocol):
+    def bind_entry_context_menu(self, entry: tk.Misc) -> None: ...
+
+
 class EducationPageHost(Protocol):
     """Narrow host contract required to build the education page."""
 
@@ -33,6 +37,7 @@ class EducationPageHost(Protocol):
     icons: Any
     _context_menus: list[tk.Menu]
     scroll_support: ScrollSupport
+    input_support: InputSupport
 
     def _create_page_header(
         self,
@@ -70,8 +75,6 @@ class EducationPageHost(Protocol):
     def _rotate_education_image_cw90(self) -> None: ...
 
     def _schedule_education_preview_render(self) -> None: ...
-
-    def bind_entry_context_menu(self, entry: ttk.Entry) -> None: ...
 
     def _fill_chsi_page(self) -> None: ...
 
@@ -337,11 +340,11 @@ def build_education_page(
     ttk.Label(form, text="姓名", font=host.font_label).pack(anchor="w")
     name_entry = ttk.Entry(form, textvariable=name_var, font=host.font_label)
     name_entry.pack(fill="x", pady=(6, 16))
-    host.bind_entry_context_menu(name_entry)
+    host.input_support.bind_entry_context_menu(name_entry)
     ttk.Label(form, text="证书编号", font=host.font_label).pack(anchor="w")
     number_entry = ttk.Entry(form, textvariable=number_var, font=host.font_label)
     number_entry.pack(fill="x", pady=(6, 16))
-    host.bind_entry_context_menu(number_entry)
+    host.input_support.bind_entry_context_menu(number_entry)
 
     ttk.Label(
         form,

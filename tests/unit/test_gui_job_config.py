@@ -5602,7 +5602,7 @@ def test_greet_queue_add_filters_before_enqueue():
     assert 'reason = "已在队列"' in controller_block
     assert "items.append(build_item(candidate, source=source))" in controller_block
     assert "没有可加入联系清单的候选人" in add_block
-    assert "self._show_text_dialog(" in add_block
+    assert "self.input_support.show_text_dialog(" in add_block
     assert "messagebox.showinfo" not in add_block
 
 
@@ -5629,24 +5629,19 @@ def test_greet_queue_item_builds_only_sendable_pending_items():
 
 def test_text_dialog_keeps_scrollbar_buttons_and_horizontal_inset_visible():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    block = source[source.index("def _show_text_dialog"):]
-    block = block[:block.index("\n    def refresh_stats")]
+    support = Path("gui_input_support.py").read_text(encoding="utf-8")
+    block = support[support.index("def show_text_dialog"):]
     add_block = source[source.index("def _add_candidates_to_greet_queue"):]
     add_block = add_block[:add_block.index("\n    @staticmethod\n    def _format_greet_queue_skip_summary")]
 
     assert 'body.grid(row=0, column=0, sticky="nsew")' in block
-    assert 'scroll.grid(row=0, column=1, sticky="ns")' in block
-    assert 'btn_row.grid(row=1, column=0, sticky="ew")' in block
+    assert 'scrollbar.grid(row=0, column=1, sticky="ns")' in block
+    assert 'button_row.grid(row=1, column=0, sticky="ew")' in block
     assert 'text=button_text' in block
     assert add_block.count('button_text="确定"') == 2
     assert add_block.count('button_align="center"') == 2
     assert 'horizontal_padding if button_align == "center" else 0' not in block
-    assert (
-        'padding=(\n'
-        '                horizontal_padding,\n'
-        '                0,\n'
-        '                horizontal_padding,'
-    ) in block
+    assert "padding=(horizontal_padding, 0, horizontal_padding, int(12 * scale))" in block
     assert 'if button_align == "center":' in block
     assert "button.pack()" in block
 
@@ -8368,7 +8363,7 @@ def test_job_review_model_keeps_low_score_false_negative_as_evidence():
 
 def test_job_review_feedback_drilldown_keeps_low_score_feedback_evidence():
     gui = BossFilterGUI.__new__(BossFilterGUI)
-    gui._show_text_dialog = Mock()
+    gui.input_support = Mock()
 
     gui._show_job_review_feedback_candidates("Java", [{
         "name": "候选人甲",
@@ -8378,7 +8373,7 @@ def test_job_review_feedback_drilldown_keeps_low_score_feedback_evidence():
         "feedback_note": "完整简历符合要求",
     }])
 
-    text = gui._show_text_dialog.call_args.args[1]
+    text = gui.input_support.show_text_dialog.call_args.args[1]
     assert "候选人甲｜40 分｜误杀" in text
     assert "规则过窄、AI 低估" in text
     assert "完整简历符合要求" in text

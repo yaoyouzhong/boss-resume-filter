@@ -26,6 +26,7 @@ import gui_config_page
 import gui_data_maintenance_dialogs
 import gui_education_page
 import gui_home_page
+import gui_input_support
 import gui_job_review
 import gui_main
 import gui_model_catalog_dialog
@@ -474,6 +475,53 @@ def test_gui_scroll_support_excludes_business_storage_browser_and_gui_main_depen
     ):
         page_source = (ROOT / page_module).read_text(encoding="utf-8")
         assert ".scroll_support." in page_source
+
+
+def test_gui_input_support_excludes_business_storage_browser_and_gui_main_dependencies():
+    forbidden = {
+        "bossmaster",
+        "browser_controller",
+        "candidate_workflow",
+        "contact_queue",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("gui_input_support") & forbidden)
+    assert callable(gui_input_support.InputSupport)
+
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    gui_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "BossFilterGUI"
+    )
+    method_names = {
+        node.name
+        for node in gui_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "self.input_support = gui_input_support.InputSupport(" in source
+    assert {
+        "bind_entry_context_menu",
+        "bind_text_context_menu",
+        "_show_text_dialog",
+    }.isdisjoint(method_names)
+    for page_module in (
+        "gui_candidate_actions.py",
+        "gui_candidate_diagnostics.py",
+        "gui_candidate_review.py",
+        "gui_config_page.py",
+        "gui_education_page.py",
+        "gui_run_page.py",
+        "gui_settings_page.py",
+    ):
+        page_source = (ROOT / page_module).read_text(encoding="utf-8")
+        assert ".input_support." in page_source
 
 
 def test_gui_compatibility_methods_delegate_to_presenters():

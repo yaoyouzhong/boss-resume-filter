@@ -11,6 +11,15 @@ import ui_theme
 from ui_windowing import get_windows_monitor_area, place_window_centered
 
 
+class InputSupport(Protocol):
+    def bind_text_context_menu(
+        self,
+        text_widget: tk.Text,
+        *,
+        editable: bool,
+    ) -> None: ...
+
+
 class CandidateReviewHost(Protocol):
     """Narrow GUI contract required to construct the review workbench."""
 
@@ -21,13 +30,7 @@ class CandidateReviewHost(Protocol):
     font_scale: float
     font_label: Any
     _candidate_review_view_name: str
-
-    def bind_text_context_menu(
-        self,
-        text_widget: tk.Text,
-        *,
-        editable: bool,
-    ) -> None: ...
+    input_support: InputSupport
 
 
 @dataclass(frozen=True)
@@ -84,7 +87,7 @@ def create_review_text_area(
     text_widget.configure(yscrollcommand=scrollbar.set)
     text_widget.pack(side="left", fill="both", expand=True)
     scrollbar.pack(side="right", fill="y")
-    host.bind_text_context_menu(text_widget, editable=False)
+    host.input_support.bind_text_context_menu(text_widget, editable=False)
     return text_widget
 
 

@@ -24,6 +24,17 @@ class StateIssueLike(Protocol):
     suggestion: str
 
 
+class InputSupport(Protocol):
+    def show_text_dialog(
+        self,
+        title: str,
+        text: str,
+        *,
+        width: int,
+        height: int,
+    ) -> None: ...
+
+
 class CandidateDiagnosticsHost(Protocol):
     """Narrow GUI contract required by the diagnostics workbench."""
 
@@ -36,6 +47,7 @@ class CandidateDiagnosticsHost(Protocol):
     _tooltip_item: Any
     _tooltip: Any
     _tooltip_after_id: Any
+    input_support: InputSupport
 
     def _format_state_issue_key_info(
         self,
@@ -46,15 +58,6 @@ class CandidateDiagnosticsHost(Protocol):
     def _clip_table_text(self, text: object, limit: int) -> str: ...
 
     def _open_candidate_review_workbench(self, candidate: Mapping[str, Any]) -> None: ...
-
-    def _show_text_dialog(
-        self,
-        title: str,
-        text: str,
-        *,
-        width: int,
-        height: int,
-    ) -> None: ...
 
     def _show_candidate_workflow_context_menu(
         self,
@@ -503,7 +506,12 @@ def show_candidate_state_diagnostics_dialog(
             f"说明：{issue.detail}",
             f"建议：{issue.suggestion}",
         ])
-        self._show_text_dialog("状态体检详情", detail, width=620, height=360)
+        self.input_support.show_text_dialog(
+            "状态体检详情",
+            detail,
+            width=620,
+            height=360,
+        )
 
     tree.bind("<Double-Button-1>", show_detail)
     tree.bind("<<TreeviewSelect>>", update_issue_context)

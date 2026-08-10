@@ -892,7 +892,7 @@ def build_run_page_steps(
                            font=host.font_log, bg=host.colors['bg_input'], borderwidth=0,
                            highlightthickness=0, height=20)
     host.log_text.pack(side="left", fill="both", expand=True)
-    host.bind_text_context_menu(host.log_text, editable=False)
+    host.input_support.bind_text_context_menu(host.log_text, editable=False)
 
     log_scroll = ttk.Scrollbar(log_container, orient="vertical", command=host.log_text.yview)
     log_scroll.pack(side="right", fill="y")

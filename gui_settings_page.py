@@ -193,7 +193,7 @@ def build_settings_content_steps(
         style='SettingsModel.TEntry',
     )
     model_entry.pack(side="left", padx=(int(5 * self.dpi_scale * self.zoom_factor), int(10 * self.dpi_scale * self.zoom_factor)))
-    self.bind_entry_context_menu(model_entry)
+    self.input_support.bind_entry_context_menu(model_entry)
 
     # 获取模型列表按钮
     icon_download_models = self.icons.button('download', self.colors['text_primary'])
@@ -220,7 +220,7 @@ def build_settings_content_steps(
         width=ui_config['entry_width_url'], font=self.font_label, show="*",
     )
     self.api_key_entry.pack(side="left", padx=(int(5 * self.dpi_scale * self.zoom_factor), 0))
-    self.bind_entry_context_menu(self.api_key_entry)
+    self.input_support.bind_entry_context_menu(self.api_key_entry)
 
     # 按住显示 API Key；松开或离开按钮立即恢复掩码。
     self.api_key_show_var = tk.BooleanVar(value=False)
@@ -251,7 +251,7 @@ def build_settings_content_steps(
         width=ui_config['entry_width_url'], font=self.font_label,
     )
     url_entry.pack(side="left", padx=(int(5 * self.dpi_scale * self.zoom_factor), 0))
-    self.bind_entry_context_menu(url_entry)
+    self.input_support.bind_entry_context_menu(url_entry)
 
     # 操作按钮行
     button_row = ttk.Frame(config_card, style='TFrame')

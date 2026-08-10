@@ -52,6 +52,7 @@ import gui_config_page
 import gui_data_maintenance_dialogs
 import gui_education_page
 import gui_home_page
+import gui_input_support
 import gui_job_review
 import gui_app_shell
 import gui_result_page
@@ -1064,6 +1065,10 @@ class BossFilterGUI:
             version=__version__,
         )
         self.scroll_support = gui_scroll_support.ScrollSupport(self)
+        self.input_support = gui_input_support.InputSupport(
+            self,
+            font_family=FONT_FAMILY,
+        )
 
         # 创建进度状态图标（依赖 self.colors，必须在 setup_styles 之后）
         self._create_status_icons()
@@ -4350,7 +4355,7 @@ class BossFilterGUI:
             if note:
                 lines.append(f"   备注：{note}")
             lines.append("")
-        self._show_text_dialog(
+        self.input_support.show_text_dialog(
             f"反馈候选人 - {job_name}",
             "\n".join(lines).rstrip(),
             width=720,
@@ -4401,84 +4406,6 @@ class BossFilterGUI:
 
     _REASON_SUGGESTIONS = stats_presenter.REASON_SUGGESTIONS
 
-
-    def _show_text_dialog(
-        self,
-        title,
-        text,
-        width=700,
-        height=520,
-        button_text="关闭",
-        button_align="right",
-        extra_actions=None,
-    ):
-        win = tk.Toplevel(self.root)
-        win.title(title)
-        win.transient(self.root)
-        win.grab_set()
-        win.withdraw()
-        scale = self.dpi_scale * self.zoom_factor
-        win.grid_rowconfigure(0, weight=1)
-        win.grid_columnconfigure(0, weight=1)
-
-        body = ttk.Frame(win, style='Page.TFrame', padding=int(16 * scale))
-        body.grid(row=0, column=0, sticky="nsew")
-        body.grid_rowconfigure(0, weight=1)
-        body.grid_columnconfigure(0, weight=1)
-        text_widget = tk.Text(
-            body,
-            wrap="word",
-            font=self.font_log,
-            bg=self.colors['bg_card'],
-            fg=self.colors['text_primary'],
-            relief="solid",
-            bd=1,
-        )
-        scroll = ttk.Scrollbar(body, orient="vertical", command=text_widget.yview)
-        text_widget.configure(yscrollcommand=scroll.set)
-        text_widget.insert("1.0", text)
-        text_widget.configure(state="disabled")
-        text_widget.grid(row=0, column=0, sticky="nsew")
-        scroll.grid(row=0, column=1, sticky="ns")
-
-        horizontal_padding = int(16 * scale)
-        btn_row = ttk.Frame(
-            win,
-            style='Page.TFrame',
-            padding=(
-                horizontal_padding,
-                0,
-                horizontal_padding,
-                int(12 * scale),
-            ),
-        )
-        btn_row.grid(row=1, column=0, sticky="ew")
-
-        def close():
-            win.grab_release()
-            win.destroy()
-
-        def run_extra_action(command):
-            close()
-            command()
-
-        for action_text, action_command in extra_actions or []:
-            action_button = ttk.Button(
-                btn_row,
-                text=action_text,
-                command=lambda command=action_command: run_extra_action(command),
-            )
-            action_button.pack(side="left", padx=(0, int(8 * scale)))
-
-        button = ttk.Button(btn_row, text=button_text, command=close)
-        if button_align == "center":
-            button.pack()
-        else:
-            button.pack(side="right")
-        win.protocol("WM_DELETE_WINDOW", close)
-        win.bind("<Escape>", lambda _event: close())
-        _place_window_centered(win, int(width * scale), int(height * scale), parent=self.root)
-        win.deiconify()
 
     def refresh_stats(self):
         """刷新数据统计页面 - 按岗位维度聚合"""
@@ -4713,92 +4640,6 @@ class BossFilterGUI:
             event.y_root + int(12 * self.dpi_scale * self.zoom_factor),
             ("result_contact_pending",),
         )
-
-    # ===== 右键菜单功能 =====
-    def bind_entry_context_menu(self, entry_widget):
-        """为 Entry/Combobox 控件绑定右键复制/粘贴/全选菜单"""
-        menu_font = (FONT_FAMILY, int(12 * self.font_scale))
-        menu = tk.Menu(entry_widget, tearoff=0, font=menu_font)
-        self._context_menus.append(menu)
-
-        def do_cut():
-            try:
-                entry_widget.event_generate('<<Cut>>')
-            except tk.TclError:
-                pass
-
-        def do_copy():
-            try:
-                entry_widget.event_generate('<<Copy>>')
-            except tk.TclError:
-                pass
-
-        def do_paste():
-            try:
-                entry_widget.event_generate('<<Paste>>')
-            except tk.TclError:
-                pass
-
-        def do_select_all():
-            try:
-                entry_widget.select_range(0, 'end')
-                entry_widget.icursor('end')
-            except tk.TclError:
-                pass
-
-        menu.add_command(label="剪切(T)", command=do_cut)
-        menu.add_command(label="复制(C)", command=do_copy)
-        menu.add_command(label="粘贴(P)", command=do_paste)
-        menu.add_separator()
-        menu.add_command(label="全选(A)", command=do_select_all)
-
-        def show_menu(event):
-            menu.tk_popup(event.x_root, event.y_root)
-
-        entry_widget.bind("<Button-3>", show_menu)
-
-    def bind_text_context_menu(self, text_widget, editable=True):
-        """为 Text 控件绑定右键复制/粘贴/全选菜单"""
-        menu_font = (FONT_FAMILY, int(12 * self.font_scale))
-        menu = tk.Menu(text_widget, tearoff=0, font=menu_font)
-        self._context_menus.append(menu)
-
-        def do_cut():
-            try:
-                text_widget.event_generate('<<Cut>>')
-            except tk.TclError:
-                pass
-
-        def do_copy():
-            try:
-                text_widget.event_generate('<<Copy>>')
-            except tk.TclError:
-                pass
-
-        def do_paste():
-            try:
-                text_widget.event_generate('<<Paste>>')
-            except tk.TclError:
-                pass
-
-        def do_select_all():
-            try:
-                text_widget.tag_add('sel', '1.0', 'end')
-            except tk.TclError:
-                pass
-
-        if editable:
-            menu.add_command(label="剪切(T)", command=do_cut)
-        menu.add_command(label="复制(C)", command=do_copy)
-        if editable:
-            menu.add_command(label="粘贴(P)", command=do_paste)
-        menu.add_separator()
-        menu.add_command(label="全选(A)", command=do_select_all)
-
-        def show_menu(event):
-            menu.tk_popup(event.x_root, event.y_root)
-
-        text_widget.bind("<Button-3>", show_menu)
 
     def refresh_home_stats(self):
         """刷新首页统计"""
@@ -6051,7 +5892,7 @@ class BossFilterGUI:
                     if detail_type == "new"
                     else "\n\n如正在使用这些模型，请尽快切换。"
                 )
-                self._show_text_dialog(
+                self.input_support.show_text_dialog(
                     title,
                     "\n".join(f"• {model}" for model in sorted(values)) + suffix,
                     width=640,
@@ -12467,7 +12308,7 @@ class BossFilterGUI:
             skip_text = self._format_greet_queue_skip_summary(skipped_reasons)
             self.append_log(f"[联系候选人] 已加入 {added} 人" + (f"，已跳过 {sum(skipped_reasons.values())} 人" if skipped_reasons else ""))
             if skip_text:
-                self._show_text_dialog(
+                self.input_support.show_text_dialog(
                     "联系候选人",
                     f"已加入联系清单：{added} 人\n\n已跳过：\n{skip_text}",
                     width=500,
@@ -12476,7 +12317,7 @@ class BossFilterGUI:
                     button_align="center",
                 )
         elif skipped_reasons:
-            self._show_text_dialog(
+            self.input_support.show_text_dialog(
                 "联系候选人",
                 f"没有可加入联系清单的候选人。\n\n已跳过：\n{self._format_greet_queue_skip_summary(skipped_reasons)}",
                 width=500,
