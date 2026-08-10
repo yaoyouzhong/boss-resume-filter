@@ -28,6 +28,7 @@ import gui_stats_detail
 import gui_stats_page
 import model_catalog
 import resume_parser
+import resume_import_service
 import run_presenter
 import stats_presenter
 import ui_windowing
@@ -102,20 +103,35 @@ def test_resume_parser_is_ui_free_and_does_not_mutate_candidate_state():
     assert callable(resume_parser.parse_resume_text)
 
 
-def test_resume_import_controller_delegates_file_parsing_only():
+def test_resume_import_controller_delegates_parsing_and_persistence_boundaries():
     source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
     block = source[source.index("def _import_resume"):]
     block = block[:block.index("\n    def _revert_resume_eval")]
 
     assert "parse_resume_text(filepath)" in block
-    assert "store_resume_copy(filepath" in block
-    assert "mutate_candidates_with_resume_cleanup(" in block
+    assert "persist_candidate_resume(" in block
+    assert "store_resume_copy(" not in block
+    assert "mutate_candidates_with_resume_cleanup(" not in block
     assert "evaluate_with_resume(" in block
     assert "pdfminer.high_level" not in block
     assert "docx.Document" not in block
     assert "striprtf.striprtf" not in block
     assert "re.sub(" not in block
     assert "open(filepath" not in block
+
+
+def test_resume_import_service_excludes_gui_parser_and_network_dependencies():
+    forbidden = {
+        "gui_main",
+        "tkinter",
+        "resume_parser",
+        "requests",
+        "socket",
+        "subprocess",
+        "urllib",
+    }
+    assert not (_top_level_imports("resume_import_service") & forbidden)
+    assert callable(resume_import_service.persist_candidate_resume)
 
 
 def test_candidate_cleanup_does_not_import_gui_storage_or_network_modules():

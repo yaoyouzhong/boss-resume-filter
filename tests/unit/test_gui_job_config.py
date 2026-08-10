@@ -8835,24 +8835,23 @@ def test_resume_eval_error_callback_keeps_background_exception_until_ui_runs():
         resume_path = tmp_path / "resume.txt"
         resume_path.write_text("Java 开发经验 " * 10, encoding="utf-8")
 
-        def persist_resume(mutator, _path, *, base_dir):
-            assert base_dir == gui_main.BASE_DIR
-            updated = mutator([candidate])
-            cleanup = types.SimpleNamespace(
-                failed_file_count=0,
-                failure_count=0,
-            )
-            return updated, cleanup
+        persistence = types.SimpleNamespace(
+            candidate={
+                **candidate,
+                "resume_file": "resumes/test.txt",
+                "resume_imported_at": "2026-08-10 10:00:00",
+            },
+            cleanup=types.SimpleNamespace(failure_count=0),
+        )
 
         with patch("gui_main.filedialog.askopenfilename", return_value=str(resume_path)), \
                 patch("gui_main.messagebox.ask_confirmation", return_value=True), \
                 patch("gui_main.messagebox.show_failure") as show_failure, \
                 patch(
-                    "gui_main.mutate_candidates_with_resume_cleanup",
-                    side_effect=persist_resume,
+                    "gui_main.persist_candidate_resume",
+                    return_value=persistence,
                 ), \
                 patch("gui_main.get_api_key", return_value="secret"), \
-                patch("gui_main.get_base_dir", return_value=tmp_path), \
                 patch("llm_eval.evaluate_with_resume", side_effect=RuntimeError("模型故障")), \
                 patch("gui_main.threading.Thread", side_effect=run_thread):
             gui._import_resume(
@@ -8921,7 +8920,6 @@ def test_import_resume_replaces_old_copy_and_clears_old_resume_evaluation():
             ),
             patch.object(gui_main, "BASE_DIR", root),
             patch.object(gui_main, "CANDIDATES_PATH", candidates_path),
-            patch.object(gui_main, "get_base_dir", return_value=root),
         ):
             gui._import_resume(None, candidate=candidate, parent=gui.root)
 

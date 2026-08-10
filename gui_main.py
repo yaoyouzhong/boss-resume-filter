@@ -177,11 +177,14 @@ from storage import (
 )
 from resume_store import (
     RESUME_STATE_FIELDS,
-    UnmanagedResumePathError,
     audit_managed_resumes,
     clear_candidate_resume_state,
-    delete_managed_resume,
-    store_resume_copy,
+)
+from resume_import_service import (
+    ResumeCandidateNotFoundError,
+    ResumeCopyError,
+    ResumePersistenceError,
+    persist_candidate_resume,
 )
 from resume_parser import (
     ResumeContentTooShortError,
@@ -13538,84 +13541,43 @@ class BossFilterGUI:
             )
             return
 
-        # 3. 保存到受管简历目录；磁盘文件名不包含候选人身份。
+        # 3. 由持久化服务原子替换受管简历引用。
+        resume_identity = self._candidate_identity_key(candidate)
+        imported_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
-            managed_resume = store_resume_copy(filepath, base_dir=get_base_dir())
-        except Exception as e:
+            persistence = persist_candidate_resume(
+                filepath,
+                identity=resume_identity,
+                candidates_path=CANDIDATES_PATH,
+                base_dir=BASE_DIR,
+                imported_at=imported_at,
+            )
+        except ResumeCopyError as exc:
             messagebox.show_failure(
                 "保存简历",
                 headline="简历文件未保存",
                 message="无法将所选文件复制到受管简历目录。",
-                detail=str(e),
+                detail=str(exc),
                 notice="请检查磁盘空间和目录写入权限后重试。",
                 parent=parent or self.root,
             )
             return
-
-        # 原子替换候选人引用；保存成功后才清理不再使用的旧副本。
-        resume_identity = self._candidate_identity_key(candidate)
-        imported_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        updated_snapshot = {}
-
-        def save_resume_reference(persisted):
-            clear_candidate_resume_state(persisted)
-            persisted['resume_file'] = managed_resume.reference
-            persisted['resume_artifact_id'] = managed_resume.artifact_id
-            persisted['resume_original_name'] = managed_resume.original_name
-            persisted['resume_imported_at'] = imported_at
-            updated_snapshot.update(persisted)
-
-        def replace_resume_reference(candidates):
-            for persisted in candidates:
-                if self._candidate_identity_key(persisted) != resume_identity:
-                    continue
-                save_resume_reference(persisted)
-                return 1
-            return 0
-
-        try:
-            saved, cleanup = mutate_candidates_with_resume_cleanup(
-                replace_resume_reference,
-                CANDIDATES_PATH,
-                base_dir=BASE_DIR,
-            )
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            persisted_new_reference = True
-            try:
-                latest_candidates = read_candidates_snapshot(CANDIDATES_PATH)
-                persisted_new_reference = any(
-                    self._candidate_identity_key(persisted) == resume_identity
-                    and persisted.get("resume_file") == managed_resume.reference
-                    for persisted in latest_candidates
-                )
-            except (OSError, RuntimeError, TypeError, ValueError):
-                pass
-            if not persisted_new_reference:
-                try:
-                    delete_managed_resume(
-                        managed_resume.reference,
-                        base_dir=get_base_dir(),
-                    )
-                except (OSError, UnmanagedResumePathError):
-                    pass
+        except ResumePersistenceError as exc:
             messagebox.show_failure(
                 "保存简历",
                 headline="简历保存状态需要核对",
                 message="候选人数据保存过程未能正常结束。",
                 detail=str(exc),
                 notice=(
-                    "无法确认最终写入状态，新副本已保留；请刷新后运行简历存储体检。"
-                    if persisted_new_reference
+                    "无法确认最终写入状态，新副本已保留；"
+                    "请刷新后运行简历存储体检。"
+                    if exc.copy_retained
                     else "候选人引用未写入，新复制的简历已回收。"
                 ),
                 parent=parent or self.root,
             )
             return
-        if not saved:
-            try:
-                delete_managed_resume(managed_resume.reference, base_dir=get_base_dir())
-            except (OSError, UnmanagedResumePathError):
-                pass
+        except ResumeCandidateNotFoundError:
             messagebox.show_failure(
                 "保存简历",
                 headline="简历未关联到候选人",
@@ -13624,9 +13586,10 @@ class BossFilterGUI:
                 parent=parent or self.root,
             )
             return
+
         candidate.clear()
-        candidate.update(updated_snapshot)
-        if cleanup.failure_count:
+        candidate.update(persistence.candidate)
+        if persistence.cleanup.failure_count:
             self.append_log(
                 "[简历导入] 新简历已保存，但旧受管副本清理失败，"
                 "可运行简历存储体检重试"
