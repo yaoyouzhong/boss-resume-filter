@@ -36,6 +36,9 @@ subprocess = hidden_subprocess(subprocess)
 DEFAULT_CHECK_TIMEOUT = 30 * 60
 DEFAULT_POLL_INTERVAL = 10
 DEFAULT_CHECK_STARTUP_TIMEOUT = 90
+REMOTE_READ_TIMEOUT_SECONDS = 30
+GITHUB_WRITE_TIMEOUT_SECONDS = 60
+REMOTE_WRITE_TIMEOUT_SECONDS = 120
 SUCCESS_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILURE_CONCLUSIONS = {
     "ACTION_REQUIRED",
@@ -51,8 +54,29 @@ class PRDeliveryError(RuntimeError):
     """A deterministic PR delivery contract was not satisfied."""
 
 
+def _configure_output_streams() -> None:
+    """Keep Chinese diagnostics readable and delivery progress immediately visible."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(
+                encoding="utf-8",
+                errors="replace",
+                line_buffering=True,
+                write_through=True,
+            )
+
+
 def _fail(message: str) -> None:
     raise PRDeliveryError(message)
+
+
+def _stream_text(value: str | bytes | None) -> str:
+    """Normalize subprocess timeout output to text."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def _run(
@@ -61,16 +85,38 @@ def _run(
     cwd: Path | None = None,
     check: bool = True,
     capture_output: bool = False,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        args,
-        cwd=cwd or BASE_DIR,
-        check=check,
-        capture_output=capture_output,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    try:
+        return subprocess.run(
+            args,
+            cwd=cwd or BASE_DIR,
+            check=check,
+            capture_output=capture_output,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = _stream_text(exc.stdout)
+        stderr = _stream_text(exc.stderr).rstrip()
+        timeout_text = f"command timed out after {float(timeout or 0):g}s"
+        stderr = f"{stderr}\n{timeout_text}".strip()
+        result = subprocess.CompletedProcess(
+            args,
+            124,
+            stdout=stdout,
+            stderr=stderr,
+        )
+        if check:
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                args,
+                output=result.stdout,
+                stderr=result.stderr,
+            ) from exc
+        return result
 
 
 def _git_text(*args: str, cwd: Path | None = None) -> str:
@@ -84,9 +130,27 @@ def _run_external(
     *,
     postcondition: Callable[[], bool] | None = None,
     cwd: Path | None = None,
+    timeout: float = REMOTE_WRITE_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
+    attempt = 0
+
+    def run_attempt(
+        command: list[str],
+        **kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal attempt
+        attempt += 1
+        return _run_remote_attempt(
+            command,
+            label,
+            attempt=attempt,
+            timeout=timeout,
+            cwd=cwd,
+            **kwargs,
+        )
+
     result = release_retry.run_cli_with_retries(
-        lambda command, **kwargs: _run(command, cwd=cwd, **kwargs),
+        run_attempt,
         args,
         label,
         postcondition=postcondition,
@@ -94,6 +158,61 @@ def _run_external(
     if result.returncode != 0:
         _fail(f"{label}失败：{release_retry.command_detail(result)}")
     return result
+
+
+def _run_remote_attempt(
+    args: list[str],
+    label: str,
+    *,
+    attempt: int,
+    timeout: float,
+    cwd: Path | None = None,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[str]:
+    """Run one bounded remote attempt and report its elapsed time."""
+    print(
+        f"  [执行] {label}（第 {attempt} 次，单次超时 {timeout:g}s）",
+        flush=True,
+    )
+    started = time.perf_counter()
+    result = _run(
+        args,
+        cwd=cwd,
+        timeout=timeout,
+        **kwargs,
+    )
+    elapsed = time.perf_counter() - started
+    outcome = "成功" if result.returncode == 0 else f"失败({result.returncode})"
+    print(
+        f"  [耗时] {label}（第 {attempt} 次）{elapsed:.2f}s，{outcome}",
+        flush=True,
+    )
+    return result
+
+
+def _run_remote_json_query(args: list[str], label: str) -> Any:
+    """Run one retryable JSON query with a bounded per-attempt timeout."""
+    attempt = 0
+
+    def run_attempt(
+        command: list[str],
+        **kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal attempt
+        attempt += 1
+        return _run_remote_attempt(
+            command,
+            label,
+            attempt=attempt,
+            timeout=REMOTE_READ_TIMEOUT_SECONDS,
+            **kwargs,
+        )
+
+    return release_retry.run_json_query_with_retries(
+        run_attempt,
+        args,
+        label,
+    )
 
 
 def expected_authorization(branch: str) -> str:
@@ -132,6 +251,7 @@ def _remote_ref(remote: str, ref: str) -> str:
     output = _run_external(
         ["git", "ls-remote", remote, ref],
         f"读取 {remote}/{ref}",
+        timeout=REMOTE_READ_TIMEOUT_SECONDS,
     ).stdout.strip()
     if not output:
         return ""
@@ -229,6 +349,7 @@ def preflight(branch: str, *, run_tests: bool = True) -> dict[str, str]:
     _run_external(
         ["gh", "auth", "status", "--hostname", "github.com"],
         "检查 GitHub 登录状态",
+        timeout=REMOTE_READ_TIMEOUT_SECONDS,
     )
     _run_external(["git", "fetch", "origin"], "拉取 GitHub 更新")
     _run_external(["git", "fetch", "gitee"], "拉取 Gitee 更新")
@@ -263,8 +384,7 @@ def preflight(branch: str, *, run_tests: bool = True) -> dict[str, str]:
 
 def _find_delivery_pr(branch: str, head_sha: str) -> dict[str, Any] | None:
     try:
-        candidates = release_retry.run_json_query_with_retries(
-            _run,
+        candidates = _run_remote_json_query(
             [
             "gh", "pr", "list",
             "--head", branch,
@@ -359,6 +479,7 @@ def _sync_open_pr_metadata(
                 body,
             ],
             f"刷新 PR #{number} 标题和正文",
+            timeout=GITHUB_WRITE_TIMEOUT_SECONDS,
         )
         print(f"  [更新] PR #{number} 标题和正文已按当前分支刷新")
     else:
@@ -413,8 +534,11 @@ def _push_and_create_pr(
     create_result: subprocess.CompletedProcess[str] | None = None
     total_attempts = len(release_retry.RETRY_DELAYS) + 1
     for attempt in range(1, total_attempts + 1):
-        create_result = _run(
+        create_result = _run_remote_attempt(
             create_args,
+            "创建交付 PR",
+            attempt=attempt,
+            timeout=GITHUB_WRITE_TIMEOUT_SECONDS,
             check=False,
             capture_output=True,
         )
@@ -453,8 +577,7 @@ def _push_and_create_pr(
 
 def _pr_view(number: int) -> dict[str, Any]:
     try:
-        data = release_retry.run_json_query_with_retries(
-            _run,
+        data = _run_remote_json_query(
             [
             "gh", "pr", "view", str(number),
             "--json",
@@ -505,8 +628,7 @@ def _pull_request_run_state_for_head(
     if not branch or not head_sha:
         return None
     try:
-        runs = release_retry.run_json_query_with_retries(
-            _run,
+        runs = _run_remote_json_query(
             [
                 "gh", "run", "list",
                 "--branch", branch,
@@ -629,6 +751,7 @@ def _merge_pr(pr: dict[str, Any]) -> dict[str, Any]:
             ["gh", "pr", "merge", str(number), "--squash"],
             f"合并 PR #{number}",
             postcondition=lambda: _pr_view(number).get("state") == "MERGED",
+            timeout=GITHUB_WRITE_TIMEOUT_SECONDS,
         )
         current = _pr_view(number)
     if current.get("state") != "MERGED":
@@ -776,9 +899,7 @@ def deliver(
 
 
 def main(argv: list[str] | None = None) -> int:
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
+    _configure_output_streams()
     parser = argparse.ArgumentParser(description="普通 PR 一次授权交付")
     parser.add_argument("--branch", help="codex/<task>；默认使用当前分支")
     parser.add_argument("--title", help="新建 PR 时使用的标题；默认取最新提交标题")
