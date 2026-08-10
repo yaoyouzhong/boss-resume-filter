@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import tkinter as tk
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+import re
 from tkinter import ttk
 from typing import Any, Protocol
 
@@ -16,6 +18,7 @@ class CandidateStateDialogHost(Protocol):
 
     colors: Mapping[str, str]
     dpi_scale: float
+    font_scale: float
     zoom_factor: float
     font_label: Any
     font_log: Any
@@ -29,6 +32,30 @@ class BlacklistReasonDialogWidgets:
 
     window: tk.Toplevel
     reason_text: tk.Text
+    save_button: ttk.Button
+    cancel_button: ttk.Button
+
+
+@dataclass(frozen=True)
+class FollowupSaveResult:
+    """Controller result consumed by the follow-up form after validation."""
+
+    saved: bool
+    request_feedback: bool = False
+
+
+@dataclass(frozen=True)
+class FollowupDialogWidgets:
+    """Follow-up form references used by focused behavior and Tk tests."""
+
+    window: tk.Toplevel
+    status_var: tk.StringVar
+    status_combo: ttk.Combobox
+    next_followup_var: tk.StringVar
+    next_followup_entry: ttk.Entry
+    quick_date_buttons: dict[str, ttk.Button]
+    note_text: tk.Text
+    error_label: ttk.Label
     save_button: ttk.Button
     cancel_button: ttk.Button
 
@@ -197,6 +224,270 @@ def show_blacklist_reason_dialog(
     return BlacklistReasonDialogWidgets(
         window=window,
         reason_text=reason_text,
+        save_button=save_button,
+        cancel_button=cancel_button,
+    )
+
+
+def show_followup_dialog(
+    host: CandidateStateDialogHost,
+    candidate: Mapping[str, Any],
+    parent: tk.Misc,
+    *,
+    font_family: str,
+    status_options: Sequence[str],
+    default_next_followup: Callable[[str], str],
+    format_followup_due: Callable[[Any], str],
+    normalize_followup: Callable[[str], str],
+    on_save: Callable[[str, str, str, tk.Toplevel], FollowupSaveResult],
+    on_request_feedback: Callable[[], None],
+) -> FollowupDialogWidgets:
+    """Show the follow-up form while delegating candidate mutation to the controller."""
+    scale = host.dpi_scale * host.zoom_factor
+    window = tk.Toplevel(parent)
+    window.title("更新跟进")
+    window.transient(parent)
+    window.grab_set()
+    window.withdraw()
+    window.configure(bg=host.colors["bg_main"])
+
+    padding = int(18 * scale)
+    frame = ttk.Frame(window, style="Page.TFrame", padding=padding)
+    frame.pack(fill="both", expand=True)
+    ttk.Label(
+        frame,
+        text=(
+            f"{candidate.get('name', '未知')}｜"
+            f"{candidate.get('job_name', '未知')}"
+        ),
+        font=(font_family, int(13 * host.font_scale)),
+        foreground=host.colors["primary"],
+        background=host.colors["bg_main"],
+    ).pack(anchor="w", pady=(0, int(12 * scale)))
+    ttk.Label(
+        frame,
+        text="跟进状态",
+        font=(font_family, int(12 * host.font_scale)),
+        style="Page.TLabel",
+    ).pack(anchor="w")
+
+    default_status = candidate.get("followup_status") or (
+        "已打招呼" if candidate.get("greet_sent") else status_options[0]
+    )
+    status_var = tk.StringVar(value=default_status)
+    status_combo = ttk.Combobox(
+        frame,
+        textvariable=status_var,
+        values=status_options,
+        state="readonly",
+        font=(font_family, int(12 * host.font_scale)),
+        width=18,
+    )
+    status_combo.pack(
+        anchor="w",
+        fill="x",
+        pady=(int(5 * scale), int(12 * scale)),
+    )
+
+    ttk.Label(
+        frame,
+        text="下次跟进日期",
+        font=(font_family, int(12 * host.font_scale)),
+        style="Page.TLabel",
+    ).pack(anchor="w")
+    existing_due = format_followup_due(candidate.get("next_followup_at"))
+    if existing_due == "未安排":
+        existing_due = format_followup_due(default_next_followup(default_status))
+        if existing_due == "未安排":
+            existing_due = ""
+    next_followup_var = tk.StringVar(value=existing_due)
+    next_followup_entry = ttk.Entry(
+        frame,
+        textvariable=next_followup_var,
+        font=(font_family, int(12 * host.font_scale)),
+    )
+    next_followup_entry.pack(
+        anchor="w",
+        fill="x",
+        pady=(int(5 * scale), int(6 * scale)),
+    )
+
+    quick_date_frame = ttk.Frame(frame, style="Page.TFrame")
+    quick_date_frame.pack(
+        anchor="w",
+        fill="x",
+        pady=(0, int(12 * scale)),
+    )
+    for column in range(5):
+        quick_date_frame.grid_columnconfigure(
+            column,
+            weight=1,
+            uniform="followup_quick_date",
+        )
+
+    form_error_label = ttk.Label(
+        frame,
+        text=" ",
+        font=(font_family, int(10 * host.font_scale)),
+        foreground=host.colors.get("danger_text", ui_theme.DANGER_TEXT),
+        background=host.colors["bg_main"],
+        justify="left",
+        wraplength=int(440 * scale),
+    )
+
+    def clear_form_error(_event: tk.Event | None = None) -> None:
+        form_error_label.configure(text=" ")
+
+    def show_form_error(message: str, focus_widget: tk.Misc) -> None:
+        form_error_label.configure(text=message)
+        try:
+            focus_widget.focus_set()
+        except tk.TclError:
+            pass
+
+    def set_quick_date(days: int | None) -> None:
+        clear_form_error()
+        if days is None:
+            next_followup_var.set("")
+            return
+        next_followup_var.set(
+            (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+        )
+
+    quick_date_buttons: dict[str, ttk.Button] = {}
+    for column, (label, days) in enumerate(
+        (
+            ("今天", 0),
+            ("明天", 1),
+            ("3 天后", 3),
+            ("7 天后", 7),
+            ("不设置", None),
+        )
+    ):
+        button = ttk.Button(
+            quick_date_frame,
+            text=label,
+            command=lambda value=days: set_quick_date(value),
+        )
+        button.grid(
+            row=0,
+            column=column,
+            sticky="ew",
+            padx=(0, int(5 * scale)) if column < 4 else 0,
+        )
+        quick_date_buttons[label] = button
+
+    def reset_due_for_status(_event: tk.Event | None = None) -> None:
+        clear_form_error()
+        formatted = format_followup_due(
+            default_next_followup(status_var.get().strip())
+        )
+        next_followup_var.set("" if formatted == "未安排" else formatted)
+
+    status_combo.bind("<<ComboboxSelected>>", reset_due_for_status)
+    ttk.Label(
+        frame,
+        text="备注",
+        font=(font_family, int(12 * host.font_scale)),
+        style="Page.TLabel",
+    ).pack(anchor="w")
+    note_text = tk.Text(
+        frame,
+        height=5,
+        wrap="word",
+        font=(font_family, int(12 * host.font_scale)),
+        bg=host.colors["bg_card"],
+        fg=host.colors["text_primary"],
+        relief="solid",
+        bd=1,
+    )
+    note_text.pack(
+        fill="both",
+        expand=True,
+        pady=(int(5 * scale), int(14 * scale)),
+    )
+    if candidate.get("followup_note"):
+        note_text.insert("1.0", candidate.get("followup_note", ""))
+
+    button_frame = ttk.Frame(frame, style="Page.TFrame")
+    button_frame.pack(anchor="center")
+    form_error_label.pack(
+        anchor="w",
+        fill="x",
+        before=button_frame,
+        pady=(0, int(8 * scale)),
+    )
+    next_followup_entry.bind("<KeyRelease>", clear_form_error)
+
+    def close() -> None:
+        try:
+            window.grab_release()
+        except tk.TclError:
+            pass
+        window.destroy()
+
+    def save_followup() -> None:
+        clear_form_error()
+        status = status_var.get().strip()
+        note = note_text.get("1.0", "end").strip()
+        if status not in status_options:
+            show_form_error("请选择有效的跟进状态。", status_combo)
+            return
+        due_input = next_followup_var.get().strip()
+        next_due = normalize_followup(due_input)
+        if due_input and not next_due:
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", due_input):
+                error_text = "下次跟进日期无效，请检查年月日是否正确"
+            else:
+                error_text = "下次跟进日期格式不正确，请使用 YYYY-MM-DD"
+            show_form_error(error_text, next_followup_entry)
+            return
+        if status in {"待约面", "已约面"} and not next_due:
+            show_form_error(
+                f"{status}状态必须安排下次跟进日期。",
+                next_followup_entry,
+            )
+            return
+
+        result = on_save(status, note, next_due, window)
+        if not result.saved:
+            return
+        close()
+        if result.request_feedback:
+            parent.after(80, on_request_feedback)
+
+    save_button = ttk.Button(
+        button_frame,
+        text="保存",
+        command=save_followup,
+    )
+    save_button.pack(side="left", padx=(0, int(8 * scale)))
+    cancel_button = ttk.Button(button_frame, text="取消", command=close)
+    cancel_button.pack(side="left")
+
+    window.protocol("WM_DELETE_WINDOW", close)
+    window.update_idletasks()
+    followup_height = max(
+        int(500 * scale),
+        window.winfo_reqheight() + int(12 * scale),
+    )
+    place_window_centered(
+        window,
+        int(500 * scale),
+        followup_height,
+        parent=parent,
+    )
+    window.deiconify()
+
+    return FollowupDialogWidgets(
+        window=window,
+        status_var=status_var,
+        status_combo=status_combo,
+        next_followup_var=next_followup_var,
+        next_followup_entry=next_followup_entry,
+        quick_date_buttons=quick_date_buttons,
+        note_text=note_text,
+        error_label=form_error_label,
         save_button=save_button,
         cancel_button=cancel_button,
     )

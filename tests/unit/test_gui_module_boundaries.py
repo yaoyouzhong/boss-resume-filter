@@ -800,6 +800,53 @@ def test_candidate_blacklist_persistence_remains_in_main_controller():
     ]
 
 
+def test_candidate_followup_dialog_exposes_form_and_save_result_contracts():
+    assert gui_candidate_state_dialogs.FollowupSaveResult.__dataclass_fields__.keys() == {
+        "saved",
+        "request_feedback",
+    }
+    assert gui_candidate_state_dialogs.FollowupDialogWidgets.__dataclass_fields__.keys() == {
+        "window",
+        "status_var",
+        "status_combo",
+        "next_followup_var",
+        "next_followup_entry",
+        "quick_date_buttons",
+        "note_text",
+        "error_label",
+        "save_button",
+        "cancel_button",
+    }
+
+
+def test_candidate_followup_dialog_compatibility_method_is_a_thin_delegate():
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("def _mark_candidate_followup"):]
+    block = block[:block.index("\n    def _update_candidate_feedback")]
+
+    assert "gui_candidate_state_dialogs.show_followup_dialog(" in block
+    assert "default_next_followup=default_next_followup_at" in block
+    assert "normalize_followup=normalize_followup_at" in block
+    assert "ttk.Combobox" not in block
+    assert "tk.Text" not in block
+    assert "tk.Toplevel" not in block
+
+
+def test_candidate_followup_persistence_and_state_sync_remain_in_controller():
+    builder = (ROOT / "gui_candidate_state_dialogs.py").read_text(encoding="utf-8")
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    controller = source[source.index("def _save_candidate_followup_from_dialog"):]
+    controller = controller[:controller.index("\n    def _mark_candidate_followup")]
+
+    assert "_update_candidate_followup(" not in builder
+    assert "mark_candidate_greeted(" not in builder
+    assert "apply_followup_state(" not in builder
+    assert "self._update_candidate_followup(" in controller
+    assert "mark_candidate_greeted(" in controller
+    assert "apply_followup_state(" in controller
+    assert "self._sync_greet_queue_candidate_state(candidate)" in controller
+
+
 def test_candidate_review_compatibility_method_delegates_window_construction():
     source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
     block = source[source.index("def _open_candidate_review_workbench"):]

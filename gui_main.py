@@ -15025,6 +15025,95 @@ class BossFilterGUI:
             self.refresh_results()
         self._status_flash(f"已确认通过 {confirmed}/{len(to_confirm)} 人")
 
+    def _save_candidate_followup_from_dialog(
+        self,
+        candidate,
+        status,
+        note,
+        next_due,
+        window,
+        on_saved=None,
+    ):
+        """Persist validated follow-up form data and update controller state."""
+        if (
+            status == "未沟通"
+            and (
+                candidate.get("greet_sent")
+                or candidate.get("followup_status") in CONTACTED_FOLLOWUP_STATUSES
+            )
+            and not messagebox.ask_confirmation(
+                "纠正沟通状态",
+                headline="将沟通状态纠正为“未沟通”？",
+                message="仅在先前记录确实有误时执行。",
+                notice="本地已打招呼事实、发送方式和跟进日期会同时清除。",
+                yes_label="确认纠正",
+                no_label="保留原状态",
+                dangerous=True,
+                parent=window,
+            )
+        ):
+            return gui_candidate_state_dialogs.FollowupSaveResult(False)
+
+        followup_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            updated = self._update_candidate_followup(
+                candidate.get("geek_id"),
+                candidate.get("job_name", ""),
+                status,
+                note,
+                next_due,
+                followup_time,
+            )
+            if not updated:
+                messagebox.show_failure(
+                    "保存跟进状态",
+                    headline="跟进状态未保存",
+                    message="本地候选人记录已发生变化，未找到当前候选人。",
+                    notice="请关闭窗口并刷新候选人列表后重试。",
+                    parent=window,
+                )
+                return gui_candidate_state_dialogs.FollowupSaveResult(False)
+            if status == "未沟通":
+                mark_candidate_not_greeted(candidate, followup_time)
+            elif (
+                status in CONTACTED_FOLLOWUP_STATUSES
+                and not candidate.get("greet_sent")
+            ):
+                mark_candidate_greeted(
+                    candidate,
+                    "manual_status",
+                    followup_time,
+                )
+            apply_followup_state(
+                candidate,
+                status,
+                note,
+                timestamp=followup_time,
+                next_followup_at=next_due,
+            )
+            self._sync_greet_queue_candidate_state(candidate)
+            self._regenerate_excel()
+            self.refresh_results()
+            if on_saved:
+                on_saved()
+            needs_feedback = (
+                status == "不合适" and not candidate.get("feedback_status")
+            )
+            return gui_candidate_state_dialogs.FollowupSaveResult(
+                True,
+                request_feedback=needs_feedback,
+            )
+        except Exception as exc:
+            messagebox.show_failure(
+                "保存跟进状态",
+                headline="跟进状态未保存",
+                message="保存过程中出现异常，本次修改没有完成。",
+                detail=str(exc),
+                notice="请检查数据文件是否可写后重试。",
+                parent=window,
+            )
+            return gui_candidate_state_dialogs.FollowupSaveResult(False)
+
     def _mark_candidate_followup(self, item, candidate=None, parent=None, on_saved=None):
         """标记候选人的跟进状态和备注。"""
         candidate = self._resolve_candidate(item, candidate)
@@ -15032,289 +15121,39 @@ class BossFilterGUI:
             messagebox.showerror("错误", "未找到候选人")
             return
 
-        _parent = parent or self.root
-        win = tk.Toplevel(_parent)
-        win.title("更新跟进")
-        win.transient(_parent)
-        win.grab_set()
-        win.withdraw()
-        win.configure(bg=self.colors['bg_main'])
+        dialog_parent = parent or self.root
 
-        pad = int(18 * self.dpi_scale * self.zoom_factor)
-        frame = ttk.Frame(win, style='Page.TFrame', padding=pad)
-        frame.pack(fill="both", expand=True)
-
-        ttk.Label(
-            frame,
-            text=f"{candidate.get('name', '未知')}｜{candidate.get('job_name', '未知')}",
-            font=(FONT_FAMILY, int(13 * self.font_scale)),
-            foreground=self.colors['primary'],
-            background=self.colors['bg_main']
-        ).pack(anchor='w', pady=(0, int(12 * self.dpi_scale * self.zoom_factor)))
-
-        ttk.Label(
-            frame,
-            text="跟进状态",
-            font=(FONT_FAMILY, int(12 * self.font_scale)),
-            style='Page.TLabel'
-        ).pack(anchor='w')
-
-        default_status = candidate.get('followup_status') or ("已打招呼" if candidate.get('greet_sent') else FOLLOWUP_STATUS_OPTIONS[0])
-        status_var = tk.StringVar(value=default_status)
-        status_combo = ttk.Combobox(
-            frame,
-            textvariable=status_var,
-            values=FOLLOWUP_STATUS_OPTIONS,
-            state='readonly',
-            font=(FONT_FAMILY, int(12 * self.font_scale)),
-            width=18
-        )
-        status_combo.pack(anchor='w', fill='x', pady=(int(5 * self.dpi_scale * self.zoom_factor), int(12 * self.dpi_scale * self.zoom_factor)))
-
-        ttk.Label(
-            frame,
-            text="下次跟进日期",
-            font=(FONT_FAMILY, int(12 * self.font_scale)),
-            style='Page.TLabel'
-        ).pack(anchor='w')
-
-        existing_due = format_followup_due_at(candidate.get('next_followup_at'))
-        if existing_due == "未安排":
-            default_due = default_next_followup_at(default_status)
-            existing_due = format_followup_due_at(default_due)
-            if existing_due == "未安排":
-                existing_due = ""
-        next_followup_var = tk.StringVar(value=existing_due)
-        next_followup_entry = ttk.Entry(
-            frame,
-            textvariable=next_followup_var,
-            font=(FONT_FAMILY, int(12 * self.font_scale)),
-        )
-        next_followup_entry.pack(
-            anchor='w', fill='x',
-            pady=(int(5 * self.dpi_scale * self.zoom_factor), int(6 * self.dpi_scale * self.zoom_factor)),
-        )
-
-        quick_date_frame = ttk.Frame(frame, style='Page.TFrame')
-        quick_date_frame.pack(
-            anchor='w',
-            fill='x',
-            pady=(0, int(12 * self.dpi_scale * self.zoom_factor)),
-        )
-        for column in range(5):
-            quick_date_frame.grid_columnconfigure(column, weight=1, uniform='followup_quick_date')
-
-        def set_quick_date(days):
-            clear_form_error()
-            if days is None:
-                next_followup_var.set("")
-                return
-            next_followup_var.set(
-                (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+        def save_followup(status, note, next_due, window):
+            return self._save_candidate_followup_from_dialog(
+                candidate,
+                status,
+                note,
+                next_due,
+                window,
+                on_saved,
             )
 
-        for column, (label, days) in enumerate((
-            ("今天", 0),
-            ("明天", 1),
-            ("3 天后", 3),
-            ("7 天后", 7),
-            ("不设置", None),
-        )):
-            ttk.Button(
-                quick_date_frame,
-                text=label,
-                command=lambda value=days: set_quick_date(value),
-            ).grid(
-                row=0,
-                column=column,
-                sticky='ew',
-                padx=(0, int(5 * self.dpi_scale * self.zoom_factor)) if column < 4 else 0,
+        def request_feedback():
+            self._mark_candidate_feedback(
+                None,
+                candidate=candidate,
+                parent=dialog_parent,
+                on_saved=on_saved,
+                default_status="放弃",
             )
 
-        def reset_due_for_status(_event=None):
-            clear_form_error()
-            default_value = default_next_followup_at(status_var.get().strip())
-            formatted = format_followup_due_at(default_value)
-            next_followup_var.set("" if formatted == "未安排" else formatted)
-
-        status_combo.bind("<<ComboboxSelected>>", reset_due_for_status)
-
-        ttk.Label(
-            frame,
-            text="备注",
-            font=(FONT_FAMILY, int(12 * self.font_scale)),
-            style='Page.TLabel'
-        ).pack(anchor='w')
-
-        note_text = tk.Text(
-            frame,
-            height=5,
-            wrap='word',
-            font=(FONT_FAMILY, int(12 * self.font_scale)),
-            bg=self.colors['bg_card'],
-            fg=self.colors['text_primary'],
-            relief='solid',
-            bd=1
+        gui_candidate_state_dialogs.show_followup_dialog(
+            self,
+            candidate,
+            dialog_parent,
+            font_family=FONT_FAMILY,
+            status_options=FOLLOWUP_STATUS_OPTIONS,
+            default_next_followup=default_next_followup_at,
+            format_followup_due=format_followup_due_at,
+            normalize_followup=normalize_followup_at,
+            on_save=save_followup,
+            on_request_feedback=request_feedback,
         )
-        note_text.pack(fill='both', expand=True, pady=(int(5 * self.dpi_scale * self.zoom_factor), int(14 * self.dpi_scale * self.zoom_factor)))
-        if candidate.get('followup_note'):
-            note_text.insert('1.0', candidate.get('followup_note', ''))
-
-        form_error_label = ttk.Label(
-            frame,
-            text=" ",
-            font=(FONT_FAMILY, int(10 * self.font_scale)),
-            foreground=self.colors.get('danger_text', ui_theme.DANGER_TEXT),
-            background=self.colors['bg_main'],
-            justify="left",
-            wraplength=int(440 * self.dpi_scale * self.zoom_factor),
-        )
-        btn_frame = ttk.Frame(frame, style='Page.TFrame')
-        btn_frame.pack(anchor='center')
-        form_error_label.pack(
-            anchor="w",
-            fill="x",
-            before=btn_frame,
-            pady=(0, int(8 * self.dpi_scale * self.zoom_factor)),
-        )
-
-        def clear_form_error(_event=None):
-            form_error_label.configure(text=" ")
-
-        def show_form_error(message, focus_widget):
-            form_error_label.configure(text=message)
-            try:
-                focus_widget.focus_set()
-            except tk.TclError:
-                pass
-
-        next_followup_entry.bind("<KeyRelease>", clear_form_error)
-
-        def close():
-            win.grab_release()
-            win.destroy()
-
-        def save_followup():
-            clear_form_error()
-            status = status_var.get().strip()
-            note = note_text.get('1.0', 'end').strip()
-            if status not in FOLLOWUP_STATUS_OPTIONS:
-                show_form_error("请选择有效的跟进状态。", status_combo)
-                return
-            due_input = next_followup_var.get().strip()
-            next_due = normalize_followup_at(due_input)
-            if due_input and not next_due:
-                if re.fullmatch(r"\d{4}-\d{2}-\d{2}", due_input):
-                    error_text = "下次跟进日期无效，请检查年月日是否正确"
-                else:
-                    error_text = "下次跟进日期格式不正确，请使用 YYYY-MM-DD"
-                show_form_error(error_text, next_followup_entry)
-                return
-            if status in {"待约面", "已约面"} and not next_due:
-                show_form_error(
-                    f"{status}状态必须安排下次跟进日期。",
-                    next_followup_entry,
-                )
-                return
-            if (
-                status == "未沟通"
-                and (
-                    candidate.get('greet_sent')
-                    or candidate.get('followup_status') in CONTACTED_FOLLOWUP_STATUSES
-                )
-                and not messagebox.ask_confirmation(
-                    "纠正沟通状态",
-                    headline="将沟通状态纠正为“未沟通”？",
-                    message="仅在先前记录确实有误时执行。",
-                    notice="本地已打招呼事实、发送方式和跟进日期会同时清除。",
-                    yes_label="确认纠正",
-                    no_label="保留原状态",
-                    dangerous=True,
-                    parent=win,
-                )
-            ):
-                return
-            followup_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-            try:
-                updated = self._update_candidate_followup(
-                    candidate.get('geek_id'),
-                    candidate.get('job_name', ''),
-                    status,
-                    note,
-                    next_due,
-                    followup_time,
-                )
-                if not updated:
-                    messagebox.show_failure(
-                        "保存跟进状态",
-                        headline="跟进状态未保存",
-                        message="本地候选人记录已发生变化，未找到当前候选人。",
-                        notice="请关闭窗口并刷新候选人列表后重试。",
-                        parent=win,
-                    )
-                    return
-                if status == "未沟通":
-                    mark_candidate_not_greeted(candidate, followup_time)
-                elif (
-                    status in CONTACTED_FOLLOWUP_STATUSES
-                    and not candidate.get('greet_sent')
-                ):
-                    mark_candidate_greeted(
-                        candidate,
-                        "manual_status",
-                        followup_time,
-                    )
-                apply_followup_state(
-                    candidate,
-                    status,
-                    note,
-                    timestamp=followup_time,
-                    next_followup_at=next_due,
-                )
-                self._sync_greet_queue_candidate_state(candidate)
-                self._regenerate_excel()
-                self.refresh_results()
-                if on_saved:
-                    on_saved()
-                needs_feedback = status == "不合适" and not candidate.get('feedback_status')
-                close()
-                if needs_feedback:
-                    _parent.after(
-                        80,
-                        lambda: self._mark_candidate_feedback(
-                            None,
-                            candidate=candidate,
-                            parent=_parent,
-                            on_saved=on_saved,
-                            default_status="放弃",
-                        ),
-                    )
-            except Exception as exc:
-                messagebox.show_failure(
-                    "保存跟进状态",
-                    headline="跟进状态未保存",
-                    message="保存过程中出现异常，本次修改没有完成。",
-                    detail=str(exc),
-                    notice="请检查数据文件是否可写后重试。",
-                    parent=win,
-                )
-
-        ttk.Button(btn_frame, text="保存", command=save_followup).pack(side='left', padx=(0, int(8 * self.dpi_scale * self.zoom_factor)))
-        ttk.Button(btn_frame, text="取消", command=close).pack(side='left')
-
-        win.protocol("WM_DELETE_WINDOW", close)
-        win.update_idletasks()
-        followup_height = max(
-            int(500 * self.dpi_scale * self.zoom_factor),
-            win.winfo_reqheight() + int(12 * self.dpi_scale * self.zoom_factor),
-        )
-        _place_window_centered(
-            win,
-            int(500 * self.dpi_scale * self.zoom_factor),
-            followup_height,
-            parent=_parent,
-        )
-        win.deiconify()
 
     def _update_candidate_feedback(self, geek_id, job_name, status, reasons, note):
         """更新候选人的人工反馈。"""

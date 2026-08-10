@@ -4412,6 +4412,75 @@ def test_update_candidate_followup_to_uncontacted_clears_incorrect_greeting_fact
         assert "next_followup_at" not in saved
 
 
+def test_followup_dialog_controller_syncs_saved_state_and_views():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._update_candidate_followup = Mock(return_value=True)
+    gui._sync_greet_queue_candidate_state = Mock()
+    gui._regenerate_excel = Mock()
+    gui.refresh_results = Mock()
+    on_saved = Mock()
+    candidate = {
+        "geek_id": "g1",
+        "job_name": "Java 工程师",
+        "followup_status": "未沟通",
+        "greet_sent": False,
+    }
+
+    result = gui._save_candidate_followup_from_dialog(
+        candidate,
+        "待约面",
+        "周三确认",
+        "20260723_090000",
+        Mock(),
+        on_saved,
+    )
+
+    assert result.saved is True
+    assert result.request_feedback is False
+    saved_args = gui._update_candidate_followup.call_args.args
+    assert saved_args[:5] == (
+        "g1",
+        "Java 工程师",
+        "待约面",
+        "周三确认",
+        "20260723_090000",
+    )
+    assert candidate["greet_sent"] is True
+    assert candidate["greet_method"] == "manual_status"
+    assert candidate["followup_status"] == "待约面"
+    assert candidate["next_followup_at"] == "20260723_090000"
+    gui._sync_greet_queue_candidate_state.assert_called_once_with(candidate)
+    gui._regenerate_excel.assert_called_once_with()
+    gui.refresh_results.assert_called_once_with()
+    on_saved.assert_called_once_with()
+
+
+def test_followup_dialog_controller_cancels_uncontacted_correction_before_write():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._update_candidate_followup = Mock(return_value=True)
+    candidate = {
+        "geek_id": "g1",
+        "job_name": "Java 工程师",
+        "followup_status": "已回复",
+        "greet_sent": True,
+    }
+
+    with patch.object(gui_main.messagebox, "ask_confirmation", return_value=False):
+        result = gui._save_candidate_followup_from_dialog(
+            candidate,
+            "未沟通",
+            "纠正误记",
+            "",
+            Mock(),
+        )
+
+    assert result.saved is False
+    assert result.request_feedback is False
+    gui._update_candidate_followup.assert_not_called()
+    assert candidate["followup_status"] == "已回复"
+    assert candidate["greet_sent"] is True
+
+
 def test_manual_contact_approval_is_persisted_for_only_matching_job():
     with tempfile.TemporaryDirectory() as tmp_dir:
         candidates_path = Path(tmp_dir) / "candidates.json"
@@ -6429,30 +6498,31 @@ def test_daily_followup_action_promotes_followup_context_menu_entry():
 
 def test_followup_dialog_supports_due_date_quick_choices_and_persistence():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    block = source[source.index("def _mark_candidate_followup"):]
-    block = block[:block.index("\n    def _update_candidate_feedback")]
+    block = Path("gui_candidate_state_dialogs.py").read_text(encoding="utf-8")
+    controller = source[source.index("def _save_candidate_followup_from_dialog"):]
+    controller = controller[:controller.index("\n    def _update_candidate_feedback")]
 
     assert 'text="下次跟进日期"' in block
     for label in ("今天", "明天", "3 天后", "7 天后", "不设置"):
         assert f'("{label}",' in block
     assert "quick_date_frame.pack(" in block
-    assert "fill='x'" in block
-    assert "grid_columnconfigure(column, weight=1, uniform='followup_quick_date')" in block
-    assert "sticky='ew'" in block
+    assert 'fill="x"' in block
+    assert 'uniform="followup_quick_date"' in block
+    assert 'sticky="ew"' in block
     assert 'status_combo.bind("<<ComboboxSelected>>", reset_due_for_status)' in block
-    assert "next_due = normalize_followup_at(due_input)" in block
+    assert "next_due = normalize_followup(due_input)" in block
     assert 're.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", due_input)' in block
     assert "下次跟进日期无效，请检查年月日是否正确" in block
     assert "下次跟进日期格式不正确，请使用 YYYY-MM-DD" in block
     assert "show_form_error(error_text, next_followup_entry)" in block
     assert 'next_followup_entry.bind("<KeyRelease>", clear_form_error)' in block
     assert 'status in {"待约面", "已约面"} and not next_due' in block
-    assert 'status == "未沟通"' in block
-    assert "本地已打招呼事实、发送方式和跟进日期会同时清除" in block
-    assert "messagebox.ask_confirmation(" in block
-    assert "apply_followup_state(" in block
-    assert 'needs_feedback = status == "不合适"' in block
-    assert 'default_status="放弃"' in block
+    assert 'status == "未沟通"' in controller
+    assert "本地已打招呼事实、发送方式和跟进日期会同时清除" in controller
+    assert "messagebox.ask_confirmation(" in controller
+    assert "apply_followup_state(" in controller
+    assert 'status == "不合适"' in controller
+    assert 'default_status="放弃"' in controller
 
 
 def test_greet_queue_start_requires_confirmation():
@@ -9737,8 +9807,9 @@ def test_model_connectivity_summary_stays_inside_selection_dialog():
 
 def test_followup_and_feedback_validation_use_inline_errors():
     source = Path("gui_main.py").read_text(encoding="utf-8")
-    followup = source[
-        source.index("def _mark_candidate_followup"):
+    followup = Path("gui_candidate_state_dialogs.py").read_text(encoding="utf-8")
+    followup_controller = source[
+        source.index("def _save_candidate_followup_from_dialog"):
         source.index("\n    def _update_candidate_feedback")
     ]
     feedback = source[
@@ -9748,7 +9819,7 @@ def test_followup_and_feedback_validation_use_inline_errors():
 
     assert "show_form_error(error_text, next_followup_entry)" in followup
     assert 'show_form_error("请选择有效的跟进状态。", status_combo)' in followup
-    assert "messagebox.show_failure(" in followup
+    assert "messagebox.show_failure(" in followup_controller
     assert 'show_form_error("请选择有效的反馈状态。", status_combo)' in feedback
     assert "标记误推或误杀时，请至少选择一个原因。" in feedback
     assert "messagebox.show_failure(" in feedback
