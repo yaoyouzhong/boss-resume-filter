@@ -2224,6 +2224,14 @@ def _remote_file_sha256(url, token=None):
     return digest.hexdigest()
 
 
+def _request_get(url, **kwargs):
+    """GET one URL, keeping all Gitee HTTP traffic off configured proxies."""
+    hostname = (requests.utils.urlparse(url).hostname or "").lower()
+    if hostname == "gitee.com" or hostname.endswith(".gitee.com"):
+        return _gitee_session().get(url, **kwargs)
+    return requests.get(url, **kwargs)
+
+
 def _transfer_item_name(item):
     return item.name if isinstance(item, Path) else str(item)
 
@@ -4196,6 +4204,10 @@ def _gitee_session(retries=3):
     自动重试 5xx/429/连接错误（3 次），减少 Gitee 服务不稳定导致的失败。
     """
     session = requests.Session()
+    # Gitee is the domestic mirror.  API calls, uploads, redirects and asset
+    # downloads must stay direct even when the process configures GitHub proxy
+    # variables globally.
+    session.trust_env = False
     retry = Retry(
         total=retries,
         backoff_factor=1,        # 1s, 2s, 4s

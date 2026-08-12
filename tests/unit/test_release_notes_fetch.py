@@ -19,6 +19,19 @@ class FakeResponse:
         return self.payload
 
 
+def test_request_get_uses_direct_session_only_for_gitee():
+    with patch.object(
+        updater.requests,
+        "get",
+        side_effect=lambda url, **kwargs: (url, kwargs),
+    ):
+        gitee = updater._request_get("https://gitee.com/owner/repo/file", timeout=3)
+        github = updater._request_get("https://github.com/owner/repo/file", timeout=4)
+
+    assert gitee[1]["proxies"] == {"http": "", "https": "", "all": ""}
+    assert "proxies" not in github[1]
+
+
 def test_download_file_streams_chunks_and_reports_progress():
     class DownloadResponse:
         headers = {"content-length": "5"}
