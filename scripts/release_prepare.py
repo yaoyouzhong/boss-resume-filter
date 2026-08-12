@@ -464,7 +464,7 @@ def apply_release_materials(version: str, title: str, body: str) -> None:
         _replace_readme(readme.read_text(encoding="utf-8"), version, title, body),
         encoding="utf-8",
     )
-    for name in ("CLAUDE.md", "AGENTS.md"):
+    for name in ("AGENTS.md",):
         path = BASE_DIR / name
         path.write_text(
             _replace_project_doc_version(path.read_text(encoding="utf-8"), version, name),

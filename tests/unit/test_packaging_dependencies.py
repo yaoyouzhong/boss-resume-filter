@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import build
+
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
@@ -132,11 +134,10 @@ def test_ruff_f821_is_a_local_and_release_ci_hard_gate():
 
 def test_hidden_release_subprocess_helper_is_compiled_by_the_release_gate():
     """The Windows no-console launcher is a release-critical source dependency."""
-    build_source = (BASE_DIR / "build.py").read_text(encoding="utf-8")
     packaging = (BASE_DIR / "PACKAGING.md").read_text(encoding="utf-8")
     scripts_readme = (BASE_DIR / "scripts" / "README.md").read_text(encoding="utf-8")
 
-    assert '"subprocess_utils.py"' in build_source
+    assert "subprocess_utils.py" in build.SOURCE_CHECK_FILES
     assert "Start-Process -WindowStyle Hidden" in packaging
     assert "Start-Process -WindowStyle Hidden" in scripts_readme
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import tkinter as tk
 from collections.abc import Callable, Iterator, Mapping
 from tkinter import font, ttk
-from typing import Any
+from typing import Any, Protocol
 
 import ui_theme
 from constants import (
@@ -16,8 +16,30 @@ from constants import (
 )
 
 
+class RunPageHost(Protocol):
+    """Shared visual services required by the incremental run-page builder."""
+
+    pages_frame: tk.Misc
+    colors: Mapping[str, str]
+    dpi_scale: float
+    zoom_factor: float
+    font_scale: float
+    font_label: Any
+    font_log: Any
+    icons: Any
+    widget_support: Any
+    scroll_support: Any
+    feedback_support: Any
+    job_rules: Mapping[str, Any]
+    inline_note_gap: int
+
+    def __getattr__(self, name: str) -> Any: ...
+
+    def __setattr__(self, name: str, value: Any) -> None: ...
+
+
 def build_run_page_steps(
-    host: Any,
+    host: RunPageHost,
     ui_config: Mapping[str, Any],
     *,
     font_family: str,

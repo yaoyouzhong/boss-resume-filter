@@ -9,7 +9,7 @@ from typing import Any
 
 import ui_theme
 from ui_messagebox import messagebox
-from ui_windowing import place_window_centered
+from ui_windowing import create_toplevel, place_window_centered
 
 
 def show_model_catalog_dialog(
@@ -22,6 +22,11 @@ def show_model_catalog_dialog(
     removed_models: Collection[str],
     font_family: str,
     show_model_detail: Callable[[str], None],
+    provider_key: str,
+    base_url: str,
+    api_key: str,
+    probe_model: Callable[[str, str, str, str], Any],
+    run_on_ui: Callable[[Callable[[], Any]], None],
 ) -> None:
     """Show model search, selection, and explicit connectivity-test controls."""
     self = host
@@ -42,7 +47,7 @@ def show_model_catalog_dialog(
         except tk.TclError:
             pass
 
-    dialog = tk.Toplevel(self.root)
+    dialog = create_toplevel(self.root)
     self._model_dialog = dialog
     dialog.title("选择模型")
     dialog.transient(self.root)
@@ -232,16 +237,13 @@ def show_model_catalog_dialog(
         if not selection:
             return
 
-        test_models = [listbox.get(idx) for idx in selection]
+        test_models = [
+            listbox.get(idx).split(" [", 1)[0]
+            for idx in selection
+        ]
 
-        # 获取 API Key 和 Base URL
-        provider_key = self.DISPLAY_TO_KEY.get(provider, provider)
-        test_base_url = self.api_base_url_var.get().strip()
-        test_api_key = self._get_api_key_cached(
-            provider_key, test_base_url
-        )
-
-        if not test_api_key:
+        test_base_url = base_url.strip()
+        if not api_key:
             messagebox.showwarning("警告",
                 f"请先配置 {self.PROVIDER_DISPLAY.get(provider_key, provider)} 的 API Key",
                 parent=dialog)
@@ -268,54 +270,51 @@ def show_model_catalog_dialog(
         # 测试结果收集
         results = {}
         results_lock = threading.Lock()
+        model_indexes = dict(zip(test_models, selection))
+
+        def _update_list_item(model_name, result):
+            try:
+                if not dialog.winfo_exists():
+                    return
+                idx = model_indexes[model_name]
+                if result["status"] == "success":
+                    new_text = (
+                        f"{model_name} [✓ {result.get('mode', '兼容')} "
+                        f"{result['time']:.1f}s]"
+                    )
+                    color = self.colors['success']
+                else:
+                    new_text = f"{model_name} [✗ {result['msg']}]"
+                    color = self.colors.get('text_muted', ui_theme.TEXT_MUTED)
+                listbox.delete(idx)
+                listbox.insert(idx, new_text)
+                listbox.itemconfig(idx, foreground=color)
+            except (KeyError, tk.TclError):
+                return
 
         def _test_single_model(model_name):
             """测试单个模型能否稳定生成程序所需评估格式。"""
-            try:
-                from llm_eval import probe_model_compatibility
-                capability = probe_model_compatibility({
-                    "api_provider": provider_key,
-                    "base_url": test_base_url,
-                    "model": model_name,
-                }, test_api_key, force=True)
-                if capability.get("status") in ("compatible", "limited"):
-                    mode = "工具" if capability.get("output_mode") == "tool" else "兼容"
-                    result = {
-                        "status": "success",
-                        "time": capability.get("response_time", 0),
-                        "mode": mode,
-                    }
-                else:
-                    result = {"status": "error", "msg": capability.get("message", "不兼容")}
-            except Exception as e:
-                result = {"status": "error", "msg": f"异常: {str(e)[:50]}"}
+            outcome = probe_model(
+                provider_key,
+                test_base_url,
+                model_name,
+                api_key,
+            )
+            if outcome.status == "success":
+                result = {
+                    "status": "success",
+                    "time": outcome.response_time,
+                    "mode": outcome.mode,
+                }
+            else:
+                result = {"status": "error", "msg": outcome.message}
 
             with results_lock:
                 results[model_name] = result
-
-            # 更新列表项状态
-            for idx in selection:
-                if listbox.get(idx).startswith(model_name):
-                    # 清除旧状态
-                    current_text = listbox.get(idx)
-                    if " [" in current_text:
-                        current_text = current_text.split(" [")[0]
-                    # 设置新状态
-                    if result["status"] == "success":
-                        new_text = f"{current_text} [✓ {result.get('mode', '兼容')} {result['time']:.1f}s]"
-                        self.root.after(0, lambda i=idx, t=new_text: (
-                            listbox.delete(i),
-                            listbox.insert(i, t),
-                            listbox.itemconfig(i, foreground=self.colors['success'])
-                        ))
-                    else:
-                        new_text = f"{current_text} [✗ {result['msg']}]"
-                        self.root.after(0, lambda i=idx, t=new_text: (
-                            listbox.delete(i),
-                            listbox.insert(i, t),
-                            listbox.itemconfig(i, foreground=self.colors.get('text_muted', ui_theme.TEXT_MUTED))
-                        ))
-                    break
+            run_on_ui(
+                lambda model_name=model_name, result=result:
+                    _update_list_item(model_name, result)
+            )
 
         # 启动所有测试线程
         threads = []
@@ -363,7 +362,7 @@ def show_model_catalog_dialog(
                     )
                 )
 
-            self.root.after(0, _apply_summary)
+            run_on_ui(_apply_summary)
 
         threading.Thread(target=_show_summary, daemon=True).start()
 

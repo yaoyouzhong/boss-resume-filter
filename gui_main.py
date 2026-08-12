@@ -80,6 +80,7 @@ import stats_presenter
 import ui_theme
 from ui_windowing import (
     clamp as _clamp,
+    create_toplevel,
     get_windows_monitor_area as _get_windows_monitor_area,
     place_window_centered as _place_window_centered,
 )
@@ -90,29 +91,6 @@ subprocess = hidden_subprocess(subprocess)
 logger = logging.getLogger(__name__)
 
 
-class _EscCloseToplevel(tk.Toplevel):
-    """统一支持 Esc 关闭的 Toplevel（等同点击窗口 X 按钮）。
-
-    通过 WM_DELETE_WINDOW 协议关闭，走各弹窗自己的关闭清理逻辑；
-    弹窗内已显式绑定 <Escape> 的会覆盖本补丁，行为不受影响。
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.bind('<Escape>', self._on_escape_close, add='+')
-
-    def _on_escape_close(self, _event=None):
-        try:
-            cmd = self.tk.call('wm', 'protocol', self._w, 'WM_DELETE_WINDOW')
-            if cmd:
-                self.tk.call(cmd)
-            elif self.winfo_exists():
-                self.destroy()
-        except Exception:
-            pass
-
-
-tk.Toplevel = _EscCloseToplevel
 from collections import Counter
 from candidate_workflow import (
     CONTACTED_FOLLOWUP_STATUSES,
@@ -1131,7 +1109,12 @@ class BossFilterGUI:
                 return
 
             def _start():
-                updater.auto_check_on_startup(self.root, delay_ms=0, gui=self)
+                updater.auto_check_on_startup(
+                    self.root,
+                    delay_ms=0,
+                    gui=self,
+                    current_version=__version__,
+                )
                 if getattr(sys, 'frozen', False):
                     updater.mark_update_success_and_cleanup()
                     updater.notify_previous_update_failure(self.root)
@@ -1314,7 +1297,7 @@ class BossFilterGUI:
                 self._schedule_status_bar_reset(text, duration_ms)
             if getattr(self, '_status_flash_win', None) and self._status_flash_win.winfo_exists():
                 self._status_flash_win.destroy()
-            win = tk.Toplevel(self.root)
+            win = create_toplevel(self.root)
             win.overrideredirect(True)
             win.attributes('-topmost', True)
             label = tk.Label(
@@ -5419,6 +5402,11 @@ class BossFilterGUI:
                 removed_models=analysis.removed_models,
                 font_family=FONT_FAMILY,
                 show_model_detail=show_detail,
+                provider_key=outcome.provider,
+                base_url=outcome.base_url,
+                api_key=self.api_key_var.get().strip(),
+                probe_model=self._probe_model_for_dialog,
+                run_on_ui=self.run_on_ui,
             )
             return
 
@@ -5435,6 +5423,7 @@ class BossFilterGUI:
                 parent=parent,
             )
             return
+
         if outcome.status == "auth_error":
             self._update_api_status(
                 text="✗ 认证失败",
@@ -5517,6 +5506,19 @@ class BossFilterGUI:
                 detail=detail,
                 parent=parent,
             )
+
+    @staticmethod
+    def _probe_model_for_dialog(provider, base_url, model, api_key):
+        """Delegate one explicit-key capability probe to SettingsController."""
+        from llm_eval import probe_model_compatibility
+
+        return _SETTINGS_CONTROLLER.probe_model(
+            provider=provider,
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            probe=probe_model_compatibility,
+        )
 
     def _show_api_key_while_pressed(self, event=None):
         """按住眼睛图标时临时显示 API Key。"""
@@ -6689,10 +6691,9 @@ class BossFilterGUI:
             try:
                 # 阶段 1：regex 解析（快速）
                 regex_result = self._build_regex_parse_result(requirement_text)
-                self.root.after(
-                    0,
+                self.run_on_ui(
                     lambda result=regex_result, task_id=parse_id:
-                        self._apply_requirement_parse_result(result, task_id),
+                        self._apply_requirement_parse_result(result, task_id)
                 )
 
                 # 阶段 2：AI 增强（慢速，仅在有 key 时执行）
@@ -6701,16 +6702,14 @@ class BossFilterGUI:
                         requirement_text, regex_result["config"],
                         ai_provider, ai_base_url, ai_model, ai_key
                     )
-                    self.root.after(
-                        0,
+                    self.run_on_ui(
                         lambda result=ai_result, task_id=parse_id:
-                            self._apply_ai_enhance_result(result, task_id),
+                            self._apply_ai_enhance_result(result, task_id)
                     )
             except Exception as exc:
-                self.root.after(
-                    0,
+                self.run_on_ui(
                     lambda error=exc, task_id=parse_id:
-                        self._handle_requirement_parse_error(error, task_id),
+                        self._handle_requirement_parse_error(error, task_id)
                 )
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -7336,7 +7335,7 @@ class BossFilterGUI:
     def _show_job_config_diagnostics_dialog(self, text, has_error=False, context="save"):
         """Show diagnostics in a scrollable dialog and return whether to continue."""
         result = {"continue": False}
-        win = tk.Toplevel(self.root)
+        win = create_toplevel(self.root)
         win.title("岗位配置体检")
         win.transient(self.root)
         win.grab_set()
@@ -8938,6 +8937,7 @@ class BossFilterGUI:
                     self.result_tree.delete(item)
             self._tree_original_order = None
             self._item_to_candidate = {}
+            self._item_to_result_row = {}
 
             self.result_tree.tag_configure('strong_recommend', background=self.colors['bg_tree_tag_high'])
             self.result_tree.tag_configure('recommend', background=self.colors['bg_tree_tag_mid'])
@@ -8949,6 +8949,7 @@ class BossFilterGUI:
                     "", "end", values=row.values, tags=(row.tag,)
                 )
                 self._item_to_candidate[item_id] = row.candidate
+                self._item_to_result_row[item_id] = row
 
             if hasattr(self, 'result_count_var'):
                 self.result_count_var.set(
@@ -9401,7 +9402,21 @@ class BossFilterGUI:
         }
         matched_with_type: list[tuple[str, str]] = []
         for item_id in all_items:
-            mt = candidate_query_match(item_map.get(item_id, {}), query)
+            candidate = item_map.get(item_id, {})
+            row = (getattr(self, '_item_to_result_row', {}) or {}).get(item_id)
+            if row is None and candidate:
+                status = self._candidate_status_model(candidate)
+                status_display = status.display
+                status_detail = status.detail
+            else:
+                status_display = row.status_display if row else ""
+                status_detail = row.status_detail if row else ""
+            mt = candidate_query_match(
+                candidate,
+                query,
+                status_display=status_display,
+                status_detail=status_detail,
+            )
             if mt:
                 matched_with_type.append((item_id, mt))
 
@@ -9477,10 +9492,16 @@ class BossFilterGUI:
             return
 
         cand = self._item_to_candidate.get(item)
+        row = (getattr(self, '_item_to_result_row', {}) or {}).get(item)
         full = ''
         if cand and column_name == 'status':
-            full = cand.get('_full_status', '')
-            display = cand.get('_display_status', '')
+            if row is None:
+                status = self._candidate_status_model(cand)
+                full = status.detail
+                display = status.display
+            else:
+                full = row.status_detail
+                display = row.status_display
             show_tooltip = bool(full and full != display)
             if full and not show_tooltip:
                 try:
@@ -9493,7 +9514,11 @@ class BossFilterGUI:
                 except (tk.TclError, TypeError, ValueError):
                     show_tooltip = False
         elif cand and column_name in ('job_status', 'school', 'company'):
-            extra = cand.get('_extra_fields') or ('', '', '', '', '')
+            extra = (
+                row.extra_fields
+                if row is not None
+                else candidate_presenter.extract_candidate_extra_fields(cand)
+            )
             extra_index = {'job_status': 2, 'school': 3, 'company': 4}[column_name]
             full = str(extra[extra_index] or '')
             try:
@@ -9594,8 +9619,9 @@ class BossFilterGUI:
                 _hide_all()
                 return
             candidate = self._find_candidate_in_detail_tree(tree, item, filtered_ref)
-            full = candidate.get('_full_status', '') if candidate else ''
-            display = candidate.get('_display_status', '') if candidate else ''
+            status = self._candidate_status_model(candidate) if candidate else None
+            full = status.detail if status else ''
+            display = status.display if status else ''
             if not full or full == display:
                 _hide_all()
                 return
@@ -9861,21 +9887,23 @@ class BossFilterGUI:
         return candidate_presenter.candidate_gender_display(candidate)
 
 
-    def _format_candidate_status(self, candidate):
-        """Keep the historical GUI entry point as a presenter delegate."""
+    def _candidate_status_model(self, candidate):
+        """Return presenter-owned status metadata without mutating candidate data."""
         status = candidate_presenter.format_candidate_status(
             candidate,
             evaluating_ids=frozenset(getattr(self, '_ai_evaluating_ids', set())),
             evaluation_results=getattr(self, '_ai_eval_results', {}) or {},
         )
-        candidate['_display_status'] = status.display
-        candidate['_full_status'] = status.detail
         if status.expired_evaluation_id:
             getattr(self, '_ai_eval_results', {}).pop(
                 status.expired_evaluation_id,
                 None,
             )
-        return status.display
+        return status
+
+    def _format_candidate_status(self, candidate):
+        """Keep the historical GUI entry point as a presenter delegate."""
+        return self._candidate_status_model(candidate).display
 
     def _open_blacklist_reason_dialog(self, candidate, parent, on_confirm):
         """打开加入黑名单原因弹窗。"""
@@ -10501,7 +10529,7 @@ class BossFilterGUI:
             # 从评估中集合移除
             for candidate in all_candidates:
                 self._ai_evaluating_ids.discard(str(candidate.get('geek_id', '')))
-            self.root.after(0, self._on_ai_eval_complete)
+            self.run_on_ui(self._on_ai_eval_complete)
 
     def _refresh_ai_eval_status(self):
         """定时刷新AI评估状态；每组评估完成都会落盘，指纹变化时 refresh_results 自动全量刷新，未变时是廉价空操作。"""
@@ -10703,6 +10731,7 @@ class BossFilterGUI:
         note,
         next_followup_at=None,
         timestamp=None,
+        job_uuid=None,
     ):
         """Keep the historical GUI entry point as a controller delegate."""
         return _candidate_controller_for(self).update_followup(
@@ -10712,6 +10741,7 @@ class BossFilterGUI:
             note,
             next_followup_at,
             timestamp,
+            job_uuid=job_uuid,
         )
 
     def _quick_update_candidate_followup(
@@ -10736,6 +10766,7 @@ class BossFilterGUI:
                 candidate.get('followup_note', ''),
                 next_due,
                 followup_time,
+                job_uuid=candidate.get('job_uuid'),
             )
             if not updated:
                 messagebox.showerror(
@@ -10786,11 +10817,13 @@ class BossFilterGUI:
         contact_approval_reason="",
         review_passed_reasons=None,
         timestamp=None,
+        job_uuid=None,
     ):
         """Keep the historical GUI entry point as a controller delegate."""
         return _candidate_controller_for(self).complete_review(
             geek_id,
             job_name,
+            job_uuid=job_uuid,
             contact_approval_reason=contact_approval_reason,
             review_passed_reasons=review_passed_reasons,
             timestamp=timestamp,
@@ -10802,11 +10835,13 @@ class BossFilterGUI:
         job_name,
         review_rejected_reasons=None,
         timestamp=None,
+        job_uuid=None,
     ):
         """Keep the historical GUI entry point as a controller delegate."""
         return _candidate_controller_for(self).reject_review(
             geek_id,
             job_name,
+            job_uuid=job_uuid,
             review_rejected_reasons=review_rejected_reasons,
             timestamp=timestamp,
         )
@@ -10817,12 +10852,14 @@ class BossFilterGUI:
         job_name,
         reason,
         timestamp=None,
+        job_uuid=None,
     ):
         """Keep the historical GUI entry point as a controller delegate."""
         return _candidate_controller_for(self).approve_contact(
             geek_id,
             job_name,
             reason,
+            job_uuid=job_uuid,
             timestamp=timestamp,
         )
 
@@ -10864,6 +10901,7 @@ class BossFilterGUI:
             candidate.get('job_name', ''),
             approval_reason,
             approved_at,
+            job_uuid=candidate.get('job_uuid'),
         )
         if not updated:
             messagebox.showerror(
@@ -10928,6 +10966,7 @@ class BossFilterGUI:
                 contact_approval_reason=contact_approval_reason,
                 review_passed_reasons=review_reasons,
                 timestamp=confirmed_at,
+                job_uuid=candidate.get('job_uuid'),
             )
             if not updated:
                 self._status_flash(f"{name} 当前已无需人工确认")
@@ -10988,6 +11027,7 @@ class BossFilterGUI:
                 candidate.get('job_name', ''),
                 review_rejected_reasons=reasons,
                 timestamp=rejected_at,
+                job_uuid=candidate.get('job_uuid'),
             )
             if not updated:
                 messagebox.showerror(
@@ -11080,6 +11120,7 @@ class BossFilterGUI:
                         self._candidate_identity_key(c), []
                     ),
                     timestamp=confirmed_at,
+                    job_uuid=c.get('job_uuid'),
                 )
                 if updated:
                     c['manual_review_required'] = False
@@ -11142,6 +11183,7 @@ class BossFilterGUI:
                 note,
                 next_due,
                 followup_time,
+                job_uuid=candidate.get("job_uuid"),
             )
             if not updated:
                 messagebox.show_failure(
@@ -11234,7 +11276,15 @@ class BossFilterGUI:
             on_request_feedback=request_feedback,
         )
 
-    def _update_candidate_feedback(self, geek_id, job_name, status, reasons, note):
+    def _update_candidate_feedback(
+        self,
+        geek_id,
+        job_name,
+        status,
+        reasons,
+        note,
+        job_uuid=None,
+    ):
         """Keep the historical GUI entry point as a controller delegate."""
         return _candidate_controller_for(self).update_feedback(
             geek_id,
@@ -11242,6 +11292,7 @@ class BossFilterGUI:
             status,
             reasons,
             note,
+            job_uuid=job_uuid,
         )
 
     def _save_candidate_feedback_from_dialog(
@@ -11261,6 +11312,7 @@ class BossFilterGUI:
                 status,
                 reasons,
                 note,
+                job_uuid=candidate.get("job_uuid"),
             )
             if not updated:
                 messagebox.show_failure(
@@ -13412,7 +13464,7 @@ class BossFilterGUI:
                     if hasattr(self, 'status_bar_left_var'):
                         self.status_bar_left_var.set("")
                     messagebox.showerror("错误", message, parent=self.root)
-                self.root.after(0, show_error)
+                self.run_on_ui(show_error)
                 return
 
             def notify_success():
@@ -13420,7 +13472,7 @@ class BossFilterGUI:
                     self.status_bar_left_var.set("")
                 self.append_log(f"已导出 {count} 名候选人：{file_path}")
                 self._status_flash(f"已导出 {count} 名候选人")
-            self.root.after(0, notify_success)
+            self.run_on_ui(notify_success)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -13618,11 +13670,33 @@ class BossFilterGUI:
 
     def show_about(self):
         """显示关于弹窗"""
-        gui_dialogs.show_about_dialog(self, __version__)
+        def _check_for_update():
+            import updater
+
+            updater.check_and_update_gui(
+                self.root,
+                silent=False,
+                gui=self,
+                source="manual",
+                current_version=__version__,
+            )
+
+        gui_dialogs.show_about_dialog(
+            self,
+            __version__,
+            check_for_update=_check_for_update,
+        )
 
     def show_changelog(self):
         """显示更新日志（版本列表 + 详情分栏）"""
-        gui_dialogs.show_changelog_dialog(self, __version__)
+        import updater
+
+        gui_dialogs.show_changelog_dialog(
+            self,
+            __version__,
+            get_cached_release_notes=updater.get_cached_release_notes,
+            fetch_current_release_notes=updater.fetch_current_release_notes,
+        )
 
 
 def main():

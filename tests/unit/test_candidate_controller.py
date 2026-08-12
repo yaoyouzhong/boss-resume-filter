@@ -5,6 +5,10 @@ from types import SimpleNamespace
 from candidate_controller import CandidateController, CandidatePersistence
 
 
+JOB_UUID_A = "11111111-1111-4111-8111-111111111111"
+JOB_UUID_B = "22222222-2222-4222-8222-222222222222"
+
+
 class _MemoryPersistence:
     def __init__(self, records):
         self.records = records
@@ -203,6 +207,41 @@ def test_ai_evaluation_merge_uses_candidate_and_job_composite_identity():
     assert records[0]["match_score"] == 72
     assert records[0]["llm_evaluated"] is True
     assert records[1]["match_score"] == 60
+
+
+def test_same_named_jobs_with_different_uuids_do_not_cross_update():
+    records = [
+        {
+            "geek_id": "g1",
+            "job_uuid": JOB_UUID_A,
+            "job_name": "Java 工程师",
+            "followup_status": "未沟通",
+        },
+        {
+            "geek_id": "g1",
+            "job_uuid": JOB_UUID_B,
+            "job_name": "Java 工程师",
+            "followup_status": "未沟通",
+        },
+    ]
+    active = dict(records[1])
+    temp_dir, _backend, controller = _controller(records)
+    try:
+        updated = controller.update_followup(
+            "g1",
+            "Java 工程师",
+            "已回复",
+            "仅更新第二个岗位",
+            job_uuid=JOB_UUID_B,
+            candidate=active,
+        )
+    finally:
+        temp_dir.cleanup()
+
+    assert updated is True
+    assert CandidateController.identity(records[0]) != CandidateController.identity(records[1])
+    assert records[0]["followup_status"] == "未沟通"
+    assert records[1]["followup_status"] == "已回复"
 
 
 def test_resume_import_uses_explicit_services_and_refreshes_active_candidate():

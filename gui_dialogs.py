@@ -10,17 +10,16 @@ from changelog_renderer import render_changelog_text
 from changelog_parser import normalize_version, parse_changelog_versions, resolve_local_changelog_path
 from ui_messagebox import messagebox
 import ui_theme
-from ui_windowing import clamp, place_window_centered
+from ui_windowing import clamp, create_toplevel, place_window_centered
 
 FONT_FAMILY = ui_theme.FONT_FAMILY
 
 
-def show_about_dialog(gui, version):
+def show_about_dialog(gui, version, *, check_for_update):
     """显示关于弹窗"""
     import webbrowser
-    import updater
 
-    dialog = tk.Toplevel(gui.root)
+    dialog = create_toplevel(gui.root)
     dialog.title("关于 BOSS 简历筛选器")
     dialog.transient(gui.root)
     dialog.resizable(False, False)
@@ -120,9 +119,7 @@ def show_about_dialog(gui, version):
         image=icon_refresh,
         text=' 检查更新',
         compound=tk.LEFT,
-        command=lambda: updater.check_and_update_gui(
-            gui.root, silent=False, gui=gui, source="manual"
-        ),
+        command=check_for_update,
         style='AboutDialog.TButton',
     )
     refresh_button._icon_ref = icon_refresh
@@ -146,7 +143,13 @@ def show_about_dialog(gui, version):
     dialog.bind('<Escape>', lambda e: dialog.destroy())
 
 
-def show_changelog_dialog(gui, current_version=""):
+def show_changelog_dialog(
+    gui,
+    current_version="",
+    *,
+    get_cached_release_notes,
+    fetch_current_release_notes,
+):
     """显示更新日志对话框（版本列表 + 详情分栏）
 
     Args:
@@ -169,7 +172,7 @@ def show_changelog_dialog(gui, current_version=""):
         messagebox.showinfo("更新日志", "CHANGELOG.md 中没有版本记录", parent=gui.root)
         return
 
-    dialog = tk.Toplevel(gui.root)
+    dialog = create_toplevel(gui.root)
     dialog.title("更新日志")
     dialog.transient(gui.root)
     dialog.withdraw()
@@ -409,13 +412,12 @@ def show_changelog_dialog(gui, current_version=""):
 
     def load_remote_current_notes():
         try:
-            import updater
-            cached = updater.get_cached_release_notes(current_version)
+            cached = get_cached_release_notes(current_version)
             if cached:
-                gui.root.after(0, lambda: apply_remote_current_notes(cached))
-            notes = updater.fetch_current_release_notes(current_version, use_cache=False)
+                gui.run_on_ui(lambda: apply_remote_current_notes(cached))
+            notes = fetch_current_release_notes(current_version, use_cache=False)
             if notes and notes != cached:
-                gui.root.after(0, lambda: apply_remote_current_notes(notes))
+                gui.run_on_ui(lambda: apply_remote_current_notes(notes))
         except Exception:
             return
 

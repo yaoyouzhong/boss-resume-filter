@@ -3,12 +3,17 @@
 测量协议：同一会话内第 1 次冷跑丢弃，再连跑 3 次取中位数；
 跨会话绝对值受冷/热缓存影响抖动可达数倍，判定只用同会话比率。
 """
+import os
 import sys
 import time
 import tkinter as tk
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+os.environ["BOSS_RESUME_FILTER_DISABLE_DATA_MIGRATION"] = "1"
+os.environ["BOSS_RESUME_FILTER_DISABLE_GUARD_PERSISTENCE"] = "1"
+os.environ["BOSS_RESUME_FILTER_DISABLE_STARTUP_UPDATE"] = "1"
 
 import gui_main
 

@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 import gui_candidate_workbench
 import ui_theme
-from ui_windowing import place_window_centered
+from ui_windowing import create_toplevel, place_window_centered
 
 
 class ContactQueueHost(Protocol):
@@ -79,7 +79,7 @@ def build_contact_queue_workbench(
 ) -> ContactQueueWidgets:
     """Build the withdrawn contact window without loading, saving, or sending data."""
     scale = host.dpi_scale * host.zoom_factor
-    win = tk.Toplevel(parent)
+    win = create_toplevel(parent)
     win.title("联系候选人")
     win.transient(parent)
     win.withdraw()

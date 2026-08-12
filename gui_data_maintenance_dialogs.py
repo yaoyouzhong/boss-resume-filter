@@ -8,7 +8,7 @@ from tkinter import ttk
 from typing import Protocol
 
 import ui_theme
-from ui_windowing import place_window_centered
+from ui_windowing import create_toplevel, place_window_centered
 
 
 class DataMaintenanceDialogHost(Protocol):
@@ -47,7 +47,7 @@ def show_clear_candidates_dialog(
     """Show clear scope/retention choices and return them to the controller."""
     scale = host.dpi_scale * host.zoom_factor
     dialog_font_scale = host.font_scale * 0.88
-    window = tk.Toplevel(parent)
+    window = create_toplevel(parent)
     window.title("清空候选人")
     window.transient(parent)
     window.grab_set()

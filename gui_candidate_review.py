@@ -8,7 +8,7 @@ from tkinter import ttk
 from typing import Any, Protocol
 
 import ui_theme
-from ui_windowing import get_windows_monitor_area, place_window_centered
+from ui_windowing import create_toplevel, get_windows_monitor_area, place_window_centered
 
 
 class InputSupport(Protocol):
@@ -150,7 +150,7 @@ def build_candidate_review_workbench(
 ) -> CandidateReviewWidgets:
     """Build the withdrawn review window without reading or mutating candidate data."""
     scale = host.dpi_scale * host.zoom_factor
-    win = tk.Toplevel(host.root)
+    win = create_toplevel(host.root)
     win.title("候选人查看与复核")
     win.transient(host.root)
     win.withdraw()

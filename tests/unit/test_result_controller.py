@@ -121,7 +121,10 @@ def test_result_view_reports_expired_ai_feedback_without_mutating_input_map():
 
     assert state.expired_evaluation_ids == ("candidate",)
     assert "candidate" in feedback
-    assert candidate["_display_status"] == "未沟通"
+    assert state.rows[0].status_display == "未沟通"
+    assert "_display_status" not in candidate
+    assert "_full_status" not in candidate
+    assert "_extra_fields" not in candidate
 
 
 def test_result_controller_uses_injected_snapshot_loader_and_cache_key():
@@ -150,12 +153,16 @@ def test_result_search_and_sort_rules_are_controller_owned():
         "gender": "女",
         "match_score": 72,
         "recommend_level": "推荐",
-        "_display_status": "未沟通｜待复核",
     }
 
     assert candidate_query_match(candidate, "张三") == "exact_name"
     assert candidate_query_match(candidate, "张") == "partial_name"
     assert candidate_query_match(candidate, "女") == "gender"
+    assert candidate_query_match(
+        candidate,
+        "待复核",
+        status_display="未沟通｜待复核",
+    ) == "status"
     assert candidate_query_match(candidate, ">=70") == "score"
     assert candidate_query_match(candidate, ">80") is None
     assert result_sort_value("salary", "15-25K") == (True, 20.0)

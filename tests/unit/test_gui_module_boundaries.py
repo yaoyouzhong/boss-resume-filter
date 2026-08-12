@@ -8,6 +8,7 @@ import browser_controller
 import candidate_controller
 import candidate_diagnostics_presenter
 import candidate_cleanup
+import candidate_scan_policy
 import candidate_presenter
 import changelog_renderer
 import contact_controller
@@ -54,16 +55,87 @@ import updater
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _top_level_imports(module_name: str) -> set[str]:
-    """Return only imports executed while the module itself is imported."""
+def _all_imports(module_name: str) -> set[str]:
+    """Return imports from every lexical scope so lazy imports cannot bypass policy."""
     tree = ast.parse((ROOT / f"{module_name}.py").read_text(encoding="utf-8"))
     imported = set()
-    for node in tree.body:
+    for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
     return imported
+
+
+# Existing focused assertions use this historical helper name. Its behavior is
+# intentionally all-scope; new policy tests use the explicit name above.
+_top_level_imports = _all_imports
+
+
+GUI_SUPPORT_MODULES = {
+    "gui_app_shell",
+    "gui_dialogs",
+    "gui_feedback_support",
+    "gui_input_support",
+    "gui_layout_support",
+    "gui_main",
+    "gui_model_catalog_dialog",
+    "gui_scroll_support",
+    "gui_style_setup",
+    "gui_widget_support",
+}
+GUI_BUILDER_MODULES = {
+    path.stem for path in ROOT.glob("gui_*.py")
+} - GUI_SUPPORT_MODULES
+
+
+def _thread_target_function_names(module_name: str) -> set[str]:
+    tree = ast.parse((ROOT / f"{module_name}.py").read_text(encoding="utf-8"))
+    targets: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        callable_name = ""
+        if isinstance(node.func, ast.Name):
+            callable_name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            callable_name = node.func.attr
+        if callable_name != "Thread":
+            continue
+        target = next(
+            (keyword.value for keyword in node.keywords if keyword.arg == "target"),
+            None,
+        )
+        if isinstance(target, ast.Name):
+            targets.add(target.id)
+        elif isinstance(target, ast.Attribute):
+            targets.add(target.attr)
+    return targets
+
+
+def _direct_attribute_calls(function: ast.FunctionDef) -> set[str]:
+    """Return calls in a function body, excluding nested callback definitions."""
+    attributes: set[str] = set()
+
+    class DirectCallVisitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node):
+            return
+
+        def visit_AsyncFunctionDef(self, node):
+            return
+
+        def visit_Lambda(self, node):
+            return
+
+        def visit_Call(self, node):
+            if isinstance(node.func, ast.Attribute):
+                attributes.add(node.func.attr)
+            self.generic_visit(node)
+
+    visitor = DirectCallVisitor()
+    for statement in function.body:
+        visitor.visit(statement)
+    return attributes
 
 
 def test_gui_modules_share_leaf_helpers_without_duplicate_implementations():
@@ -75,10 +147,63 @@ def test_gui_modules_share_leaf_helpers_without_duplicate_implementations():
     assert updater.render_changelog_text is changelog_renderer.render_changelog_text
 
 
+def test_toplevel_creation_is_explicit_and_does_not_patch_tkinter_globally():
+    gui_source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+    assert "tk.Toplevel =" not in gui_source
+    for path in ROOT.glob("*.py"):
+        if path.name == "ui_windowing.py":
+            continue
+        assert "tk.Toplevel(" not in path.read_text(encoding="utf-8")
+
+    window = Mock()
+    window.tk.call.return_value = "close-window"
+    with patch.object(ui_windowing.tk, "Toplevel", return_value=window) as factory:
+        created = ui_windowing.create_toplevel("parent")
+    assert created is window
+    factory.assert_called_once_with("parent")
+    escape_callback = window.bind.call_args.args[1]
+    escape_callback()
+    window.tk.call.assert_any_call(
+        "wm", "protocol", window._w, "WM_DELETE_WINDOW"
+    )
+    window.tk.call.assert_any_call("close-window")
+
+
+def test_gui_thread_targets_do_not_schedule_tk_directly():
+    for module_name in ("gui_main", "gui_dialogs", "gui_model_catalog_dialog"):
+        tree = ast.parse(
+            (ROOT / f"{module_name}.py").read_text(encoding="utf-8")
+        )
+        target_names = _thread_target_function_names(module_name)
+        assert target_names
+        for function in (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name in target_names
+        ):
+            assert not (
+                _direct_attribute_calls(function) & {"after", "after_idle"}
+            ), f"{module_name}.{function.name} must dispatch through run_on_ui"
+
+
+def test_manual_tk_scripts_disable_live_data_and_update_side_effects():
+    for relative_path in (
+        "tests/manual/bench_page_switch.py",
+        "tests/manual/check_widget_tree.py",
+    ):
+        source = (ROOT / relative_path).read_text(encoding="utf-8")
+        import_index = source.index("import gui_main")
+        prefix = source[:import_index]
+        assert "BOSS_RESUME_FILTER_DISABLE_DATA_MIGRATION" in prefix
+        assert "BOSS_RESUME_FILTER_DISABLE_GUARD_PERSISTENCE" in prefix
+        assert "BOSS_RESUME_FILTER_DISABLE_STARTUP_UPDATE" in prefix
+
+
 def test_dialog_and_updater_imports_do_not_recreate_gui_main_cycle():
-    assert "gui_main" not in _top_level_imports("gui_dialogs")
-    assert "gui_main" not in _top_level_imports("updater")
-    assert "gui_dialogs" not in _top_level_imports("updater")
+    assert "gui_main" not in _all_imports("gui_dialogs")
+    assert "updater" not in _all_imports("gui_dialogs")
+    assert "gui_main" not in _all_imports("updater")
+    assert "gui_dialogs" not in _all_imports("updater")
 
 
 def test_presenters_are_leaf_modules_without_ui_storage_or_network_imports():
@@ -340,6 +465,23 @@ def test_candidate_cleanup_does_not_import_gui_storage_or_network_modules():
     assert callable(candidate_cleanup.clear_candidates_in_place)
 
 
+def test_candidate_scan_policy_is_a_pure_business_module():
+    forbidden = {
+        "bossmaster",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "tkinter",
+        "urllib",
+    }
+    assert not (_all_imports("candidate_scan_policy") & forbidden)
+    assert callable(candidate_scan_policy.build_rejection_reason_labels)
+    assert callable(candidate_scan_policy.normalize_rejection_reason)
+    assert callable(candidate_scan_policy.build_ai_hard_conditions)
+
+
 def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():
     forbidden = {
         "bossmaster",
@@ -351,26 +493,66 @@ def test_gui_builders_do_not_import_gui_main_storage_or_network_modules():
         "subprocess",
         "urllib",
     }
-    for module_name in (
-        "gui_candidate_actions",
-        "gui_candidate_diagnostics",
-        "gui_candidate_menus",
-        "gui_candidate_review",
-        "gui_candidate_state_dialogs",
-        "gui_candidate_workbench",
-        "gui_contact_queue",
-        "gui_config_page",
-        "gui_data_maintenance_dialogs",
-        "gui_education_page",
-        "gui_home_page",
-        "gui_job_review",
-        "gui_result_page",
-        "gui_run_page",
-        "gui_settings_page",
-        "gui_stats_detail",
-        "gui_stats_page",
-    ):
-        assert not (_top_level_imports(module_name) & forbidden)
+    assert "gui_candidate_workbench" in GUI_BUILDER_MODULES
+    for module_name in sorted(GUI_BUILDER_MODULES):
+        assert not (_all_imports(module_name) & forbidden)
+
+
+def test_incremental_page_builders_use_explicit_host_protocols():
+    expected = {
+        "gui_config_page": ("build_config_page_steps", "ConfigPageHost"),
+        "gui_run_page": ("build_run_page_steps", "RunPageHost"),
+        "gui_settings_page": (
+            "build_settings_content_steps",
+            "SettingsPageHost",
+        ),
+    }
+    for module_name, (function_name, protocol_name) in expected.items():
+        tree = ast.parse(
+            (ROOT / f"{module_name}.py").read_text(encoding="utf-8")
+        )
+        classes = {
+            node.name: node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef)
+        }
+        assert protocol_name in classes
+        assert any(
+            isinstance(base, ast.Name) and base.id == "Protocol"
+            for base in classes[protocol_name].bases
+        )
+        function = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == function_name
+        )
+        annotation = function.args.args[0].annotation
+        assert isinstance(annotation, ast.Name)
+        assert annotation.id == protocol_name
+
+
+def test_new_controllers_and_presenters_are_automatically_boundary_checked():
+    controllers = {path.stem for path in ROOT.glob("*_controller.py")}
+    presenters = {path.stem for path in ROOT.glob("*_presenter.py")}
+    assert controllers
+    assert presenters
+
+    for module_name in sorted(controllers):
+        assert not (_all_imports(module_name) & {"gui_main", "tkinter"})
+
+    presenter_forbidden = {
+        "bossmaster",
+        "contact_queue",
+        "gui_main",
+        "requests",
+        "socket",
+        "storage",
+        "subprocess",
+        "tkinter",
+        "urllib",
+    }
+    for module_name in sorted(presenters):
+        assert not (_all_imports(module_name) & presenter_forbidden)
 
 
 def test_gui_style_setup_owns_only_global_tk_style_registration():
@@ -1245,12 +1427,19 @@ def test_candidate_persistence_compatibility_methods_delegate_to_controller():
 def test_model_catalog_dialog_does_not_import_controller_storage_or_http_clients():
     forbidden = {
         "gui_main",
+        "llm_eval",
         "requests",
         "security",
         "storage",
     }
-    assert not (_top_level_imports("gui_model_catalog_dialog") & forbidden)
+    assert not (_all_imports("gui_model_catalog_dialog") & forbidden)
     assert callable(gui_model_catalog_dialog.show_model_catalog_dialog)
+
+    source = (ROOT / "gui_model_catalog_dialog.py").read_text(encoding="utf-8")
+    assert "probe_model(" in source
+    assert "run_on_ui(" in source
+    assert "_get_api_key_cached" not in source
+    assert ".root.after(0" not in source
 
 
 def test_model_catalog_service_is_ui_free_and_main_uses_both_extracted_parts():

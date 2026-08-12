@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from tkinter import messagebox as _native_messagebox, ttk
 
 import ui_theme
+from ui_windowing import create_toplevel
 
 
 class CenteredMessageBox:
@@ -219,7 +220,7 @@ class CenteredMessageBox:
         meta_font = self._structured_meta_font
         metric_value_font = self._font_with_weight(message_font, "bold")
 
-        window = tk.Toplevel(parent)
+        window = create_toplevel(parent)
         window.title(str(title or "提示"))
         window.transient(parent)
         window.resizable(False, False)
@@ -774,7 +775,7 @@ class CenteredMessageBox:
         message_font = self._font_with_delta(self._message_font, font_delta)
         button_font = self._font_with_delta(self._button_font, font_delta)
 
-        window = tk.Toplevel(parent)
+        window = create_toplevel(parent)
         window.title(str(title or "提示"))
         window.transient(parent)
         window.resizable(False, False)

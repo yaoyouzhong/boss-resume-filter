@@ -362,6 +362,31 @@ def test_dedupe_migrates_legacy_name_record_into_stable_identity():
     assert result[0]["job_uuid"] == job_uuid
 
 
+def test_dedupe_keeps_same_named_jobs_with_different_stable_ids():
+    first_uuid = "11111111-1111-4111-8111-111111111111"
+    second_uuid = "22222222-2222-4222-8222-222222222222"
+    result = _dedupe_candidates([
+        {
+            "geek_id": "g1",
+            "job_uuid": first_uuid,
+            "job_name": "Java 工程师",
+            "match_score": 70,
+        },
+        {
+            "geek_id": "g1",
+            "job_uuid": second_uuid,
+            "job_name": "Java 工程师",
+            "match_score": 80,
+        },
+    ])
+
+    assert len(result) == 2
+    assert {candidate["job_uuid"] for candidate in result} == {
+        first_uuid,
+        second_uuid,
+    }
+
+
 def test_dedupe_merges_greet_sent_from_old_to_new():
     """old 有 greet_sent=True，new 没有 → 合并后保留 True。"""
     result = _dedupe_candidates([
@@ -858,6 +883,27 @@ def test_save_upgrades_candidate_record_schema_without_wrapping_list():
             payload = json.load(file_obj)
         assert isinstance(payload, list)
         assert payload[0]["schema_version"] == 2
+
+
+def test_save_strips_result_view_transient_fields_without_mutating_input():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "candidates.json"
+        candidate = {
+            "geek_id": "g1",
+            "job_name": "Java 工程师",
+            "match_score": 70,
+            "_display_status": "未沟通",
+            "_full_status": "完整状态",
+            "_extra_fields": ["本科", "30岁", "在职", "学校", "公司"],
+        }
+
+        save_candidates_all([candidate], path)
+        saved = load_candidates_all(path)[0]
+
+    assert "_display_status" not in saved
+    assert "_full_status" not in saved
+    assert "_extra_fields" not in saved
+    assert candidate["_full_status"] == "完整状态"
 
 
 def test_save_creates_backup_of_existing_file():

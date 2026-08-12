@@ -56,6 +56,9 @@ class ResultRow:
     candidate: Candidate
     values: tuple[Any, ...]
     tag: str
+    status_display: str
+    status_detail: str
+    extra_fields: tuple[str, str, str, str, str]
     expired_evaluation_id: str = ""
 
 
@@ -186,7 +189,13 @@ def result_sort_value(column: str, value: object) -> tuple[bool, float | str]:
     return (True, float(match.group())) if match else (False, 0.0)
 
 
-def candidate_query_match(candidate: Mapping[str, Any], query: str) -> str | None:
+def candidate_query_match(
+    candidate: Mapping[str, Any],
+    query: str,
+    *,
+    status_display: str = "",
+    status_detail: str = "",
+) -> str | None:
     """Return the result-search match class for one candidate."""
     normalized = str(query or "").strip().lower()
     if not normalized:
@@ -199,8 +208,8 @@ def candidate_query_match(candidate: Mapping[str, Any], query: str) -> str | Non
         filter(
             None,
             (
-                str(candidate.get("_display_status") or candidate.get("followup_status") or ""),
-                str(candidate.get("_full_status") or ""),
+                str(status_display or candidate.get("followup_status") or ""),
+                str(status_detail or ""),
             ),
         )
     ).lower()
@@ -293,8 +302,6 @@ def _build_result_row(
         evaluation_results=evaluation_results,
         now=now,
     )
-    candidate["_display_status"] = status.display
-    candidate["_full_status"] = status.detail
     salary, experience = candidate_presenter.parse_salary_experience(
         candidate.get("summary"),
         candidate.get("structured"),
@@ -302,7 +309,7 @@ def _build_result_row(
     education, age, job_status, school, company = (
         candidate_presenter.extract_candidate_extra_fields(candidate)
     )
-    candidate["_extra_fields"] = education, age, job_status, school, company
+    extra_fields = education, age, job_status, school, company
     return ResultRow(
         candidate=candidate,
         values=(
@@ -322,6 +329,9 @@ def _build_result_row(
             company,
         ),
         tag=_result_row_tag(candidate, score, rejected),
+        status_display=status.display,
+        status_detail=status.detail,
+        extra_fields=extra_fields,
         expired_evaluation_id=status.expired_evaluation_id,
     )
 

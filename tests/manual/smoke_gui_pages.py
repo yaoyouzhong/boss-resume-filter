@@ -1,4 +1,4 @@
-"""Smoke all seven GUI pages, force-refresh results, and open the changelog."""
+"""Smoke all seven GUI pages and extracted workbenches without live I/O."""
 
 from __future__ import annotations
 
@@ -13,6 +13,11 @@ os.environ["BOSS_RESUME_FILTER_DISABLE_GUARD_PERSISTENCE"] = "1"
 os.environ["BOSS_RESUME_FILTER_DISABLE_STARTUP_UPDATE"] = "1"
 
 import gui_main
+import gui_candidate_actions
+import gui_candidate_diagnostics
+import gui_candidate_review
+import gui_contact_queue
+import gui_dialogs
 
 
 PAGES = (
@@ -49,7 +54,12 @@ def main() -> int:
         print("PASS refresh_results(force=True)")
 
         previous_toplevels = set(root.winfo_children())
-        app.show_changelog()
+        gui_dialogs.show_changelog_dialog(
+            app,
+            gui_main.__version__,
+            get_cached_release_notes=lambda _version: None,
+            fetch_current_release_notes=lambda _version, **_kwargs: None,
+        )
         root.update_idletasks()
         changelog_windows = [
             child
@@ -64,6 +74,75 @@ def main() -> int:
             )
         print("PASS changelog dialog")
         changelog_windows[0].destroy()
+
+        noop = lambda *_args, **_kwargs: None
+        review = gui_candidate_review.build_candidate_review_workbench(
+            app,
+            navigate=noop,
+            show_view=lambda _view: "break",
+            toggle_view=lambda: "break",
+            close_window=lambda window: window.destroy(),
+        )
+        diagnostics = gui_candidate_diagnostics.show_candidate_state_diagnostics_dialog(
+            app,
+            "全部岗位",
+            [],
+            [],
+            load_diagnostics=lambda: ([], []),
+            export_report=noop,
+            ui_config=gui_main.UI_CONFIG,
+        )
+        actions = gui_candidate_actions.show_daily_candidate_actions_dialog(
+            app,
+            "全部岗位",
+            [],
+            load_actions=lambda: [],
+            export_report=noop,
+            ui_config=gui_main.UI_CONFIG,
+        )
+        contact = gui_contact_queue.build_contact_queue_workbench(
+            app,
+            root,
+            selected_group="全部",
+            initial_counts={},
+            callbacks=gui_contact_queue.ContactQueueCallbacks(
+                start=noop,
+                pause=noop,
+                resume=noop,
+                group_selected=noop,
+                confirm_sent=noop,
+                confirm_not_sent=noop,
+                retry_failed=noop,
+                remove_selected=noop,
+                show_selected_detail=noop,
+                update_action_states=noop,
+                row_motion=noop,
+                hide_tooltip=noop,
+                context_menu=noop,
+                select_all=noop,
+                close=noop,
+            ),
+            ui_config=gui_main.UI_CONFIG,
+        )
+        root.update_idletasks()
+        workbench_windows = (
+            review.window,
+            diagnostics,
+            actions,
+            contact.window,
+        )
+        expected_titles = {
+            "候选人查看与复核",
+            "候选人状态体检",
+            "今日待办",
+            "联系候选人",
+        }
+        actual_titles = {window.title() for window in workbench_windows}
+        if actual_titles != expected_titles:
+            raise RuntimeError(f"workbench titles mismatch: {actual_titles}")
+        print("PASS extracted workbenches")
+        for window in workbench_windows:
+            window.destroy()
         return 0
     finally:
         root.destroy()

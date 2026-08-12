@@ -14,6 +14,7 @@ from candidate_workflow import (
     normalize_followup_at,
 )
 from constants import SCORE_THRESHOLD_PASS, SCORE_THRESHOLD_RECOMMEND, SCORE_THRESHOLD_STRONG
+from data_schema import canonical_candidate_identity
 
 
 FOLLOWUP_STATUS_OPTIONS = SUPPORTED_FOLLOWUP_STATUSES
@@ -294,10 +295,9 @@ def _diagnose_individual_candidates(candidates: Iterable[dict[str, Any]]) -> lis
 def _diagnose_duplicate_records(candidates: Iterable[dict[str, Any]]) -> list[CandidateStateIssue]:
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for candidate in candidates:
-        geek_id = _clean_text(candidate.get("geek_id"))
-        job_name = _clean_text(candidate.get("job_name"))
-        if geek_id and job_name:
-            groups[(geek_id, job_name)].append(candidate)
+        identity = canonical_candidate_identity(candidate)
+        if all(identity):
+            groups[identity].append(candidate)
 
     issues: list[CandidateStateIssue] = []
     for (_geek_id, _job_name), records in groups.items():
@@ -374,10 +374,9 @@ def _issue(
 
 
 def _candidate_key(candidate: dict[str, Any]) -> str:
-    geek_id = _clean_text(candidate.get("geek_id"))
-    job_name = _clean_text(candidate.get("job_name"))
-    if geek_id and job_name:
-        return f"{geek_id}:{job_name}"
+    geek_id, job_identity = canonical_candidate_identity(candidate)
+    if geek_id and job_identity:
+        return f"{geek_id}:{job_identity}"
     return geek_id or _clean_text(candidate.get("name")) or "unknown"
 
 
