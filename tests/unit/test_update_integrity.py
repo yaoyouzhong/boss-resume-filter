@@ -450,6 +450,59 @@ diff --git a/icons.py b/icons.py
     assert "未覆盖信号" not in output.getvalue()
 
 
+def test_changelog_coverage_ignores_behavior_code_moved_between_files():
+    diff_text = """\
+diff --git a/gui_main.py b/gui_main.py
+--- a/gui_main.py
++++ b/gui_main.py
+-        error=TimeoutError("浏览器页面连接超时"),
+-        raise TimeoutError("浏览器页面连接超时")
+-        if cap_status in ("compatible", "limited"):
+diff --git a/browser_connection.py b/browser_connection.py
+--- /dev/null
++++ b/browser_connection.py
++        error=TimeoutError("浏览器页面连接超时"),
++        timeout: float,
+diff --git a/api_connectivity.py b/api_connectivity.py
+--- /dev/null
++++ b/api_connectivity.py
++        return self.status in {"compatible", "limited"}
+"""
+
+    class Result:
+        returncode = 0
+        stdout = diff_text
+
+    originals = (
+        build._read_version,
+        build._extract_changelog_release,
+        build._get_last_tag,
+        build.subprocess.run,
+    )
+    try:
+        build._read_version = lambda: "2.28"
+        build._extract_changelog_release = lambda _version: (
+            "v2.28 — 测试",
+            "### 新增功能\n\n- 岗位复盘配置定位。",
+        )
+        build._get_last_tag = lambda: "v2.27"
+        build.subprocess.run = lambda *args, **kwargs: Result()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            build._check_code_to_changelog_coverage(strict=True)
+    finally:
+        (
+            build._read_version,
+            build._extract_changelog_release,
+            build._get_last_tag,
+            build.subprocess.run,
+        ) = originals
+
+    assert "未检测到用户可见的新增代码信号" in output.getvalue()
+    assert "未覆盖信号" not in output.getvalue()
+
+
 def test_changelog_coverage_ignores_excel_column_width_map_conversion():
     diff_text = """\
 diff --git a/bossmaster.py b/bossmaster.py
