@@ -40,7 +40,7 @@ class JobReviewCallbacks:
     """Business actions supplied by the main controller."""
 
     show_feedback_candidates: Callable[[], Any]
-    open_job_config: Callable[[], Any]
+    open_job_config: Callable[[Mapping[str, Any]], Any]
     format_suggestion: Callable[[object], tuple[str, str]]
 
 
@@ -398,28 +398,19 @@ def _add_suggestions(
     scale: float,
     callbacks: JobReviewCallbacks,
 ) -> None:
-    def build_suggestion_action(title_bar: tk.Misc, padding: int) -> None:
-        if review["feedback_count"] < 5:
-            return
-        ttk.Button(
-            title_bar,
-            text="前往岗位配置",
-            command=callbacks.open_job_config,
-        ).pack(
-            side="right",
-            padx=(0, padding),
-            pady=max(4, int(padding * 0.45)),
-        )
-
     suggestions = host.widget_support.create_card(
         parent,
         "建议调整",
         fill="x",
         pady=(0, int(10 * scale)),
-        title_trailing_builder=build_suggestion_action,
     )
-    for index, suggestion in enumerate(review["suggestions"], start=1):
+    recommendation_items = review.get("recommendations") or review["suggestions"]
+    for index, suggestion in enumerate(recommendation_items, start=1):
         title, detail = callbacks.format_suggestion(suggestion)
+        recommendation = suggestion if isinstance(suggestion, Mapping) else {}
+        evidence = str(recommendation.get("evidence") or "").strip()
+        config_target = str(recommendation.get("config_target") or "").strip()
+        action_label = str(recommendation.get("action_label") or "").strip()
         row = tk.Frame(
             suggestions,
             bg=host.colors["bg_input"],
@@ -440,6 +431,16 @@ def _add_suggestions(
             padx=int(10 * scale),
             pady=int(10 * scale),
         )
+        if config_target and action_label:
+            ttk.Button(
+                row,
+                text=action_label,
+                command=lambda item=recommendation: callbacks.open_job_config(item),
+            ).pack(
+                side="right",
+                padx=int(10 * scale),
+                pady=int(10 * scale),
+            )
         text_box = tk.Frame(row, bg=host.colors["bg_input"])
         text_box.pack(
             side="left",
@@ -458,6 +459,17 @@ def _add_suggestions(
             anchor="w",
             wraplength=max(520, int(700 * min(scale, 1.2))),
         ).pack(fill="x", anchor="w")
+        if evidence:
+            tk.Label(
+                text_box,
+                text=f"复盘证据：{evidence}",
+                font=(font_family, int(10 * host.font_scale)),
+                fg=host.colors["primary"],
+                bg=host.colors["bg_input"],
+                justify="left",
+                anchor="w",
+                wraplength=max(460, int(610 * min(scale, 1.2))),
+            ).pack(fill="x", anchor="w", pady=(int(2 * scale), 0))
         if detail:
             tk.Label(
                 text_box,
@@ -574,7 +586,9 @@ def build_job_review_workbench(
     _add_insights(host, content, review, font_family=font_family, scale=scale)
     contextual_callbacks = JobReviewCallbacks(
         show_feedback_candidates=callbacks.show_feedback_candidates,
-        open_job_config=lambda: close_then(callbacks.open_job_config),
+        open_job_config=lambda recommendation: close_then(
+            lambda: callbacks.open_job_config(recommendation)
+        ),
         format_suggestion=callbacks.format_suggestion,
     )
     _add_suggestions(

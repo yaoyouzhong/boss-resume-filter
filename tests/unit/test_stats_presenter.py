@@ -94,6 +94,64 @@ def test_job_review_suggestions_require_enough_feedback():
     assert detail == "补充硬性约束。"
 
 
+def test_job_review_recommendations_map_every_feedback_reason_to_safe_action():
+    reason_counts = Counter(
+        {
+            "技能不匹配": 2,
+            "行业经验不符": 1,
+            "年限判断偏差": 1,
+            "学历/学校不符": 1,
+            "薪资不合适": 1,
+            "地点不合适": 1,
+            "求职状态不合适": 1,
+            "AI 高估": 1,
+            "AI 低估": 1,
+            "规则过宽": 1,
+            "规则过窄": 1,
+            "简历信息不足": 1,
+            "其他": 1,
+        }
+    )
+
+    recommendations = stats_presenter.build_job_review_recommendations(
+        Counter({"误推": 3, "误杀": 2}),
+        reason_counts,
+        5,
+    )
+    by_title = {item["title"]: item for item in recommendations}
+
+    assert by_title["技能不匹配"]["config_target"] == "skills"
+    assert by_title["年限判断偏差"]["config_target"] == "minimum_experience"
+    assert by_title["学历/学校不符"]["config_target"] == "education"
+    assert by_title["薪资不合适"]["config_target"] == "salary"
+    assert by_title["地点不合适"]["config_target"] == "work_location"
+    assert by_title["规则过窄"]["config_target"] == "required_conditions"
+    assert by_title["AI 高估"]["config_target"] == "requirement"
+    assert by_title["简历信息不足"]["config_target"] == ""
+    assert by_title["其他"]["action_label"] == ""
+    assert by_title["技能不匹配"]["evidence"] == (
+        "5 条反馈中 2 条标记为“技能不匹配”"
+    )
+
+
+def test_job_review_recommendations_never_offer_config_actions_below_sample_gate():
+    recommendations = stats_presenter.build_job_review_recommendations(
+        Counter({"误推": 3}),
+        Counter({"规则过宽": 3}),
+        3,
+    )
+
+    assert all(not item["config_target"] for item in recommendations)
+    assert all(not item["action_label"] for item in recommendations)
+    assert "样本不足 5 条" in recommendations[0]["detail"]
+
+
+def test_job_review_suggestion_format_accepts_structured_recommendation():
+    assert stats_presenter.format_job_review_suggestion(
+        {"title": "规则过宽", "detail": "核对必要条件。"}
+    ) == ("规则过宽", "核对必要条件。")
+
+
 def test_job_review_text_aggregates_structured_feedback_reasons():
     candidates = [
         {
@@ -150,3 +208,23 @@ def test_job_review_only_reports_trends_after_minimum_feedback_sample():
     assert "误推占比较高" in text
     assert "规则过宽：3/5 条" in text
     assert "样本不足" not in text
+
+
+def test_job_review_model_exposes_text_and_structured_recommendations_together():
+    candidates = [
+        {
+            "match_score": 70,
+            "feedback_status": "误推",
+            "feedback_reasons": ["薪资不合适"],
+        }
+        for _index in range(5)
+    ]
+
+    review = stats_presenter.build_job_review_model("Java", candidates)
+
+    salary = next(
+        item for item in review["recommendations"] if item["title"] == "薪资不合适"
+    )
+    assert salary["config_target"] == "salary"
+    assert salary["action_label"] == "定位薪资范围"
+    assert salary["text"] in review["suggestions"]

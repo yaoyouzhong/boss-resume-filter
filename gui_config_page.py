@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from tkinter import ttk
 from typing import Any, Protocol
 
@@ -13,7 +14,11 @@ from filtering import GENDER_VALUES
 class ConfigPageHost(Protocol):
     """Shared visual services required by the incremental config builder."""
 
+    root: tk.Misc
     pages_frame: tk.Misc
+    config_page: tk.Misc
+    config_canvas: tk.Canvas
+    config_scrollable_frame: tk.Misc
     colors: Mapping[str, str]
     dpi_scale: float
     zoom_factor: float
@@ -34,6 +39,15 @@ class ConfigPageHost(Protocol):
     def __getattr__(self, name: str) -> Any: ...
 
     def __setattr__(self, name: str, value: Any) -> None: ...
+
+
+@dataclass(frozen=True)
+class ConfigReviewTarget:
+    """One scroll and highlight anchor owned by the job-config page."""
+
+    label: str
+    scroll_widget: tk.Misc
+    highlight_widget: tk.Misc
 
 
 def build_config_page_steps(
@@ -806,6 +820,46 @@ def build_config_page_steps(
     ttk.Button(required_edit_frame, text="添加", command=self.add_required_condition).pack(side="left", padx=(int(8 * self.dpi_scale * self.zoom_factor), int(3 * self.dpi_scale * self.zoom_factor)))
     ttk.Button(required_edit_frame, text="删除选中", command=self.delete_required_condition).pack(side="left", padx=(int(3 * self.dpi_scale * self.zoom_factor), 0))
 
+    self._job_config_review_targets = {
+        "requirement": ConfigReviewTarget(
+            "招聘需求",
+            parse_frame,
+            parse_frame.master,
+        ),
+        "education": ConfigReviewTarget(
+            "最低学历",
+            row_education_experience,
+            basic_frame.master,
+        ),
+        "minimum_experience": ConfigReviewTarget(
+            "最低经验",
+            row_education_experience,
+            basic_frame.master,
+        ),
+        "salary": ConfigReviewTarget(
+            "薪资范围",
+            row_salary,
+            basic_frame.master,
+        ),
+        "work_location": ConfigReviewTarget(
+            "工作地点",
+            row_location,
+            basic_frame.master,
+        ),
+        "skills": ConfigReviewTarget(
+            "技能评分条件",
+            skills_frame,
+            skills_frame.master,
+        ),
+        "required_conditions": ConfigReviewTarget(
+            "必要条件",
+            required_frame,
+            required_frame.master,
+        ),
+    }
+    self._job_config_review_highlight = None
+    self._job_config_review_highlight_after_id = None
+
     yield
 
     # 按钮行（居中布局，固定在页面底部，不随 Canvas 滚动）
@@ -916,3 +970,93 @@ def build_config_page_steps(
         self.config_canvas,
         self.config_scrollable_frame,
     )
+
+
+def locate_job_config_review_target(
+    host: ConfigPageHost,
+    target_key: str,
+) -> str | None:
+    """Scroll one reviewed config field into view and pulse its owning card."""
+    target = getattr(host, "_job_config_review_targets", {}).get(target_key)
+    if target is None:
+        return None
+    if target_key == "requirement":
+        host._set_requirement_section_expanded(True)
+
+    canvas = host.config_canvas
+    content = host.config_scrollable_frame
+    canvas.update_idletasks()
+    content.update_idletasks()
+    target.scroll_widget.update_idletasks()
+    try:
+        target_top = target.scroll_widget.winfo_rooty() - content.winfo_rooty()
+        scroll_region = canvas.bbox("all")
+        viewport_height = max(1, canvas.winfo_height())
+        content_height = (
+            max(1, scroll_region[3] - scroll_region[1])
+            if scroll_region is not None
+            else max(1, content.winfo_reqheight())
+        )
+        max_offset = max(0, content_height - viewport_height)
+        margin = int(18 * host.dpi_scale * host.zoom_factor)
+        target_offset = max(0, min(target_top - margin, max_offset))
+        canvas.yview_moveto(target_offset / max_offset if max_offset else 0.0)
+    except tk.TclError:
+        return None
+
+    previous_after_id = getattr(
+        host,
+        "_job_config_review_highlight_after_id",
+        None,
+    )
+    if previous_after_id:
+        try:
+            host.root.after_cancel(previous_after_id)
+        except tk.TclError:
+            pass
+    previous = getattr(host, "_job_config_review_highlight", None)
+    if previous:
+        previous_widget, previous_border, previous_thickness = previous
+        try:
+            previous_widget.configure(
+                highlightbackground=previous_border,
+                highlightthickness=previous_thickness,
+            )
+        except tk.TclError:
+            pass
+
+    highlight_widget = target.highlight_widget
+    try:
+        original_border = highlight_widget.cget("highlightbackground")
+        original_thickness = highlight_widget.cget("highlightthickness")
+        highlight_widget.configure(
+            highlightbackground=host.colors["primary"],
+            highlightthickness=max(2, int(2 * host.dpi_scale)),
+        )
+    except tk.TclError:
+        return target.label
+    host._job_config_review_highlight = (
+        highlight_widget,
+        original_border,
+        original_thickness,
+    )
+
+    def restore_highlight() -> None:
+        current = getattr(host, "_job_config_review_highlight", None)
+        if not current or current[0] is not highlight_widget:
+            return
+        try:
+            highlight_widget.configure(
+                highlightbackground=original_border,
+                highlightthickness=original_thickness,
+            )
+        except tk.TclError:
+            pass
+        host._job_config_review_highlight = None
+        host._job_config_review_highlight_after_id = None
+
+    host._job_config_review_highlight_after_id = host.root.after(
+        2400,
+        restore_highlight,
+    )
+    return target.label

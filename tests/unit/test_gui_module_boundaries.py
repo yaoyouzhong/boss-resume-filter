@@ -1121,7 +1121,7 @@ def test_job_review_compatibility_method_only_wires_business_callbacks():
     assert "gui_job_review.JobReviewCallbacks(" in block
     assert "gui_job_review.build_job_review_workbench(" in block
     assert "self._show_job_review_feedback_candidates(job_name, candidates)" in block
-    assert "self._open_job_config_from_review(job_name)" in block
+    assert "self._open_job_config_from_review(job_name, recommendation)" in block
     assert "tk.Toplevel" not in block
     assert "ttk.Frame" not in block
 
@@ -1148,13 +1148,14 @@ def test_job_review_delegate_keeps_feedback_and_navigation_in_main_controller():
     assert build.call_args.kwargs["time_range"] == "近30天"
     callbacks = build.call_args.kwargs["callbacks"]
     callbacks.show_feedback_candidates()
-    callbacks.open_job_config()
+    recommendation = {"config_target": "skills"}
+    callbacks.open_job_config(recommendation)
     assert callbacks.format_suggestion("建议") == ("标题", "详情")
     gui._show_job_review_feedback_candidates.assert_called_once_with(
         "Java",
         candidates,
     )
-    gui._open_job_config_from_review.assert_called_once_with("Java")
+    gui._open_job_config_from_review.assert_called_once_with("Java", recommendation)
 
 
 def test_result_page_compatibility_method_is_a_thin_builder_delegate():

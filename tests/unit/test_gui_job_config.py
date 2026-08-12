@@ -14,6 +14,7 @@ from unittest.mock import Mock, call, patch
 
 import gui_main
 import gui_app_shell
+import gui_config_page
 import gui_layout_support
 import gui_scroll_support
 import icons
@@ -8326,10 +8327,11 @@ def test_job_review_workbench_uses_cards_funnel_and_contextual_actions():
     assert '"建议调整"' in block
     assert "if not insight_sections:" in block
     assert 'text="查看反馈候选人"' in block
-    assert 'text="前往岗位配置"' in block
-    assert 'if review["feedback_count"] < 5:' in block
-    assert "title_trailing_builder=build_suggestion_action" in block
-    assert 'enumerate(review["suggestions"], start=1)' in block
+    assert 'recommendation_items = review.get("recommendations")' in block
+    assert 'text=f"复盘证据：{evidence}"' in block
+    assert 'text=action_label' in block
+    assert 'callbacks.open_job_config(item)' in block
+    assert 'text="前往岗位配置"' not in block
     assert 'anchor="w"' in block
     assert "int(9 * host.font_scale)" not in block
     assert "_show_text_dialog(" not in block
@@ -8391,6 +8393,10 @@ def test_job_review_can_navigate_to_matching_saved_job_config():
     gui.config_job_combo = _FakeCombo()
     gui.config_job_combo.set("其他岗位")
     gui.on_job_selected = Mock()
+    gui.root = Mock()
+    gui.root.after_idle.side_effect = lambda callback: callback()
+    gui.config_page = Mock()
+    gui.feedback_support = Mock()
 
     def request_page(page_index, on_ready=None):
         assert page_index == 1
@@ -8399,11 +8405,149 @@ def test_job_review_can_navigate_to_matching_saved_job_config():
     gui.app_shell = Mock()
     gui.app_shell.request_sidebar_page.side_effect = request_page
 
-    gui._open_job_config_from_review("  Java   工程师 ")
+    with patch.object(
+        gui_config_page,
+        "locate_job_config_review_target",
+        return_value="必要条件",
+    ) as locate:
+        gui._open_job_config_from_review(
+            "  Java   工程师 ",
+            {
+                "config_target": "required_conditions",
+                "evidence": "5 条反馈中 3 条标记为“规则过宽”",
+            },
+        )
 
     gui.app_shell.request_sidebar_page.assert_called_once()
     assert gui.config_job_combo.get() == "Java 工程师"
     gui.on_job_selected.assert_called_once_with(None)
+    locate.assert_called_once_with(gui, "required_conditions")
+    gui.feedback_support.show_inline_banner.assert_called_once()
+    banner_args = gui.feedback_support.show_inline_banner.call_args.args
+    assert banner_args[:3] == (
+        gui.config_page,
+        "info",
+        "复盘证据：5 条反馈中 3 条标记为“规则过宽”。"
+        "已定位到“必要条件”，请核对后手工调整；尚未修改或保存任何岗位配置。",
+    )
+
+
+def test_job_review_navigation_keeps_same_job_and_locates_without_writing():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.job_rules = {"Java 工程师": {"min_exp": 3}}
+    gui.config_job_combo = _FakeCombo()
+    gui.config_job_combo.set("Java 工程师")
+    gui.on_job_selected = Mock()
+    gui.save_config = Mock()
+    gui.root = Mock()
+    gui.root.after_idle.side_effect = lambda callback: callback()
+    gui.config_page = Mock()
+    gui.feedback_support = Mock()
+
+    def request_page(_page_index, on_ready=None):
+        on_ready()
+
+    gui.app_shell = Mock()
+    gui.app_shell.request_sidebar_page.side_effect = request_page
+
+    with patch.object(
+        gui_config_page,
+        "locate_job_config_review_target",
+        return_value="最低经验",
+    ):
+        gui._open_job_config_from_review(
+            "Java 工程师",
+            {"config_target": "minimum_experience", "evidence": "5 条反馈中 2 条"},
+        )
+
+    gui.on_job_selected.assert_not_called()
+    gui.save_config.assert_not_called()
+    assert gui.job_rules == {"Java 工程师": {"min_exp": 3}}
+
+
+class _ReviewTargetWidget:
+    def __init__(self, root_y=0, *, requested_height=1000):
+        self.root_y = root_y
+        self.requested_height = requested_height
+        self.options = {
+            "highlightbackground": "#cccccc",
+            "highlightthickness": 1,
+        }
+
+    def update_idletasks(self):
+        return None
+
+    def winfo_rooty(self):
+        return self.root_y
+
+    def winfo_reqheight(self):
+        return self.requested_height
+
+    def cget(self, key):
+        return self.options[key]
+
+    def configure(self, **kwargs):
+        self.options.update(kwargs)
+
+
+class _ReviewTargetCanvas(_ReviewTargetWidget):
+    def __init__(self):
+        super().__init__(root_y=100)
+        self.moved_to = None
+
+    def bbox(self, _tag):
+        return (0, 0, 800, 1200)
+
+    def winfo_height(self):
+        return 300
+
+    def yview_moveto(self, fraction):
+        self.moved_to = fraction
+
+
+def test_job_config_review_locator_scrolls_highlights_and_restores_card():
+    host = Mock()
+    host.dpi_scale = 1.0
+    host.zoom_factor = 1.0
+    host.colors = {"primary": "#2563eb"}
+    host.root = Mock()
+    scheduled = {}
+    host.root.after.return_value = "after-1"
+    host.root.after.side_effect = lambda delay, callback: (
+        scheduled.update({"delay": delay, "callback": callback}) or "after-1"
+    )
+    host.config_canvas = _ReviewTargetCanvas()
+    host.config_scrollable_frame = _ReviewTargetWidget(root_y=100)
+    target_widget = _ReviewTargetWidget(root_y=700)
+    card = _ReviewTargetWidget(root_y=650)
+    host._job_config_review_targets = {
+        "salary": gui_config_page.ConfigReviewTarget(
+            "薪资范围",
+            target_widget,
+            card,
+        )
+    }
+    host._job_config_review_highlight = None
+    host._job_config_review_highlight_after_id = None
+
+    label = gui_config_page.locate_job_config_review_target(host, "salary")
+
+    assert label == "薪资范围"
+    assert 0 < host.config_canvas.moved_to < 1
+    assert card.options["highlightbackground"] == "#2563eb"
+    assert card.options["highlightthickness"] == 2
+    assert scheduled["delay"] == 2400
+
+    scheduled["callback"]()
+    assert card.options["highlightbackground"] == "#cccccc"
+    assert card.options["highlightthickness"] == 1
+
+
+def test_job_config_review_locator_rejects_unknown_target_without_ui_change():
+    host = Mock()
+    host._job_config_review_targets = {}
+
+    assert gui_config_page.locate_job_config_review_target(host, "unknown") is None
 
 
 def test_education_browser_reuses_live_page():
