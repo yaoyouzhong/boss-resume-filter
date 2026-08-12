@@ -6,7 +6,7 @@
 
 ```text
 boss-resume-filter/
-├── gui_main.py            # 图形界面主程序（v2.27）
+├── gui_main.py            # 图形界面主程序（v2.28）
 ├── bossmaster.py          # BOSS 扫描、筛选、联系和导出主程序
 ├── education_tool*.py     # 独立学历核验工具入口、配置与安全
 ├── *_controller.py        # 领域动作编排；不持有 Tk 控件
