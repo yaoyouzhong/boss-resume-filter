@@ -20,7 +20,7 @@ import random
 import socket
 import subprocess
 import zipfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import filedialog, font, ttk
@@ -3851,7 +3851,9 @@ class BossFilterGUI:
             show_feedback_candidates=lambda: (
                 self._show_job_review_feedback_candidates(job_name, candidates)
             ),
-            open_job_config=lambda: self._open_job_config_from_review(job_name),
+            open_job_config=lambda recommendation: (
+                self._open_job_config_from_review(job_name, recommendation)
+            ),
             format_suggestion=self._format_job_review_suggestion,
         )
         return gui_job_review.build_job_review_workbench(
@@ -3891,8 +3893,16 @@ class BossFilterGUI:
             height=520,
         )
 
-    def _open_job_config_from_review(self, job_name):
-        """Navigate from a job review to the matching saved job configuration."""
+    def _open_job_config_from_review(self, job_name, recommendation=None):
+        """Load a reviewed job and optionally locate one evidenced config field."""
+        recommendation_data = (
+            recommendation if isinstance(recommendation, Mapping) else {}
+        )
+        target_key = str(
+            recommendation_data.get("config_target") or ""
+        ).strip()
+        evidence = str(recommendation_data.get("evidence") or "").strip()
+
         def _select_reviewed_job() -> None:
             normalized_target = " ".join(str(job_name or '').strip().split()).casefold()
             matched_job = next(
@@ -3910,9 +3920,33 @@ class BossFilterGUI:
                 )
                 return
             if self.config_job_combo.get() == matched_job:
+                selected = True
+            else:
+                self.config_job_combo.set(matched_job)
+                self.on_job_selected(None)
+                selected = self.config_job_combo.get() == matched_job
+            if not selected or not target_key:
                 return
-            self.config_job_combo.set(matched_job)
-            self.on_job_selected(None)
+
+            def _locate_review_target() -> None:
+                target_label = gui_config_page.locate_job_config_review_target(
+                    self,
+                    target_key,
+                )
+                if not target_label:
+                    return
+                evidence_text = f"复盘证据：{evidence}。" if evidence else ""
+                self.feedback_support.show_inline_banner(
+                    self.config_page,
+                    "info",
+                    (
+                        f"{evidence_text}已定位到“{target_label}”，请核对后手工调整；"
+                        "尚未修改或保存任何岗位配置。"
+                    ),
+                    duration_ms=8000,
+                )
+
+            self.root.after_idle(_locate_review_target)
 
         self.app_shell.request_sidebar_page(PageIndex.CONFIG, on_ready=_select_reviewed_job)
 
