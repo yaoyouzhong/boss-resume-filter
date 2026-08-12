@@ -21,7 +21,7 @@ from pathlib import Path
 from changelog_renderer import render_changelog_text
 from ui_messagebox import messagebox
 import ui_theme
-from ui_windowing import place_window_centered
+from ui_windowing import create_toplevel, place_window_centered
 
 import requests
 import tkinter as tk
@@ -69,14 +69,9 @@ def _place_dialog_centered(dialog, parent, width, height):
 
 def get_current_version() -> str:
     """获取当前版本号"""
-    try:
-        # gui_main 是程序入口，updater 被调用时已在 sys.modules 中
-        # 直接读取模块属性，无需解析源文件，兼容所有打包模式
-        import gui_main
-        return gui_main.__version__
-    except Exception:
-        logger.warning("获取当前版本失败，返回默认值", exc_info=True)
-        return "0.0.0"
+    # GUI 是版本号唯一来源；更新器不反向导入入口模块。
+    gui_module = sys.modules.get("gui_main")
+    return str(getattr(gui_module, "__version__", "0.0.0"))
 
 
 def _parse_version(v: str) -> tuple:
@@ -149,7 +144,11 @@ def _github_asset_integrity(
     return {"size": release_size, "sha256": sha256}
 
 
-def check_github_release(repo="yaoyouzhong/boss-resume-filter"):
+def check_github_release(
+    repo="yaoyouzhong/boss-resume-filter",
+    *,
+    current_version=None,
+):
     """
     检查 GitHub Release 最新版本
 
@@ -166,7 +165,7 @@ def check_github_release(repo="yaoyouzhong/boss-resume-filter"):
     """
     result = {
         'latest': None,
-        'current': get_current_version(),
+        'current': str(current_version or get_current_version()),
         'has_update': False,
         'update_type': None,
         'content_changed': False,
@@ -252,7 +251,11 @@ def _get_gitee_latest_response(latest_json_url):
             raise
 
 
-def check_gitee_latest(latest_json_url="https://gitee.com/yaoyouzhong/boss-resume-filter/raw/master/latest.json"):
+def check_gitee_latest(
+    latest_json_url="https://gitee.com/yaoyouzhong/boss-resume-filter/raw/master/latest.json",
+    *,
+    current_version=None,
+):
     """
     从 Gitee 检查最新版本（国内备用源）
 
@@ -266,7 +269,7 @@ def check_gitee_latest(latest_json_url="https://gitee.com/yaoyouzhong/boss-resum
     """
     result = {
         'latest': None,
-        'current': get_current_version(),
+        'current': str(current_version or get_current_version()),
         'has_update': False,
         'update_type': None,
         'content_changed': False,
@@ -1220,8 +1223,15 @@ def exit_for_update(root):
     os._exit(0)
 
 
-def check_and_update_gui(root: tk.Tk, silent: bool = False, on_complete=None, gui=None,
-                         source: str = "manual", on_defer=None) -> None:
+def check_and_update_gui(
+    root: tk.Tk,
+    silent: bool = False,
+    on_complete=None,
+    gui=None,
+    source: str = "manual",
+    on_defer=None,
+    current_version=None,
+) -> None:
     """
     GUI 版本的更新检查和执行
 
@@ -1234,16 +1244,16 @@ def check_and_update_gui(root: tk.Tk, silent: bool = False, on_complete=None, gu
     """
     def do_check():
         # 优先尝试 Gitee（国内快）
-        result = check_gitee_latest()
+        result = check_gitee_latest(current_version=current_version)
 
         if result['error']:
             # Gitee 请求失败，回退到 GitHub
             if not silent:
                 print(f"[更新] Gitee 检查失败: {result['error']}，尝试 GitHub...")
-            result = check_github_release()
+            result = check_github_release(current_version=current_version)
         elif not result['has_update']:
             # Gitee 返回成功但无更新，用 GitHub 复核（防止 Gitee 镜像同步延迟）
-            gh = check_github_release()
+            gh = check_github_release(current_version=current_version)
             if not gh['error'] and gh['has_update']:
                 print(f"[更新] GitHub 发现新版本 v{gh['latest']}，使用 GitHub 结果")
                 result = gh
@@ -1259,7 +1269,10 @@ def check_and_update_gui(root: tk.Tk, silent: bool = False, on_complete=None, gu
                     result["cached_update_path"] = str(cached_update)
 
         # 回到主线程处理结果
-        root.after(0, lambda: handle_result(result))
+        if gui is not None and callable(getattr(gui, "run_on_ui", None)):
+            gui.run_on_ui(lambda: handle_result(result))
+        else:
+            root.after(0, lambda: handle_result(result))
 
     def handle_result(result):
         if result['error']:
@@ -1431,7 +1444,7 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
     font_family_bold = getattr(gui, 'FONT_FAMILY_SEMIBOLD', _FONT_FAMILY)
     colors = getattr(gui, 'colors', None) or ui_theme.build_palette()
 
-    dialog = tk.Toplevel(root)
+    dialog = create_toplevel(root)
     dialog.title("发现新版本")
     dialog.transient(root)
     dialog.grab_set()
@@ -1545,7 +1558,7 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
 
     def show_update_details():
         """下载完成后显示可滚动的新版本升级明细。"""
-        details = tk.Toplevel(dialog)
+        details = create_toplevel(dialog)
         details.title(f"v{result['latest']} 升级内容")
         details.transient(dialog)
         details.resizable(True, True)
@@ -2061,7 +2074,7 @@ def _write_update_defer_cooldown(base_dir: Path) -> None:
     _write_cooldown(base_dir, "found", 0)
 
 
-def auto_check_on_startup(root, delay_ms=3000, gui=None):
+def auto_check_on_startup(root, delay_ms=3000, gui=None, current_version=None):
     """
     启动时自动检查更新（延迟执行），自适应冷却机制
 
@@ -2094,6 +2107,7 @@ def auto_check_on_startup(root, delay_ms=3000, gui=None):
             gui=gui,
             source="startup",
             on_defer=lambda: _write_update_defer_cooldown(base_dir),
+            current_version=current_version,
         )
 
     root.after(delay_ms, _do_check_and_record)

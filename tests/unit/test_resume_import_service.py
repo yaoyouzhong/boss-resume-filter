@@ -11,6 +11,10 @@ from resume_import_service import (
 from storage import load_candidates_all, save_candidates_all
 
 
+JOB_UUID_A = "11111111-1111-4111-8111-111111111111"
+JOB_UUID_B = "22222222-2222-4222-8222-222222222222"
+
+
 def test_persist_candidate_resume_replaces_reference_and_old_evaluation():
     with tempfile.TemporaryDirectory() as tmp_dir:
         root = Path(tmp_dir)
@@ -54,6 +58,34 @@ def test_persist_candidate_resume_replaces_reference_and_old_evaluation():
         assert "resume_eval_reason" not in saved
         assert result.candidate == saved
         assert result.cleanup.deleted_file_count == 1
+
+
+def test_persist_candidate_resume_targets_uuid_when_job_names_match():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        root = Path(tmp_dir)
+        candidates_path = root / "candidates.json"
+        source = root / "new.txt"
+        source.write_text("Java 开发经验 " * 10, encoding="utf-8")
+        save_candidates_all(
+            [
+                {"geek_id": "g1", "job_uuid": JOB_UUID_A, "job_name": "Java 工程师", "match_score": 70},
+                {"geek_id": "g1", "job_uuid": JOB_UUID_B, "job_name": "Java 工程师", "match_score": 70},
+            ],
+            candidates_path,
+        )
+
+        result = persist_candidate_resume(
+            source,
+            identity=("g1", f"uuid:{JOB_UUID_B}"),
+            candidates_path=candidates_path,
+            base_dir=root,
+            imported_at="2026-08-12 10:00:00",
+        )
+        saved = load_candidates_all(candidates_path)
+
+        assert "resume_file" not in saved[0]
+        assert saved[1]["resume_file"] == result.candidate["resume_file"]
+        assert result.candidate["job_uuid"] == JOB_UUID_B
 
 
 def test_persist_candidate_resume_removes_new_copy_when_candidate_disappeared():

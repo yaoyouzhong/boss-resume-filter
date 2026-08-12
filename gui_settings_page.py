@@ -4,11 +4,34 @@ from __future__ import annotations
 import tkinter as tk
 from collections.abc import Iterator, Mapping
 from tkinter import ttk
-from typing import Any
+from typing import Any, Protocol
+
+
+class SettingsPageHost(Protocol):
+    """Shared visual services required by the incremental settings builder."""
+
+    root: tk.Misc
+    api_scrollable_frame: tk.Misc
+    colors: Mapping[str, str]
+    dpi_scale: float
+    zoom_factor: float
+    font_scale: float
+    font_label: Any
+    icons: Any
+    widget_support: Any
+    feedback_support: Any
+    input_support: Any
+    layout_support: Any
+    api_config: Mapping[str, Any]
+    saved_models: list[Mapping[str, Any]]
+
+    def __getattr__(self, name: str) -> Any: ...
+
+    def __setattr__(self, name: str, value: Any) -> None: ...
 
 
 def build_settings_content_steps(
-    host: Any,
+    host: SettingsPageHost,
     ui_config: Mapping[str, Any],
     *,
     font_family: str,

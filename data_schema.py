@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 from job_identity import normalize_job_name
@@ -44,6 +45,29 @@ def job_identity_token(job_uuid: Any, job_name: Any) -> str:
     if stable_id:
         return f"uuid:{stable_id}"
     return normalize_job_name(job_name)
+
+
+def candidate_identity_from_values(
+    geek_id: Any,
+    job_uuid: Any,
+    job_name: Any,
+) -> tuple[str, str]:
+    """Return the canonical candidate/job identity with a legacy fallback."""
+    return (
+        str(geek_id or "").strip(),
+        job_identity_token(job_uuid, job_name),
+    )
+
+
+def canonical_candidate_identity(
+    candidate: Mapping[str, Any],
+) -> tuple[str, str]:
+    """Return one candidate record's canonical persisted identity."""
+    return candidate_identity_from_values(
+        candidate.get("geek_id"),
+        candidate.get("job_uuid"),
+        candidate.get("job_name"),
+    )
 
 
 def upgrade_job_config(payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:

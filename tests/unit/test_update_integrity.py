@@ -2282,6 +2282,45 @@ def test_cross_platform_rebuild_policy_distinguishes_build_and_docs_changes():
     assert build._needs_cross_platform_rebuild(["tests/unit/test_update_integrity.py"]) is False
 
 
+def test_project_docs_version_sync_uses_agents_as_single_source():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        dist_dir = tmp_path / "dist"
+        dist_dir.mkdir()
+        (tmp_path / "AGENTS.md").write_text(
+            "├── gui_main.py            # 图形界面主程序（v9.9.9）\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "CLAUDE.md").write_text(
+            "# Claude Code 入口\n\n@AGENTS.md\n",
+            encoding="utf-8",
+        )
+
+        with _with_build_context(tmp_path, dist_dir, is_win=True, is_mac=False):
+            build._check_project_docs_version_sync("9.9.9")
+
+
+def test_all_root_python_sources_trigger_cross_platform_rebuild():
+    root_sources = sorted(path.name for path in build.BASE_DIR.glob("*.py"))
+
+    assert root_sources
+    assert set(root_sources) == set(build.ROOT_PYTHON_SOURCE_FILES)
+    assert all(
+        build._needs_cross_platform_rebuild([source]) is True
+        for source in root_sources
+    )
+
+
+def test_unknown_production_path_conservatively_triggers_cross_platform_rebuild():
+    assert build._needs_cross_platform_rebuild(["future_runtime/feature.py"]) is True
+
+
+def test_source_compile_gate_includes_every_root_python_module():
+    root_sources = {path.name for path in build.BASE_DIR.glob("*.py")}
+
+    assert root_sources <= set(build.SOURCE_CHECK_FILES)
+
+
 def test_github_asset_matches_local_by_digest_without_download():
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "asset.exe"

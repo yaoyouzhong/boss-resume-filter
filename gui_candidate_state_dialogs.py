@@ -10,7 +10,7 @@ from tkinter import ttk
 from typing import Any, Protocol
 
 import ui_theme
-from ui_windowing import place_window_centered
+from ui_windowing import create_toplevel, place_window_centered
 
 
 class CandidateStateDialogHost(Protocol):
@@ -98,7 +98,7 @@ def show_blacklist_reason_dialog(
     height = max(320, int(320 * scale))
     padding = int(20 * scale)
 
-    window = tk.Toplevel(parent)
+    window = create_toplevel(parent)
     window.title("加入黑名单")
     window.withdraw()
     window.transient(parent)
@@ -266,7 +266,7 @@ def show_followup_dialog(
 ) -> FollowupDialogWidgets:
     """Show the follow-up form while delegating candidate mutation to the controller."""
     scale = host.dpi_scale * host.zoom_factor
-    window = tk.Toplevel(parent)
+    window = create_toplevel(parent)
     window.title("更新跟进")
     window.transient(parent)
     window.grab_set()
@@ -533,7 +533,7 @@ def show_feedback_dialog(
     """Show the feedback form while delegating candidate mutation to the controller."""
     scale = host.dpi_scale * host.zoom_factor
     field_width = 30
-    window = tk.Toplevel(parent)
+    window = create_toplevel(parent)
     window.title("标记反馈")
     window.transient(parent)
     window.grab_set()

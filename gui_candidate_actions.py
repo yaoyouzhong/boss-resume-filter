@@ -14,7 +14,7 @@ from candidate_workflow import (
     candidate_review_category,
     format_followup_due_at,
 )
-from ui_windowing import place_window_centered
+from ui_windowing import create_toplevel, place_window_centered
 
 
 class DailyActionLike(Protocol):
@@ -107,7 +107,7 @@ def show_daily_candidate_actions_dialog(
     ui_config: Mapping[str, Any],
 ) -> tk.Toplevel:
     """Build and show the daily actions dialog without reading or writing business data."""
-    win = tk.Toplevel(self.root)
+    win = create_toplevel(self.root)
     win.title("今日待办")
     win.transient(self.root)
     win.withdraw()

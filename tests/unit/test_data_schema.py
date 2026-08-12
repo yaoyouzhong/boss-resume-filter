@@ -2,10 +2,40 @@
 from data_schema import (
     CANDIDATE_SCHEMA_VERSION,
     JOB_CONFIG_SCHEMA_VERSION,
+    canonical_candidate_identity,
     job_uuid_by_normalized_name,
     migrate_candidate_records,
     upgrade_job_config,
 )
+
+
+JOB_UUID_A = "11111111-1111-4111-8111-111111111111"
+JOB_UUID_B = "22222222-2222-4222-8222-222222222222"
+
+
+def test_candidate_identity_prefers_job_uuid_and_falls_back_to_legacy_name():
+    stable = canonical_candidate_identity({
+        "geek_id": " g1 ",
+        "job_uuid": JOB_UUID_A,
+        "job_name": "Java 工程师",
+    })
+    renamed = canonical_candidate_identity({
+        "geek_id": "g1",
+        "job_uuid": JOB_UUID_A,
+        "job_name": "高级 Java 工程师",
+    })
+    legacy = canonical_candidate_identity({
+        "geek_id": "g1",
+        "job_name": " Java 工程师 ",
+    })
+
+    assert stable == renamed == ("g1", f"uuid:{JOB_UUID_A}")
+    assert legacy == ("g1", "Java工程师")
+    assert canonical_candidate_identity({
+        "geek_id": "g1",
+        "job_uuid": JOB_UUID_B,
+        "job_name": "Java 工程师",
+    }) != stable
 
 
 def _legacy_config() -> dict:

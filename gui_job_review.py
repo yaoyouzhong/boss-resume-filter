@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from tkinter import ttk
 from typing import Any, Protocol
 
-from ui_windowing import get_windows_monitor_area, place_window_centered
+from ui_windowing import create_toplevel, get_windows_monitor_area, place_window_centered
 
 
 class ScrollSupport(Protocol):
@@ -500,7 +500,7 @@ def build_job_review_workbench(
 ) -> JobReviewWidgets:
     """Build and show the modal job review workbench from a prepared model."""
     scale = host.dpi_scale * host.zoom_factor
-    window = tk.Toplevel(host.root)
+    window = create_toplevel(host.root)
     window.title(f"岗位复盘 - {job_name}")
     window.transient(host.root)
     window.grab_set()

@@ -69,6 +69,11 @@ from filtering import (
     normalize_candidate_gender,
     parse_experience_years,
 )
+from candidate_scan_policy import (
+    build_ai_hard_conditions,
+    build_rejection_reason_labels,
+    normalize_rejection_reason,
+)
 from candidate_workflow import candidate_greet_skip_reason
 from job_config_store import load_job_config_snapshot
 from job_identity import normalize_job_name
@@ -5010,32 +5015,8 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
     processed_candidate_keys = set()
     scan_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # 构建淘汰原因的动态描述（基于实际招聘要求）
     rule = job_info['rule']
-    exp_requirement = f"经验不足（要求{rule.get('min_exp', 0)}年以上）"
-    # 学历要求：优先取 required_conditions 中的统招本科，否则取 edu 字段
-    edu_requirement = rule.get('edu', '不限')
-    req_conds = rule.get('required_conditions', [])
-    for cond in req_conds:
-        if isinstance(cond, str) and '统招' in cond:
-            edu_requirement = cond
-            break
-    edu_requirement = f"学历不符/不足（要求{edu_requirement}）"
-
-    # 年龄、地点、薪资、技术条件要求
-    max_age = rule.get('max_age')
-    age_requirement = f"年龄不符（要求≤{max_age}岁）" if max_age else "年龄不符"
-    required_gender = rule.get('gender', '不限')
-    gender_requirement = (
-        f"性别不符（要求{required_gender}）"
-        if required_gender in {"男", "女"}
-        else "性别不符"
-    )
-    work_location = rule.get('work_location', '')
-    city_requirement = f"地点不符（要求{work_location}）" if work_location else "地点不符"
-    salary_max = rule.get('salary_max')
-    salary_requirement = f"薪资不匹配（岗位最高{salary_max}K）" if salary_max else "薪资不匹配"
-    tech_requirement = f"技术条件不符"
+    rejection_labels = build_rejection_reason_labels(rule)
 
     for i, candidate in enumerate(raw_candidates):
         if stop_event and stop_event.is_set():
@@ -5163,24 +5144,10 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
                 else:
                     reason = "评分不足(<30分)"
             else:
-                reason = details.get('reason', '未知')
-                # 合并同类淘汰原因
-                if '经验不足' in reason:
-                    reason = exp_requirement
-                elif '学历不足' in reason or '学历不符' in reason:
-                    reason = edu_requirement
-                elif '年龄不符' in reason or '年龄超限' in reason:
-                    reason = age_requirement
-                elif '性别不符' in reason:
-                    reason = gender_requirement
-                elif '地点不符' in reason or '城市不符' in reason:
-                    reason = city_requirement
-                elif '薪资不匹配' in reason or '薪资期望过高' in reason:
-                    reason = salary_requirement
-                elif '技术不匹配' in reason or '必要条件不满足' in reason:
-                    reason = tech_requirement
-                elif '筛选异常' in reason:
-                    reason = '筛选异常'
+                reason = normalize_rejection_reason(
+                    details.get('reason', '未知'),
+                    rejection_labels,
+                )
             failed_reasons[reason] = failed_reasons.get(reason, 0) + 1
             candidate_k = candidate_key(
                 candidate['geek_id'],
@@ -5298,25 +5265,7 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
         # 按规则评分降序排列，确保 AI 评估优先处理最有价值的候选人
         passed_candidates.sort(key=lambda x: x.get('match_score', 0), reverse=True)
 
-        # 构建硬条件摘要，供 LLM 评估时参考（带具体阈值，方便 AI 精确判断）
-        hard_parts = []
-        if rule.get('min_exp'):
-            hard_parts.append(f"- 经验：要求≥{rule['min_exp']}年，候选人需满足")
-        if rule.get('edu') and rule.get('edu') != '不限':
-            hard_parts.append(f"- 学历：要求{rule['edu']}")
-        if rule.get('max_age'):
-            hard_parts.append(f"- 年龄：上限{rule['max_age']}岁")
-        if rule.get('gender') in {"男", "女"}:
-            hard_parts.append(f"- 性别：要求{rule['gender']}")
-        if rule.get('work_location'):
-            hard_parts.append(f"- 地点：要求{rule['work_location']}，候选人期望城市需匹配")
-        if rule.get('salary_max'):
-            hard_parts.append(f"- 薪资：岗位最高{rule['salary_max']}K，候选人期望不应超过")
-        req_conds = rule.get('required_conditions', [])
-        if req_conds:
-            cond_names = [c if isinstance(c, str) else c.get('name', str(c)) for c in req_conds]
-            hard_parts.append(f"- 必要条件：{'、'.join(cond_names)}")
-        hard_conditions = "## 筛选硬条件\n" + "\n".join(hard_parts) + "\n\n" if hard_parts else ""
+        hard_conditions = build_ai_hard_conditions(rule)
 
         passed_candidates = evaluate_batch(
             passed_candidates, job_requirement, api_config, api_key,

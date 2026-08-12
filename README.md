@@ -209,66 +209,30 @@ python tests/test_import.py
 
 ## 📁 项目结构
 
-```
+项目按“界面构建、动作编排、纯领域逻辑、持久化与外部服务”分层，`gui_main.py` 只保留 Tk 组合根、窗口生命周期和兼容门面。完整依赖边界以 [AGENTS.md](AGENTS.md) 为准。
+
+```text
 boss-resume-filter/
-├── bossmaster.py         # BOSS 直聘自动筛选主程序（核心）
-├── filtering.py          # 纯筛选规则模块（评分、硬条件、薪资/经验/城市解析）
-├── llm_eval.py           # LLM 辅助评估模块（prompt 构建、API 调用、批量评估）
-├── ai_adapter.py         # 多服务商接口适配与模型能力验证
-├── job_ai_parser.py      # 岗位需求 AI 增强解析模块（基于正则初稿补充优化）
-├── job_config_diagnostics.py # 岗位配置保存前体检模块
-├── candidate_state_diagnostics.py # 候选人状态一致性体检模块
-├── candidate_workflow.py # 候选人决策分类、复核规则、待办与下一步动作模块
-├── greeting_failure.py   # 打招呼失败原因归类模块
-├── release_user_audit.py # 用户视角发布审计模块
-├── storage.py            # 候选人数据持久化模块（去重、原子写入、备份恢复）
-├── constants.py          # 共享常量（评分模型参数、阈值、学历档位、滚动参数、城市列表）
-├── paths.py              # 路径工具（get_base_dir、ensure_config_files、路径常量）
 ├── gui_main.py            # 图形界面主程序（v2.27）
-├── gui_dialogs.py        # 独立对话框模块（更新日志、关于弹窗、CHANGELOG 渲染）
-├── changelog_parser.py   # CHANGELOG 解析模块（版本段落提取、标题解析）
-├── updater.py            # 自动更新模块（Gitee/GitHub 双源检查、下载替换、完整性校验、启动时自动检查）
-├── icons.py              # 图标绘制模块（Pillow 矢量图标 + IconCache）
-├── doc_parser.py         # 招聘需求文档解析器（JD → 必要条件 + 职位要求）
-├── education_certificate.py # 毕业证书图片识别、字段校验与学信网页面填写
-├── education_tool.py       # 独立学历证书核验助手入口
-├── education_tool_config.py # 独立工具固定 AI 配置
-├── education_tool_security.py # 独立工具内置 API Key 解密
-├── security.py           # API Key 安全存储模块（keyring 加密，按 provider+base_url 组合存储）
-├── migrate_keys.py       # API Key 迁移工具（明文→加密）
-├── build.py              # PyInstaller 打包、发布门禁与公开版本核验脚本
-├── build_education_tool.py # 独立学历证书核验助手打包脚本
-├── latest.json           # 双源版本清单（正式发布工作流自动维护）
-├── gui.bat               # GUI 启动脚本
-├── job_config.json       # 岗位筛选规则配置
-├── api_config.json       # 发布默认 AI 模型配置模板（不含明文 Key）
-├── selectors.json        # 页面选择器配置（CSS/XPath/关键词，DOM 变化时修改）
-├── ui_config.json        # UI 尺寸与缩放配置
-├── candidates_all.json   # 累积的候选人数据（累积、去重）
-├── candidates_all.xlsx   # Excel 导出文件（多工作表 + 统计摘要）
-├── CLAUDE.md             # AI 协作规范（Claude / Codex 通用）
-├── AGENTS.md             # Codex 专用项目规范
-├── README.md             # 项目主文档
-├── CHANGELOG.md          # 更新日志（嵌入 EXE，运行时从 _MEIPASS 读取）
-├── docs/                 # 用户操作说明、PDF、PPTX 和配套素材
-├── GUI 使用说明.md        # 图形界面详细说明
-├── README_文件管理.md      # 数据文件管理说明
-├── DEPLOYMENT.md         # 部署说明
-├── PACKAGING.md          # 打包指南
-├── requirements.txt      # Python 依赖
-├── install.bat           # 安装脚本
-├── tests/                # 测试脚本目录
-├── scripts/              # 辅助脚本目录
-│   ├── pr_delivery.py  # 普通 PR 一次授权交付
-│   ├── release_flow.py # 单/多分支一键发布统一入口
-│   ├── release_delivery.py # 版本准备与发布准备 PR 分阶段恢复
-│   ├── release_prepare.py # 本地版本准备、门禁与提交
-│   ├── release_dispatch.py # 正式发布触发、监控与验收
-│   ├── release_ci.py   # GitHub 暂存、本机镜像与正式发布规则
-│   ├── release_content_review.py # 发布内容审核与内部凭证绑定
-│   └── watch_progress.py # 本地打包进度监控脚本
-├── pyinstaller-hooks/    # PyInstaller 自定义 hook（控制模块收集范围，减小产物体积）
-└── .build_progress.json  # 发布进度文件（build.py 实时更新，供外部监控）
+├── gui_*_page.py          # 首页、配置、运行、结果、统计、设置、学历页面
+├── gui_candidate_*.py     # 候选人查看、复核、待办、菜单与状态表单
+├── gui_*_support.py       # 导航、滚动、输入、反馈、控件和布局支持
+├── *_controller.py        # 候选人、联系、扫描、设置、浏览器等动作编排
+├── *_presenter.py         # 候选人、联系、运行和统计的纯展示转换
+├── filtering.py           # 纯筛选规则
+├── candidate_*.py         # 候选人流程、清理和一致性诊断
+├── data_schema.py         # 持久化 schema 与稳定身份
+├── storage.py             # 候选人原子持久化
+├── *_store.py             # 岗位、简历与安全 JSON 存储
+├── llm_eval.py            # LLM 辅助评估
+├── ai_adapter.py          # 多服务商 API 适配
+├── browser_connection.py  # Chrome 页面检测与限时连接
+├── bossmaster.py          # BOSS 扫描、筛选、联系和导出主程序
+├── updater.py             # 双源自动更新
+├── build.py               # PyInstaller 打包与发布门禁
+├── tests/                 # 稳定回归、导入烟测与人工测试
+├── scripts/               # PR、发布和辅助脚本
+└── docs/                  # 用户说明与配套材料
 ```
 
 ## 📊 匹配规则

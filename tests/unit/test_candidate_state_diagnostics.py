@@ -101,6 +101,25 @@ def test_diagnose_duplicate_candidate_records_by_geek_and_job():
     assert any(issue.title == "重复候选人记录" and issue.severity == "error" for issue in issues)
 
 
+def test_same_named_jobs_with_different_uuids_are_not_diagnosed_as_duplicates():
+    issues = diagnose_candidate_states([
+        {
+            "geek_id": "g1",
+            "job_uuid": "11111111-1111-4111-8111-111111111111",
+            "job_name": "Java 工程师",
+            "match_score": 70,
+        },
+        {
+            "geek_id": "g1",
+            "job_uuid": "22222222-2222-4222-8222-222222222222",
+            "job_name": "Java 工程师",
+            "match_score": 80,
+        },
+    ])
+
+    assert not any(issue.title == "重复候选人记录" for issue in issues)
+
+
 def test_diagnose_cross_job_blacklist_state_mismatch():
     issues = diagnose_candidate_states([
         _candidate(geek_id="g1", job_name="Java 工程师", blacklisted=True),

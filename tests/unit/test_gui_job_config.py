@@ -2101,6 +2101,7 @@ def test_more_menu_excel_export_uses_exact_visible_result_candidates():
     gui.result_date_start_entry = Mock()
     gui._get_result_date_filter = Mock(return_value=("20260709", "20260715"))
     gui.append_log = Mock()
+    gui.run_on_ui = lambda callback: callback()
 
     class _FakeRoot:
         def after(self, _delay, callback):
@@ -2147,6 +2148,7 @@ def test_background_export_reports_worker_failure_on_ui_thread():
 
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _ImmediateRoot()
+    gui.run_on_ui = lambda callback: callback()
     gui.status_bar_left_var = _FakeVar()
 
     with (
@@ -3825,7 +3827,8 @@ def test_candidate_status_shows_temporary_ai_eval_state_and_expires():
 
     candidate["llm_error"] = "请求超时"
     assert gui._format_candidate_status(candidate) == "未沟通"
-    assert candidate["_full_status"] == "未沟通"
+    assert gui._candidate_status_model(candidate).detail == "未沟通"
+    assert "_full_status" not in candidate
 
 
 def test_result_status_tooltip_shows_hidden_review_reason():
@@ -3878,7 +3881,8 @@ def test_result_status_tooltip_shows_confirmed_status_only_when_clipped():
         "review_passed_reasons": ["评分处于待定区间（60 分）"],
     }
     assert gui._format_candidate_status(candidate) == "未沟通｜复核通过｜合适"
-    assert candidate["_full_status"].startswith("复核事项：评分处于待定区间（60 分）")
+    status_detail = gui._candidate_status_model(candidate).detail
+    assert status_detail.startswith("复核事项：评分处于待定区间（60 分）")
 
     gui.result_tree = Mock()
     gui.result_tree.identify_row.return_value = "row-1"
@@ -3902,7 +3906,7 @@ def test_result_status_tooltip_shows_confirmed_status_only_when_clipped():
     callback = gui.root.after.call_args.args[1]
     callback()
     gui.feedback_support.show_tooltip.assert_called_once_with(
-        candidate["_full_status"], 115, 210, ("row-1", "status")
+        status_detail, 115, 210, ("row-1", "status")
     )
 
     gui.root.after.reset_mock()
@@ -3914,14 +3918,18 @@ def test_result_status_tooltip_shows_confirmed_status_only_when_clipped():
     callback = gui.root.after.call_args.args[1]
     callback()
     gui.feedback_support.show_tooltip.assert_called_once_with(
-        candidate["_full_status"], 115, 210, ("row-1", "status")
+        status_detail, 115, 210, ("row-1", "status")
     )
 
 
 def test_result_job_status_tooltip_only_shows_when_text_is_clipped():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     candidate = {
-        "_extra_fields": ("本科", "30岁", "正在考虑机会，合适的话可以到岗", "", ""),
+        "structured": {
+            "degree": "本科",
+            "age": "30岁",
+            "job_status": "正在考虑机会，合适的话可以到岗",
+        },
     }
     gui.result_tree = Mock()
     gui.result_tree.identify_row.return_value = "row-1"
@@ -3962,13 +3970,11 @@ def test_result_job_status_tooltip_only_shows_when_text_is_clipped():
 def test_result_school_and_company_tooltips_work_in_non_maximized_table():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     candidate = {
-        "_extra_fields": (
-            "本科",
-            "30岁",
-            "在职",
-            "南京航空航天大学",
-            "某某金融科技有限公司",
-        ),
+        "structured": {"degree": "本科", "age": "30岁", "job_status": "在职"},
+        "_api_profile": {
+            "educations": [{"school": "南京航空航天大学"}],
+            "works": [{"company": "某某金融科技有限公司"}],
+        },
     }
     gui.result_tree = Mock()
     gui.result_tree.identify_row.return_value = "row-1"
@@ -4684,6 +4690,7 @@ def test_feedback_dialog_controller_promotes_suitable_review_candidate():
         "合适",
         ["技能匹配"],
         "人工复核通过",
+        job_uuid=None,
     )
     assert candidate["feedback_status"] == "合适"
     assert candidate["feedback_reasons"] == ["技能匹配"]
@@ -4878,7 +4885,7 @@ def test_suitable_pending_status_is_resolved_without_changing_recommendation():
 
     assert status == "未沟通｜复核通过｜合适"
     assert "待复核" not in status
-    assert candidate["_full_status"] == (
+    assert gui._candidate_status_model(candidate).detail == (
         "人工复核结论已通过；原评分和推荐指数不变。"
         "是否可联系仍以当前沟通、反馈和屏蔽状态为准。"
     )
@@ -4895,7 +4902,7 @@ def test_manually_approved_pending_status_is_review_passed():
     status = gui._format_candidate_status(candidate)
 
     assert status == "未沟通｜复核通过"
-    assert candidate["_full_status"] == (
+    assert gui._candidate_status_model(candidate).detail == (
         "人工复核结论已通过；原评分和推荐指数不变。"
         "是否可联系仍以当前沟通、反馈和屏蔽状态为准。"
     )
@@ -4916,7 +4923,7 @@ def test_hard_condition_review_passed_keeps_recommendation_and_status():
     assert decision.result_view == "推荐候选人"
     assert decision.review_status == "passed"
     assert gui._format_candidate_status(candidate) == "未沟通｜复核通过"
-    assert candidate["_full_status"] == (
+    assert gui._candidate_status_model(candidate).detail == (
         "复核事项：学历形式待确认\n"
         "人工复核结论已通过；原评分和推荐指数不变。"
         "是否可联系仍以当前沟通、反馈和屏蔽状态为准。"
@@ -7025,6 +7032,8 @@ def test_greet_queue_click_prepares_browser_before_confirmation():
     gui.greet_queue_running = False
     gui.greet_queue_preparing = False
     gui.greet_queue_paused = True
+    gui.greet_queue_window = None
+    gui.root = Mock()
     gui.is_running = False
     gui.greet_queue_items = [{"status": "待发送", "candidate": {"geek_id": "g1"}}]
     gui.greet_queue_tree = None
@@ -7129,6 +7138,8 @@ def test_contact_queue_sends_only_selected_pending_candidate():
     gui.greet_queue_running = False
     gui.greet_queue_preparing = False
     gui.greet_queue_paused = False
+    gui.greet_queue_window = None
+    gui.root = Mock()
     gui.is_running = False
     gui.stop_event = Mock()
     gui._ensure_greet_queue_loaded = Mock()
@@ -9471,6 +9482,7 @@ def test_batch_ai_eval_worker_uses_each_jobs_requirement_and_merges_results():
     }
     gui._save_ai_eval_results = Mock()
     gui._on_ai_eval_complete = Mock()
+    gui.run_on_ui = Mock(side_effect=lambda callback: callback())
     gui.root = Mock()
     java = {'geek_id': 'java-1', 'name': '甲'}
     python = {'geek_id': 'python-1', 'name': '乙'}
@@ -9497,7 +9509,7 @@ def test_batch_ai_eval_worker_uses_each_jobs_requirement_and_merges_results():
     assert gui._ai_eval_done == 2
     assert gui._ai_evaluating_ids == set()
     assert gui._save_ai_eval_results.call_count == 2
-    gui.root.after.assert_called_once_with(0, gui._on_ai_eval_complete)
+    gui.run_on_ui.assert_called_once_with(gui._on_ai_eval_complete)
 
 
 def test_ai_eval_batch_guard_uses_has_ai_eval_helper():

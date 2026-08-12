@@ -14,7 +14,8 @@ from candidate_workflow import default_next_followup_at
 from constants import SCORE_THRESHOLD_PASS, SCORE_THRESHOLD_RECOMMEND
 from data_schema import (
     CANDIDATE_SCHEMA_VERSION,
-    job_identity_token,
+    canonical_candidate_identity,
+    candidate_identity_from_values,
     normalize_job_uuid,
     validate_candidate_schema,
 )
@@ -29,6 +30,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _CANDIDATES_FILE_LOCK = threading.RLock()
+_TRANSIENT_CANDIDATE_FIELDS = frozenset({
+    "_display_status",
+    "_full_status",
+    "_extra_fields",
+})
 _MutationResult = TypeVar("_MutationResult")
 
 CANDIDATES_FILE = "candidates_all.json"
@@ -245,16 +251,12 @@ def candidate_key(
     job_uuid: Any = None,
 ) -> tuple[str, str]:
     """Return a stable candidate/job key with a legacy name fallback."""
-    return (str(geek_id), job_identity_token(job_uuid, job_name))
+    return candidate_identity_from_values(geek_id, job_uuid, job_name)
 
 
 def candidate_record_key(candidate: dict[str, Any]) -> tuple[str, str]:
     """Return the best available persisted identity for one candidate record."""
-    return candidate_key(
-        candidate.get("geek_id"),
-        candidate.get("job_name", ""),
-        candidate.get("job_uuid"),
-    )
+    return canonical_candidate_identity(candidate)
 
 
 def candidate_records_share_job(
@@ -344,6 +346,10 @@ def _prepare_candidates_for_save(
 ) -> list[dict[str, Any]]:
     """Normalize and filter one candidate snapshot before persistence."""
     unique_candidates = _dedupe_candidates(candidates_all)
+
+    for candidate in unique_candidates:
+        for field in _TRANSIENT_CANDIDATE_FIELDS:
+            candidate.pop(field, None)
 
     # 兼容旧数据：batch_timestamp 继续表示首次发现时间，避免重复扫描
     # 把历史候选人重新计入”今天/本周”统计。仅在缺少字段时回填。
@@ -937,19 +943,35 @@ def _dedupe_candidates(candidates_all: list[dict[str, Any]]) -> list[dict[str, A
     """按候选人与岗位去重，保留最新评估并合并人工业务状态。"""
     seen: dict[tuple[str, str], dict[str, Any]] = {}
     aliases: dict[tuple[str, str], tuple[str, str]] = {}
+    ambiguous_legacy_keys: set[tuple[str, str]] = set()
 
     for c in candidates_all:
         geek_id = c.get('geek_id')
         if geek_id:
             stable_key = candidate_record_key(c)
             legacy_key = candidate_key(geek_id, c.get('job_name', ''))
-            key = aliases.get(stable_key) or aliases.get(legacy_key) or stable_key
+            key = aliases.get(stable_key)
+            legacy_target = aliases.get(legacy_key)
+            if key is None and legacy_target is not None:
+                legacy_record = seen.get(legacy_target, {})
+                both_stable = bool(
+                    stable_key != legacy_key
+                    and normalize_job_uuid(legacy_record.get('job_uuid'))
+                )
+                if both_stable and legacy_target != stable_key:
+                    ambiguous_legacy_keys.add(legacy_key)
+                    aliases.pop(legacy_key, None)
+                else:
+                    key = legacy_target
+            key = key or stable_key
             if key not in seen:
                 seen[key] = dict(c)  # 浅拷贝，避免修改调用方的输入数据
             else:
                 old_c = seen[key]
                 if _should_replace_candidate(old_c, c) or c.get('greet_sent', False):
                     c = dict(c)
+                    if not c.get('job_uuid') and old_c.get('job_uuid'):
+                        c['job_uuid'] = old_c['job_uuid']
                     first_seen_at = get_first_seen(old_c)
                     last_evaluated_at = get_last_evaluated(c)
                     if first_seen_at:
@@ -964,9 +986,12 @@ def _dedupe_candidates(candidates_all: list[dict[str, Any]]) -> list[dict[str, A
                     _merge_manual_fields(c, old_c)
                     seen[key] = c
                 else:
+                    if not old_c.get('job_uuid') and c.get('job_uuid'):
+                        old_c['job_uuid'] = c['job_uuid']
                     _merge_manual_fields(old_c, c)
             aliases[stable_key] = key
-            aliases[legacy_key] = key
+            if legacy_key not in ambiguous_legacy_keys:
+                aliases[legacy_key] = key
 
     unique_candidates = list(seen.values())
 

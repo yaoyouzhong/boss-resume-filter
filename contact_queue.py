@@ -9,6 +9,7 @@ from typing import Any
 
 from data_schema import (
     CONTACT_QUEUE_SCHEMA_VERSION,
+    canonical_candidate_identity,
     job_identity_token,
     normalize_job_uuid,
 )
@@ -25,13 +26,7 @@ _QUEUE_FILE_LOCK = threading.RLock()
 
 def candidate_identity(candidate: dict[str, Any]) -> tuple[str, str]:
     """Return the durable candidate/job identity used by the contact queue."""
-    return (
-        str(candidate.get("geek_id") or "").strip(),
-        job_identity_token(
-            candidate.get("job_uuid"),
-            candidate.get("job_name"),
-        ),
-    )
+    return canonical_candidate_identity(candidate)
 
 
 def _candidate_identity_aliases(

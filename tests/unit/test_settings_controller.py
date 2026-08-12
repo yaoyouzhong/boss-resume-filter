@@ -121,3 +121,30 @@ def test_catalog_fetch_returns_plain_success_and_classified_failure():
     assert seen["api_key"] == "one-shot-secret"
     assert failure.status == "connection_error"
     assert vars(SettingsController()) == {}
+
+
+def test_model_probe_uses_explicit_key_and_returns_plain_outcome():
+    seen = {}
+
+    def probe(config, api_key, *, force):
+        seen.update(config=config, api_key=api_key, force=force)
+        return {
+            "status": "compatible",
+            "output_mode": "tool",
+            "response_time": 1.25,
+        }
+
+    outcome = SettingsController.probe_model(
+        provider="qwen",
+        base_url="https://example.test/v1",
+        model="qwen-plus",
+        api_key="one-shot-secret",
+        probe=probe,
+    )
+
+    assert outcome.status == "success"
+    assert outcome.mode == "工具"
+    assert outcome.response_time == 1.25
+    assert seen["api_key"] == "one-shot-secret"
+    assert seen["force"] is True
+    assert vars(SettingsController()) == {}

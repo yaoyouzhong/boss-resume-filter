@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from data_schema import canonical_candidate_identity
 from job_identity import normalize_job_name
 from resume_store import (
     ResumeCleanupResult,
@@ -41,10 +42,7 @@ class CandidateResumePersistenceResult:
 
 
 def _candidate_identity(candidate: dict[str, Any]) -> tuple[str, str]:
-    return (
-        str(candidate.get("geek_id") or ""),
-        normalize_job_name(candidate.get("job_name")),
-    )
+    return canonical_candidate_identity(candidate)
 
 
 def persist_candidate_resume(

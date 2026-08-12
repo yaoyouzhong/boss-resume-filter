@@ -70,6 +70,16 @@ class CatalogOutcome:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class ModelProbeOutcome:
+    """Plain compatibility result for one explicitly supplied model key."""
+
+    status: str
+    response_time: float = 0.0
+    mode: str = ""
+    message: str = ""
+
+
 class SettingsController:
     """Coordinate model configuration while never retaining API credentials."""
 
@@ -286,6 +296,43 @@ class SettingsController:
             return CatalogOutcome("connection_error", provider, base_url, error=str(exc)[:200])
         except Exception as exc:
             return CatalogOutcome("exception", provider, base_url, error=str(exc)[:200])
+
+    @staticmethod
+    def probe_model(
+        *,
+        provider: str,
+        base_url: str,
+        model: str,
+        api_key: str,
+        probe: Callable[..., Mapping[str, Any]],
+    ) -> ModelProbeOutcome:
+        """Probe one model without storing the explicitly supplied API key."""
+        try:
+            capability = probe(
+                {
+                    "api_provider": provider,
+                    "base_url": base_url,
+                    "model": model,
+                },
+                api_key,
+                force=True,
+            )
+            if capability.get("status") in {"compatible", "limited"}:
+                mode = "工具" if capability.get("output_mode") == "tool" else "兼容"
+                return ModelProbeOutcome(
+                    status="success",
+                    response_time=float(capability.get("response_time") or 0),
+                    mode=mode,
+                )
+            return ModelProbeOutcome(
+                status="error",
+                message=str(capability.get("message") or "不兼容"),
+            )
+        except Exception as exc:
+            return ModelProbeOutcome(
+                status="error",
+                message=f"异常: {str(exc)[:50]}",
+            )
 
 
 def _endpoint_key(provider: object, base_url: object) -> tuple[str, str]:

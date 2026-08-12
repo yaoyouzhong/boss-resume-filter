@@ -9,6 +9,7 @@ from tkinter import filedialog, ttk
 from typing import Any
 
 from ui_messagebox import messagebox
+from ui_windowing import create_toplevel
 
 
 Candidate = dict[str, Any]
@@ -301,7 +302,7 @@ def show_stats_detail_dialog(
 ) -> StatsDetailWidgets:
     """Build a non-modal statistics detail dialog for filtered candidates."""
     scale = host.dpi_scale * host.zoom_factor
-    window = tk.Toplevel(host.root)
+    window = create_toplevel(host.root)
     window.transient(host.root)
     window.title(title)
     window.configure(bg=host.colors["bg_main"])

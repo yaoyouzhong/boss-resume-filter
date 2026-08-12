@@ -4,14 +4,40 @@ from __future__ import annotations
 import tkinter as tk
 from collections.abc import Iterator, Mapping
 from tkinter import ttk
-from typing import Any
+from typing import Any, Protocol
 
 import ui_theme
 from filtering import GENDER_VALUES
 
 
+class ConfigPageHost(Protocol):
+    """Shared visual services required by the incremental config builder."""
+
+    pages_frame: tk.Misc
+    colors: Mapping[str, str]
+    dpi_scale: float
+    zoom_factor: float
+    font_scale: float
+    font_label: Any
+    font_log: Any
+    font_section: Any
+    font_table: Any
+    icons: Any
+    widget_support: Any
+    scroll_support: Any
+    feedback_support: Any
+    input_support: Any
+    job_rules: Mapping[str, Any]
+    inline_note_gap: int
+    _context_menus: list[Any]
+
+    def __getattr__(self, name: str) -> Any: ...
+
+    def __setattr__(self, name: str, value: Any) -> None: ...
+
+
 def build_config_page_steps(
-    host: Any,
+    host: ConfigPageHost,
     ui_config: Mapping[str, Any],
     *,
     font_family: str,

@@ -13,7 +13,10 @@ from candidate_workflow import (
     derive_candidate_decision,
 )
 from constants import SCORE_THRESHOLD_PASS, SCORE_THRESHOLD_RECOMMEND
-from job_identity import normalize_job_name
+from data_schema import (
+    canonical_candidate_identity,
+    candidate_identity_from_values,
+)
 
 
 Candidate = dict[str, Any]
@@ -63,11 +66,8 @@ class CandidateController:
 
     @staticmethod
     def identity(candidate: Candidate) -> tuple[str, str]:
-        """Return the stable candidate and normalized-job identity."""
-        return (
-            str(candidate.get("geek_id") or ""),
-            normalize_job_name(candidate.get("job_name")),
-        )
+        """Return the canonical candidate/job identity."""
+        return canonical_candidate_identity(candidate)
 
     def import_resume(
         self,
@@ -232,6 +232,7 @@ class CandidateController:
         next_followup_at: str | None = None,
         timestamp: str | None = None,
         *,
+        job_uuid: object = None,
         candidate: Candidate | None = None,
     ) -> bool:
         """Persist one candidate/job follow-up transition."""
@@ -249,8 +250,14 @@ class CandidateController:
                 self._persistence,
             )
 
+        target_identity = _requested_identity(
+            geek_id,
+            job_name,
+            job_uuid=job_uuid,
+            candidate=candidate,
+        )
         updated = self._persistence.update_records(
-            _identity_predicate(geek_id, job_name),
+            lambda record: self.identity(record) == target_identity,
             mutate,
             self._candidate_path,
         )
@@ -263,6 +270,7 @@ class CandidateController:
         geek_id: object,
         job_name: object,
         *,
+        job_uuid: object = None,
         contact_approval_reason: str = "",
         review_passed_reasons: Iterable[str] | None = None,
         timestamp: str | None = None,
@@ -273,11 +281,17 @@ class CandidateController:
             return 0
         changed_at = timestamp or _timestamp()
         reasons = list(review_passed_reasons or [])
+        target_identity = _requested_identity(
+            geek_id,
+            job_name,
+            job_uuid=job_uuid,
+            candidate=candidate,
+        )
 
         def mutate_all(records: list[Candidate]) -> int:
             updated = 0
             for record in records:
-                if not _same_identity(record, geek_id, job_name):
+                if self.identity(record) != target_identity:
                     continue
                 if not (
                     record.get("manual_review_required")
@@ -316,6 +330,7 @@ class CandidateController:
         geek_id: object,
         job_name: object,
         *,
+        job_uuid: object = None,
         review_rejected_reasons: Iterable[str] | None = None,
         timestamp: str | None = None,
         candidate: Candidate | None = None,
@@ -325,10 +340,16 @@ class CandidateController:
             return 0
         changed_at = timestamp or _timestamp()
         requested_reasons = list(review_rejected_reasons or [])
+        target_identity = _requested_identity(
+            geek_id,
+            job_name,
+            job_uuid=job_uuid,
+            candidate=candidate,
+        )
 
         def mutate_all(records: list[Candidate]) -> int:
             for record in records:
-                if not _same_identity(record, geek_id, job_name):
+                if self.identity(record) != target_identity:
                     continue
                 decision = derive_candidate_decision(record)
                 if decision.review_status != "pending":
@@ -363,6 +384,7 @@ class CandidateController:
         job_name: object,
         reason: str,
         *,
+        job_uuid: object = None,
         timestamp: str | None = None,
         candidate: Candidate | None = None,
     ) -> bool:
@@ -370,12 +392,18 @@ class CandidateController:
         if not geek_id or not self._candidate_path.exists():
             return False
         changed_at = timestamp or _timestamp()
+        target_identity = _requested_identity(
+            geek_id,
+            job_name,
+            job_uuid=job_uuid,
+            candidate=candidate,
+        )
 
         def mutate(record: Candidate) -> None:
             _apply_contact_approval(record, reason, changed_at)
 
         updated = self._persistence.update_records(
-            _identity_predicate(geek_id, job_name),
+            lambda record: self.identity(record) == target_identity,
             mutate,
             self._candidate_path,
         )
@@ -391,6 +419,7 @@ class CandidateController:
         reasons: Iterable[str],
         note: str,
         *,
+        job_uuid: object = None,
         timestamp: str | None = None,
         candidate: Candidate | None = None,
     ) -> bool:
@@ -399,12 +428,18 @@ class CandidateController:
             return False
         changed_at = timestamp or _timestamp()
         reason_list = list(reasons)
+        target_identity = _requested_identity(
+            geek_id,
+            job_name,
+            job_uuid=job_uuid,
+            candidate=candidate,
+        )
 
         def mutate(record: Candidate) -> None:
             _apply_feedback(record, status, reason_list, note, changed_at)
 
         updated = self._persistence.update_records(
-            _identity_predicate(geek_id, job_name),
+            lambda record: self.identity(record) == target_identity,
             mutate,
             self._candidate_path,
         )
@@ -491,19 +526,16 @@ def _coerce_score(value: object) -> int:
         return 0
 
 
-def _same_identity(record: Candidate, geek_id: object, job_name: object) -> bool:
-    return (
-        str(record.get("geek_id") or "") == str(geek_id)
-        and normalize_job_name(record.get("job_name"))
-        == normalize_job_name(job_name)
-    )
-
-
-def _identity_predicate(
+def _requested_identity(
     geek_id: object,
     job_name: object,
-) -> Callable[[Candidate], bool]:
-    return lambda record: _same_identity(record, geek_id, job_name)
+    *,
+    job_uuid: object = None,
+    candidate: Candidate | None = None,
+) -> tuple[str, str]:
+    if candidate is not None:
+        return canonical_candidate_identity(candidate)
+    return candidate_identity_from_values(geek_id, job_uuid, job_name)
 
 
 def _apply_blacklist(candidate: Candidate, reason: str, changed_at: str) -> None:

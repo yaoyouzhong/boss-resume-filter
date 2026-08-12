@@ -6,6 +6,26 @@ import tkinter as tk
 from typing import Any
 
 
+def create_toplevel(parent: Any = None, *args: Any, **kwargs: Any) -> tk.Toplevel:
+    """Create a Toplevel with the application's standard Escape close behavior."""
+    window = tk.Toplevel(parent, *args, **kwargs)
+
+    def close_on_escape(_event: Any = None) -> None:
+        try:
+            command = window.tk.call(
+                "wm", "protocol", window._w, "WM_DELETE_WINDOW"
+            )
+            if command:
+                window.tk.call(command)
+            elif window.winfo_exists():
+                window.destroy()
+        except (AttributeError, tk.TclError):
+            return
+
+    window.bind("<Escape>", close_on_escape, add="+")
+    return window
+
+
 def clamp(value: float, min_value: float, max_value: float) -> float:
     """Clamp a numeric value to the inclusive bounds."""
     return max(min_value, min(max_value, value))

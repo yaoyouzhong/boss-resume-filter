@@ -9,7 +9,7 @@ from typing import Any, Protocol
 import ui_theme
 import gui_candidate_workbench
 from job_identity import normalize_job_name
-from ui_windowing import place_window_centered
+from ui_windowing import create_toplevel, place_window_centered
 
 
 class StateIssueLike(Protocol):
@@ -101,7 +101,7 @@ def show_candidate_state_diagnostics_dialog(
     ui_config: Mapping[str, Any],
 ) -> tk.Toplevel:
     """Build and show the diagnostics dialog without loading or writing business data."""
-    win = tk.Toplevel(self.root)
+    win = create_toplevel(self.root)
     win.title("候选人状态体检")
     win.transient(self.root)
     win.withdraw()

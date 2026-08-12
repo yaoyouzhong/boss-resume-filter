@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import tkinter as tk
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
+
+os.environ["BOSS_RESUME_FILTER_DISABLE_DATA_MIGRATION"] = "1"
+os.environ["BOSS_RESUME_FILTER_DISABLE_GUARD_PERSISTENCE"] = "1"
+os.environ["BOSS_RESUME_FILTER_DISABLE_STARTUP_UPDATE"] = "1"
 
 import gui_main
 

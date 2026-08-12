@@ -353,29 +353,22 @@ SENSITIVE_TRACKED_PATHS = [
     "candidates_all.json",
     "candidates_all.xlsx",
 ]
-SOURCE_CHECK_FILES = [
-    "bossmaster.py",
-    "gui_main.py",
-    "ui_layout.py",
-    "filtering.py",
-    "storage.py",
-    "contact_queue.py",
-    "data_schema.py",
-    "data_recovery.py",
-    "diagnostic_package.py",
-    "safe_json_store.py",
-    "job_config_store.py",
-    "job_identity.py",
-    "llm_eval.py",
-    "ai_adapter.py",
-    "job_ai_parser.py",
-    "job_config_diagnostics.py",
-    "doc_parser.py",
-    "security.py",
+ROOT_PYTHON_SOURCE_FILES = tuple(
+    sorted(path.name for path in BASE_DIR.glob("*.py"))
+)
+NON_USER_FACING_ROOT_TOOLS = {
     "build.py",
-    "subprocess_utils.py",
-    "icons.py",
+    "build_education_tool.py",
     "migrate_keys.py",
+    "release_user_audit.py",
+}
+USER_FACING_ROOT_SOURCE_FILES = tuple(
+    name
+    for name in ROOT_PYTHON_SOURCE_FILES
+    if name not in NON_USER_FACING_ROOT_TOOLS
+)
+SOURCE_CHECK_FILES = [
+    *ROOT_PYTHON_SOURCE_FILES,
     "tests/run_unit_tests.py",
     "tests/test_import.py",
     "tests/unit/test_core_logic.py",
@@ -820,15 +813,11 @@ def _check_changelog_updated():
         print("  [跳过] CHANGELOG 检查：无法获取上一个 tag")
         return
 
-    # 检查核心代码是否有变更
+    # 所有面向用户的根模块均属于核心代码，避免拆出新模块后漏检。
     core_files = [
-        "gui_main.py", "gui_dialogs.py", "ui_messagebox.py", "changelog_parser.py", "bossmaster.py",
-        "filtering.py", "storage.py", "contact_queue.py", "data_schema.py",
-        "data_recovery.py", "diagnostic_package.py", "resume_store.py",
-        "llm_eval.py", "ai_adapter.py", "job_ai_parser.py",
-        "job_config_diagnostics.py", "doc_parser.py", "security.py", "updater.py", "icons.py",
-        "constants.py", "paths.py", "subprocess_utils.py", "selectors.json", "ui_config.json",
-        "ui_layout.py",
+        *USER_FACING_ROOT_SOURCE_FILES,
+        "selectors.json",
+        "ui_config.json",
         "job_config.json",
     ]
     result = subprocess.run(
@@ -1023,7 +1012,7 @@ def _check_changelog_entry_quality(strict=False):
                     )
 
     # 规则 4: readme-style.md 写作规范（技术黑话 / 字段名 / 内部机制）
-    # 这些词在用户可见的 CHANGELOG 中不应出现（详见 CLAUDE.md「版本内容写作规范」）
+    # 这些词在用户可见的 CHANGELOG 中不应出现（详见 AGENTS.md「版本内容写作规范」）
     STYLE_KEYWORDS = [
         # 内部机制关键词
         "listener", "API 兜底", "兜底预算", "闸门解耦", "持久化字段",
@@ -1810,21 +1799,26 @@ def _check_claude_md_size():
 
 
 def _check_project_docs_version_sync(version):
-    """检查 CLAUDE.md 和 AGENTS.md 项目结构中的 gui_main.py 版本注释。"""
+    """检查权威项目规范的版本注释和 Claude Code 导入入口。"""
     pattern = re.compile(
         rf"gui_main\.py\s+#\s+图形界面主程序（v{re.escape(version)}）"
     )
-    for doc_name in ("CLAUDE.md", "AGENTS.md"):
-        doc_path = BASE_DIR / doc_name
-        if not doc_path.exists():
-            continue
-        content = doc_path.read_text(encoding="utf-8")
+    agents_path = BASE_DIR / "AGENTS.md"
+    if agents_path.exists():
+        content = agents_path.read_text(encoding="utf-8")
         if not pattern.search(content):
-            print(f"[错误] {doc_name} 项目结构中的 gui_main.py 版本未同步为 v{version}")
-            print(f"请将 {doc_name} 项目结构中的 gui_main.py 标注更新为："
+            print(f"[错误] AGENTS.md 项目结构中的 gui_main.py 版本未同步为 v{version}")
+            print("请将 AGENTS.md 项目结构中的 gui_main.py 标注更新为："
                   f"gui_main.py{' ' * 12}# 图形界面主程序（v{version}）")
             sys.exit(1)
-    print(f"  [OK] CLAUDE.md / AGENTS.md 项目结构版本注释已同步 v{version}")
+
+    claude_path = BASE_DIR / "CLAUDE.md"
+    if claude_path.exists():
+        content = claude_path.read_text(encoding="utf-8")
+        if not re.search(r"(?m)^@AGENTS\.md\s*$", content):
+            print("[错误] CLAUDE.md 未通过 @AGENTS.md 导入权威项目规范")
+            sys.exit(1)
+    print(f"  [OK] AGENTS.md 版本注释已同步 v{version}，CLAUDE.md 导入有效")
 
 
 def _preflight_checks(
@@ -1877,7 +1871,7 @@ def _preflight_checks(
         strict=strict_changelog,
     )
     _run_preflight_step(
-        "CLAUDE.md / AGENTS.md 版本同步检查",
+        "AGENTS.md 版本与 CLAUDE.md 导入检查",
         _check_project_docs_version_sync,
         current_version,
     )
@@ -3790,17 +3784,11 @@ def _needs_cross_platform_rebuild(changed_files):
     if changed_files is None:
         return True  # 无法判断，保守起见重建
 
-    # 需要重建的文件（改了影响构建产物内容）
-    SHARED_BUILD_FILES = {
-        'gui_main.py', 'bossmaster.py', 'filtering.py', 'llm_eval.py', 'ai_adapter.py',
-        'job_ai_parser.py', 'job_config_diagnostics.py', 'storage.py',
-        'contact_queue.py', 'data_schema.py', 'data_recovery.py',
-        'diagnostic_package.py',
-        'job_config_store.py', 'resume_store.py',
-        'doc_parser.py', 'security.py', 'constants.py',
-        'paths.py', 'icons.py', 'updater.py', 'subprocess_utils.py', 'ui_layout.py', 'selectors.json',
-        'job_config.json', 'api_config.json', 'ui_config.json', 'requirements.txt',
-        'build.py',  # 打包脚本本身的变化影响产物内容
+    # 根目录 Python 源码默认影响构建产物；新增模块无需再登记白名单。
+    shared_build_files = {
+        *ROOT_PYTHON_SOURCE_FILES,
+        'selectors.json', 'job_config.json', 'api_config.json',
+        'ui_config.json', 'requirements.txt',
     }
 
     # 需要重建的目录（改了影响构建产物内容）
@@ -3821,7 +3809,7 @@ def _needs_cross_platform_rebuild(changed_files):
             continue
 
         # 明确需要重建
-        if f in SHARED_BUILD_FILES:
+        if f in shared_build_files:
             return True
 
         # 需要重建的目录
@@ -3832,8 +3820,9 @@ def _needs_cross_platform_rebuild(changed_files):
         if f.endswith('.md') or any(f.startswith(p) for p in SKIP_PREFIXES):
             continue
 
-        # 未知文件：跳过（不保守触发 CI，避免每次发布都白等 CI）
-        print(f"  [信息] 未分类文件: {f}，跳过（不影响构建产物）")
+        # 未知路径不能被静默判定为与产物无关。
+        print(f"  [信息] 未分类文件: {f}，保守触发跨平台重建")
+        return True
 
     return False
 

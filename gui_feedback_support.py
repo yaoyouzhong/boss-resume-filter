@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 import ui_theme
-from ui_windowing import get_windows_monitor_area
+from ui_windowing import create_toplevel, get_windows_monitor_area
 
 
 class FeedbackSupportHost(Protocol):
@@ -210,7 +210,7 @@ class FeedbackSupport:
         """Create and clamp one borderless tooltip to its monitor work area."""
         host = self.host
         tooltip_parent = parent or host.root
-        tooltip = tk.Toplevel(tooltip_parent)
+        tooltip = create_toplevel(tooltip_parent)
         tooltip.wm_overrideredirect(True)
         label_options: dict[str, Any] = {}
         if wraplength:

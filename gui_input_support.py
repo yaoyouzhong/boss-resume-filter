@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable, Mapping
 from tkinter import ttk
 from typing import Any, Protocol
 
-from ui_windowing import place_window_centered
+from ui_windowing import create_toplevel, place_window_centered
 
 
 class InputSupportHost(Protocol):
@@ -112,7 +112,7 @@ class InputSupport:
     ) -> None:
         """Show modal read-only text with optional explicit business callbacks."""
         host = self.host
-        win = tk.Toplevel(host.root)
+        win = create_toplevel(host.root)
         win.title(title)
         win.transient(host.root)
         win.grab_set()

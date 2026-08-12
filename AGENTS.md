@@ -2,100 +2,55 @@
 
 ## 项目结构
 
+`AGENTS.md` 是项目工程规范的唯一权威来源；`CLAUDE.md` 仅通过 `@AGENTS.md` 导入本文，不复制第二份规则。
+
 ```text
 boss-resume-filter/
-├── bossmaster.py         # BOSS 直聘自动筛选主程序（核心）
-├── filtering.py          # 纯筛选规则模块（评分、硬条件、薪资/经验/城市解析）
-├── llm_eval.py           # LLM 辅助评估模块（prompt 构建、API 调用、批量评估）
-├── ai_adapter.py         # 多服务商接口适配与模型能力验证
-├── api_connectivity.py   # DNS 与模型能力连通性探测及结果分类服务
-├── browser_connection.py # Chrome 调试端口、页面 URL 与 DrissionPage 限时连接服务
-├── result_controller.py # 结果集合读取、筛选、排序与视图状态控制器
-├── candidate_controller.py # 候选人简历、复核、反馈、跟进与删除动作控制器
-├── settings_controller.py # 模型配置与连通性动作控制器
-├── data_maintenance_controller.py # 数据备份、恢复与维护动作控制器
-├── education_controller.py # 学历识别、学信网填写与验证码流程控制器
-├── browser_controller.py # Chrome 生命周期、页面状态与连接去抖控制器
-├── contact_controller.py # 联系清单准备、复核与发送状态机控制器
-├── run_controller.py    # 扫描会话、进度事件与终态保存控制器
-├── model_catalog.py      # 模型目录获取、聊天模型过滤与端点隔离差异分析
-├── job_ai_parser.py      # 岗位需求 AI 增强解析模块（基于正则初稿补充优化）
-├── job_config_diagnostics.py # 岗位配置保存前体检模块
-├── candidate_state_diagnostics.py # 候选人状态一致性体检模块
-├── candidate_workflow.py # 候选人决策分类、复核规则、待办与下一步动作模块
-├── candidate_cleanup.py # 候选人按岗位清理与保留策略的纯集合转换模块
-├── greeting_failure.py   # 打招呼失败原因归类模块
-├── release_user_audit.py # 用户视角发布审计模块
-├── storage.py            # 候选人数据持久化模块（去重、原子写入、备份恢复）
-├── contact_queue.py      # GUI 候选人联系清单持久化与恢复模块
-├── candidate_presenter.py # 候选人详情、状态、AI 评估与复核文本的纯格式化模块
-├── candidate_diagnostics_presenter.py # 候选人状态体检列表的纯展示转换模块
-├── contact_presenter.py # 联系清单就绪状态、确认内容与结果文本模块
-├── run_presenter.py     # 运行进度、终态日志与摘要文本模块
-├── stats_presenter.py   # 统计看板聚合、岗位复盘模型与文本模块
-├── gui_stats_page.py    # 数据统计页 Tk 控件构建与页面局部引用模块
-├── gui_stats_detail.py  # 首页/结果页统计候选人明细弹窗与列表交互模块
-├── gui_job_review.py    # 岗位复盘工作台 Tk 构建、漏斗与洞察展示模块
-├── gui_result_page.py   # 筛选结果页 Tk 控件构建与显式控件引用模块
-├── gui_run_page.py      # 运行控制页分步 Tk 构建、控件状态联动与事件绑定模块
-├── gui_style_setup.py   # 全局 Tk/ttk 样式、字体和设计令牌注册模块
-├── gui_app_shell.py     # 应用侧边栏、页面注册、导航与按需打开生命周期模块
-├── gui_scroll_support.py # 跨平台滚动容器、滚轮路由与 Cocoa 触控板生命周期模块
-├── gui_input_support.py # Entry/Text 右键编辑菜单与通用只读文本弹窗模块
-├── gui_feedback_support.py # Tooltip 窗口与页面 inline 横幅生命周期模块
-├── gui_widget_support.py # 页面标题、卡片、开关、空态与状态图标控件原语模块
-├── gui_layout_support.py # 窗口高度、页面区域与表格列宽响应式布局模块
-├── gui_config_page.py   # 岗位配置页分步 Tk 构建、表单控件装配与事件绑定模块
-├── gui_settings_page.py # 系统设置页分步 Tk 构建、模型控件与数据工具入口装配模块
-├── gui_education_page.py # 学历核验页 Tk 控件构建、队列列表与事件绑定模块
-├── gui_home_page.py     # 首页 Tk 控件构建、统计卡与快速入口装配模块
-├── gui_model_catalog_dialog.py # 模型目录选择、搜索与连通性测试对话框
-├── gui_candidate_diagnostics.py # 候选人状态体检弹窗的 Tk 构建与交互状态模块
-├── gui_candidate_review.py # 候选人查看与复核工作台的 Tk 构建与视图切换模块
-├── gui_candidate_actions.py # 今日待办弹窗的 Tk 构建、分组导航与局部选择状态模块
-├── gui_candidate_menus.py # 候选人单选、批量及工作流右键菜单构建模块
-├── gui_candidate_workbench.py # 候选人工作台共用标题、指标条与导航树 UI 原语
-├── gui_candidate_state_dialogs.py # 候选人屏蔽、跟进与人工反馈表单弹窗模块
-├── gui_contact_queue.py # 联系候选人工作台的 Tk 构建与控件引用模块
-├── gui_data_maintenance_dialogs.py # 候选人数据清理等维护确认弹窗模块
-├── gui_main.py           # 图形界面主程序（v2.27）
-├── gui_dialogs.py        # 独立对话框模块（更新日志、关于弹窗、CHANGELOG 渲染）
-├── ui_messagebox.py      # 统一居中提示与确认弹窗（兼容 tkinter.messagebox）
-├── changelog_parser.py   # CHANGELOG 解析模块（版本段落提取、标题解析）
-├── updater.py            # 自动更新模块（Gitee/GitHub 双源检查、下载替换、完整性校验、启动时自动检查）
-├── icons.py              # 图标绘制模块（Pillow 矢量图标 + IconCache）
-├── doc_parser.py         # 招聘需求文档解析器（JD → 必要条件 + 职位要求）
-├── resume_parser.py      # 本地简历文件解析与可预期错误分类模块
-├── resume_import_service.py # 受管简历副本与候选人引用的事务替换服务
-├── education_certificate.py # 毕业证书图片识别、字段校验与学信网页面填写
-├── education_tool.py    # 独立学历证书核验助手入口（复用 gui_main 学历核验模式）
-├── education_tool_config.py # 独立工具固定 AI 配置
-├── education_tool_security.py # 独立工具内置 API Key 解密
-├── security.py           # API Key 安全存储模块（keyring 加密，按 provider+base_url 组合存储）
-├── migrate_keys.py       # API Key 迁移工具（明文→加密）
-├── constants.py          # 共享常量（评分模型参数、阈值、学历档位、滚动参数、城市列表）
-├── paths.py              # 路径工具（get_base_dir、ensure_config_files、路径常量）
-├── subprocess_utils.py   # Windows 控制台继承、无窗口启动与输出回放
-├── build.py              # PyInstaller 打包、发布门禁与公开版本核验脚本
-├── build_education_tool.py # 独立学历证书核验助手打包脚本
-├── latest.json           # 双源版本清单（正式发布工作流自动维护）
-├── job_config.json       # 岗位筛选规则配置
-├── api_config.json       # 发布默认 AI 模型配置模板（不含明文 Key）
-├── selectors.json        # 页面选择器配置（CSS/XPath/关键词，DOM 变化时修改）
-├── ui_config.json        # UI 尺寸与缩放配置
-├── tests/                # 测试脚本目录
-├── scripts/              # 辅助脚本（发布监控、PPT 生成、截图等）
-│   ├── release_ci.py   # GitHub 暂存、本机镜像与正式发布规则
-│   ├── release_content_review.py # 发布内容审核与内部凭证绑定
-│   ├── pr_delivery.py # 普通 PR 一次授权交付（门禁、PR、合并、双远端同步、分支清理）
-│   ├── release_flow.py # 一键发布、内容确认与断点续跑统一入口
-│   ├── release_delivery.py / release_prepare.py / release_dispatch.py # 分阶段恢复入口
-│   └── watch_progress.py # 发布进度监控脚本（轮询 .build_progress.json）
-├── pyinstaller-hooks/    # PyInstaller 自定义 hook（控制模块收集范围，减小产物体积）
-├── GUI 使用说明.md       # 图形界面操作说明
-├── DEPLOYMENT.md         # 部署说明（新电脑首次部署步骤）
-└── PACKAGING.md          # 打包指南（跨平台支持、体积基线、build.py 参数）
+├── gui_main.py            # 图形界面主程序（v2.27）
+├── bossmaster.py          # BOSS 扫描、筛选、联系和导出主程序
+├── education_tool*.py     # 独立学历核验工具入口、配置与安全
+├── *_controller.py        # 领域动作编排；不持有 Tk 控件
+├── *_presenter.py         # 纯展示转换；不访问存储或网络
+├── gui_*_page.py          # 七个主页面的 Tk 构建与事件绑定
+├── gui_candidate_*.py     # 候选人工作台、菜单和状态表单
+├── gui_contact_queue.py   # 联系候选人工作台
+├── gui_*_dialog*.py       # 模型、维护等独立对话框
+├── gui_*_support.py       # Shell、滚动、输入、反馈、控件和布局支持
+├── ui_*.py                # 主题、布局、窗口定位和统一消息框基础设施
+├── filtering.py           # 纯筛选规则
+├── candidate_*.py         # 候选人流程、清理和状态诊断
+├── job_identity.py        # 岗位名称归一化
+├── data_schema.py         # 持久化 schema、稳定身份和纯迁移
+├── storage.py             # 候选人持久化与原子写入
+├── *_store.py             # 岗位配置、简历与安全 JSON 存储
+├── contact_queue.py       # 联系清单持久化
+├── data_recovery.py       # 数据恢复编排
+├── diagnostic_package.py  # 脱敏诊断包
+├── llm_eval.py            # LLM 评估与评分
+├── ai_adapter.py          # 多服务商 API 适配
+├── api_connectivity.py    # DNS 与模型能力探测
+├── model_catalog.py       # 模型目录与端点差异分析
+├── browser_connection.py  # Chrome 页面分类与限时连接
+├── doc_parser.py          # 岗位需求文档解析
+├── resume_parser.py       # 本地简历文本解析
+├── resume_import_service.py # 受管简历副本事务替换
+├── job_ai_parser.py       # 岗位需求 AI 增强解析
+├── *_diagnostics.py       # 岗位配置和候选人一致性体检
+├── changelog_*.py         # CHANGELOG 解析与渲染
+├── gui_dialogs.py         # 更新日志和关于弹窗
+├── updater.py             # 双源自动更新
+├── constants.py / paths.py / subprocess_utils.py # 共享基础设施
+├── build*.py              # PyInstaller 打包与发布门禁
+├── *.json                 # 发布模板、岗位规则、选择器和 UI 配置
+├── tests/                 # 稳定回归、导入烟测和人工测试
+├── scripts/               # PR、发布、监控与辅助脚本
+├── pyinstaller-hooks/     # PyInstaller 自定义 hook
+├── GUI 使用说明.md        # GUI 操作说明
+├── DEPLOYMENT.md          # 部署说明
+└── PACKAGING.md           # 打包指南
 ```
+
+依赖方向固定为：Tk 页面/工作台 → Controller/Presenter → 纯领域与服务 → 持久化/外部适配。详细边界见本文“GUI 模块边界”；新增目录必须先在该节定义职责和依赖方向。
 
 ## 运行命令
 
@@ -145,8 +100,8 @@ boss-resume-filter/
   1. `gui_main.py` 的 `__version__`（不带 `v` 前缀，如 `__version__ = "2.9"`）
   2. `CHANGELOG.md` 新版本标题（`## vX.Y — 标题`），含分类：新增功能/体验优化/问题修复（至少一个）
   3. `README.md` 顶部版本标识 + 版本历史段落（只保留最近 2-3 个版本，更早版本由 CHANGELOG.md 承载）+ gui_main.py 注释
-  4. `CLAUDE.md` 和 `AGENTS.md` 项目结构中的 gui_main.py 注释
-- **版本内容写作规范**（必须遵守，详见 memory/readme-style.md）：
+  4. `AGENTS.md` 项目结构中的 gui_main.py 注释；`CLAUDE.md` 通过 `@AGENTS.md` 自动同源
+- **版本内容写作规范**（必须遵守）：
   - 目标：简洁专业、对普通用户友好（不是大白话，避免过度通俗化）；只描述用户得到的功能和体验变化，不展开实现过程
   - 范围基准：必须以“上一公开 tag → 目标发布提交”的最终净变化为准，逐项核对提交和变更文件；每项用户可感知变化要么写入版本内容，要么明确判定为合并表述或不面向用户，避免遗漏
   - 功能无关内容禁止进入版本内容：版本号同步、测试、内部重构、打包、CI/CD、发布编排、双远端同步、门禁和开发过程说明一律不写
@@ -283,7 +238,7 @@ boss-resume-filter/
 
 ### 去重机制
 
-- 基于 `(geek_id, job_name)` 复合键去重；`first_seen_at` 保持首次发现时间，`last_evaluated_at` 决定最新评估结果，旧数据从 `batch_timestamp` 兼容迁移；人工反馈、跟进、黑名单和沟通状态始终合并保留
+- 候选人/岗位身份统一使用 `geek_id + job_uuid`，旧数据缺少稳定岗位 ID 时才回退归一化岗位名；`first_seen_at` 保持首次发现时间，`last_evaluated_at` 决定最新评估结果，旧数据从 `batch_timestamp` 兼容迁移；人工反馈、跟进、黑名单和沟通状态始终合并保留
 - 重复扫描时，本轮已评估但未通过的候选人必须退出活跃结果和统计；只有曾经推荐、AI 淘汰或存在用户业务历史的记录保留供复核，不得继续沿用旧高分
 - `storage.py:save_candidates_all()` 使用 O(n) 算法；`bossmaster.py` 保留同名导入兼容旧调用
 
@@ -370,7 +325,7 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 - 时间范围默认“全部时间”，预设近 7 天和近 30 天按包含今天的自然日计算；只有选择“自定义”才显示起止日期，不设置独立重置按钮
 - 状态列显示多段业务标记（跟进状态/复核状态/反馈/屏蔽），不暴露内部发送能力；待复核状态的 tooltip 补充具体复核原因，复核通过状态说明复核结论但不改变评分或推荐指数，是否可联系仍由沟通、反馈和屏蔽状态独立决定；求职状态、学校和公司内容被截断时，tooltip 显示完整内容
 - 结果页把“今日待办、查看与复核、联系候选人”作为连续工作流入口，三个按钮使用一致样式；状态体检、导出和清空收入“更多操作”。结果表有候选人时复核入口保持可用，未选择具体行时自动从当前结果第一位开始；双击候选人或使用同名右键菜单也可打开连续复核工作台。今日待办按候选人唯一归组且不静默截断，先按立即处理/已逾期/今天/待安排/以后区分时间，再按业务动作归组；发送待核实优先于放弃、屏蔽等结束状态，必须先人工确认实际发送结果；未知枚举或缺失分数进入状态异常待处理；未来任务不计入今日人数，缺时间的旧记录进入待安排，已约面不得因缺少日期而从待办消失。“待复核”必须复用结果范围的统一派生结论，并按每人的主要原因唯一归入一层业务子分类。任务分组和文案只描述用户可执行的业务动作，不暴露发送上下文等内部概念。今日待办和状态体检的候选人右键菜单必须使用同一复核、核实、快捷跟进和加入联系清单规则。发送待核实的候选人在右键菜单和复核工作台都必须提供“核实发送结果”入口。首屏显示下一步、判断依据、匹配证据和风险，完整资料保留原详情，并提供上一位/下一位及确认通过、确认不通过、跟进、反馈、简历和 AI 评估动作
-- 所有候选人修改和移除操作使用 `(geek_id, job_name)` 复合身份；缺少 `geek_id` 的旧记录只能展示，不得用姓名、分数或空标识执行持久化修改
+- 所有候选人修改和移除操作使用 canonical 候选人/岗位身份（`geek_id + job_uuid`，仅旧数据回退归一化岗位名）；缺少 `geek_id` 的旧记录只能展示，不得用姓名、分数或空标识执行持久化修改
 - **多选右键菜单**：支持 Ctrl/Shift 多选候选人，右键显示批量操作：加入联系清单、移除选中、导出选中；单选时显示完整菜单（查看与复核、导入简历、加入联系清单、核实发送结果、更新跟进、标记反馈、加入/移出黑名单、移除此人），不提供单人 Excel 导出。所有联系动作统一先进入联系清单，不提供绕过清单的立即发送入口
 
 ## AI 模型配置
