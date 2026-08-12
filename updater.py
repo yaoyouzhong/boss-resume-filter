@@ -51,6 +51,14 @@ logger = logging.getLogger(__name__)
 _FONT_FAMILY = ui_theme.FONT_FAMILY
 
 
+def _request_get(url, **kwargs):
+    """GET one URL, bypassing configured proxies for every Gitee endpoint."""
+    hostname = (requests.utils.urlparse(url).hostname or "").lower()
+    if hostname == "gitee.com" or hostname.endswith(".gitee.com"):
+        kwargs["proxies"] = {"http": "", "https": "", "all": ""}
+    return requests.get(url, **kwargs)
+
+
 def _place_dialog_centered(dialog, parent, width, height):
     """将更新弹窗相对父窗口居中，并限制在屏幕可见范围内。"""
     if hasattr(dialog, "winfo_id"):
@@ -244,7 +252,7 @@ def _get_gitee_latest_response(latest_json_url):
     """Fetch Gitee latest.json, retrying once for cold raw-file timeouts."""
     for attempt in range(2):
         try:
-            return requests.get(latest_json_url, timeout=UPDATE_TIMEOUT_GITEE)
+            return _request_get(latest_json_url, timeout=UPDATE_TIMEOUT_GITEE)
         except requests.exceptions.Timeout:
             if attempt == 0:
                 continue
@@ -447,7 +455,7 @@ def download_file(url, dest_path, progress_callback=None):
         progress_callback: 进度回调函数 callback(downloaded, total)
     """
     try:
-        response = requests.get(url, stream=True, timeout=UPDATE_TIMEOUT_DOWNLOAD)
+        response = _request_get(url, stream=True, timeout=UPDATE_TIMEOUT_DOWNLOAD)
         response.raise_for_status()
 
         total_size = int(response.headers.get('content-length', 0))
@@ -1324,7 +1332,7 @@ def _fetch_changelog_section(target_version):
     content = None
     for url in urls:
         try:
-            resp = requests.get(url, timeout=UPDATE_TIMEOUT_CHANGELOG)
+            resp = _request_get(url, timeout=UPDATE_TIMEOUT_CHANGELOG)
             resp.raise_for_status()
             content = resp.text
             break
@@ -1400,7 +1408,7 @@ def fetch_current_release_notes(version, *, use_cache=True, base_dir=None):
     gitee_url = "https://gitee.com/yaoyouzhong/boss-resume-filter/raw/master/latest.json"
     for timeout in (UPDATE_TIMEOUT_RELEASE_NOTES_GITEE, UPDATE_TIMEOUT_RELEASE_NOTES_GITEE_RETRY):
         try:
-            resp = requests.get(gitee_url, timeout=timeout)
+            resp = _request_get(gitee_url, timeout=timeout)
             resp.raise_for_status()
             data = resp.json()
             if str(data.get("version", "")).lstrip("vV") == target:
@@ -1415,7 +1423,7 @@ def fetch_current_release_notes(version, *, use_cache=True, base_dir=None):
 
     # Fallback to the exact GitHub Release tag, not the full release list.
     try:
-        resp = requests.get(
+        resp = _request_get(
             f"https://api.github.com/repos/yaoyouzhong/boss-resume-filter/releases/tags/v{target}",
             headers={'Accept': 'application/vnd.github.v3+json'},
             timeout=UPDATE_TIMEOUT_RELEASE_NOTES_GITHUB,

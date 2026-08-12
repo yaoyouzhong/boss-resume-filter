@@ -1251,7 +1251,7 @@ def _public_asset_probe(
     headers = {"Range": "bytes=0-511"}
     response = None
     try:
-        response = build.requests.get(
+        response = build._request_get(
             url,
             headers=headers,
             allow_redirects=True,
@@ -1339,7 +1339,7 @@ def verify_public_endpoints(version: str, attempts: int = 6, delay: int = 10) ->
                 last_errors.append(f"{url} -> {detail}")
         for url in manifest_urls:
             try:
-                response = build.requests.get(url, timeout=30)
+                response = build._request_get(url, timeout=30)
                 response.raise_for_status()
                 remote = response.json()
                 if remote != latest:

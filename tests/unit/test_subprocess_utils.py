@@ -78,6 +78,36 @@ def test_hidden_subprocess_hides_windows_popen_without_changing_normal_env():
     assert kwargs["env"] is original_env
 
 
+def test_gitee_git_commands_extend_no_proxy_without_changing_proxy_values():
+    fake = _FakeSubprocess()
+    proxy = HiddenSubprocess(fake, platform="linux")
+    original_env = {
+        "HTTPS_PROXY": "http://127.0.0.1:7890",
+        "NO_PROXY": "localhost,127.0.0.1",
+    }
+
+    proxy.run(["git", "fetch", "gitee"], env=original_env)
+
+    _kind, _args, kwargs = fake.calls[0]
+    assert kwargs["env"] is not original_env
+    assert kwargs["env"]["HTTPS_PROXY"] == original_env["HTTPS_PROXY"]
+    assert kwargs["env"]["NO_PROXY"].split(",") == [
+        "localhost", "127.0.0.1", "gitee.com", ".gitee.com",
+    ]
+    assert kwargs["env"]["no_proxy"] == kwargs["env"]["NO_PROXY"]
+
+
+def test_github_git_commands_keep_the_original_proxy_environment():
+    fake = _FakeSubprocess()
+    proxy = HiddenSubprocess(fake, platform="linux")
+    original_env = {"HTTPS_PROXY": "http://127.0.0.1:7890"}
+
+    proxy.run(["git", "fetch", "origin"], env=original_env)
+
+    _kind, _args, kwargs = fake.calls[0]
+    assert kwargs["env"] is original_env
+
+
 def test_visible_gui_process_can_explicitly_keep_its_window():
     fake = _FakeSubprocess()
     proxy = HiddenSubprocess(fake, platform="win32", has_console=False)

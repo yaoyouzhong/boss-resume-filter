@@ -20,6 +20,35 @@ def _is_github_cli(command: Any) -> bool:
     return Path(executable.strip('"')).name.lower() in {"gh", "gh.exe"}
 
 
+def _is_gitee_git_command(command: Any) -> bool:
+    """Return whether a Git subprocess communicates with the Gitee remote."""
+    if not isinstance(command, (list, tuple)) or not command:
+        return False
+    if Path(str(command[0]).strip('"')).name.lower() not in {"git", "git.exe"}:
+        return False
+    return any(
+        str(argument).lower() == "gitee"
+        or "gitee.com/" in str(argument).lower()
+        for argument in command[1:]
+    )
+
+
+def _gitee_direct_environment(source: dict[str, str] | None = None) -> dict[str, str]:
+    """Return an environment that bypasses proxies only for Gitee hosts."""
+    env = dict(source or os.environ)
+    existing = env.get("NO_PROXY") or env.get("no_proxy") or ""
+    entries = [item.strip() for item in existing.split(",") if item.strip()]
+    lowered = {item.lower() for item in entries}
+    for host in ("gitee.com", ".gitee.com"):
+        if host.lower() not in lowered:
+            entries.append(host)
+            lowered.add(host.lower())
+    no_proxy = ",".join(entries)
+    env["NO_PROXY"] = no_proxy
+    env["no_proxy"] = no_proxy
+    return env
+
+
 def _has_attached_console(platform: str) -> bool:
     """Return whether the current Windows process already owns a console."""
     if platform != "win32":
@@ -54,6 +83,8 @@ class HiddenSubprocess:
     def _prepare_kwargs(self, command: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
         prepared = dict(kwargs)
         show_window = bool(prepared.pop("show_window", False))
+        if _is_gitee_git_command(command):
+            prepared["env"] = _gitee_direct_environment(prepared.get("env"))
         if self._platform != "win32":
             return prepared
 

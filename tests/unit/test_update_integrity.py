@@ -2812,3 +2812,29 @@ def test_current_exe_sha256_hashes_macos_frozen_executable():
             updater.sys.platform = original_platform
             updater.sys.executable = original_executable
             updater._current_exe_sha256_cache = original_cache
+
+
+def test_gitee_session_ignores_environment_proxies():
+    session = build._gitee_session(retries=0)
+    assert session.trust_env is False
+
+
+def test_request_get_uses_direct_session_only_for_gitee():
+    class DirectSession:
+        def get(self, url, **kwargs):
+            return ("direct", url, kwargs)
+
+    original_session = build._gitee_session
+    original_get = build.requests.get
+    try:
+        build._gitee_session = lambda **_kwargs: DirectSession()
+        build.requests.get = lambda url, **kwargs: ("default", url, kwargs)
+
+        gitee = build._request_get("https://gitee.com/owner/repo/file", timeout=3)
+        github = build._request_get("https://github.com/owner/repo/file", timeout=4)
+    finally:
+        build._gitee_session = original_session
+        build.requests.get = original_get
+
+    assert gitee[0] == "direct"
+    assert github[0] == "default"
