@@ -1,29 +1,29 @@
 {
-  "version": "2.27",
-  "release_date": "2026-08-08",
+  "version": "2.28",
+  "release_date": "2026-08-12",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.27/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.27/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.27/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "macos_dmg": {
-      "size": 33732097,
-      "sha256": "096ca2038fafffea7345dd366997f584ecc023bc4a49b5a4e773174ef14eec7e"
+      "size": 33559797,
+      "sha256": "496861fd3cf69ffa437f85a25b14b029399ff368a606970cfc993c1eec226ce3"
     },
     "windows": {
-      "size": 36066875,
-      "sha256": "22d7f4a5fe567859525d85f2904ac9d19ae9ea5539f334922aca0524236e129f"
+      "size": 35940403,
+      "sha256": "bd0fdf15dfcaf4c2d3d0180e4104d464164031467a36399bf6561998385910bc"
     },
     "macos": {
-      "size": 34567389,
-      "sha256": "1fc5e4f8f26431798cc4f217a5c4eedce455d97fc38a7517c9d12ae16b3eae4c"
+      "size": 34429190,
+      "sha256": "d12b0728d55093abcbdbfd9953febb8ce4465f9c0cb88b50be4bbe19d7e8cb40"
     }
   },
-  "release_notes": "### 新增功能\n\n- **岗位性别筛选**：岗位配置新增性别要求，并覆盖岗位需求解析、候选人筛选、AI 辅助评估、结果查看和 Excel 导出；旧配置未设置性别时继续按不限处理。\n\n### 体验优化\n\n- **高级运行设置**：将滚动轮次、AI 响应超时、扫描增强和后续联系集中到折叠区域；滚动轮次默认 50，AI 响应超时随 AI 辅助评估开关联动，参数超过建议值时会在开始前再次确认。\n- **结果列表浏览**：重新排列关键字段，普通窗口显示性别，并可通过底部横向滚动条查看全部字段；求职状态、毕业学校和最近公司显示不全时，可悬停查看完整内容。\n- **岗位配置布局**：调整性别要求、最大年龄和薪资输入区域的排列与间距，使常用条件更容易填写和核对。",
+  "release_notes": "### 新增功能\n\n- **岗位复盘配置定位**：岗位人工反馈达到 5 条后，复盘建议会显示对应样本证据，并可直接定位到招聘需求、学历、经验、薪资、地点、技能或必要条件；定位只打开并高亮相关区域，岗位规则仍由用户核对后手工调整。",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.27/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.27/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.27/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28/BOSS_ResumeFilter.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28/BOSS_ResumeFilter.dmg"
   }
 }
