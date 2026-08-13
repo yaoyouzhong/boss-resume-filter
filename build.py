@@ -4729,7 +4729,7 @@ def _gitee_upload_artifacts(version, release_title, release_notes, artifact_path
                         ) from None
                     raise error
 
-            if fail_fast:
+            if fail_fast and max(1, int(large_workers)) == 1:
                 for f in to_upload:
                     print(f"  {label} 串行: {f.name}")
                     try:

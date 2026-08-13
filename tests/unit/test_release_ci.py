@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+import threading
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -135,6 +136,7 @@ def test_release_state_is_atomic_and_contains_no_credentials():
     assert state["schema"] == release_ci.RELEASE_STATE_SCHEMA
     assert state["phases"]["download_github_artifacts"]["attempts"] == 1
     assert state["artifacts"]["BOSS_ResumeFilter.exe"]["downloaded_bytes"] == 10
+    assert state["artifacts"]["BOSS_ResumeFilter.exe"]["download_status"] == "downloading"
     assert "token" not in json.dumps(state).lower()
 
 
@@ -350,6 +352,14 @@ def test_github_asset_download_resumes_after_stall_and_verifies_sha256():
         assert not destination.with_name(destination.name + ".part").exists()
 
 
+def test_github_download_session_honors_environment_proxy_configuration():
+    session = release_ci._github_download_session()
+    try:
+        assert session.trust_env is True
+    finally:
+        session.close()
+
+
 def test_resume_rejects_new_business_changes_after_the_release_commit():
     with (
         patch.object(release_ci, "_is_ancestor", return_value=True),
@@ -515,7 +525,7 @@ def test_confirmed_local_preview_reuses_gate_only_for_the_same_content():
         )
     preflight.assert_not_called()
 
-def test_finalize_local_publishes_github_before_gitee_mirror():
+def test_finalize_local_prepares_gitee_before_pipelined_artifact_transfer():
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         artifacts = [temp_path / name for name in release_ci.RELEASE_ARTIFACTS]
@@ -555,11 +565,6 @@ def test_finalize_local_publishes_github_before_gitee_mirror():
                 "_verify_github_release_assets_complete",
                 return_value=github_assets,
             ),
-            patch.object(
-                release_ci,
-                "_download_verified_github_artifacts",
-                side_effect=lambda *_args, **_kwargs: events.append("download_verify") or artifacts,
-            ),
             patch.object(release_ci, "_ensure_gitee_tag", side_effect=lambda *_: events.append("gitee_tag")),
             patch.object(
                 release_ci,
@@ -568,8 +573,8 @@ def test_finalize_local_publishes_github_before_gitee_mirror():
             ),
             patch.object(
                 release_ci,
-                "_publish_gitee_artifacts",
-                side_effect=lambda *_args, **_kwargs: events.append("gitee_assets")
+                "_transfer_github_artifacts_to_gitee",
+                side_effect=lambda *_args, **_kwargs: events.append("artifact_transfer")
                 or release_ci._canonical_downloads_cn("2.21"),
             ),
             patch.object(
@@ -599,11 +604,10 @@ def test_finalize_local_publishes_github_before_gitee_mirror():
             )
 
         assert events.count("master_safe") == 2
-        assert events.index("github_public") < events.index("download_verify")
-        assert events.index("download_verify") < events.index("gitee_tag")
+        assert events.index("github_public") < events.index("gitee_tag")
         assert events.index("gitee_tag") < events.index("gitee_prune")
-        assert events.index("gitee_prune") < events.index("gitee_assets")
-        assert events.index("gitee_assets") < events.index("manifest")
+        assert events.index("gitee_prune") < events.index("artifact_transfer")
+        assert events.index("artifact_transfer") < events.index("manifest")
         assert events[-2:] == ["remote_verify", "public_verify"]
 
 
@@ -691,6 +695,83 @@ def test_local_gitee_resume_reuses_existing_same_size_staged_assets():
     assert downloads == release_ci._canonical_downloads_cn("2.21")
 
 
+def test_artifact_transfer_starts_first_upload_before_second_download_finishes():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        artifacts = [temp_path / name for name in release_ci.RELEASE_ARTIFACTS]
+        for artifact in artifacts:
+            artifact.write_bytes(b"artifact")
+        github_assets = {path.name: _asset(path.stat().st_size) for path in artifacts}
+        upload_started = threading.Event()
+        downloaded: list[str] = []
+        uploaded: list[str] = []
+
+        def fake_download(_tag, name, *_args, **_kwargs):
+            downloaded.append(name)
+            if len(downloaded) == 2:
+                assert upload_started.wait(2), "first upload did not overlap the next download"
+            return temp_path / name
+
+        def fake_upload(_version, _title, _body, paths, **_kwargs):
+            path = paths[0]
+            uploaded.append(path.name)
+            upload_started.set()
+            return {release_ci.build._downloads_cn_key(path.name): "https://example.invalid"}
+
+        cache = {
+            "token": "token",
+            "owner": "owner",
+            "repo": "repo",
+            "tag": "v2.21",
+            "api_base": "https://example.invalid/api",
+            "release_id": 1,
+            "existing": {},
+        }
+        with (
+            patch.object(release_ci, "RELEASE_STATE_PATH", temp_path / "state.json"),
+            patch.object(
+                release_ci,
+                "_download_verified_github_artifact",
+                side_effect=fake_download,
+            ),
+            patch.object(
+                release_ci.build,
+                "_github_asset_matches_local",
+                return_value=(True, "SHA256 一致"),
+            ),
+            patch.object(
+                release_ci.build,
+                "_gitee_upload_artifacts",
+                side_effect=fake_upload,
+            ),
+            patch.object(
+                release_ci.build,
+                "_verify_gitee_release_assets_complete",
+                return_value=True,
+            ),
+        ):
+            downloads = release_ci._transfer_github_artifacts_to_gitee(
+                "2.21",
+                "v2.21 — Test",
+                "notes",
+                github_assets,
+                temp_path,
+                release_sha="a" * 40,
+                release_cache=cache,
+                upload_workers=1,
+            )
+
+        state = json.loads((temp_path / "state.json").read_text(encoding="utf-8"))
+
+    assert downloaded == list(release_ci.RELEASE_ARTIFACTS)
+    assert uploaded == list(release_ci.RELEASE_ARTIFACTS)
+    assert downloads == release_ci._canonical_downloads_cn("2.21")
+    assert all(
+        item["gitee_status"] == "complete"
+        for item in state["artifacts"].values()
+    )
+
+
 def test_gitee_local_upload_accepts_windows_and_macos_artifacts_together():
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
@@ -727,6 +808,61 @@ def test_gitee_local_upload_accepts_windows_and_macos_artifacts_together():
             )
 
         assert set(downloads) == {"windows", "macos", "macos_dmg"}
+
+
+def test_gitee_fail_fast_upload_honors_three_worker_concurrency():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        artifacts = [temp_path / name for name in release_ci.RELEASE_ARTIFACTS]
+        for artifact in artifacts:
+            artifact.write_bytes(b"artifact")
+        cache = {
+            "token": "token",
+            "owner": "owner",
+            "repo": "repo",
+            "tag": "v2.21",
+            "api_base": "https://example.invalid/api",
+            "release_id": 1,
+            "existing": {},
+        }
+        all_started = threading.Event()
+        lock = threading.Lock()
+        started: list[str] = []
+
+        def fake_upload(path, *_args, **_kwargs):
+            with lock:
+                started.append(path.name)
+                if len(started) == 3:
+                    all_started.set()
+            assert all_started.wait(2), "uploads did not run concurrently"
+            return path.name, {
+                "browser_download_url": f"https://example.invalid/{path.name}"
+            }
+
+        with (
+            patch.object(
+                release_ci.build,
+                "_is_large_transfer_item",
+                return_value=True,
+            ),
+            patch.object(
+                release_ci.build,
+                "_gitee_upload_single",
+                side_effect=fake_upload,
+            ),
+        ):
+            downloads = release_ci.build._gitee_upload_artifacts(
+                "2.21",
+                "v2.21 — Test",
+                "notes",
+                artifacts,
+                release_cache=cache,
+                large_workers=3,
+                fail_fast=True,
+            )
+
+    assert sorted(started) == sorted(release_ci.RELEASE_ARTIFACTS)
+    assert set(downloads) == {"windows", "macos", "macos_dmg"}
 
 
 def test_gitee_local_upload_stops_after_the_first_failed_artifact():

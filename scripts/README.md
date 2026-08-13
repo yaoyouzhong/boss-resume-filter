@@ -11,7 +11,8 @@ python tests/test_import.py
 
 ## 活跃脚本
 
-- `release_ci.py`：正式发布的确定性规则实现；Actions 只调用严格门禁和 GitHub Draft 暂存，本机核对 GitHub 附件完整性元数据后立即公开主源，再自动清理 Gitee 历史版本附件、下载并镜像本次版本、同步清单和完成一次权威线上验收；阶段耗时、Actions run、附件进度和脱敏错误同时写入状态文件与发布日志；行为测试在 `tests/unit/test_release_ci.py`。
+- `release_ci.py`：正式发布的确定性规则实现；Actions 只调用严格门禁和 GitHub Draft 暂存，本机核对 GitHub 附件完整性元数据后立即公开主源，再自动清理 Gitee 历史版本附件；随后 GitHub 按环境代理下载，每个附件校验完成即进入 Gitee 单路直连上传队列，使下载与上传重叠，再同步清单和完成一次权威线上验收；阶段耗时、Actions run、逐附件下载/上传进度和脱敏错误同时写入状态文件与发布日志；行为测试在 `tests/unit/test_release_ci.py`。
+- `gitee_upload_benchmark.py`：只允许 `transfer-benchmark-*` 临时预发布的 Gitee 直连上传基准；要求精确授权文本，支持按 1/2/3 路交叉测试三个固定发布产物，并在 `finally` 中删除测试附件、临时 Release 和 tag。正式默认并发度必须依据该基准决定，不能凭直觉调整。
 - `release_flow.py`：正常发布唯一入口；支持单分支和显式多分支聚合，把候选 PR、内容确认、Squash tree 校验、正式发布与断点续跑串成一个状态机；准备阶段记录候选新增历史中已经包含的 `codex/*` 阶段分支并展示清理名单，完整线上验收后才核对提交、远端和 worktree 状态并自动清理；行为测试在 `tests/unit/test_release_flow.py`。
 - `product_fingerprint.py`：计算排除公开发布文案后的产品代码指纹；本机门禁和 PR Checks 仅在同一指纹已经成功回归时复用测试证据。
 - `release_content_review.py`：对最终标题和正文做固定用户视角审核；确认前绑定候选 tree，合并后绑定正式发布提交。
