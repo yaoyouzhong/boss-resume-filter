@@ -634,14 +634,13 @@ def build_config_page_steps(
         tooltip_key = (item, column)
         if tooltip_key == self._skills_tooltip_item and self._skills_tooltip and self._skills_tooltip.winfo_exists():
             return
-            self.feedback_support.hide_skills_tooltip()
-        self._skills_tooltip_item = tooltip_key
         x = self.root.winfo_pointerx() + 15
         y = self.root.winfo_pointery() + 10
-        self._skills_tooltip = self.feedback_support.create_simple_tooltip(
+        self.feedback_support.show_skills_tooltip(
             full_text,
             x,
             y,
+            tooltip_key,
         )
 
     def _on_skills_leave(event):
@@ -771,7 +770,13 @@ def build_config_page_steps(
     def _on_req_motion(event):
         """鼠标悬停在必要条件上时显示原文出处"""
         idx = self.required_listbox.nearest(event.y)
-        if idx < 0:
+        item_bbox = self.required_listbox.bbox(idx) if idx >= 0 else None
+        if (
+            idx < 0
+            or idx >= self.required_listbox.size()
+            or not item_bbox
+            or not (item_bbox[1] <= event.y < item_bbox[1] + item_bbox[3])
+        ):
             self.feedback_support.hide_requirement_tooltip()
             return
         if idx == self._req_tooltip_idx and self._req_tooltip and self._req_tooltip.winfo_exists():
@@ -786,13 +791,13 @@ def build_config_page_steps(
                 evidence = self._required_evidence_map.get(str(cond), "") if hasattr(self, '_required_evidence_map') else ""
         if not evidence:
             return
-        self._req_tooltip_idx = idx
         x = self.root.winfo_pointerx() + 15
         y = self.root.winfo_pointery() + 10
-        self._req_tooltip = self.feedback_support.create_simple_tooltip(
+        self.feedback_support.show_requirement_tooltip(
             evidence,
             x,
             y,
+            idx,
         )
 
     def _on_req_leave(event):

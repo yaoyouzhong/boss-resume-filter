@@ -768,6 +768,41 @@ def test_gui_feedback_support_excludes_business_storage_browser_and_gui_main_dep
         assert ".feedback_support." in page_source
 
 
+def test_feedback_support_replaces_page_specific_tooltips_and_clears_all_slots():
+    host = type("FeedbackHost", (), {})()
+    support = gui_feedback_support.FeedbackSupport(host, font_family="Arial")
+    old_skills = Mock()
+    old_requirement = Mock()
+    new_skills = Mock()
+    new_requirement = Mock()
+    host._skills_tooltip = old_skills
+    host._skills_tooltip_item = ("old", "#4")
+    host._req_tooltip = old_requirement
+    host._req_tooltip_idx = 0
+
+    with patch.object(
+        support,
+        "_styled_tooltip",
+        side_effect=(new_skills, new_requirement),
+    ):
+        support.show_skills_tooltip("技能原文", 10, 20, ("new", "#4"))
+        support.show_requirement_tooltip("条件原文", 30, 40, 1)
+
+    old_skills.destroy.assert_called_once_with()
+    old_requirement.destroy.assert_called_once_with()
+    assert host._skills_tooltip is new_skills
+    assert host._skills_tooltip_item == ("new", "#4")
+    assert host._req_tooltip is new_requirement
+    assert host._req_tooltip_idx == 1
+
+    support.hide_all_tooltips()
+
+    new_skills.destroy.assert_called_once_with()
+    new_requirement.destroy.assert_called_once_with()
+    assert host._skills_tooltip is None
+    assert host._req_tooltip is None
+
+
 def test_gui_widget_support_excludes_business_storage_browser_and_gui_main_dependencies():
     forbidden = {
         "bossmaster",
