@@ -87,6 +87,12 @@ class LayoutSupport(Protocol):
     def update_stats_tree_columns(self) -> None: ...
 
 
+class FeedbackSupport(Protocol):
+    """Transient visual feedback cleared when the active page changes."""
+
+    def hide_all_tooltips(self) -> None: ...
+
+
 class AppShellHost(Protocol):
     """Explicit host surface consumed by the application shell."""
 
@@ -118,6 +124,7 @@ class AppShellHost(Protocol):
     stats_page: tk.Widget | None
     education_page: tk.Widget | None
     layout_support: LayoutSupport
+    feedback_support: FeedbackSupport
 
     def _ensure_data_storage_available(self, action: str) -> bool: ...
 
@@ -579,6 +586,7 @@ class AppShell:
         """Hide all cached pages and stop run-page browser polling."""
         host = self.host
         host._stop_browser_auto_check()
+        host.feedback_support.hide_all_tooltips()
         for page in (
             getattr(host, "_page_loading_frame", None),
             host.home_page,

@@ -65,6 +65,49 @@ def _make_layout_support(host):
     )
 
 
+def test_app_shell_clears_tooltips_before_hiding_cached_pages():
+    pages = [Mock() for _ in range(7)]
+    host = types.SimpleNamespace(
+        _stop_browser_auto_check=Mock(),
+        feedback_support=Mock(),
+        home_page=pages[0],
+        config_page=pages[1],
+        api_config_page=pages[2],
+        run_page=pages[3],
+        result_page=pages[4],
+        stats_page=pages[5],
+        education_page=pages[6],
+    )
+    shell = gui_app_shell.AppShell(
+        host,
+        ui_config=gui_main.UI_CONFIG,
+        font_family="Test Font",
+        font_family_semibold="Test Font Semibold",
+        version="test",
+    )
+
+    shell.hide_all_pages()
+
+    host._stop_browser_auto_check.assert_called_once_with()
+    host.feedback_support.hide_all_tooltips.assert_called_once_with()
+    for page in pages:
+        page.pack_forget.assert_called_once_with()
+
+
+def test_job_config_list_tooltips_use_managed_replacement_and_empty_area_guard():
+    source = Path("gui_config_page.py").read_text(encoding="utf-8")
+    skills_block = source[source.index("def _on_skills_motion"):]
+    skills_block = skills_block[:skills_block.index("\n    def _on_skills_leave")]
+    requirement_block = source[source.index("def _on_req_motion"):]
+    requirement_block = requirement_block[:requirement_block.index("\n    def _on_req_leave")]
+
+    assert "show_skills_tooltip(" in skills_block
+    assert "create_simple_tooltip(" not in skills_block
+    assert "show_requirement_tooltip(" in requirement_block
+    assert "self.required_listbox.bbox(idx)" in requirement_block
+    assert "idx >= self.required_listbox.size()" in requirement_block
+
+
 def test_optional_max_age_none_displays_as_blank():
     assert _optional_int_to_entry(None) == ""
 

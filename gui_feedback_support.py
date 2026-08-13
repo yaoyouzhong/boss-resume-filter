@@ -178,9 +178,23 @@ class FeedbackSupport:
             host._model_tooltip = None
         host._model_tooltip_item = None
 
-    def create_simple_tooltip(self, text: str, x: int, y: int) -> tk.Toplevel:
-        """Create an unmanaged tooltip window for a page-specific slot."""
-        return self._styled_tooltip(text, x, y, wraplength=500)
+    def show_skills_tooltip(
+        self,
+        text: str,
+        x: int,
+        y: int,
+        tooltip_key: Any,
+    ) -> None:
+        """Replace the job-skills tooltip slot with one managed window."""
+        host = self.host
+        self.hide_skills_tooltip()
+        host._skills_tooltip = self._styled_tooltip(
+            text,
+            x,
+            y,
+            wraplength=500,
+        )
+        host._skills_tooltip_item = tooltip_key
 
     def hide_skills_tooltip(self, _event: tk.Event | None = None) -> None:
         """Destroy the job-skills tooltip slot."""
@@ -190,6 +204,24 @@ class FeedbackSupport:
             host._skills_tooltip = None
         host._skills_tooltip_item = None
 
+    def show_requirement_tooltip(
+        self,
+        text: str,
+        x: int,
+        y: int,
+        item_index: int,
+    ) -> None:
+        """Replace the job-requirement tooltip slot with one managed window."""
+        host = self.host
+        self.hide_requirement_tooltip()
+        host._req_tooltip = self._styled_tooltip(
+            text,
+            x,
+            y,
+            wraplength=500,
+        )
+        host._req_tooltip_idx = item_index
+
     def hide_requirement_tooltip(self, _event: tk.Event | None = None) -> None:
         """Destroy the job-requirement tooltip slot."""
         host = self.host
@@ -197,6 +229,13 @@ class FeedbackSupport:
             host._req_tooltip.destroy()
             host._req_tooltip = None
         host._req_tooltip_idx = None
+
+    def hide_all_tooltips(self) -> None:
+        """Cancel and destroy every tooltip slot before navigation or teardown."""
+        self.hide_tooltip()
+        self.hide_model_tooltip()
+        self.hide_skills_tooltip()
+        self.hide_requirement_tooltip()
 
     def _styled_tooltip(
         self,
