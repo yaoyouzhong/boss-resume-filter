@@ -30,6 +30,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -58,12 +59,13 @@ RESUME_ONLY_MASTER_CHANGES = frozenset({"latest.json"})
 GITEE_OWNER = "yaoyouzhong"
 GITEE_REPO = "boss-resume-filter"
 RELEASE_STATE_PATH = BASE_DIR / ".release_state.json"
-RELEASE_STATE_SCHEMA = 2
+RELEASE_STATE_SCHEMA = 3
 RELEASE_LOG_DIR = BASE_DIR / "logs"
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 DOWNLOAD_CONNECT_TIMEOUT = 15
 DOWNLOAD_STALL_TIMEOUT = 45
 DOWNLOAD_ATTEMPTS = 4
+DEFAULT_GITEE_UPLOAD_WORKERS = 1
 
 
 class ReleaseAutomationError(RuntimeError):
@@ -90,6 +92,7 @@ def _write_release_state(
     *,
     artifact: str = "",
     artifact_status: str = "",
+    gitee_status: str = "",
     downloaded_bytes: int | None = None,
     expected_bytes: int | None = None,
     error_type: str = "",
@@ -187,6 +190,9 @@ def _write_release_state(
         item = dict(artifacts.get(artifact) or {})
         if artifact_status:
             item["status"] = artifact_status
+            item["download_status"] = artifact_status
+        if gitee_status:
+            item["gitee_status"] = gitee_status
         if downloaded_bytes is not None:
             item["downloaded_bytes"] = max(0, int(downloaded_bytes))
         if expected_bytes is not None:
@@ -231,6 +237,7 @@ def _write_release_state(
         or previous_status != status
         or bool(error_type)
         or bool(artifact_status)
+        or bool(gitee_status)
         or bool(actions_run)
     )
     if event_changed:
@@ -242,6 +249,7 @@ def _write_release_state(
             phase_state,
             artifact=artifact,
             artifact_status=artifact_status,
+            gitee_status=gitee_status,
         )
 
 
@@ -254,6 +262,7 @@ def _append_release_event(
     *,
     artifact: str = "",
     artifact_status: str = "",
+    gitee_status: str = "",
 ) -> None:
     """Append one credential-free, human-readable release event."""
     parts = [f"[{timestamp}]", phase, status]
@@ -261,6 +270,8 @@ def _append_release_event(
         parts.append(f"artifact={artifact}")
     if artifact_status:
         parts.append(f"artifact_status={artifact_status}")
+    if gitee_status:
+        parts.append(f"gitee_status={gitee_status}")
     if status in {"complete", "failed"}:
         parts.append(f"duration={phase_state.get('duration_seconds', 0):g}s")
     if phase_state.get("error_type"):
@@ -842,6 +853,7 @@ def _download_github_asset_resumable(
     attempts: int = DOWNLOAD_ATTEMPTS,
     connect_timeout: int = DOWNLOAD_CONNECT_TIMEOUT,
     stall_timeout: int = DOWNLOAD_STALL_TIMEOUT,
+    state_phase: str = "download_github_artifacts",
 ) -> Path:
     """Download one GitHub asset with Range resume and inactivity timeout."""
     name = str(remote.get("name") or destination.name)
@@ -872,7 +884,7 @@ def _download_github_asset_resumable(
                 _write_release_state(
                     version,
                     release_sha,
-                    "download_github_artifacts",
+                    state_phase,
                     "in_progress",
                     artifact=name,
                     artifact_status="complete",
@@ -898,7 +910,7 @@ def _download_github_asset_resumable(
         _write_release_state(
             version,
             release_sha,
-            "download_github_artifacts",
+            state_phase,
             "in_progress",
             artifact=name,
             artifact_status="downloading",
@@ -961,7 +973,7 @@ def _download_github_asset_resumable(
             _write_release_state(
                 version,
                 release_sha,
-                "download_github_artifacts",
+                state_phase,
                 "in_progress",
                 artifact=name,
                 artifact_status="complete",
@@ -980,7 +992,7 @@ def _download_github_asset_resumable(
             _write_release_state(
                 version,
                 release_sha,
-                "download_github_artifacts",
+                state_phase,
                 "in_progress",
                 artifact=name,
                 artifact_status=artifact_status,
@@ -1010,6 +1022,59 @@ def _format_bytes(size: int) -> str:
     return f"{value:.1f} GiB"
 
 
+def _github_download_session() -> build.requests.Session:
+    """Return a GitHub session that honors the configured proxy environment."""
+    session = build.requests.Session()
+    session.trust_env = True
+    return session
+
+
+def _download_verified_github_artifact(
+    tag: str,
+    name: str,
+    github_assets: dict,
+    artifact_dir: Path,
+    *,
+    release_sha: str,
+    session=None,
+    state_phase: str = "download_github_artifacts",
+) -> Path:
+    """Download or reuse one GitHub asset and verify its size and SHA256."""
+    remote = github_assets.get(name)
+    if not _asset_has_integrity(remote):
+        _fail(f"GitHub Draft 缺少可校验附件：{name}")
+    path = artifact_dir / name
+    if path.exists():
+        same, reason = build._github_asset_matches_local(tag, path, remote)
+        if same:
+            print(f"  [复用] 本机镜像缓存已校验: {name} ({reason})")
+            _write_release_state(
+                tag.removeprefix("v"),
+                release_sha,
+                state_phase,
+                "in_progress",
+                artifact=name,
+                artifact_status="complete",
+                downloaded_bytes=path.stat().st_size,
+                expected_bytes=int(remote.get("size") or 0),
+            )
+            return path
+        print(f"  [刷新] 本机镜像缓存不一致: {name} ({reason})")
+    _download_github_asset_resumable(
+        remote,
+        path,
+        version=tag.removeprefix("v"),
+        release_sha=release_sha,
+        session=session,
+        state_phase=state_phase,
+    )
+    same, reason = build._github_asset_matches_local(tag, path, remote)
+    if not same:
+        _fail(f"GitHub 附件下载后校验失败：{name}（{reason}）")
+    print(f"  [OK] GitHub 附件已下载并校验: {name} ({reason})")
+    return path
+
+
 def _download_verified_github_artifacts(
     tag: str,
     github_assets: dict,
@@ -1020,29 +1085,21 @@ def _download_verified_github_artifacts(
     """Download staged assets into the ignored local cache and verify SHA256."""
     artifact_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
-    for name in RELEASE_ARTIFACTS:
-        remote = github_assets.get(name)
-        if not _asset_has_integrity(remote):
-            _fail(f"GitHub Draft 缺少可校验附件：{name}")
-        path = artifact_dir / name
-        if path.exists():
-            same, reason = build._github_asset_matches_local(tag, path, remote)
-            if same:
-                print(f"  [复用] 本机镜像缓存已校验: {name} ({reason})")
-                paths.append(path)
-                continue
-            print(f"  [刷新] 本机镜像缓存不一致: {name} ({reason})")
-        _download_github_asset_resumable(
-            remote,
-            path,
-            version=tag.removeprefix("v"),
-            release_sha=release_sha,
-        )
-        same, reason = build._github_asset_matches_local(tag, path, remote)
-        if not same:
-            _fail(f"GitHub 附件下载后校验失败：{name}（{reason}）")
-        print(f"  [OK] GitHub 附件已下载并校验: {name} ({reason})")
-        paths.append(path)
+    session = _github_download_session()
+    try:
+        for name in RELEASE_ARTIFACTS:
+            paths.append(
+                _download_verified_github_artifact(
+                    tag,
+                    name,
+                    github_assets,
+                    artifact_dir,
+                    release_sha=release_sha,
+                    session=session,
+                )
+            )
+    finally:
+        session.close()
     return paths
 
 
@@ -1085,6 +1142,178 @@ def _prune_gitee_old_assets(version: str, token: str) -> None:
         _fail("Gitee 旧版本附件清理失败")
 
 
+def _gitee_artifact_is_reusable(
+    version: str,
+    path: Path,
+    github_asset: dict,
+    gitee_asset: dict | None,
+) -> bool:
+    """Return whether a verified local/GitHub asset matches Gitee by size."""
+    if not _asset_has_integrity(github_asset):
+        _fail(f"GitHub 附件缺少完整性元数据：{path.name}")
+    same_github, _reason = build._github_asset_matches_local(
+        f"v{version}", path, github_asset
+    )
+    try:
+        same_size = (
+            int((gitee_asset or {}).get("size") or 0)
+            == int(github_asset.get("size") or 0)
+            > 0
+        )
+    except (AttributeError, TypeError, ValueError):
+        same_size = False
+    return same_github and same_size
+
+
+def _upload_one_gitee_artifact(
+    version: str,
+    title: str,
+    body: str,
+    path: Path,
+    release_cache: dict,
+) -> str:
+    """Upload one verified artifact using Gitee's proxy-independent session."""
+    uploaded = build._gitee_upload_artifacts(
+        version,
+        title,
+        body,
+        [path],
+        release_cache=release_cache,
+        large_workers=1,
+        fail_fast=True,
+    )
+    if not uploaded:
+        _fail(f"Gitee Release 附件上传失败：{path.name}")
+    return path.name
+
+
+def _transfer_github_artifacts_to_gitee(
+    version: str,
+    title: str,
+    body: str,
+    github_assets: dict,
+    artifact_dir: Path,
+    *,
+    release_sha: str,
+    token: str | None = None,
+    release_cache: dict | None = None,
+    upload_workers: int = DEFAULT_GITEE_UPLOAD_WORKERS,
+) -> dict[str, str]:
+    """Pipeline verified GitHub downloads into bounded direct Gitee uploads."""
+    try:
+        upload_workers = int(upload_workers)
+    except (TypeError, ValueError):
+        _fail("Gitee 上传并发数必须是 1、2 或 3")
+    if upload_workers not in {1, 2, 3}:
+        _fail("Gitee 上传并发数必须是 1、2 或 3")
+
+    cache = release_cache or build._gitee_get_release_cache(
+        version,
+        title,
+        body,
+        token=token,
+        skip_ping=bool(token),
+    )
+    if cache is None:
+        _fail("无法创建或读取 Gitee Release")
+
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    tag = f"v{version}"
+    existing = cache.get("existing", {})
+    futures: dict[Future, Path] = {}
+    completed: set[Future] = set()
+    session = _github_download_session()
+
+    def record_upload(future: Future) -> None:
+        path = futures[future]
+        if future in completed:
+            return
+        try:
+            future.result()
+        except BaseException:
+            _write_release_state(
+                version,
+                release_sha,
+                "artifact_transfer",
+                "in_progress",
+                artifact=path.name,
+                gitee_status="failed",
+            )
+            raise
+        completed.add(future)
+        _write_release_state(
+            version,
+            release_sha,
+            "artifact_transfer",
+            "in_progress",
+            artifact=path.name,
+            gitee_status="complete",
+        )
+
+    print(
+        "  [流水线] GitHub 按环境代理下载；"
+        f"Gitee 直连上传 workers={upload_workers}"
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=upload_workers) as executor:
+            for name in RELEASE_ARTIFACTS:
+                path = _download_verified_github_artifact(
+                    tag,
+                    name,
+                    github_assets,
+                    artifact_dir,
+                    release_sha=release_sha,
+                    session=session,
+                    state_phase="artifact_transfer",
+                )
+                if _gitee_artifact_is_reusable(
+                    version,
+                    path,
+                    github_assets[name],
+                    existing.get(name),
+                ):
+                    print(f"  [复用] Gitee 已有同尺寸已验证产物: {name}")
+                    _write_release_state(
+                        version,
+                        release_sha,
+                        "artifact_transfer",
+                        "in_progress",
+                        artifact=name,
+                        gitee_status="complete",
+                    )
+                else:
+                    future = executor.submit(
+                        _upload_one_gitee_artifact,
+                        version,
+                        title,
+                        body,
+                        path,
+                        cache,
+                    )
+                    futures[future] = path
+                    _write_release_state(
+                        version,
+                        release_sha,
+                        "artifact_transfer",
+                        "in_progress",
+                        artifact=name,
+                        gitee_status="uploading",
+                    )
+
+                for ready in tuple(futures):
+                    if ready.done() and ready not in completed:
+                        record_upload(ready)
+
+            for future in as_completed(futures):
+                record_upload(future)
+    finally:
+        session.close()
+
+    if not build._verify_gitee_release_assets_complete(tag, github_assets, cache):
+        _fail("Gitee Release 附件完整性校验失败")
+    return _canonical_downloads_cn(version)
+
+
 def _publish_gitee_artifacts(
     version: str,
     title: str,
@@ -1093,6 +1322,7 @@ def _publish_gitee_artifacts(
     github_assets: dict,
     release_cache: dict | None = None,
     token: str | None = None,
+    upload_workers: int = DEFAULT_GITEE_UPLOAD_WORKERS,
 ) -> dict[str, str]:
     cache = release_cache or build._gitee_get_release_cache(
         version,
@@ -1112,21 +1342,9 @@ def _publish_gitee_artifacts(
     existing = cache.get("existing", {})
     for path in artifacts:
         github_asset = github_assets.get(path.name)
-        if not _asset_has_integrity(github_asset):
-            _fail(f"GitHub 附件缺少完整性元数据：{path.name}")
-        gitee_asset = existing.get(path.name)
-        same_github, _reason = build._github_asset_matches_local(
-            f"v{version}", path, github_asset
-        )
-        try:
-            same_size = (
-                int(gitee_asset.get("size") or 0)
-                == int(github_asset.get("size") or 0)
-                > 0
-            )
-        except (AttributeError, TypeError, ValueError):
-            same_size = False
-        if same_github and same_size:
+        if _gitee_artifact_is_reusable(
+            version, path, github_asset, existing.get(path.name)
+        ):
             print(f"  [复用] Gitee 已有同尺寸已验证产物: {path.name}")
             continue
         pending.append(path)
@@ -1138,7 +1356,7 @@ def _publish_gitee_artifacts(
             body,
             pending,
             release_cache=cache,
-            large_workers=1,
+            large_workers=upload_workers,
             fail_fast=True,
         )
         if not uploaded:
@@ -1460,17 +1678,6 @@ def finalize_release_local(
         _publish_github_release(tag)
         _write_release_state(version, release_sha, phase, "complete")
 
-        phase = "download_github_artifacts"
-        _write_release_state(version, release_sha, phase, "in_progress")
-        mirror_dir = build.DIST_DIR / "release-mirror" / tag
-        artifacts = _download_verified_github_artifacts(
-            tag,
-            github_assets,
-            mirror_dir,
-            release_sha=release_sha,
-        )
-        _write_release_state(version, release_sha, phase, "complete")
-
         phase = "gitee_tag"
         _write_release_state(version, release_sha, phase, "in_progress")
         _ensure_gitee_tag(tag, release_sha, gitee_token)
@@ -1490,15 +1697,18 @@ def finalize_release_local(
                 details={"keep_tag": tag},
             )
 
-        phase = "gitee_artifacts"
+        phase = "artifact_transfer"
         _write_release_state(version, release_sha, phase, "in_progress")
-        downloads_cn = _publish_gitee_artifacts(
+        mirror_dir = build.DIST_DIR / "release-mirror" / tag
+        downloads_cn = _transfer_github_artifacts_to_gitee(
             version,
             title,
             body,
-            artifacts,
             github_assets,
+            mirror_dir,
+            release_sha=release_sha,
             token=gitee_token,
+            upload_workers=DEFAULT_GITEE_UPLOAD_WORKERS,
         )
         _write_release_state(version, release_sha, phase, "complete")
 
