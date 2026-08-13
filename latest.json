@@ -1,29 +1,29 @@
 {
-  "version": "2.28",
-  "release_date": "2026-08-12",
+  "version": "2.28.1",
+  "release_date": "2026-08-13",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28.1/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28.1/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28.1/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "macos_dmg": {
-      "size": 33559797,
-      "sha256": "496861fd3cf69ffa437f85a25b14b029399ff368a606970cfc993c1eec226ce3"
+      "size": 33554862,
+      "sha256": "df9be0024198aa5185bce3cf7c2371952505b231da5adaf7fe85c4743c9af0ec"
     },
     "windows": {
-      "size": 35940403,
-      "sha256": "bd0fdf15dfcaf4c2d3d0180e4104d464164031467a36399bf6561998385910bc"
+      "size": 35982124,
+      "sha256": "fd77999b755250d483c65cfc83ce4d48787a4a84da2f6ee5f1ee038cbabb7b2e"
     },
     "macos": {
-      "size": 34429190,
-      "sha256": "d12b0728d55093abcbdbfd9953febb8ce4465f9c0cb88b50be4bbe19d7e8cb40"
+      "size": 34444184,
+      "sha256": "47aa051dc0322c0ee12427373f19501cd3d077c33eab057f5b9031ab5590e6a4"
     }
   },
-  "release_notes": "### 新增功能\n\n- **岗位复盘配置定位**：岗位人工反馈达到 5 条后，复盘建议会显示对应样本证据，并可直接定位到招聘需求、学历、经验、薪资、地点、技能或必要条件；定位只打开并高亮相关区域，岗位规则仍由用户核对后手工调整。",
+  "release_notes": "### 问题修复\n\n- **Gitee 更新连接**：修复系统配置代理时 Gitee 更新信息、版本说明和安装包下载可能仍经过代理的问题；Gitee 更新链路现在默认直连，国内镜像不可用时仍会自动尝试 GitHub。\n- **岗位配置悬停提示**：修复技能原文出处提示随鼠标移动不断叠加，以及离开列表或切换页面后没有及时消失的问题；必要条件列表的空白区域不再误显示上一条原文。",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28.1/BOSS_ResumeFilter.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28.1/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28.1/BOSS_ResumeFilter.dmg"
   }
 }
