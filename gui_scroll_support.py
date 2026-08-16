@@ -9,6 +9,38 @@ from typing import Any, Protocol
 from gui_app_shell import PageIndex
 
 
+def resolve_msg_send_double(objc: Any) -> Any:
+    """Return a 2-argument objc_msgSend that yields a C double.
+
+    arm64 has no ``objc_msgSend_fpret`` (doubles come back in the normal return
+    register), so Apple Silicon always takes the fallback branch. The fallback
+    must be built from ``objc_msgSend``'s *address*: handing ``CFUNCTYPE`` the
+    ``_FuncPtr`` object itself makes ctypes wrap it as a Python callback that
+    re-enters ``objc_msgSend`` under its 3-argument ``argtypes``, raising
+    ``TypeError`` on every scroll event. That error surfaces across a ctypes
+    callback boundary, so the caller's ``except`` clause never sees it, and the
+    repeated failures eventually abort the interpreter with
+    ``PyEval_RestoreThread: the GIL is released``.
+
+    Returns None when the symbol address cannot be resolved.
+    """
+    import ctypes
+
+    try:
+        objc.objc_msgSend_fpret.restype = ctypes.c_double
+        objc.objc_msgSend_fpret.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        return objc.objc_msgSend_fpret
+    except AttributeError:
+        address = ctypes.cast(objc.objc_msgSend, ctypes.c_void_p).value
+        if not address:
+            return None
+        return ctypes.CFUNCTYPE(
+            ctypes.c_double,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        )(address)
+
+
 class ScrollSupportHost(Protocol):
     """Explicit GUI surface used by cross-platform scroll routing."""
 
@@ -235,19 +267,9 @@ class ScrollSupport:
                 self.host.root.after(1000, self.setup_cocoa_scroll_hook)
                 return
 
-            try:
-                objc.objc_msgSend_fpret.restype = ctypes.c_double
-                objc.objc_msgSend_fpret.argtypes = [
-                    ctypes.c_void_p,
-                    ctypes.c_void_p,
-                ]
-                msg_send_double = objc.objc_msgSend_fpret
-            except AttributeError:
-                msg_send_double = ctypes.CFUNCTYPE(
-                    ctypes.c_double,
-                    ctypes.c_void_p,
-                    ctypes.c_void_p,
-                )(objc.objc_msgSend)
+            msg_send_double = resolve_msg_send_double(objc)
+            if msg_send_double is None:
+                return
             msg_send_is_kind = ctypes.CFUNCTYPE(
                 ctypes.c_bool,
                 ctypes.c_void_p,
