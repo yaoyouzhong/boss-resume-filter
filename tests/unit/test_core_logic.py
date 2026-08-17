@@ -21,6 +21,49 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
+def test_external_candidate_excel_uses_record_level_profile_fields():
+    """外部候选人的人工画像必须覆盖简历原文并完整进入 Excel。"""
+    from openpyxl import load_workbook
+
+    candidate = {
+        "geek_id": "ext-export-1",
+        "source": "external",
+        "source_channel": "内推",
+        "job_name": "Java 岗",
+        "name": "导出测试",
+        "summary": "年龄：40岁\n大专\n期望薪资：50K\n期望城市：北京\n工作经历：旧公司",
+        "match_score": 70,
+        "age": "35",
+        "exp_years": "8",
+        "education": "硕士",
+        "salary": "20-30K",
+        "city": "上海",
+        "job_status": "离职",
+        "gender": "女",
+        "school": "人工修正大学",
+        "company": "人工修正公司",
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "external.xlsx"
+        assert bossmaster.export_to_excel([candidate], str(target), preserve_input=True)
+        workbook = load_workbook(target, read_only=True, data_only=True)
+        try:
+            sheet = workbook["Java 岗"]
+            rows = list(sheet.iter_rows(values_only=True))
+            headers = list(rows[0])
+            values = dict(zip(headers, rows[1]))
+        finally:
+            workbook.close()
+    assert values["年龄"] == "35"
+    assert values["工作年限"] == "8"
+    assert values["学历"] == "硕士"
+    assert values["薪资"] == "20-30K"
+    assert values["求职状态"] == "离职"
+    assert values["城市"] == "上海"
+    assert values["学历明细"] == "人工修正大学"
+    assert values["最近公司"] == "人工修正公司"
+
+
 def test_recommend_listener_aggregates_packets_and_switches_to_fast_drain():
     """Listener data is enrichment only, but every queued response must be drained."""
     url = "https://www.zhipin.com/wapi/zpjob/geek/recommend/list"
@@ -4064,6 +4107,257 @@ def test_extract_summary_info_status_with_company():
     info = extract_summary_info("在职-阿里巴巴集团")
     assert info['job_status'] == '在职'
     assert info['company'] == '阿里巴巴集团'
+
+
+def test_extract_summary_info_full_resume_salary_formats():
+    """完整简历的薪资口径：元/月折算 K，年薪按 12 个月折算月薪。"""
+    from bossmaster import extract_summary_info
+    # 前程无忧导出格式：期望薪资以元/月标注，不能当作 K
+    info = extract_summary_info("求职意向\n期望薪资：10000-14999元/月\n到岗时间：随时")
+    assert info['salary'] == '10-15K'
+    # 年薪 X 万 → 月薪 K（14 万 / 12 ≈ 11.7K）
+    info = extract_summary_info("目前薪资：年薪  14万  人民币")
+    assert info['salary'] == '11.7K'
+    # 年收入 18 万 → 15K（整除时不保留小数）
+    info = extract_summary_info("年收入：18万元")
+    assert info['salary'] == '15K'
+    # 月薪以元标注
+    info = extract_summary_info("薪资要求：月薪 15000元")
+    assert info['salary'] == '15K'
+    # BOSS 的 K 口径不受影响
+    info = extract_summary_info("期望薪资：15-25K")
+    assert info['salary'] == '15-25K'
+
+
+def test_extract_summary_info_full_resume_salary_yuan_range_and_yearly_guard():
+    """元/月区间两端都要保留；年/月口径只看标签词和值本身，不被行前缀日期污染。"""
+    from bossmaster import extract_summary_info
+    # “期望月薪：4000-6000元/月” → 4-6K（此前只取紧邻“元”的上限 6K）
+    info = extract_summary_info("期望月薪：4000-6000元/月")
+    assert info['salary'] == '4-6K'
+    # 整行排版简历：标签前的“1992年5月/2年工作经验”不得触发年薪折算
+    info = extract_summary_info(
+        "王必强 男 | 2年工作经验 | 1992年5月 | 未婚 "
+        "月薪： 10001-15000元/月 目前状况：在职"
+    )
+    assert info['salary'] == '10-15K'
+    # 表格式写法“期望年薪 11.4万＝9,500元/月*12”：元/月值才是月薪（含千分位）
+    info = extract_summary_info("期望年薪： 11.4 万 9,500 元 / 月 * 12 个月")
+    assert info['salary'] == '9.5K'
+    # 年收入没有元/月单位时仍按年薪折算
+    info = extract_summary_info("目前年收入： 15 万元 ( 包含基本工资、补贴 )")
+    assert info['salary'] == '12.5K'
+    # “薪资：面议”“期待薪资：面议”标签识别
+    info = extract_summary_info("薪资：面议上班地点：南京")
+    assert info['salary'] == '面议'
+    info = extract_summary_info("期待薪资：面议")
+    assert info['salary'] == '面议'
+    # 标签值为空时不误抓下一行的职位名
+    info = extract_summary_info("目前薪资：\n期望薪资：\nIT研发总监")
+    assert info['salary'] == ''
+
+
+def test_extract_summary_info_full_resume_age_gender_education():
+    """完整简历的出生日期换算年龄、行内性别标签、专科归一为大专。"""
+    from bossmaster import extract_summary_info
+    from datetime import datetime
+    # 出生日期换算年龄（不到生日月份减一岁）
+    info = extract_summary_info("出生日期：1993年11月\n本科")
+    today = datetime.now()
+    expected = today.year - 1993 - (1 if today.month < 11 else 0)
+    assert info['age'] == str(expected)
+    # 姓名与性别同一行的排版（行首不是性别标签）
+    info = extract_summary_info("姓名：    丁小飞                         性别：   男")
+    assert info['gender'] == '男'
+    # 专科归一为大专（与筛选体系同档）
+    info = extract_summary_info("求职意向：java开发工程师\n学历：    专科")
+    assert info['education'] == '大专'
+    # 不合理的出生日期（年龄越界）不落字段
+    info = extract_summary_info("出生日期：2015年3月")
+    assert info['age'] == ''
+
+
+def test_extract_summary_info_full_resume_school_and_company():
+    """完整简历板块：毕业学校取学位最高的一条，最近公司取第一段工作经历。"""
+    from bossmaster import extract_summary_info
+    text = (
+        "工作经验\n"
+        "\n"
+        "2013/4―2017/5[4年1个月]\n"
+        "项目经理  | 联通事业部\n"
+        "亚信科技\n"
+        "通信/电信运营、增值服务 | 外资(非欧美) | 10000人以上\n"
+        "工作描述：负责项目管理\n"
+        "\n"
+        "教育经历\n"
+        "2006/9―2008/12\n"
+        "江南大学 \n"
+        "本科 | 计算机科学与技术\n"
+        "1998/7―2001/7\n"
+        "南京气象学院(现南京信息工程大学) \n"
+        "大专 | 电子科学与技术\n"
+    )
+    info = extract_summary_info(text)
+    assert info['school'] == '江南大学'  # 本科优先于大专
+    assert info['company'] == '亚信科技'  # 裸公司名（无“公司”后缀）
+    # 公司名与时间段同行 + 人数后缀剥离
+    text2 = (
+        "工作经验\n"
+        "2014 /5--至今： 文思海辉信息技术有限公司 （10000人以上）\n"
+        "岗位：研发组长\n"
+        "项目经验\n"
+        "2014 /5 --至今： 某项目\n"
+    )
+    info = extract_summary_info(text2)
+    assert info['company'] == '文思海辉信息技术有限公司'
+    # 学位都未标注时取毕业年份最晚的学校
+    text3 = (
+        "教育背景\n"
+        "2012.9－2015.7        山东科技职业学院       建筑工程管理\n"
+        "2017.9-2019.12        南京理工大学             计算机科学与技术\n"
+    )
+    info = extract_summary_info(text3)
+    assert info['school'] == '南京理工大学'
+    # BOSS 摘要没有板块结构：学校和公司板块提取不误触发
+    info = extract_summary_info("15-20K\n30 岁，6 年经验，本科\n离职-某某科技有限公司\n南京")
+    assert info['school'] == ''
+    assert info['company'] == '某某科技有限公司'  # 仍来自求职状态行
+
+
+def test_extract_summary_info_birthdate_variants():
+    """出生日期的真实变体：跨行表格值、生僻标签、无标签“生”写法、竖线分隔。"""
+    from datetime import datetime
+
+    from bossmaster import extract_summary_info
+
+    def expected_age(year: int, month: int) -> str:
+        today = datetime.now()
+        return str(today.year - year - (1 if today.month < month else 0))
+
+    # 表格简历：标签独占一行，值在下一行
+    info = extract_summary_info("出生日期\n1990.02\n本科")
+    assert info['age'] == expected_age(1990, 2)
+    # 出生年月 + 横杠分隔
+    info = extract_summary_info("出生年月\n1986-6-11")
+    assert info['age'] == expected_age(1986, 6)
+    # 标签字间带空格
+    info = extract_summary_info("生    日：1990年8月3日")
+    assert info['age'] == expected_age(1990, 8)
+    # 无标签的“X年X月生”
+    info = extract_summary_info("男|已婚|1989年9月生| 户口：江苏-南京")
+    assert info['age'] == expected_age(1989, 9)
+    # 竖线分隔的出生年月（BOSS 平台导出格式）
+    info = extract_summary_info("王必强 男 | 2年工作经验 | 1992年5月 | 未婚")
+    assert info['age'] == expected_age(1992, 5)
+    # 字间带空格的年龄标签（整行排版简历）
+    info = extract_summary_info("基本资料 年   龄： 28 婚姻状况： 保密")
+    assert info['age'] == '28'
+
+
+def test_extract_summary_info_school_label_and_standalone_line():
+    """毕业学校：显式标签（含跨行值）、板块缺失时的独占行兜底、长校名完整保留。"""
+    from bossmaster import extract_summary_info
+    info = extract_summary_info("毕业学校：南京晓庄学院\n本科")
+    assert info['school'] == '南京晓庄学院'
+    # 表格简历：标签与值跨行
+    info = extract_summary_info("毕业学校\n南京林业大学")
+    assert info['school'] == '南京林业大学'
+    # 复合校名不得在第一个“大学”处截断
+    info = extract_summary_info("毕业院校：东南大学成贤学院")
+    assert info['school'] == '东南大学成贤学院'
+    # 无教育板块时，独占一行的学校名兜底（正文长句中的校名不匹配）
+    info = extract_summary_info("自我评价\n勤奋踏实\n长春工程学院\n本科在读")
+    assert info['school'] == '长春工程学院'
+
+
+def test_extract_summary_info_company_variants():
+    """最近公司的真实变体：装饰性板块标题、公司标签、段首公司、就职于句式。"""
+    from bossmaster import extract_summary_info
+    # 装饰性板块标题 + 标签独占一行
+    info = extract_summary_info("◆◆工作经历\n所属公司\n高伟达软件股份有限公司\n项目名称：某系统")
+    assert info['company'] == '高伟达软件股份有限公司'
+    # 书名号板块 + 公司名称标签
+    info = extract_summary_info("【工作经历】（由近及远）\n公司名称： 文思海辉技术有限公司\n公司名称：上海京颐云杏网络技术有限公司")
+    assert info['company'] == '文思海辉技术有限公司'
+    # 实习及工作经历 + 段首直接列公司
+    info = extract_summary_info("实习及工作经历\n南京翔晟信息科技有限公司\n某电商公司")
+    assert info['company'] == '南京翔晟信息科技有限公司'
+    # 就职于句式优先取“至今”所在行
+    info = extract_summary_info(
+        "2016.5月到 2017年5月 就职于江苏欣网科技股份有限公司，负责开发。\n"
+        "2017年7月至今，就职于南京十分便民商务有限公司，主要职责为java软件工程师。"
+    )
+    assert info['company'] == '南京十分便民商务有限公司'
+    # 目前公司标签（整行排版简历）
+    info = extract_summary_info("胡家敏 男 目前公司： 江苏三六五网络股份有限公司 目前职位： 运维主管")
+    assert info['company'] == '江苏三六五网络股份有限公司'
+    # “应聘公司”是求职目标而非雇主，不得误提取
+    info = extract_summary_info("应聘公司：\n高伟达软件股份有限公司\n项目经验\n某项目")
+    assert info['company'] == ''
+    # 带前缀词的板块标题（“其他公司工作经历”）
+    info = extract_summary_info("其他公司工作经历\n2016.7-2016.10\n华苏科技有限公司\n实习生")
+    assert info['company'] == '华苏科技有限公司'
+    # 表格简历：多段时间连续排列、公司依次列在其后
+    info = extract_summary_info(
+        "实习及工作经历\n2012/7—2013/10\n2013/11-2014/12\n2014/12-至今\n"
+        "南京翔晟信息科技有限公司\n中软国际"
+    )
+    assert info['company'] == '南京翔晟信息科技有限公司'
+    # 无板块标题、时间段与公司同行：取结束时间最晚的一行（正序排版）
+    info = extract_summary_info(
+        "2013.7-2015.8 东风悦达起亚汽车有限公司 生产管理-物流工程师\n"
+        "2015.9-2017.7 南京联高物联网科技有限公司 测试+开发工程师"
+    )
+    assert info['company'] == '南京联高物联网科技有限公司'
+
+
+def test_extract_summary_info_company_position_prefix_and_open_end():
+    """“职位，公司”写法与“2015/09 –”开放式时间段：取最近一份公司。"""
+    from bossmaster import extract_summary_info
+    # 王枫简历布局：时间段独占一行，下一行是“职位, 公司”；最后一段只有起始日期
+    info = extract_summary_info(
+        "从业经历\n"
+        "2006/09-2007/12\n咨询顾问职位，文思创新信息技术有限公司\n"
+        "2008/01 – 2013/12\n高级咨询顾问职位, 北京高伟达信息技术有限公司\n"
+        "2014/11 – 2015/09\n顾问经理职位, 电讯盈科(广州)有限公司北京分公司\n"
+        "2015/09 –\n经理职位, 凯捷咨询\n"
+        "行业经验\n制造业\n摩托罗拉，海尔"
+    )
+    assert info['company'] == '凯捷咨询'
+
+
+def test_extract_summary_info_company_rejects_non_company_words():
+    """裸公司名防御：行业词独立成行、学校名都不得当成公司。"""
+    from bossmaster import extract_summary_info
+    # 行业词独立成行（表格单元格），后面的真实公司不能被它抢占
+    info = extract_summary_info(
+        "从业经历\n2015/09 –\n经理职位, 凯捷咨询\n行业经验\n金融\n华泰证券"
+    )
+    assert info['company'] == '凯捷咨询'
+    # 学校名结尾的短行不是公司
+    info = extract_summary_info("其他公司工作经历\n华苏科技有限公司\n金陵科技学院\n技能\nJava")
+    assert info['company'] == '华苏科技有限公司'
+    # “制造业”这类行业词不得接受
+    info = extract_summary_info("从业经历\n2014/11 – 2015/09\n顾问经理职位, 电讯盈科(广州)有限公司\n行业经验\n制造业")
+    assert info['company'] == '电讯盈科(广州)有限公司'
+
+
+def test_extract_summary_info_dom_salary_fallback_requires_short_first_line():
+    """完整简历的长首行里出现的数字区间不是薪资，DOM 兜底只对短首行生效。"""
+    from bossmaster import extract_summary_info
+    long_line = "简  历 个人信息 姓名：许敏 性别：女 出生日期： 1983年9月12日 团队规模50-150人 " + "补充内容" * 30
+    info = extract_summary_info(long_line)
+    assert info['salary'] == ''
+    # BOSS 摘要短首行不受影响
+    info = extract_summary_info("15-20K\n30 岁，6 年经验，本科")
+    assert info['salary'] == '15-20K'
+
+
+def test_extract_summary_info_bachelor_degree_alias():
+    """“学士学位”按本科识别。"""
+    from bossmaster import extract_summary_info
+    info = extract_summary_info("武汉纺织大学，信息与计算科学，学士学位")
+    assert info['education'] == '本科'
 
 
 # === Excel 评分拆解与简历评估的替代关系（regression: resume_adj=0 时不得回退显示 AI 调整值）===

@@ -95,7 +95,7 @@ _VISION_MODEL_KEYWORDS: tuple[str, ...] = (
     "qwen3.5", "qwen3.6", "qwen3.7",
     "glm-4v", "glm-5v",
     "kimi-k2.5", "kimi-k2.6",
-    "minimax-vl", "minimax-m2",
+    "minimax-vl", "minimax-m2", "minimax-m3",
     "step-1v", "step-2v",
     "gemini", "gemma",
     "deepseek-vl",

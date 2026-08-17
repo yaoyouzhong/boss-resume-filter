@@ -37,6 +37,14 @@ SUPPORTED_FOLLOWUP_STATUSES = {
     "未沟通", "已打招呼", "已回复", "待约面", "已约面", "不合适", "已归档",
 }
 SUPPORTED_FEEDBACK_STATUSES = {"合适", "误推", "误杀", "放弃"}
+EXTERNAL_CANDIDATE_SOURCE = "external"
+
+
+def is_external_candidate(candidate: dict[str, Any]) -> bool:
+    """Return whether one record came from an external-channel import."""
+    return (
+        str(candidate.get("source") or "").strip() == EXTERNAL_CANDIDATE_SOURCE
+    )
 
 
 @dataclass(frozen=True)
@@ -140,6 +148,9 @@ def filter_candidates_by_result_view(
     candidates: list[dict[str, Any]], view: str
 ) -> list[dict[str, Any]]:
     """Filter candidates by screening or review scope; scopes may overlap."""
+    if view == "外部导入":
+        # 与筛选结论正交的来源视图：外部候选人全量展示，含淘汰记录
+        return [candidate for candidate in candidates if is_external_candidate(candidate)]
     if view not in {"推荐候选人", "复核通过", "待复核", "淘汰记录"}:
         return list(candidates)
     if view == "复核通过":
@@ -180,6 +191,8 @@ def candidate_greet_skip_reason(candidate: dict[str, Any]) -> str:
     """Return why a candidate cannot enter the manual greeting queue."""
     if not candidate.get("geek_id"):
         return "缺少候选人标识"
+    if is_external_candidate(candidate):
+        return "外部渠道候选人，无法在 BOSS 上联系"
     if candidate.get("greet_confirmation_pending"):
         return "发送结果待核实"
     if candidate.get("greet_sent"):
@@ -237,6 +250,8 @@ def candidate_can_manual_approve_contact(candidate: dict[str, Any]) -> bool:
     """Return whether one explicit approval can resolve the current contact blocker."""
     if not candidate.get("geek_id"):
         return False
+    if is_external_candidate(candidate):
+        return False
     if candidate.get("blacklisted") or candidate.get("greet_sent"):
         return False
     if candidate.get("greet_confirmation_pending"):
@@ -275,6 +290,7 @@ def build_daily_candidate_actions(
         "已回复待推进": [],
         "待复核": [],
         "待完成简历评估": [],
+        "待外部联系": [],
         "待打招呼": [],
         "已打招呼待跟进": [],
         "待约面待推进": [],
@@ -333,6 +349,17 @@ def build_daily_candidate_actions(
             ))
             continue
 
+        if is_external_candidate(candidate) and followup == "未沟通":
+            channel = str(candidate.get("source_channel") or "原来源渠道").strip()
+            buckets["待外部联系"].append(_item(
+                45,
+                "待外部联系",
+                candidate,
+                f"候选人来自{channel}，尚未记录联系结果",
+                "通过来源渠道联系候选人，沟通后更新跟进状态。",
+            ))
+            continue
+
         if _should_greet(candidate):
             has_context = bool((candidate.get("greet_context") or {}).get("chat_start"))
             if has_context:
@@ -359,6 +386,7 @@ def build_daily_candidate_actions(
         "已回复待推进",
         "待复核",
         "待完成简历评估",
+        "待外部联系",
         "待打招呼",
         "已打招呼待跟进",
         "待约面待推进",
@@ -637,6 +665,8 @@ def _recommended_next_action(candidate: dict[str, Any], communication: str) -> s
         if communication == "已回复":
             return "查看回复并推进约面，随后更新跟进状态。"
         return "查看 BOSS 会话；有回复后更新跟进状态。"
+    if is_external_candidate(candidate):
+        return "通过来源渠道联系候选人，沟通后更新跟进状态。"
     return "加入联系清单，统一确认后发送。"
 
 

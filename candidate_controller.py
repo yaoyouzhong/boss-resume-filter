@@ -145,16 +145,22 @@ class CandidateController:
             nonlocal reverted_score
             rule_score = resolve_rule_score(persisted)
             llm_adjustment = _coerce_score(persisted.get("llm_adjustment", 0))
-            reverted_score = max(0, min(100, rule_score + llm_adjustment))
+            # 已淘汰记录冻结分数与推荐等级，撤回只清除简历评估状态
+            rejected = persisted.get("qualification_status") == "rejected"
             for field in resume_state_fields:
                 persisted.pop(field, None)
             persisted["rule_score"] = rule_score
-            persisted["match_score"] = reverted_score
-            persisted["recommend_level"] = recalc_recommend_level(reverted_score)
+            if rejected:
+                reverted_score = _coerce_score(persisted.get("match_score", 0))
+            else:
+                reverted_score = max(0, min(100, rule_score + llm_adjustment))
+                persisted["match_score"] = reverted_score
+                persisted["recommend_level"] = recalc_recommend_level(reverted_score)
             breakdown = persisted.get("score_breakdown")
             if isinstance(breakdown, dict):
                 breakdown.pop("resume_adjustment", None)
-                breakdown["total"] = reverted_score
+                if not rejected:
+                    breakdown["total"] = reverted_score
             updated_snapshot.update(persisted)
 
         def mutate_all(records: list[Candidate]) -> int:
@@ -174,6 +180,49 @@ class CandidateController:
             candidate.clear()
             candidate.update(updated_snapshot)
         return ResumeRevertOutcome(bool(updated), reverted_score, cleanup)
+
+    def reassign_job(
+        self,
+        candidate: Candidate,
+        updates: dict[str, Any],
+        cleared_fields: Iterable[str],
+        *,
+        validate_latest: Callable[[list[Candidate]], None] | None = None,
+    ) -> bool:
+        """Persist a job reassignment: apply updates and drop stale fields.
+
+        The identity is resolved before ``updates`` changes ``job_uuid``;
+        the in-memory candidate is updated with the same mutation.
+        """
+        identity = self.identity(candidate)
+
+        def mutate(persisted: Candidate) -> None:
+            persisted.update(updates)
+            for field in cleared_fields:
+                persisted.pop(field, None)
+
+        if validate_latest is None:
+            updated = self._persistence.update_records(
+                lambda persisted: self.identity(persisted) == identity,
+                mutate,
+                self._candidate_path,
+            )
+        else:
+            def mutate_all(records: list[Candidate]) -> int:
+                validate_latest(records)
+                for persisted in records:
+                    if self.identity(persisted) == identity:
+                        mutate(persisted)
+                        return 1
+                return 0
+
+            updated = self._persistence.mutate_all(
+                mutate_all,
+                self._candidate_path,
+            )
+        if updated:
+            mutate(candidate)
+        return bool(updated)
 
     def blacklist(
         self,

@@ -207,18 +207,22 @@ def clear_candidate_resume_state(candidate: dict[str, Any]) -> None:
 
     rule_score = _resolve_rule_score(candidate)
     llm_adjustment = candidate.get("llm_adjustment", 0) or 0
+    for field in RESUME_STATE_FIELDS:
+        candidate.pop(field, None)
+    candidate["rule_score"] = rule_score
+    breakdown = candidate.get("score_breakdown")
+    if isinstance(breakdown, dict):
+        breakdown.pop("resume_adjustment", None)
+    if candidate.get("qualification_status") == "rejected":
+        # 已淘汰记录冻结分数与推荐等级，仅清除简历评估状态
+        return
     try:
         reverted_score = max(0, min(100, rule_score + int(llm_adjustment)))
     except (TypeError, ValueError):
         reverted_score = rule_score
-    for field in RESUME_STATE_FIELDS:
-        candidate.pop(field, None)
-    candidate["rule_score"] = rule_score
     candidate["match_score"] = reverted_score
     candidate["recommend_level"] = _recalc_recommend_level(reverted_score)
-    breakdown = candidate.get("score_breakdown")
     if isinstance(breakdown, dict):
-        breakdown.pop("resume_adjustment", None)
         breakdown["total"] = reverted_score
 
 

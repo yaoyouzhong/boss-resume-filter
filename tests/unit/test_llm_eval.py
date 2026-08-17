@@ -1117,6 +1117,56 @@ def test_evaluate_with_resume_no_dimension_scores_keeps_round1(mock_call, mock_s
     assert candidate['llm_dimension_scores'] == round1_dims
 
 
+# === 已淘汰候选人的分数冻结（AI 调整不推翻规则淘汰结论）===
+
+@patch('llm_eval.time.sleep')
+@patch('llm_eval._call_llm_api')
+def test_batch_keeps_rejected_candidate_score_frozen(mock_call, mock_sleep):
+    """已淘汰候选人跑一次评估：只记录元数据与复核结论，分数/等级/拆解全部冻结。"""
+    mock_call.return_value = LLMEvalResult(
+        success=True, adjustment=15, reason="技能高度匹配", model="m",
+    )
+    candidates = [{
+        'name': '丁小飞', 'match_score': 0, 'rule_score': 42,
+        'recommend_level': '未通过', 'qualification_status': 'rejected',
+        'qualification_reasons': ['学历不足：要求本科'], 'summary': '2年Java',
+        'score_breakdown': {'base': 25, 'skill': 12, 'experience': 5, 'education': 0,
+                            'preferred': 0, 'total': 42},
+    }]
+    result = quiet_evaluate_batch(candidates, "岗位要求", {'base_url': 'x', 'model': 'y'}, "key")
+    c = result[0]
+    assert c['llm_evaluated'] is True
+    assert c['llm_adjustment'] == 15
+    assert c['match_score'] == 0, "淘汰记录的匹配分必须冻结为 0"
+    assert c['recommend_level'] == '未通过'
+    assert c['qualification_status'] == 'rejected'
+    assert c['qualification_reasons'] == ['学历不足：要求本科'], "淘汰原因不被 AI 复核改写"
+    assert c['score_breakdown']['total'] == 42, "拆解保持参考规则分，不叠加 AI 调整"
+
+
+@patch('llm_eval.time.sleep')
+@patch('llm_eval._call_llm_api')
+def test_evaluate_with_resume_keeps_rejected_candidate_score_frozen(mock_call, mock_sleep):
+    """已淘汰候选人做简历评估：记录评估意见，但不改写分数与推荐等级。"""
+    mock_call.return_value = LLMEvalResult(
+        success=True, adjustment=15, reason="技能高度匹配", model="m",
+    )
+    candidate = {
+        'name': '丁小飞', 'match_score': 0, 'rule_score': 42,
+        'recommend_level': '未通过', 'qualification_status': 'rejected',
+        'summary': '2年Java',
+        'score_breakdown': {'base': 25, 'skill': 12, 'experience': 5, 'education': 0,
+                            'preferred': 0, 'total': 42},
+    }
+    result = evaluate_with_resume(candidate, "简历文本", "岗位", {'base_url': 'x', 'model': 'y'}, "key")
+    assert result.success is True
+    assert candidate['resume_eval_adjustment'] == 15
+    assert candidate['resume_eval_reason'] == "技能高度匹配"
+    assert candidate['match_score'] == 0, "淘汰记录的匹配分必须冻结为 0"
+    assert candidate['recommend_level'] == '未通过'
+    assert candidate['score_breakdown']['total'] == 42
+
+
 # === evaluate_batch 基线读取（regression: 张力1——用真实 rule_score，不读 match_score；有简历评估不改写最终分）===
 
 @patch('llm_eval.time.sleep')

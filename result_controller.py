@@ -93,6 +93,22 @@ class ResultController:
         return prepare_result_view(candidates, query)
 
 
+def candidate_result_score(candidate: Mapping[str, Any]) -> int:
+    """Return the score shown, sorted, and searched in the result table."""
+    try:
+        match_score = int(candidate.get("match_score") or 0)
+    except (TypeError, ValueError):
+        match_score = 0
+    if candidate.get("qualification_status") == "rejected" and not match_score:
+        try:
+            reference_score = int(candidate.get("rule_score") or 0)
+        except (TypeError, ValueError):
+            reference_score = 0
+        if reference_score > 0:
+            return reference_score
+    return match_score
+
+
 def result_cache_key(path: Path, query: ResultQuery) -> tuple[Any, ...]:
     """Return the file and filter fingerprint used to skip unchanged rebuilds."""
     fingerprint: tuple[float, int] | None = None
@@ -142,7 +158,7 @@ def prepare_result_view(
     view_candidates = filter_candidates_by_result_view(scoped, query.result_view)
     sorted_candidates = sorted(
         view_candidates,
-        key=lambda candidate: candidate.get("match_score", 0),
+        key=candidate_result_score,
         reverse=True,
     )
     rows: list[ResultRow] = []
@@ -202,7 +218,7 @@ def candidate_query_match(
         return None
     name = str(candidate.get("name") or "").lower()
     gender = candidate_presenter.candidate_gender_display(candidate).lower()
-    score_text = str(candidate.get("match_score") or "").lower()
+    score_text = str(candidate_result_score(candidate)).lower()
     level = str(candidate.get("recommend_level") or "").lower()
     status = " ".join(
         filter(
@@ -290,6 +306,7 @@ def _build_result_row(
         or geek_id in evaluation_results
         or candidate.get("llm_evaluated")
         or candidate.get("llm_error")
+        or candidate.get("resume_file")
     )
     rejected = candidate.get("qualification_status") == "rejected"
     if score < SCORE_THRESHOLD_PASS and not keep_low_score and not rejected:
@@ -305,11 +322,15 @@ def _build_result_row(
     salary, experience = candidate_presenter.parse_salary_experience(
         candidate.get("summary"),
         candidate.get("structured"),
+        record=candidate,
     )
     education, age, job_status, school, company = (
         candidate_presenter.extract_candidate_extra_fields(candidate)
     )
     extra_fields = education, age, job_status, school, company
+    # 淘汰记录的 match_score 按存储约定固定为 0；有参考规则分时展示参考分，
+    # 让淘汰行的技能/经验匹配度可见；排序和搜索复用同一展示分。
+    display_score = candidate_result_score(candidate)
     return ResultRow(
         candidate=candidate,
         values=(
@@ -318,7 +339,7 @@ def _build_result_row(
             experience,
             salary,
             candidate.get("skill_match_ratio", ""),
-            score,
+            display_score,
             _ai_adjustment_text(candidate),
             decision.screening_result,
             status.display,

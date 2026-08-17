@@ -719,11 +719,278 @@ def _resolve_job_name(requested_job: str, job_rules: dict[str, Any]) -> str | No
     return None
 
 
+def _format_salary_k(value: float) -> str:
+    """格式化 K 为单位的薪资金额：整数去小数点，否则保留一位小数。"""
+    rounded = round(value, 1)
+    if rounded == int(rounded):
+        return str(int(rounded))
+    return str(rounded)
+
+
+_RESUME_SCHOOL_RE = re.compile(r'[一-龥]{2,12}?(?:大学|学院|学校)(?![一-龥])')
+_RESUME_SCHOOL_ANCHORED_RE = re.compile(
+    r'([一-龥]{2,20}(?:大学|学院|学校))(?=[\s　（(|｜、，。：:；;/／]|$)'
+)
+_RESUME_DEGREE_RANK = {
+    '博士': 6, '硕士': 5, '本科': 4, '大专': 3, '专科': 3, '高中': 2, '中专': 1,
+}
+_RESUME_SECTION_STOP_WORDS = (
+    r'工作经验|工作经历|任职经历|工作背景|实习及工作经历|从业经历|实习经历|'
+    r'教育[/／]?(?:经历|背景|培训)|'
+    r'项目经验|项目经历|求职意向|行业经验|技能|自我评价|培训经历|证书|语言|附件'
+)
+# 板块标题允许“其他/相关/主要（公司）”前缀（如“其他公司工作经历”），
+# 但必须是行首锚定：“2年工作经验”这类正文不能当成板块标题
+_RESUME_SECTION_PREFIX = r'(?:其他|相关|主要)?(?:公司)?'
+_RESUME_SECTION_STOP_RE = re.compile(
+    rf'^{_RESUME_SECTION_PREFIX}(?:{_RESUME_SECTION_STOP_WORDS})'
+)
+_RESUME_WORK_SECTION_RE = re.compile(
+    rf'^{_RESUME_SECTION_PREFIX}'
+    r'(?:工作经验|工作经历|任职经历|工作背景|实习及工作经历|从业经历|实习经历)'
+)
+_RESUME_EDU_SECTION_RE = re.compile(
+    rf'^{_RESUME_SECTION_PREFIX}教育[/／]?(?:经历|背景|培训)'
+)
+_RESUME_HEADER_DECORATION = '◆●◎■□▲△○◇★☆§【】[]（）()<>《》-—=*#·．.、/／\\|｜ \t　'
+_RESUME_DATE_RE = re.compile(r'(?:19|20)\d{2}\s*[/年.\-]\s*\d{1,2}')
+_RESUME_COMPANY_SUFFIX_RE = re.compile(
+    r'[一-龥（）()]{2,30}?(?:有限责任公司|股份有限公司|集团有限公司|有限公司|集团|公司)'
+)
+# “公司性质：上市公司”这类泛称不是公司名
+_RESUME_COMPANY_GENERIC = {
+    '上市公司', '股份公司', '集团公司', '有限公司', '某公司', '某某公司',
+    '某电商公司', '国企公司', '央企公司', '外企公司', '民营公司', '私营公司',
+}
+# 表格简历里独立成单元格的行业词，不是公司名
+_RESUME_INDUSTRY_WORDS = {
+    '金融', '汽车', '咨询', '保险', '银行', '证券', '互联网', '教育',
+    '医疗', '物流', '电商', '软件', '通信', '能源', '传媒', '零售',
+}
+
+
+def _company_suffix_name(value: str) -> str:
+    """在行内找第一个非泛称的带后缀公司名（剥离“就职于/在”等引导词）。"""
+    for match in _RESUME_COMPANY_SUFFIX_RE.finditer(value):
+        name = re.sub(r'^(?:就职于|任职于|在|于)', '', match.group(0).strip('（）() '))
+        if name and name not in _RESUME_COMPANY_GENERIC:
+            return name
+    return ""
+
+
+_RESUME_COMPANY_ANCHORED_RE = re.compile(
+    r'^[ \t　，。：:；;、\-–—~]*(?:就职于|任职于|在)?'
+    r'([一-龥（）()]{2,30}?(?:有限责任公司|股份有限公司|集团有限公司|有限公司|集团|公司))'
+)
+_RESUME_COMPANY_LABEL_RE = re.compile(
+    r'(?<!应聘)(?:所属公司|目前公司|公司名称|所在单位|单位名称|公司|单位)\s*[：:]\s*([^\n]{0,60})'
+)
+_RESUME_COMPANY_LABEL_WORDS = {
+    '所属公司', '目前公司', '公司名称', '所在单位', '单位名称', '公司', '单位',
+}
+
+
+def _resume_header_text(line: str) -> str:
+    """剥掉板块标题的装饰字符（◆◆、【】等），返回可匹配的正文开头。"""
+    return line.strip(_RESUME_HEADER_DECORATION).strip()
+
+
+def _company_from_line(value: str) -> str:
+    """从一行文本中提取公司名：优先带后缀的名称，其次简短的裸公司名。"""
+    # “顾问经理职位, 电讯盈科”这类“职位，公司”写法：取职位标签后的部分
+    position_match = re.match(r'^[^，,]{1,12}?职位[，,]\s*(?P<tail>.+)$', value)
+    if position_match:
+        value = position_match.group('tail').strip()
+    company = _company_suffix_name(value)
+    if company:
+        return company
+    if (
+        2 <= len(value) <= 20
+        and not re.search(r'[|｜/／、，。：:；;]', value)
+        and not re.search(r'描述|职责|岗位|职位|行业|工作|人数|规模|汇报|下属|项目', value)
+        and not re.search(r'(?:大学|学院|学校)$', value)  # 学校名不是公司
+        and value not in _RESUME_INDUSTRY_WORDS  # “金融”这类独立成行的行业词
+        and not (value.endswith('业') and len(value) <= 4)  # “制造业”这类行业词
+    ):
+        return value
+    return ""
+
+
+def _extract_school_from_resume(text: str) -> str:
+    """尽力从完整简历中提取毕业学校。
+
+    依次尝试：显式标签（毕业学校/毕业院校，值可能与标签跨行）→ 教育板块
+    （板块内多条记录取学位最高、学位相同取毕业年份最晚的一条）→ 独占一行
+    的学校名兜底。正文长句中嵌入的校名不匹配，避免把客户/项目名称当学校。
+    """
+    if not text:
+        return ""
+    label_match = re.search(
+        r'毕业(?:学校|院校)\s*[：:]?\s*(?:\n[ \t]*)?' + _RESUME_SCHOOL_ANCHORED_RE.pattern,
+        text,
+    )
+    if label_match:
+        return label_match.group(1)
+    lines = text.split('\n')
+    start = None
+    for i, line in enumerate(lines):
+        if _RESUME_EDU_SECTION_RE.search(_resume_header_text(line)):
+            start = i + 1
+            break
+    if start is not None:
+        segment: list[str] = []
+        for line in lines[start:]:
+            stripped = line.strip()
+            if _RESUME_SECTION_STOP_RE.search(_resume_header_text(stripped)):
+                break
+            if stripped:
+                segment.append(stripped)
+        best_school, best_rank, best_year = "", -1, -1
+        for idx, line in enumerate(segment):
+            for match in _RESUME_SCHOOL_RE.finditer(line):
+                school = match.group(0)
+                # 学位通常标注在学校同一行或紧随其后的一两行
+                block = '\n'.join(segment[idx:idx + 3])
+                rank = 0
+                for word, word_rank in _RESUME_DEGREE_RANK.items():
+                    if word in block:
+                        rank = max(rank, word_rank)
+                years = [int(y) for y in re.findall(r'(?:19|20)\d{2}', block)]
+                end_year = max(years) if years else 0
+                if rank > best_rank or (rank == best_rank and end_year >= best_year):
+                    best_school, best_rank, best_year = school, rank, end_year
+        if best_school:
+            return best_school
+    # 板块缺失时的兜底：独占一行（可带一个专业词）的学校名
+    standalone = re.search(
+        r'^[ \t]*([一-龥]{2,20}(?:大学|学院|学校))'
+        r'(?:[ \t　]+[一-龥（）()A-Za-z]{2,20})?[ \t]*$',
+        text,
+        re.MULTILINE,
+    )
+    if standalone:
+        return standalone.group(1)
+    return ""
+
+
+def _extract_company_from_resume(text: str) -> str:
+    """尽力从完整简历中提取最近一家公司。
+
+    依次尝试：显式公司标签（“公司：/所属公司/目前公司”等，值可跨行；排除
+    “应聘公司”）→ 工作经验板块内第一段经历（时间段锚定，兼容装饰性标题与
+    段首直接列公司的写法）→ “就职于 X”句式（优先“至今”所在行）。不做全文
+    公司名扫描：正文里的公司名可能是客户或项目名称。
+    """
+    if not text:
+        return ""
+    lines = text.split('\n')
+    # 1) 显式公司标签
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        label_match = _RESUME_COMPANY_LABEL_RE.search(stripped)
+        label_value = label_match.group(1).strip() if label_match else ""
+        if label_value:
+            company = _company_from_line(label_value)
+            if company:
+                return company
+        elif label_match or stripped in _RESUME_COMPANY_LABEL_WORDS:
+            # 标签后无值（含表格单元格独占一行）：值在下一非空行
+            for next_line in lines[i + 1:i + 4]:
+                value = next_line.strip()
+                if not value:
+                    continue
+                company = _company_from_line(value)
+                if company:
+                    return company
+                break
+    # 2) 工作经验板块：时间段锚定经历，取结束时间最晚的一段（正序/倒序排版通用）
+    start = None
+    for i, line in enumerate(lines):
+        if _RESUME_WORK_SECTION_RE.search(_resume_header_text(line)):
+            start = i + 1
+            break
+    if start is not None:
+        section: list[str] = []
+        for line in lines[start:]:
+            stripped = line.strip()
+            if _RESUME_SECTION_STOP_RE.search(_resume_header_text(stripped)):
+                break
+            if stripped:
+                section.append(stripped)
+        # 段首直接列公司（时间段之前的写法），仅限短行——长句是职责描述
+        if section and len(section[0]) <= 30:
+            company = _company_from_line(section[0])
+            if company and not _RESUME_DATE_RE.search(section[0]):
+                return company
+        best: tuple[int, str] | None = None
+        for idx, line in enumerate(section):
+            if not _RESUME_DATE_RE.search(line):
+                continue
+            # 时间段残留部分只认带后缀的公司名：剥离日期后剩下的
+            # “―[4年1个月]”这类区间说明不是公司
+            company = _company_suffix_name(_RESUME_DATE_RE.sub('', line, count=2))
+            if not company:
+                # 表格简历会把多段时间连续排在前列、公司依次列在其后：
+                # 窗口内跳过其他时间段行，取第一个可识别的公司名
+                for next_line in section[idx + 1:idx + 7]:
+                    if _RESUME_DATE_RE.search(next_line):
+                        continue
+                    company = _company_from_line(next_line)
+                    if company:
+                        break
+            if not company:
+                continue
+            years = [int(y) for y in re.findall(r'(?:19|20)\d{2}', line)]
+            # “2015/09 –”这类只有破折号没有结束日期的写法等同于“至今”
+            end_year = 9999 if '至今' in line or re.search(r'[-–—~]\s*$', line) else (max(years) if years else 0)
+            if best is None or end_year >= best[0]:
+                best = (end_year, company)
+        if best:
+            return best[1]
+    # 3) “就职于 X”句式：优先“至今”所在行（最近一份），否则取第一处
+    employed: list[tuple[bool, str]] = []
+    for line in lines:
+        if '就职于' not in line:
+            continue
+        match = re.search(
+            r'就职于\s*([一-龥（）()]{2,30}?(?:有限责任公司|股份有限公司|集团有限公司|有限公司|集团|公司))',
+            line,
+        )
+        if match:
+            employed.append(('至今' in line, match.group(1).strip('（）() ')))
+    for current, company in employed:
+        if current:
+            return company
+    if employed:
+        return employed[0][1]
+    # 4) 全文兜底：时间段与公司名同行的行（无板块标题的简历），公司必须
+    # 紧跟时间段（排除“日本leoplace保险公司财产系统”这类项目描述行），
+    # 取结束时间最晚的一行
+    best = None
+    for line in lines:
+        if not _RESUME_DATE_RE.search(line):
+            continue
+        tail = _RESUME_DATE_RE.sub('', line, count=2)
+        anchored = _RESUME_COMPANY_ANCHORED_RE.search(tail)
+        if not anchored:
+            continue
+        company = anchored.group(1).strip('（）() ').lstrip('在')
+        if not company or company in _RESUME_COMPANY_GENERIC:
+            continue
+        years = [int(y) for y in re.findall(r'(?:19|20)\d{2}', line)]
+        end_year = 9999 if '至今' in line or re.search(r'[-–—~]\s*$', line) else (max(years) if years else 0)
+        if best is None or end_year >= best[0]:
+            best = (end_year, company)
+    return best[1] if best else ""
+
+
 def extract_summary_info(text: str) -> dict[str, Any]:
     """从候选人摘要中提取结构化信息
 
-    同时支持 DOM 格式（"15-20K\\n30 岁，6 年经验"）
-    和 API 标签格式（"期望薪资：15-25K\\n年龄：30\\n经验：5年"）
+    同时支持 DOM 格式（"15-20K\\n30 岁，6 年经验"）、
+    API 标签格式（"期望薪资：15-25K\\n年龄：30\\n经验：5年"）
+    和完整简历标签格式（"目前薪资：年薪 14 万"、"出生日期：1993年11月"、
+    教育/工作板块中的学校与公司名）。
     """
     info: dict[str, Any] = {
         'salary': '',
@@ -734,7 +1001,8 @@ def extract_summary_info(text: str) -> dict[str, Any]:
         'job_status': '',
         'company': '',
         'city': '',
-        'skills': ''
+        'skills': '',
+        'school': ''
     }
 
     if not text:
@@ -752,10 +1020,13 @@ def extract_summary_info(text: str) -> dict[str, Any]:
             if '面议' in val:
                 info['salary'] = '面议'
             else:
-                # 15K-25K / 15-20K / 15-25（K 可选）
+                # 15K-25K / 15-20K / 15-25（K 可选）；10000-14999元/月 按元折算
                 m = re.search(r'(\d+(?:\.\d+)?)\s*[Kk]?\s*[-~～\-]\s*(\d+(?:\.\d+)?)\s*[Kk]?', val)
                 if m:
-                    info['salary'] = f"{m.group(1)}-{m.group(2)}K"
+                    lo, hi = float(m.group(1)), float(m.group(2))
+                    if lo >= 1000:  # 元/月口径折算为 K
+                        lo, hi = lo / 1000, hi / 1000
+                    info['salary'] = f"{_format_salary_k(lo)}-{_format_salary_k(hi)}K"
                 else:
                     # 15-25薪
                     m = re.search(r'(\d+)\s*薪\s*[-~～\-]\s*(\d+)\s*薪', val)
@@ -777,38 +1048,111 @@ def extract_summary_info(text: str) -> dict[str, Any]:
                                 info['salary'] = '面议'
             break
 
-    # DOM 格式兜底
+    # 完整简历的薪资标签（BOSS 摘要不会出现）：目前薪资/年收入/年薪/月薪
     if not info['salary']:
+        for line in lines:
+            stripped = line.strip()
+            label_match = re.search(
+                r'(目前薪资|期待薪资|年收入|期望年薪|年薪|月薪|薪资要求|薪资待遇|薪资)\s*[：:]\s*(.+)',
+                stripped,
+            )
+            if not label_match:
+                continue
+            label_word = label_match.group(1)
+            val = label_match.group(2).strip()
+            if '面议' in val:
+                info['salary'] = '面议'
+                break
+            # 年/月口径只看标签词和值本身：整行排版简历的行前缀里可能有
+            # “1992年5月”这类日期，不能拿来判断年薪；值里明确带“元/月”
+            # 单位时以元口径为准（“期望年薪 11.4万＝9,500元/月*12”这类
+            # 表格式写法里元/月值才是月薪，万口径只是年薪换算说明）
+            monthly_unit = bool(re.search(r'元\s*/\s*月', val))
+            yearly = ('年' in label_word or '年薪' in val or bool(re.search(r'/\s*年', val))) and not monthly_unit
+            lo_k: float | None = None
+            hi_k: float | None = None
+            yuan_range = re.search(r'(\d[\d,]{2,7})\s*[-~～—–\-]\s*(\d[\d,]{2,7})\s*元', val)
+            yuan_single = re.search(r'(\d[\d,]{3,7})\s*元', val) if not yuan_range else None
+            wan_match = re.search(r'([\d.]+)\s*[万萬]', val)
+            if monthly_unit and (yuan_range or yuan_single):
+                if yuan_range:
+                    lo_k = float(yuan_range.group(1).replace(',', '')) / 1000
+                    hi_k = float(yuan_range.group(2).replace(',', '')) / 1000
+                else:
+                    lo_k = float(yuan_single.group(1).replace(',', '')) / 1000
+            elif wan_match:
+                lo_k = float(wan_match.group(1)) * 10  # 万 → K
+            elif yuan_single:
+                lo_k = float(yuan_single.group(1).replace(',', '')) / 1000
+            else:
+                k_match = re.search(r'(\d+(?:\.\d+)?)\s*[Kk千]', val)
+                if k_match:
+                    lo_k = float(k_match.group(1))
+            if lo_k is None:
+                continue  # 标签存在但数值无法识别，尝试下一行其他标签
+            if yearly:
+                lo_k = lo_k / 12  # 年薪按 12 个月折算月薪
+                if hi_k is not None:
+                    hi_k = hi_k / 12
+            info['salary'] = (
+                f"{_format_salary_k(lo_k)}-{_format_salary_k(hi_k)}K"
+                if hi_k is not None and hi_k != lo_k
+                else f"{_format_salary_k(lo_k)}K"
+            )
+            break
+
+    # DOM 格式兜底（仅适用于 BOSS 摘要的短首行；完整简历的长首行里
+    # 出现的数字区间不是薪资，直接跳过）
+    if not info['salary'] and len(first_line) <= 40:
         if '面议' in first_line:
             info['salary'] = '面议'
         else:
             salary_match = re.search(r'(\d+(?:\.\d+)?)\s*[Kk]?\s*[-~～\-]\s*(\d+(?:\.\d+)?)\s*[Kk]?', first_line)
             if salary_match:
-                info['salary'] = f"{salary_match.group(1)}-{salary_match.group(2)}K"
+                lo, hi = float(salary_match.group(1)), float(salary_match.group(2))
+                if lo >= 1000:  # 元/月口径折算为 K
+                    lo, hi = lo / 1000, hi / 1000
+                info['salary'] = f"{_format_salary_k(lo)}-{_format_salary_k(hi)}K"
             else:
                 salary_match = re.search(r'(\d+(?:\.\d+)?)[Kk千]', first_line)
                 if salary_match:
                     info['salary'] = salary_match.group(1) + 'K'
 
     # ---- 性别 ----
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("性别：") or stripped.startswith("性别:"):
-            info['gender'] = normalize_candidate_gender(stripped) or ''
-            break
+    # 行首标签（BOSS 摘要）或行内标签（完整简历“姓名：X  性别：男”排版）
+    gender_match = re.search(r'性别\s*[：:]\s*(\S+)', text)
+    if gender_match:
+        info['gender'] = normalize_candidate_gender(f"性别：{gender_match.group(1)}") or ''
 
     # ---- 年龄 ----
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("年龄："):
-            m = re.search(r'(\d+)', stripped[len("年龄："):])
-            if m:
-                info['age'] = m.group(1)
-            break
+    # 标签允许字间空格（“年   龄：28”），位置不限行首（整行排版的简历）
+    age_label = re.search(r'年\s*龄\s*[：:]\s*(\d{1,2})', text)
+    if age_label:
+        info['age'] = age_label.group(1)
     if not info['age']:
         age_match = re.search(r'(\d+)\s*岁', text)
         if age_match:
             info['age'] = age_match.group(1)
+    if not info['age']:
+        # 完整简历的出生日期：标签与值可能跨行（表格单元格逐行导出），
+        # 也可能是“1989年9月生”或竖线分隔的“| 1992年5月 |”写法
+        birth_patterns = (
+            r'(?:出生日期|出生年月|生\s*日)\s*[：:]?\s*(?:\n[ \t]*)?((?:19|20)\d{2})\s*[年/.\-]\s*(\d{1,2})',
+            r'((?:19[5-9]\d|200\d))\s*年\s*(\d{1,2})\s*月\s*生',
+            r'[|｜]\s*((?:19[5-9]\d|200\d))\s*年\s*(\d{1,2})\s*月\s*(?=[|｜])',
+        )
+        for pattern in birth_patterns:
+            birth_match = re.search(pattern, text)
+            if not birth_match:
+                continue
+            birth_year, birth_month = int(birth_match.group(1)), int(birth_match.group(2))
+            if not 1 <= birth_month <= 12:
+                continue
+            today = datetime.now()
+            computed_age = today.year - birth_year - (1 if today.month < birth_month else 0)
+            if 16 <= computed_age <= 80:
+                info['age'] = str(computed_age)
+                break
 
     # ---- 工作经验年限 ----
     for line in lines:
@@ -826,10 +1170,11 @@ def extract_summary_info(text: str) -> dict[str, Any]:
             info['exp_years'] = str(parsed_exp)
 
     # ---- 学历 ----
-    edu_keywords = ['博士', '硕士', '本科', '大专', '高中', '中专']
+    edu_keywords = ['博士', '硕士', '本科', '学士', '大专', '专科', '高中', '中专']
     for edu in edu_keywords:
         if edu in text:
-            info['education'] = edu
+            # 专科与大专同档、学士即本科，统一归一为系统通用表述
+            info['education'] = {'专科': '大专', '学士': '本科'}[edu] if edu in ('专科', '学士') else edu
             break
 
     # ---- 求职状态和公司 ----
@@ -850,6 +1195,12 @@ def extract_summary_info(text: str) -> dict[str, Any]:
         if status_match:
             info['job_status'] = status_match.group(1)
             info['company'] = status_match.group(2).strip()
+
+    # ---- 毕业学校与最近公司（完整简历板块格式；BOSS 摘要无板块结构，保持空值） ----
+    if not info['school']:
+        info['school'] = _extract_school_from_resume(text)
+    if not info['company']:
+        info['company'] = _extract_company_from_resume(text)
 
     # ---- 城市 ----
     info['city'] = _extract_city(text)
@@ -935,6 +1286,8 @@ def export_to_excel(
 
     def _format_edu_detail(c: dict[str, Any]) -> str:
         """学历明细：优先使用 _api_profile，fallback 到 summary 解析。"""
+        if str(c.get('source') or '').strip() == 'external' and 'school' in c:
+            return str(c.get('school') or '').strip()
         api_profile = c.get('_api_profile')
         if api_profile and api_profile.get('educations'):
             lines = []
@@ -959,6 +1312,8 @@ def export_to_excel(
 
     def _format_recent_company(c: dict[str, Any]) -> str:
         """最近公司：从 _api_profile 取第一段工作经历的公司名。"""
+        if str(c.get('source') or '').strip() == 'external' and 'company' in c:
+            return str(c.get('company') or '').strip()
         api_profile = c.get('_api_profile')
         if api_profile and api_profile.get('works'):
             for work in api_profile['works']:
@@ -975,7 +1330,8 @@ def export_to_excel(
                 parts = val.split()
                 if parts:
                     return parts[0]
-        return ""
+        # 外部导入候选人：导入时已从简历提取到记录级字段
+        return str(c.get('company') or '').strip()
 
     def _format_skills(c: dict[str, Any], summary_info_skills: str) -> str:
         """技能：优先从 _api_profile 聚合工作经历技能标签，fallback 到 DOM 关键词匹配。"""
@@ -1046,6 +1402,20 @@ def export_to_excel(
                 summary_info['city'] = structured['city']
             if structured.get('job_status'):
                 summary_info['job_status'] = structured['job_status']
+            # 外部候选人的记录级画像可能经过人工修正；即使修正为空也必须
+            # 压过原简历文本，避免导出再次出现已清除的旧识别结果。
+            if str(c.get('source') or '').strip() == 'external':
+                for record_field, summary_field in (
+                    ('age', 'age'),
+                    ('exp_years', 'exp_years'),
+                    ('education', 'education'),
+                    ('salary', 'salary'),
+                    ('city', 'city'),
+                    ('job_status', 'job_status'),
+                    ('gender', 'gender'),
+                ):
+                    if record_field in c:
+                        summary_info[summary_field] = str(c.get(record_field) or '').strip()
             # 维度评分：有简历二次评估时优先用简历评估的（替代一次评估）
             dims = c.get('resume_eval_dimension_scores') or c.get('llm_dimension_scores') or {}
             row = {
@@ -1055,6 +1425,11 @@ def export_to_excel(
                 '姓名': c.get('name', '未知'),
                 '性别': summary_info['gender'],
                 'geek_id': c.get('geek_id', ''),
+                '来源渠道': (
+                    c.get('source_channel') or '其他'
+                    if str(c.get('source') or '').strip() == 'external'
+                    else 'BOSS直聘'
+                ),
                 # ② 画像
                 '年龄': summary_info['age'],
                 '工作年限': summary_info['exp_years'],
@@ -1107,7 +1482,7 @@ def export_to_excel(
 
         # 列顺序：身份 → 画像 → 评估 → 简历二次评估 → 跟进 → 原始
         columns = [
-            '序号', '岗位', '姓名', '性别', 'geek_id',
+            '序号', '岗位', '姓名', '性别', 'geek_id', '来源渠道',
             '年龄', '工作年限', '学历', '学历明细', '薪资', '求职状态', '城市', '最近公司', '技能',
             '匹配分', '推荐指数', '技能匹配', '评分拆解', '评分解释', '命中证据',
             '简历评估', '简历评估理由', '技能深度', '经验质量', '行业匹配', '发展潜力',

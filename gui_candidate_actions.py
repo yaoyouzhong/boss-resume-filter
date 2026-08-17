@@ -118,9 +118,11 @@ def show_daily_candidate_actions_dialog(
 
     business_group_order = [
         "发送结果待核实",
+        "状态异常待处理",
         "已回复待推进",
         "待复核",
         "待完成简历评估",
+        "待外部联系",
         "待打招呼",
         "已打招呼待跟进",
         "待约面待推进",
@@ -539,6 +541,7 @@ def show_daily_candidate_actions_dialog(
                     else (
                         "followup"
                         if item.group in (
+                            "待外部联系",
                             "已打招呼待跟进",
                             "已回复待推进",
                             "待约面待推进",

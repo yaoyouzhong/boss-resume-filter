@@ -43,6 +43,7 @@ import gui_style_setup
 import gui_widget_support
 import model_catalog
 import resume_parser
+import resume_ai_profile
 import resume_import_service
 import result_controller
 import run_controller
@@ -242,6 +243,26 @@ def test_resume_parser_is_ui_free_and_does_not_mutate_candidate_state():
     }
     assert not (_top_level_imports("resume_parser") & forbidden)
     assert callable(resume_parser.parse_resume_text)
+
+
+def test_legacy_doc_converter_stays_local_and_ui_free():
+    """转换适配器允许 subprocess（经 subprocess_utils 隐藏窗口），不触网不触库。"""
+    forbidden = {
+        "bossmaster",
+        "gui_main",
+        "resume_store",
+        "storage",
+        "tkinter",
+        "requests",
+        "socket",
+        "urllib",
+    }
+    imported = _all_imports("legacy_doc_converter")
+    assert not (imported & forbidden)
+    assert "subprocess_utils" in imported  # 窗口隐藏统一走基础设施
+    source = (ROOT / "legacy_doc_converter.py").read_text(encoding="utf-8")
+    assert "hidden_subprocess(subprocess)" in source
+    assert "shutil.rmtree(temp_dir, ignore_errors=True)" in source  # 失败清理临时目录
 
 
 def test_resume_import_controller_delegates_parsing_and_persistence_boundaries():
@@ -463,6 +484,22 @@ def test_candidate_cleanup_does_not_import_gui_storage_or_network_modules():
     }
     assert not (_top_level_imports("candidate_cleanup") & forbidden)
     assert callable(candidate_cleanup.clear_candidates_in_place)
+
+
+def test_resume_ai_profile_excludes_gui_storage_and_service_dependencies():
+    """画像增强模块只依赖传输与纯函数，不反向耦合 GUI/存储/服务层。"""
+    forbidden = {
+        "bossmaster",
+        "gui_main",
+        "storage",
+        "tkinter",
+        "external_import_service",
+        "job_ai_parser",
+    }
+    assert not (_top_level_imports("resume_ai_profile") & forbidden)
+    assert callable(resume_ai_profile.extract_profile_with_ai)
+    assert callable(resume_ai_profile.merge_profile)
+    assert callable(resume_ai_profile.normalize_ai_profile)
 
 
 def test_candidate_scan_policy_is_a_pure_business_module():
@@ -1770,6 +1807,45 @@ def test_candidate_feedback_persistence_and_state_sync_remain_in_controller():
     assert "self._update_candidate_feedback(" in controller
     assert "candidate.pop(\"contact_approved_at\", None)" in controller
     assert "self._sync_greet_queue_candidate_state(candidate)" in controller
+
+
+def test_external_edit_menu_item_and_gui_delegation_stay_within_boundaries():
+    menus = (ROOT / "gui_candidate_menus.py").read_text(encoding="utf-8")
+    source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
+
+    assert 'label="编辑候选人信息…"' in menus
+    assert "state.can_edit_external_info" in menus
+    assert "callbacks.edit_external_info" in menus
+    # BOSS 扫描候选人使用文件导入入口；外部候选人已有受管简历，
+    # 菜单必须复用保存的全文直接重评，不能再要求选择一个隐藏入口。
+    assert menus.count('label="导入简历 / 二次评估"') == 1
+    assert 'label="进行简历评估"' in menus
+    assert 'label=("进行简历评估" if state.is_external' in menus
+    assert "if not state.can_edit_external_info:" in menus
+    assert "elif not state.has_resume_adjustment:" in menus
+
+    picker = source[source.index("def _edit_external_candidate_info"):]
+    picker = picker[:picker.index("\n    def _apply_external_profile_update")]
+    assert "gui_external_edit_dialog.show_external_edit_dialog(" in picker
+    assert "is_external_candidate(candidate)" in picker
+    assert "tk.Toplevel" not in picker
+    assert "ttk.Combobox" not in picker
+
+    apply = source[source.index("def _apply_external_profile_update"):]
+    apply = apply[:apply.index("\n    def _revert_resume_eval")]
+    assert "update_external_candidate_profile(" in apply
+    assert "controller.reassign_job(" in apply
+    assert "update_candidate_records(" not in apply
+    assert "tk.Toplevel" not in apply
+    assert "messagebox.ask_confirmation(" in apply
+    assert '("授权模型", model_label)' in apply
+    assert '("发送范围", "简历文本前 6000 字")' in apply
+
+    # 外部候选人撤销简历评估：受管简历副本是档案本体，必须剔除引用字段
+    revert = source[source.index("def _revert_resume_eval"):]
+    revert = revert[:revert.index("\n    # ===== 一键AI评估功能 =====")]
+    assert "is_external_candidate(candidate)" in revert
+    assert '"resume_file"' in revert and '"resume_original_name"' in revert
 
 
 def test_candidate_menu_builders_only_consume_explicit_state_and_callbacks():

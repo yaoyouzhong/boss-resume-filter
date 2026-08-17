@@ -1,11 +1,14 @@
 """Candidate persistence helpers for BOSS resume screening."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import shutil
+import tempfile
 import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar
@@ -30,6 +33,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _CANDIDATES_FILE_LOCK = threading.RLock()
+_CANDIDATES_LOCK_DEPTH = threading.local()
 _TRANSIENT_CANDIDATE_FIELDS = frozenset({
     "_display_status",
     "_full_status",
@@ -38,6 +42,66 @@ _TRANSIENT_CANDIDATE_FIELDS = frozenset({
 _MutationResult = TypeVar("_MutationResult")
 
 CANDIDATES_FILE = "candidates_all.json"
+
+
+def _candidate_lock_key(path: Optional[str]) -> tuple[str, Path]:
+    candidate_path, _backup_path = _candidate_paths(path)
+    resolved = str(candidate_path.resolve(strict=False)).casefold()
+    digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()
+    lock_dir = Path(tempfile.gettempdir()) / "boss-resume-filter-locks"
+    return digest, lock_dir / f"{digest}.lock"
+
+
+@contextmanager
+def _process_candidate_lock(path: Optional[str]):
+    """Serialize candidate-file access across application processes."""
+    _key, lock_path = _candidate_lock_key(path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+b") as lock_file:
+        if os.name == "nt":
+            import msvcrt
+
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"0")
+                lock_file.flush()
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _candidates_guard(path: Optional[str]):
+    """Re-entrant thread lock plus per-path inter-process lock."""
+    key, _lock_path = _candidate_lock_key(path)
+    with _CANDIDATES_FILE_LOCK:
+        depths = getattr(_CANDIDATES_LOCK_DEPTH, "values", {})
+        depth = depths.get(key, 0)
+        depths[key] = depth + 1
+        _CANDIDATES_LOCK_DEPTH.values = depths
+        try:
+            if depth:
+                yield
+            else:
+                with _process_candidate_lock(path):
+                    yield
+        finally:
+            if depth:
+                depths[key] = depth
+            else:
+                depths.pop(key, None)
 _FEEDBACK_FIELDS = (
     'feedback_status',
     'feedback_reasons',
@@ -144,7 +208,7 @@ def validate_candidates_snapshot(payload: Any) -> None:
 
 def read_candidates_snapshot(path: Optional[str] = None) -> list[dict[str, Any]]:
     """Read the primary candidate snapshot without restoring or writing files."""
-    with _CANDIDATES_FILE_LOCK:
+    with _candidates_guard(path):
         candidate_path, backup_path = _candidate_paths(path)
         if candidate_path.exists():
             return _read_candidate_file(candidate_path)
@@ -224,7 +288,7 @@ def _load_candidates_all_unlocked(path: Optional[str] = None) -> list[dict[str, 
 
 def load_candidates_all(path: Optional[str] = None) -> list[dict[str, Any]]:
     """加载候选人数据；主文件损坏时自动尝试从已验证的 .bak 恢复。"""
-    with _CANDIDATES_FILE_LOCK:
+    with _candidates_guard(path):
         return _load_candidates_all_unlocked(path)
 
 
@@ -437,7 +501,7 @@ def _save_candidates_all_unlocked(
 
 def save_candidates_all(candidates_all: list[dict[str, Any]], path: Optional[str] = None) -> None:
     """保存候选人快照；只轮换已验证备份并原子替换主文件。"""
-    with _CANDIDATES_FILE_LOCK:
+    with _candidates_guard(path):
         _save_candidates_all_unlocked(candidates_all, path)
 
 
@@ -449,7 +513,7 @@ def mutate_candidates_all(
 
     ``mutator`` 必须返回真值表示数据发生变化；返回假值时不会写盘或轮换备份。
     """
-    with _CANDIDATES_FILE_LOCK:
+    with _candidates_guard(path):
         candidates = _load_candidates_all_unlocked(path)
         result = mutator(candidates)
         if result:
@@ -469,7 +533,7 @@ def mutate_candidates_with_resume_cleanup(
         cleanup_unreferenced_managed_resumes,
     )
 
-    with _CANDIDATES_FILE_LOCK:
+    with _candidates_guard(path):
         candidates = _load_candidates_all_unlocked(path)
         previous_references = [
             candidate.get("resume_file") for candidate in candidates
@@ -546,7 +610,7 @@ def repair_candidate_resume_storage(
         repair_invalid_resume_references,
     )
 
-    with _CANDIDATES_FILE_LOCK:
+    with _candidates_guard(path):
         candidates = _load_candidates_all_unlocked(path)
         repair = repair_invalid_resume_references(
             candidates,
@@ -696,7 +760,7 @@ def merge_candidates_all(
     prune_pending_jobs: Optional[set[str]] = None,
 ) -> None:
     """合并候选人；完整扫描可替换岗位的普通待定快照。"""
-    with _CANDIDATES_FILE_LOCK:
+    with _candidates_guard(path):
         current = load_candidates_all(path)
         incoming_keys = {
             candidate_record_key(item)
@@ -750,7 +814,7 @@ def persist_candidate_greeted(
     """将单个打招呼成功状态立即合并到最新磁盘数据。"""
     if not candidate.get('geek_id'):
         return False
-    with _CANDIDATES_FILE_LOCK:
+    with _candidates_guard(path):
         mark_candidate_greeted(candidate, method)
         merge_candidates_all([candidate], path)
         return True
@@ -764,7 +828,7 @@ def persist_candidate_greeting_pending(
     """将单个候选人的发送待核实状态立即合并到最新磁盘数据。"""
     if not candidate.get('geek_id'):
         return False
-    with _CANDIDATES_FILE_LOCK:
+    with _candidates_guard(path):
         mark_candidate_greeting_pending(candidate, reason)
         merge_candidates_all([candidate], path)
         return True
@@ -781,7 +845,7 @@ def resolve_candidate_greeting_confirmation(
     if not geek_id:
         return False
 
-    with _CANDIDATES_FILE_LOCK:
+    with _candidates_guard(path):
         candidates = load_candidates_all(path)
         target = next((
             item for item in candidates
@@ -813,7 +877,7 @@ def update_candidate_greeted(
     path: Optional[str] = None,
 ) -> bool:
     """原子完成候选人读取、打招呼状态更新和保存。"""
-    with _CANDIDATES_FILE_LOCK:
+    with _candidates_guard(path):
         candidates = load_candidates_all(path)
         normalized_job = normalize_job_name(job_name)
         for candidate in candidates:

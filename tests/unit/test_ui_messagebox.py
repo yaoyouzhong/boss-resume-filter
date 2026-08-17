@@ -221,7 +221,7 @@ def test_medium_multiline_message_uses_scrollable_content():
         "当前学历核验模型可能不支持图片输入。\n\n"
         "图片识别需要多模态视觉模型，例如：\n"
         "国外：GPT-4o / GPT-4.1、Claude Sonnet 4、Gemini 2.5 Pro\n"
-        "国内：qwen3.7-plus、mimo-v2.5、GLM-5V、Kimi K2.5、MiniMax-M2.7\n\n"
+        "国内：qwen3.7-plus、mimo-v2.5、GLM-5V、Kimi K2.5、MiniMax-M3\n\n"
         "PDF 文件使用文本提取，不受此限制。\n\n"
         "可在系统设置的使用中的模型中选择学历核验模型。\n\n"
         "是否仍要尝试识别？"
