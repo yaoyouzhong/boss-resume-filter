@@ -1,29 +1,29 @@
 {
-  "version": "2.28.1",
-  "release_date": "2026-08-13",
+  "version": "2.29",
+  "release_date": "2026-08-17",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28.1/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28.1/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28.1/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.29/BOSS_ResumeFilter.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.29/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.29/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "macos_dmg": {
-      "size": 33554862,
-      "sha256": "df9be0024198aa5185bce3cf7c2371952505b231da5adaf7fe85c4743c9af0ec"
+      "size": 33694103,
+      "sha256": "898e17449a5da25f75bb0896f235ec8b532fecc411b98f63caa1419fc1aca701"
     },
     "windows": {
-      "size": 35982124,
-      "sha256": "fd77999b755250d483c65cfc83ce4d48787a4a84da2f6ee5f1ee038cbabb7b2e"
+      "size": 36155235,
+      "sha256": "a14f7256023fd8df2434ecfcc382bd12dc8331b2e746088cf43dab0e689462bf"
     },
     "macos": {
-      "size": 34444184,
-      "sha256": "47aa051dc0322c0ee12427373f19501cd3d077c33eab057f5b9031ab5590e6a4"
+      "size": 34576882,
+      "sha256": "a0b2e8e06720db4bf6cbaf07fd6d7b55261a829cc3e2077800e97815725581a2"
     }
   },
-  "release_notes": "### 问题修复\n\n- **Gitee 更新连接**：修复系统配置代理时 Gitee 更新信息、版本说明和安装包下载可能仍经过代理的问题；Gitee 更新链路现在默认直连，国内镜像不可用时仍会自动尝试 GitHub。\n- **岗位配置悬停提示**：修复技能原文出处提示随鼠标移动不断叠加，以及离开列表或切换页面后没有及时消失的问题；必要条件列表的空白区域不再误显示上一条原文。",
+  "release_notes": "### 新增功能\n\n- **外部候选人导入**：筛选结果页支持导入猎头、内推、智联、猎聘等渠道的 PDF、DOCX、旧版 DOC、TXT、MD、RTF 和 HTML 简历，统一选择归属岗位和来源渠道后自动完成解析、筛选评分与保存；单份导入会立即显示处理中状态，多份简历可并行解析、逐份显示进度并取消尚未完成的任务，重复或单份失败不会阻断其余文件。\n- **AI 画像与简历评估授权**：导入时可分别开启 AI 增强识别和 AI 简历评估；AI 只补充本地规则未识别的画像字段，冲突时保留规则结果并转人工复核，调用失败不影响候选人入库；筛选评分完成后候选人立即出现在结果表中，后台评估期间明确显示“AI评估中...”，完成后再更新最终分和评估理由。\n- **外部候选人信息编辑**：右键菜单可修正姓名、年龄、学历、工作年限、薪资、城市、求职状态、学校和公司，也可调整归属岗位；影响筛选的字段变化会按当前岗位重新评分，调岗时重新核对 AI 评估和复核状态。\n- **外部候选人管理闭环**：结果页可单独查看全部外部候选人，未通过筛选的记录也会保留并展示参考匹配分；AI 调整不会推翻岗位规则的淘汰结论，参考分不进入统计。外部候选人可继续复核、反馈、跟进、屏蔽和导出，但不会进入 BOSS 联系清单。\n\n### 问题修复\n\n- **MiniMax-M3 学历核验提示**：学历核验现在识别 MiniMax-M3 的图像能力，并按学历核验实际选择的模型判断，不再因默认模型不同而错误提示该模型可能不支持图片。",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28.1/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28.1/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.28.1/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.29/BOSS_ResumeFilter.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.29/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.29/BOSS_ResumeFilter.dmg"
   }
 }
