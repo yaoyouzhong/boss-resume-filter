@@ -16,9 +16,6 @@ from constants import (
     SCORE_EDU_MASTER,
     SCORE_EDU_BACHELOR_985,
     SCORE_EDU_BACHELOR,
-    SCORE_THRESHOLD_PASS,
-    SCORE_THRESHOLD_RECOMMEND,
-    SCORE_THRESHOLD_STRONG,
     CHINESE_NUMERALS,
     NON_REGULAR_EDU,
 )
@@ -449,15 +446,34 @@ def filter_candidate(candidate_text: str, rule: dict[str, Any], structured_field
         edu_bonus = 0
         if rule.get("edu", "不限") != "不限":
             edu_keywords = {"博士": 6, "硕士": 5, "本科": 4, "大专": 3, "高中": 2, "中专": 1}
-            candidate_edu_level = max(
-                [edu_keywords.get(word, 0) for word in edu_keywords if word in candidate_text],
-                default=0,
+            # 人工钉定的学历（外部候选人信息编辑）优先于全文关键词；
+            # 非统招形式风险仍看全文证据，钉定只解决"识别不到/识别错"
+            education_is_pinned = (
+                structured_fields is not None and "education" in structured_fields
             )
+            pinned_edu = (
+                str(structured_fields.get("education") or "").strip()
+                if education_is_pinned
+                else ""
+            )
+            if education_is_pinned and not pinned_edu:
+                candidate_edu_level = None
+            elif pinned_edu:
+                candidate_edu_level = edu_keywords.get(pinned_edu, 0)
+            else:
+                candidate_edu_level = max(
+                    [edu_keywords.get(word, 0) for word in edu_keywords if word in candidate_text],
+                    default=0,
+                )
             required_edu = edu_keywords.get(rule.get("edu", "不限"), 0)
             has_non_regular_risk = _has_non_regular_edu_risk(candidate_text)
             explicit_non_regular_reason = _explicit_non_regular_bachelor_reason(candidate_text)
 
-            if rule.get("edu") == "本科":
+            if candidate_edu_level is None:
+                hard_checks.append(
+                    f"学历：人工标记为未识别，跳过等级检查，要求{rule.get('edu')}"
+                )
+            elif rule.get("edu") == "本科":
                 if explicit_non_regular_reason and not re.search(r'(统招|全日制)\s*本科', candidate_text):
                     return False, 0, {
                         "reason": f"学历不符：{explicit_non_regular_reason}",
@@ -486,7 +502,7 @@ def filter_candidate(candidate_text: str, rule: dict[str, Any], structured_field
                 elif has_non_regular_risk:
                     if has_4year_evidence:
                         # 有4年起止时间证据，作为统招本科的有力佐证
-                        hard_checks.append(f"学历：通过，要求本科（4年制本科佐证）")
+                        hard_checks.append("学历：通过，要求本科（4年制本科佐证）")
                     else:
                         _add_risk_flag(details, "学历形式待确认：疑似非统招本科", "学历形式待确认")
                         hard_checks.append("学历：疑似本科路径，学历形式待人工确认")
@@ -495,7 +511,19 @@ def filter_candidate(candidate_text: str, rule: dict[str, Any], structured_field
             elif required_edu > 0 and candidate_edu_level < required_edu:
                 return False, 0, {"reason": f"学历不足：要求{rule.get('edu')}，实际未达要求"}
 
-            edu_bonus = _calc_edu_bonus(candidate_text)
+            if candidate_edu_level is None:
+                edu_bonus = 0
+            elif pinned_edu:
+                # 钉定档次给学历分；985/211/双一流标记仍取自全文证据
+                has_985211 = any(m in candidate_text for m in ('985', '211', '双一流'))
+                if pinned_edu == "博士":
+                    edu_bonus = SCORE_EDU_DOCTOR
+                elif pinned_edu == "硕士":
+                    edu_bonus = SCORE_EDU_MASTER_985 if has_985211 else SCORE_EDU_MASTER
+                elif pinned_edu == "本科":
+                    edu_bonus = SCORE_EDU_BACHELOR_985 if has_985211 else SCORE_EDU_BACHELOR
+            else:
+                edu_bonus = _calc_edu_bonus(candidate_text)
         else:
             hard_checks.append("学历：未设置硬性要求")
         details['edu_bonus'] = edu_bonus
@@ -544,9 +572,12 @@ def filter_candidate(candidate_text: str, rule: dict[str, Any], structured_field
         required_gender = normalize_gender(rule.get("gender"))
         if required_gender:
             candidate_gender = None
-            if structured_fields and structured_fields.get('gender') is not None:
+            gender_is_pinned = (
+                structured_fields is not None and 'gender' in structured_fields
+            )
+            if gender_is_pinned:
                 candidate_gender = normalize_candidate_gender(structured_fields['gender'])
-            if candidate_gender is None:
+            if candidate_gender is None and not gender_is_pinned:
                 for line in candidate_text.split('\n'):
                     stripped = line.strip()
                     if stripped.startswith("性别：") or stripped.startswith("性别:"):
@@ -618,8 +649,11 @@ def filter_candidate(candidate_text: str, rule: dict[str, Any], structured_field
 
         # 求职状态检查：明确不考虑的直接淘汰
         job_status = ""
-        if structured_fields and structured_fields.get('job_status'):
-            job_status = structured_fields['job_status']
+        job_status_is_pinned = (
+            structured_fields is not None and 'job_status' in structured_fields
+        )
+        if job_status_is_pinned:
+            job_status = str(structured_fields['job_status'] or '').strip()
         else:
             # 从文本兜底解析
             for line in candidate_text.split('\n'):

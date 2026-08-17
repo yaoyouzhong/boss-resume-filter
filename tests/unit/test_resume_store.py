@@ -226,6 +226,31 @@ def test_repair_invalid_references_clears_resume_state_and_restores_score():
         assert external.exists()
 
 
+def test_clear_candidate_resume_state_keeps_rejected_score_frozen():
+    """已淘汰记录清除简历状态：分数与推荐等级冻结，不回算出非淘汰分。"""
+    from resume_store import clear_candidate_resume_state
+
+    candidate = {
+        "resume_file": "resumes/g1.pdf",
+        "resume_eval_adjustment": 10,
+        "rule_score": 42,
+        "llm_adjustment": 15,
+        "match_score": 0,
+        "recommend_level": "未通过",
+        "qualification_status": "rejected",
+        "score_breakdown": {"base": 25, "skill": 12, "resume_adjustment": 10, "total": 42},
+    }
+
+    clear_candidate_resume_state(candidate)
+
+    assert "resume_file" not in candidate
+    assert candidate["match_score"] == 0
+    assert candidate["recommend_level"] == "未通过"
+    assert candidate["rule_score"] == 42
+    assert candidate["score_breakdown"]["total"] == 42
+    assert "resume_adjustment" not in candidate["score_breakdown"]
+
+
 def test_audit_reports_resume_metadata_without_a_file_reference():
     with tempfile.TemporaryDirectory() as tmpdir:
         report = audit_managed_resumes(

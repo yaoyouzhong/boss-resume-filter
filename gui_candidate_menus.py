@@ -29,6 +29,8 @@ class WorkflowCandidateMenuState:
     greet_sent: bool
     followup_status: str
     blacklisted: bool
+    # 外部渠道候选人复用已有受管简历，只执行简历评估，不重新选文件。
+    is_external: bool = False
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,7 @@ class CandidateContextMenuState:
 
     has_ai_evaluation: bool
     has_resume_adjustment: bool
+    can_edit_external_info: bool
     needs_review: bool
     can_confirm_review: bool
     queue_action: str
@@ -72,6 +75,7 @@ class CandidateContextMenuCallbacks:
     evaluate_ai: Callable[[], None]
     import_resume: Callable[[], None]
     revert_resume_evaluation: Callable[[], None]
+    edit_external_info: Callable[[], None]
     confirm_review: Callable[[], None]
     reject_review: Callable[[], None]
     add_queue: Callable[[], None]
@@ -197,7 +201,7 @@ def show_workflow_candidate_menu(
         _add_command(
             menu,
             icons,
-            label="导入简历 / 二次评估",
+            label=("进行简历评估" if state.is_external else "导入简历 / 二次评估"),
             icon="document",
             command=callbacks.import_resume,
         )
@@ -367,6 +371,7 @@ def show_candidate_context_menu(
             "unblacklist": ("check", "success"),
             "trash": ("trash", "text_primary"),
             "undo": ("refresh", "text_primary"),
+            "reassign": ("briefcase", "primary"),
             "ai": ("ai_spark", "primary"),
             "confirm": ("stamp_check", "success"),
         },
@@ -386,13 +391,22 @@ def show_candidate_context_menu(
             icon="ai",
             command=callbacks.evaluate_ai,
         )
-    _add_command(
-        menu,
-        icons,
-        label="导入简历 / 二次评估",
-        icon="document",
-        command=callbacks.import_resume,
-    )
+    if not state.can_edit_external_info:
+        _add_command(
+            menu,
+            icons,
+            label="导入简历 / 二次评估",
+            icon="document",
+            command=callbacks.import_resume,
+        )
+    elif not state.has_resume_adjustment:
+        _add_command(
+            menu,
+            icons,
+            label="进行简历评估",
+            icon="document",
+            command=callbacks.import_resume,
+        )
     if state.has_resume_adjustment:
         _add_command(
             menu,
@@ -400,6 +414,14 @@ def show_candidate_context_menu(
             label="撤销简历评估",
             icon="undo",
             command=callbacks.revert_resume_evaluation,
+        )
+    if state.can_edit_external_info:
+        _add_command(
+            menu,
+            icons,
+            label="编辑候选人信息…",
+            icon="reassign",
+            command=callbacks.edit_external_info,
         )
     if state.can_confirm_review:
         _add_command(

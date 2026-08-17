@@ -26,6 +26,70 @@ class CandidateStatusView:
     expired_evaluation_id: str = ""
 
 
+def external_profile_note(candidate: Mapping[str, Any]) -> str:
+    """Build the single-import AI profile audit note."""
+    filled = candidate.get("profile_ai_filled") or []
+    conflicts = candidate.get("profile_conflicts") or []
+    error = str(candidate.get("profile_ai_error") or "")
+    rejected = candidate.get("qualification_status") == "rejected"
+    lines: list[str] = []
+    if filled:
+        labels = "、".join(
+            str(item.get("label") or item.get("field") or "画像字段")
+            for item in filled
+            if isinstance(item, dict)
+        )
+        lines.append(f"· 补全：{labels}")
+    if conflicts:
+        labels = "、".join(
+            str(item.get("label") or item.get("field") or "画像字段")
+            for item in conflicts
+            if isinstance(item, dict)
+        )
+        action = (
+            "已保留规则值，淘汰结论请人工核对"
+            if rejected
+            else "已保留规则值，转待复核"
+        )
+        lines.append(f"· 冲突：{labels}（{action}）")
+    if error:
+        lines.append(f"· 调用未完成：{error}")
+    return "AI 增强识别\n" + "\n".join(lines) if lines else ""
+
+
+def external_profile_batch_note(summary: object | None) -> str:
+    """Build the batch-import AI profile audit suffix."""
+    if summary is None:
+        return ""
+    items = getattr(summary, "items", ())
+    filled_n = sum(
+        1
+        for item in items
+        if getattr(item, "candidate", None)
+        and item.candidate.get("profile_ai_filled")
+    )
+    conflict_n = sum(
+        1
+        for item in items
+        if getattr(item, "candidate", None)
+        and item.candidate.get("profile_conflicts")
+    )
+    error_n = sum(
+        1
+        for item in items
+        if getattr(item, "candidate", None)
+        and item.candidate.get("profile_ai_error")
+    )
+    parts: list[str] = []
+    if filled_n:
+        parts.append(f"AI 补全 {filled_n} 人")
+    if conflict_n:
+        parts.append(f"AI 冲突转待复核 {conflict_n} 人")
+    if error_n:
+        parts.append(f"AI 增强失败 {error_n} 人")
+    return "；" + "，".join(parts) if parts else ""
+
+
 def candidate_gender_display(candidate: Mapping[str, Any]) -> str:
     """Return normalized candidate gender from current or legacy records."""
     structured = candidate.get("structured") or {}
@@ -105,8 +169,18 @@ def latest_history_value(
 def parse_salary_experience(
     summary: object,
     structured: Mapping[str, Any] | None = None,
+    record: Mapping[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Return compact salary and experience text for a result-table row."""
+    # 外部候选人：画像字段由导入时的简历全文提取钉定，summary 是简历原文，
+    # BOSS 摘要正则会把时间段（2017-2019）和规模数字（50-150人）误当薪资，
+    # 展示一律以记录字段为准，不回退摘要文本
+    record = record or {}
+    if str(record.get("source") or "").strip() == "external":
+        salary = str(record.get("salary") or "").strip()
+        exp_raw = str(record.get("exp_years") or "").strip()
+        experience = exp_raw if (not exp_raw or exp_raw.endswith("年")) else f"{exp_raw}年"
+        return salary, experience
     salary = ""
     experience = ""
     structured = structured or {}
@@ -160,7 +234,19 @@ def extract_candidate_extra_fields(
         summary,
         "工作经历：",
     )
-    if not education or not age or not job_status:
+    # 外部导入候选人没有 API 画像：回退到导入时从简历提取的记录级字段
+    if not school:
+        school = str(candidate.get("school") or "").strip()
+    if not company:
+        company = str(candidate.get("company") or "").strip()
+    # 外部导入候选人：学历/年龄/求职状态在导入时已从简历全文钉定到记录级字段，
+    # summary 是简历原文，摘要正则会误命中"在校情况"等教育板块标题——
+    # 一律以记录字段为准，不回退摘要文本
+    if str(candidate.get("source") or "").strip() == "external":
+        education = education or str(candidate.get("education") or "").strip()
+        age = age or str(candidate.get("age") or "").strip()
+        job_status = job_status or str(candidate.get("job_status") or "").strip()
+    elif not education or not age or not job_status:
         fallback = extract_summary_display_fields(summary)
         education = education or fallback["education"]
         age = age or fallback["age"]
@@ -552,6 +638,11 @@ def format_candidate_detail(
         lines.append(f"  {edu}")
 
     lines.append(f"  geek_id：{c.get('geek_id', '')}")
+    if str(c.get('source') or '').strip() == 'external':
+        source_parts = [f"来源渠道：{c.get('source_channel') or '其他'}"]
+        if c.get('source_note'):
+            source_parts.append(f"备注：{c.get('source_note')}")
+        lines.append(f"  {'｜'.join(source_parts)}")
     lines.append("═" * 50)
 
     # 评分信息
@@ -560,6 +651,11 @@ def format_candidate_detail(
     score = c.get('match_score', 0)
     level = derive_candidate_decision(c).screening_result
     lines.append(f"  匹配分：{score}（{level}）")
+    # 淘汰记录的匹配分固定为 0；参考匹配分（剔除硬条件的规则分）供误杀核对
+    if c.get('qualification_status') == 'rejected':
+        reference_score = c.get('rule_score')
+        if isinstance(reference_score, int) and reference_score > 0:
+            lines.append(f"  参考匹配分：{reference_score}（剔除硬条件后估算，不影响淘汰结论）")
     lines.append(f"  技能匹配：{c.get('skill_match_ratio', '—')}")
     breakdown = c.get('score_breakdown') or {}
     if breakdown:
@@ -675,7 +771,8 @@ def format_candidate_detail(
         lines.append(f"  AI 调整值：{sign}{adj}")
         # 调整后分数 = 规则分 + 一次评估调整值；不读 match_score（简历二次评估已替代为 rule+resume_adj）
         r1_score = max(0, min(100, (c.get('rule_score', 0) or 0) + adj))
-        lines.append(f"  调整后分数：{r1_score}")
+        r1_suffix = "（仅参考，不改变淘汰结论）" if c.get('qualification_status') == 'rejected' else ""
+        lines.append(f"  调整后分数：{r1_score}{r1_suffix}")
         lines.append(f"  评估模型：{c.get('llm_model', '未知')}")
         lines.append("")
         lines.append("  AI评估：")
@@ -753,6 +850,30 @@ def format_candidate_detail(
             lines.append(f"  简历文件：{resume_name}")
         if c.get('resume_imported_at'):
             lines.append(f"  导入时间：{c.get('resume_imported_at')}")
+
+    # AI 画像增强痕迹（外部导入的开关制增强；标签在落库时已写入记录，
+    # 展示层直接读取，不反向依赖提取模块）
+    profile_filled = [
+        item for item in (c.get('profile_ai_filled') or []) if isinstance(item, dict)
+    ]
+    profile_conflicts = [
+        item for item in (c.get('profile_conflicts') or []) if isinstance(item, dict)
+    ]
+    profile_error = str(c.get('profile_ai_error') or '').strip()
+    if profile_filled or profile_conflicts or profile_error:
+        lines.append("")
+        lines.append("【AI 画像增强】")
+        for item in profile_filled:
+            label = item.get('label') or item.get('field') or '画像字段'
+            lines.append(f"  补全：{label} = {item.get('value', '')}")
+        for item in profile_conflicts:
+            label = item.get('label') or item.get('field') or '画像字段'
+            lines.append(
+                f"  冲突：{label} 规则值 {item.get('rule', '')}"
+                f" / AI 值 {item.get('ai', '')}（已保留规则值）"
+            )
+        if profile_error:
+            lines.append(f"  增强未完成：{profile_error}")
 
     # 技能匹配详情
     skill_matches = c.get('skill_matches', [])

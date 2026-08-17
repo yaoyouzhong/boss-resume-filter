@@ -1923,7 +1923,7 @@ def test_result_page_defaults_to_all_records_and_offers_today():
 
     assert 'values=("全部时间", "今天", "近7天", "近30天", "自定义")' in result_block
     assert 'view_var = tk.StringVar(value="全部记录")' in result_block
-    assert '"推荐候选人", "复核通过", "待复核", "淘汰记录", "全部记录"' in result_block
+    assert '"推荐候选人", "复核通过", "待复核", "淘汰记录", "外部导入", "全部记录"' in result_block
 
 
 def test_result_page_keeps_gender_visible_and_all_fields_horizontally_scrollable():
@@ -9116,6 +9116,9 @@ def test_education_import_dialog_supports_pdf():
     # 用 validate_document_path（接受图片+PDF），不再用 validate_image_path
     assert "validate_document_path" in select_block
     assert "is_pdf_path" in select_block
+    # 导入时的视觉提示必须检查学历核验专用模型，不能误用默认 AI 模型。
+    assert "edu_config = self._get_education_api_config()" in select_block
+    assert "likely_supports_vision(edu_config)" in select_block
     # item 字典存 is_pdf 标记
     assert '"is_pdf": is_pdf(path)' in controller
 
@@ -10429,6 +10432,10 @@ def test_file_import_failures_use_structured_user_and_detail_sections():
         source.index("def _select_education_images"):
         source.index("\n    def _refresh_education_queue_summary")
     ]
+    resume_helper = source[
+        source.index("def _show_resume_file_error"):
+        source.index("\n    def _import_resume")
+    ]
     resume = source[
         source.index("def _import_resume"):
         source.index("\n    def _revert_resume_eval")
@@ -10437,7 +10444,220 @@ def test_file_import_failures_use_structured_user_and_detail_sections():
     assert "messagebox.show_notice(" in education
     assert 'headline=f"{len(invalid_files)} 个文件未导入"' in education
     assert 'detail="\\n".join(invalid_files[:10])' in education
-    assert resume.count("messagebox.show_failure(") >= 7
-    assert "detail=str(e)" in resume
-    assert "detail=result.reason" in resume
+    assert resume_helper.count("messagebox.show_failure(") >= 5
+    assert resume_helper.count("messagebox.show_notice(") >= 3
+    assert "detail=str(exc)" in resume_helper
+    assert "_show_resume_file_error(" in resume
+    assert resume.count("messagebox.show_failure(") >= 2
+    assert "failure = persistence_error or result.reason" in resume
+    assert "detail=failure" in resume
     assert "detail=str(error)" in resume
+
+
+def test_resume_file_error_guides_legacy_doc_conversion_failure():
+    """旧版 .doc 转换失败给出原因和手动另存指引；其他格式保持通用提示。"""
+    from legacy_doc_converter import LegacyDocConversionError
+    from resume_parser import UnsupportedResumeFormatError
+
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    with patch.object(gui_main.messagebox, "show_notice") as notice:
+        gui._show_resume_file_error(
+            LegacyDocConversionError("未检测到本机安装的 Microsoft Word"),
+            "张三-简历.doc",
+            Mock(),
+        )
+        gui._show_resume_file_error(
+            UnsupportedResumeFormatError(".wps"), "张三-简历.wps", Mock()
+        )
+
+    legacy = notice.call_args_list[0].kwargs
+    generic = notice.call_args_list[1].kwargs
+    assert legacy["headline"] == "旧版 .doc 自动转换未完成"
+    assert legacy["message"] == "未检测到本机安装的 Microsoft Word"
+    assert "另存为" in legacy["notice"] and ".docx" in legacy["notice"]
+    assert legacy["detail"] == "张三-简历.doc"
+    assert "PDF、Word（含旧版 .doc）" in generic["message"]
+    assert generic["metrics"] == (("当前格式", ".wps"),)
+
+
+def test_external_preview_cache_reuses_parse_until_file_changes():
+    """预解析缓存命中时导入不再二次解析（旧版 .doc 省去一次 Word 转换）。"""
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        resume = Path(tmp_dir) / "张三-简历.txt"
+        resume.write_text("张三 5 年 Java 经验", encoding="utf-8")
+
+        gui._remember_external_preview(str(resume), "已解析文本")
+
+        def _forbidden_parse(_path):
+            raise AssertionError("缓存命中时不应再次解析")
+
+        with patch.object(gui_main, "parse_resume_text", _forbidden_parse):
+            assert gui._external_resume_parser(str(resume)) == "已解析文本"
+
+        # 文件内容变化后缓存失效，回退真实解析
+        resume.write_text("张三 5 年 Java 经验，另有测试", encoding="utf-8")
+        with patch.object(
+            gui_main, "parse_resume_text", return_value="重新解析文本"
+        ) as real_parse:
+            assert gui._external_resume_parser(str(resume)) == "重新解析文本"
+            real_parse.assert_called_once()
+
+
+def test_single_external_import_background_success_closes_progress_dialog():
+    """单份导入启动后台事务；完成回 UI 后必须关闭进行中视图。"""
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.run_on_ui = lambda callback: callback()
+    gui._build_external_profile_enhancer = Mock(return_value=None)
+    gui._external_resume_parser = Mock()
+    gui.append_log = Mock()
+    gui.refresh_results = Mock()
+    gui.refresh_home_stats = Mock()
+    widgets = types.SimpleNamespace(close_dialog=Mock())
+    form = types.SimpleNamespace(
+        file_path="C:/tmp/张三-简历.txt",
+        name="张三",
+        job_name="Java 工程师",
+        source_channel="猎头",
+        source_note="",
+        ai_enhance=False,
+    )
+    rules = {
+        "Java 工程师": {"job_uuid": "11111111-1111-4111-8111-111111111111"}
+    }
+    outcome = types.SimpleNamespace(
+        candidate={
+            "name": "张三",
+            "recommend_level": "未通过",
+            "match_score": 0,
+        },
+        passed=False,
+        reference_score=42,
+        rejection_reason="学历不满足",
+    )
+
+    with (
+        patch.object(gui_main, "load_candidates_all", return_value=[]),
+        patch.object(
+            gui_main, "_import_external_candidate_record", return_value=outcome
+        ),
+        patch.object(gui_main.threading, "Thread") as thread_cls,
+        patch.object(gui_main.messagebox, "show_notice") as notice,
+    ):
+        started = gui._run_external_import(form, rules, widgets)
+        worker = thread_cls.call_args.kwargs["target"]
+        thread_cls.return_value.start.assert_called_once_with()
+        worker()
+
+    assert started is True
+    widgets.close_dialog.assert_called_once_with()
+    notice.assert_called_once()
+    gui.refresh_results.assert_called_once_with()
+    gui.refresh_home_stats.assert_called_once_with()
+
+
+def test_single_external_import_background_failure_closes_progress_dialog():
+    """单份导入后台解析失败也必须关闭进行中视图，再展示分类错误。"""
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.run_on_ui = lambda callback: callback()
+    gui._build_external_profile_enhancer = Mock(return_value=None)
+    gui._external_resume_parser = Mock()
+    gui._show_resume_file_error = Mock()
+    widgets = types.SimpleNamespace(close_dialog=Mock())
+    form = types.SimpleNamespace(
+        file_path="C:/tmp/坏简历.txt",
+        name="李四",
+        job_name="Java 工程师",
+        source_channel="猎头",
+        source_note="",
+        ai_enhance=False,
+    )
+    rules = {
+        "Java 工程师": {"job_uuid": "11111111-1111-4111-8111-111111111111"}
+    }
+    parse_error = RuntimeError("无法读取简历")
+
+    with (
+        patch.object(gui_main, "load_candidates_all", return_value=[]),
+        patch.object(
+            gui_main,
+            "_import_external_candidate_record",
+            side_effect=parse_error,
+        ),
+        patch.object(gui_main.threading, "Thread") as thread_cls,
+    ):
+        started = gui._run_external_import(form, rules, widgets)
+        worker = thread_cls.call_args.kwargs["target"]
+        worker()
+
+    assert started is True
+    widgets.close_dialog.assert_called_once_with()
+    gui._show_resume_file_error.assert_called_once_with(
+        parse_error, form.file_path, gui.root
+    )
+
+
+def test_external_batch_without_api_key_never_leaves_evaluating_state():
+    """批量导入跳过 AI 时不得提前写入永久的“AI评估中”瞬时状态。"""
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.api_config = {"api_provider": "openai", "base_url": "", "model": "gpt"}
+    gui._ai_evaluating_ids = set()
+    gui._get_job_rules_cached = Mock(
+        return_value={
+            "Java 工程师": {
+                "job_uuid": "11111111-1111-4111-8111-111111111111",
+                "original_requirement": "Java 工程师",
+            }
+        }
+    )
+    gui._get_api_key_cached = Mock(return_value="")
+    gui._format_ai_hard_conditions = Mock(return_value="")
+    gui._build_external_profile_enhancer = Mock(return_value=None)
+    gui.run_on_ui = lambda callback: callback()
+    gui.refresh_results = Mock()
+    gui.refresh_home_stats = Mock()
+    gui.append_log = Mock()
+    form = types.SimpleNamespace(
+        job_name="Java 工程师",
+        source_channel="猎头",
+        source_note="",
+        ai_enhance=False,
+        ai_resume_eval=True,
+    )
+    callbacks = types.SimpleNamespace(
+        on_progress=Mock(),
+        on_import_done=Mock(),
+        on_eval_progress=Mock(),
+        on_all_done=Mock(),
+    )
+    item = types.SimpleNamespace(
+        name="张三",
+        status=gui_main.BATCH_STATUS_IMPORTED,
+        score=72,
+        candidate={"geek_id": "external-1"},
+        resume_text="Java 后端经验",
+    )
+    summary = types.SimpleNamespace(
+        items=(item,),
+        stopped=False,
+        count=lambda status: int(status == gui_main.BATCH_STATUS_IMPORTED),
+    )
+
+    with (
+        patch.object(
+            gui_main, "_import_external_candidates_batch", return_value=summary
+        ),
+        patch.object(gui_main.threading, "Thread") as thread_cls,
+    ):
+        stop = gui._run_external_import_batch(["resume.txt"], form, callbacks)
+        worker = thread_cls.call_args.kwargs["target"]
+        worker()
+
+    assert callable(stop)
+    assert gui._ai_evaluating_ids == set()
+    callbacks.on_import_done.assert_called_once_with(summary)
+    final_text = callbacks.on_all_done.call_args.args[1]
+    assert "未配置 API Key" in final_text and "跳过简历评估" in final_text

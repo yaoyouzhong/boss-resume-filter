@@ -692,3 +692,78 @@ def test_daily_action_summary_separates_timing_and_business_groups():
     assert "# 今天" in text
     assert "## 已打招呼待跟进" in text
     assert "到期：2026-07-18" in text
+
+
+def test_external_candidates_are_blocked_from_boss_contact_flow():
+    candidate = {
+        "geek_id": "ext-abc123def456",
+        "source": "external",
+        "match_score": 80,
+        "qualification_status": "qualified",
+        "followup_status": "未沟通",
+    }
+
+    assert candidate_greet_skip_reason(candidate) == (
+        "外部渠道候选人，无法在 BOSS 上联系"
+    )
+    assert candidate_can_manual_approve_contact(candidate) is False
+
+    decision = derive_candidate_decision(candidate)
+    assert decision.result_view == "推荐候选人"
+    assert "来源渠道" in decision.next_action
+    assert "联系清单" not in decision.next_action
+
+
+def test_external_candidates_use_separate_daily_contact_action():
+    items = build_daily_candidate_actions([
+        {
+            "geek_id": "ext-strong",
+            "source": "external",
+            "match_score": 85,
+            "qualification_status": "qualified",
+            "followup_status": "未沟通",
+        },
+        {
+            "geek_id": "boss-strong",
+            "match_score": 85,
+            "qualification_status": "qualified",
+            "followup_status": "未沟通",
+        },
+    ])
+
+    by_id = {item.candidate["geek_id"]: item for item in items}
+    assert by_id["ext-strong"].group == "待外部联系"
+    assert "来源渠道" in by_id["ext-strong"].action
+    assert by_id["boss-strong"].group == "待打招呼"
+
+
+def test_boss_scan_records_without_source_keep_existing_contact_behavior():
+    candidate = {
+        "geek_id": "boss-1",
+        "match_score": 80,
+        "qualification_status": "qualified",
+        "followup_status": "未沟通",
+    }
+
+    assert candidate_greet_skip_reason(candidate) == ""
+    assert derive_candidate_decision(candidate).next_action == (
+        "加入联系清单，统一确认后发送。"
+    )
+
+
+def test_result_view_external_import_filters_by_source_regardless_of_outcome():
+    """外部导入视图按来源过滤，与筛选结论正交（含淘汰与低分记录）。"""
+    candidates = [
+        {"geek_id": "boss-1", "match_score": 80, "qualification_status": "qualified"},
+        {"geek_id": "ext-1", "source": "external", "match_score": 70,
+         "qualification_status": "qualified"},
+        {"geek_id": "ext-2", "source": "external", "match_score": 0,
+         "qualification_status": "rejected"},
+        # 缺失 source 的历史记录一律视为 BOSS 扫描来源
+        {"geek_id": "boss-2", "source": "", "match_score": 60,
+         "qualification_status": "qualified"},
+    ]
+    view = filter_candidates_by_result_view(candidates, "外部导入")
+    assert [c["geek_id"] for c in view] == ["ext-1", "ext-2"]
+    # 其他视图行为不受影响
+    assert len(filter_candidates_by_result_view(candidates, "全部记录")) == 4

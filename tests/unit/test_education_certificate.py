@@ -89,6 +89,15 @@ def test_k3_is_recognized_as_vision_capable():
     }) is True
 
 
+def test_minimax_m3_is_recognized_as_vision_capable():
+    """MiniMax M3 支持图片输入，不应触发学历核验的能力警告。"""
+    assert likely_supports_vision({
+        "api_provider": "minimax",
+        "base_url": "https://api.minimaxi.com/v1",
+        "model": "MiniMax-M3",
+    }) is True
+
+
 def test_kimi_code_image_recognition_uses_larger_output_budget():
     from unittest.mock import patch
 

@@ -100,6 +100,50 @@ def test_result_view_keeps_low_score_ai_context_and_rejected_records():
     assert rows["rejected"].tag == "rejected"
 
 
+def test_result_view_shows_reference_score_for_rejected_records():
+    """淘汰记录行：match_score 固定为 0 时，匹配分列展示 rule_score 参考分。"""
+    candidates = [
+        {
+            "geek_id": "rejected-with-ref",
+            "name": "丁小飞",
+            "match_score": 0,
+            "rule_score": 42,
+            "qualification_status": "rejected",
+        },
+        {
+            "geek_id": "rejected-no-ref",
+            "name": "旧记录",
+            "match_score": 0,
+            "qualification_status": "rejected",
+        },
+        {
+            "geek_id": "passed-normal",
+            "name": "正常通过",
+            "match_score": 72,
+            "rule_score": 72,
+        },
+    ]
+
+    state = prepare_result_view(
+        candidates,
+        ResultQuery(result_view="淘汰记录", now=100.0),
+    )
+
+    rows = {row.candidate["geek_id"]: row for row in state.rows}
+    assert rows["rejected-with-ref"].values[5] == 42
+    assert rows["rejected-no-ref"].values[5] == 0
+    assert [row.candidate["geek_id"] for row in state.rows] == [
+        "rejected-with-ref",
+        "rejected-no-ref",
+    ]
+    assert candidate_query_match(candidates[0], ">=40") == "score"
+    assert candidate_query_match(candidates[0], ">50") is None
+    # 正常候选人的分数列不受参考分逻辑影响
+    normal_state = prepare_result_view(candidates, ResultQuery(now=100.0))
+    normal_rows = {row.candidate["geek_id"]: row for row in normal_state.rows}
+    assert normal_rows["passed-normal"].values[5] == 72
+
+
 def test_result_view_reports_expired_ai_feedback_without_mutating_input_map():
     feedback = {
         "candidate": {
@@ -167,3 +211,28 @@ def test_result_search_and_sort_rules_are_controller_owned():
     assert candidate_query_match(candidate, ">80") is None
     assert result_sort_value("salary", "15-25K") == (True, 20.0)
     assert result_sort_value("score", "—") == (False, 0.0)
+
+
+def test_result_view_keeps_low_score_candidates_with_imported_resume():
+    candidates = [
+        {
+            "geek_id": "ext-low",
+            "name": "外部低分",
+            "match_score": 25,
+            "resume_file": "resumes/abc.txt",
+            "source": "external",
+        },
+        {
+            "geek_id": "scan-low",
+            "name": "扫描低分",
+            "match_score": 25,
+        },
+    ]
+
+    state = prepare_result_view(
+        candidates,
+        ResultQuery(result_view="淘汰记录"),
+    )
+
+    assert state.visible_count == 1
+    assert [row.candidate["geek_id"] for row in state.rows] == ["ext-low"]

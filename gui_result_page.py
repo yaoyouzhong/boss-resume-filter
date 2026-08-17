@@ -94,6 +94,8 @@ class ResultPageHost(Protocol):
 
     def show_candidate_state_diagnostics(self) -> None: ...
 
+    def import_external_candidate(self) -> None: ...
+
     def export_excel(self) -> None: ...
 
     def clear_candidates(self) -> None: ...
@@ -356,7 +358,7 @@ def build_result_page(
     view_combo = ttk.Combobox(
         search_frame,
         textvariable=view_var,
-        values=("推荐候选人", "复核通过", "待复核", "淘汰记录", "全部记录"),
+        values=("推荐候选人", "复核通过", "待复核", "淘汰记录", "外部导入", "全部记录"),
         width=11,
         state="readonly",
         font=host.font_label,
@@ -596,10 +598,18 @@ def build_result_page(
     greet_queue_badge.bind("<Leave>", host.feedback_support.hide_tooltip)
 
     state_check_icon = host.icons.button("health_shield", host.colors["primary"])
+    import_icon = host.icons.button("import", host.colors["primary"])
     export_icon = host.icons.button("export", host.colors["text_primary"])
     clear_icon = host.icons.button("trash", host.colors["danger"])
     more_menu = tk.Menu(button_inner, tearoff=0, font=host.font_label)
-    more_menu._icon_refs = [state_check_icon, export_icon, clear_icon]
+    more_menu._icon_refs = [state_check_icon, import_icon, export_icon, clear_icon]
+    more_menu.add_command(
+        label=" 导入外部候选人",
+        image=import_icon,
+        compound=tk.LEFT,
+        command=host.import_external_candidate,
+    )
+    more_menu.add_separator()
     more_menu.add_command(
         label=" 候选人状态体检",
         image=state_check_icon,

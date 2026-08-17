@@ -148,3 +148,33 @@ def test_model_probe_uses_explicit_key_and_returns_plain_outcome():
     assert seen["api_key"] == "one-shot-secret"
     assert seen["force"] is True
     assert vars(SettingsController()) == {}
+
+
+def test_default_api_config_disables_external_import_ai_enhance():
+    config = SettingsController.default_api_config()
+    assert config["external_import_ai_enhance"] is False
+    assert config["external_import_ai_resume_eval"] is False
+
+
+def test_prepare_saved_models_preserves_external_import_ai_enhance_switch():
+    """保存任意模型不得抹掉外部导入 AI 增强开关。"""
+    controller = SettingsController()
+    outcome = controller.prepare_saved_models(
+        {
+            "external_import_ai_enhance": True,
+            "external_import_ai_resume_eval": True,
+        },
+        [],
+        provider="qwen",
+        base_url="https://example.test/v1",
+        model_name="qwen-a",
+        pending_models=(),
+        api_key="secret",
+        llm_read_timeout=60,
+    )
+    assert outcome.api_config["external_import_ai_enhance"] is True
+    assert outcome.api_config["external_import_ai_resume_eval"] is True
+
+    clean = SettingsController.sanitize_for_save(outcome.api_config)
+    assert clean["external_import_ai_enhance"] is True
+    assert clean["external_import_ai_resume_eval"] is True

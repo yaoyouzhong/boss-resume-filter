@@ -13,7 +13,6 @@ from constants import (
     SCORE_THRESHOLD_PASS,
     SCORE_THRESHOLD_RECOMMEND,
     SCORE_THRESHOLD_STRONG,
-    USER_AGENT,
     LLM_MAX_TOKENS,
     LLM_TEMPERATURE,
     LLM_CONNECT_TIMEOUT,
@@ -1053,20 +1052,26 @@ def evaluate_batch(
                     # 固化规则分（幂等：已存在则写回相同值，确保后续撤回/二次评估可还原）
                     candidate['rule_score'] = rule_score
 
+                    # 已被规则淘汰的候选人：AI 评估只记录元数据与硬条件复核结论，
+                    # 冻结分数和推荐等级（AI 调整分不推翻规则淘汰结论）。
+                    already_rejected = candidate.get('qualification_status') == 'rejected'
+
                     # 简历二次评估已存在时，一次评估的调整值不计入最终分（resume 替代语义）；
                     # 一次评估仅记录元数据 + 硬条件复核 + 维度评分，不改写 match_score
                     has_resume = candidate.get('resume_eval_adjustment') is not None
-                    if has_resume:
+                    if already_rejected or has_resume:
                         new_score = candidate.get('match_score', rule_score)
                     else:
                         new_score = max(0, min(100, rule_score + result.adjustment))
-                    candidate['match_score'] = new_score
-                    candidate['recommend_level'] = _recalc_recommend_level(new_score)
+                    if not already_rejected:
+                        candidate['match_score'] = new_score
+                        candidate['recommend_level'] = _recalc_recommend_level(new_score)
 
                     # 同步 score_breakdown：ai_adjustment 记一次评估值；total 为最终分
-                    # （有简历评估时 total = rule+resume_adj = match_score，拆解合计仍=总分）
+                    # （有简历评估时 total = rule+resume_adj = match_score，拆解合计仍=总分；
+                    # 已淘汰候选人保持拆解与参考规则分一致，不叠加 AI 调整）
                     breakdown = candidate.get('score_breakdown')
-                    if isinstance(breakdown, dict):
+                    if isinstance(breakdown, dict) and not already_rejected:
                         breakdown['ai_adjustment'] = result.adjustment
                         breakdown['total'] = new_score
 
@@ -1085,7 +1090,7 @@ def evaluate_batch(
                     validated_failures = _validated_hard_failures(
                         candidate, result.hard_condition_findings, hard_conditions, rule
                     )
-                    if validated_failures:
+                    if validated_failures and not already_rejected:
                         candidate['qualification_status'] = 'rejected'
                         candidate['qualification_reasons'] = [
                             f"AI发现并经规则复核：{item.get('condition')}"
@@ -1098,7 +1103,12 @@ def evaluate_batch(
 
                     sign = "+" if result.adjustment > 0 else ""
                     log_summary = _format_ai_log_summary(candidate, clean_reason, new_score)
-                    if has_resume:
+                    if already_rejected:
+                        print(
+                            f"  [{idx+1}/{total}] {name}：已淘汰记录，AI 调整 "
+                            f"{sign}{result.adjustment} 仅作参考（分数冻结）｜{log_summary}"
+                        )
+                    elif has_resume:
                         print(
                             f"  [{idx+1}/{total}] {name}：规则分 {rule_score}，最终分 {new_score}"
                             f"（一次评估 {sign}{result.adjustment} 不计入，简历评估替代）｜{log_summary}"
@@ -1222,6 +1232,11 @@ def evaluate_with_resume(
         # 简历二次评估的维度评分（基于完整简历，替代一次评估的维度评分显示）；非空才存
         if result.dimension_scores:
             candidate["resume_eval_dimension_scores"] = result.dimension_scores
+
+        # 已被规则淘汰的候选人：记录评估意见但不改写分数与推荐等级
+        # （AI 调整分不推翻规则淘汰结论；淘汰记录的 match_score 由存储层固定为 0）
+        if candidate.get("qualification_status") == "rejected":
+            return result
 
         # Resume evaluation replaces first-round adjustment (not stacked)
         rule_score = candidate.get("rule_score", candidate.get("match_score", 0))

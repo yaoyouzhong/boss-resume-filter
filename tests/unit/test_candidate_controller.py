@@ -300,6 +300,57 @@ def test_resume_evaluation_persists_only_second_evaluation_fields():
     assert "unrelated_transient" not in records[0]
 
 
+def test_reassign_job_updates_by_old_identity_and_mirrors_active_candidate():
+    """调岗先按旧身份定位记录，再应用新 job_uuid 并清除旧岗位语境字段。"""
+    records = [
+        {
+            "geek_id": "ext-abc",
+            "job_uuid": JOB_UUID_A,
+            "job_name": "Java",
+            "match_score": 55,
+            "resume_eval_adjustment": 8,
+            "review_passed_at": "t0",
+            "feedback_status": "合适",
+        },
+        {
+            "geek_id": "ext-xyz",
+            "job_uuid": JOB_UUID_B,
+            "job_name": "Python",
+            "match_score": 61,
+        },
+    ]
+    active = dict(records[0])
+    temp_dir, _backend, controller = _controller(records)
+    try:
+        updated = controller.reassign_job(
+            active,
+            {
+                "job_uuid": JOB_UUID_B,
+                "job_name": "Python",
+                "match_score": 72,
+                "rule_score": 72,
+            },
+            ("resume_eval_adjustment", "review_passed_at"),
+        )
+    finally:
+        temp_dir.cleanup()
+
+    assert updated is True
+    # 持久化记录被旧身份命中并换到新岗位，旧评估/复核字段被清除
+    assert records[0]["job_uuid"] == JOB_UUID_B
+    assert records[0]["job_name"] == "Python"
+    assert records[0]["match_score"] == 72
+    assert "resume_eval_adjustment" not in records[0]
+    assert "review_passed_at" not in records[0]
+    # 用户业务历史保留，其他记录不受影响
+    assert records[0]["feedback_status"] == "合适"
+    assert records[1]["match_score"] == 61
+    # 内存中的候选人镜像同一变更
+    assert active["job_uuid"] == JOB_UUID_B
+    assert active["match_score"] == 72
+    assert "resume_eval_adjustment" not in active
+
+
 def test_resume_revert_restores_pre_resume_score_and_clears_resume_state():
     records = [{
         "geek_id": "g1",
@@ -330,3 +381,79 @@ def test_resume_revert_restores_pre_resume_score_and_clears_resume_state():
     assert records[0]["recommend_level"] == "推荐"
     assert records[0]["score_breakdown"] == {"total": 70}
     assert "resume_path" not in active
+
+
+def test_resume_revert_keeps_rejected_candidate_score_frozen():
+    """已淘汰记录撤回简历评估：只清除评估状态，分数与推荐等级保持冻结。"""
+    records = [{
+        "geek_id": "g1",
+        "job_name": "Java",
+        "rule_score": 42,
+        "llm_adjustment": 15,
+        "match_score": 0,
+        "recommend_level": "未通过",
+        "qualification_status": "rejected",
+        "resume_eval_adjustment": 10,
+        "resume_path": "resumes/g1.pdf",
+        "score_breakdown": {"base": 25, "skill": 12, "resume_adjustment": 10, "total": 42},
+    }]
+    active = dict(records[0])
+    temp_dir, _backend, controller = _controller(records)
+    try:
+        outcome = controller.revert_resume_evaluation(
+            active,
+            resolve_rule_score=lambda candidate: candidate["rule_score"],
+            recalc_recommend_level=lambda score: "推荐" if score >= 65 else "待定",
+            resume_state_fields=("resume_eval_adjustment", "resume_path"),
+        )
+    finally:
+        temp_dir.cleanup()
+
+    assert outcome.updated is True
+    assert outcome.score == 0, "淘汰记录撤回不产生分数变化"
+    assert records[0]["match_score"] == 0
+    assert records[0]["recommend_level"] == "未通过"
+    assert records[0]["rule_score"] == 42
+    assert records[0]["score_breakdown"]["total"] == 42
+    assert "resume_adjustment" not in records[0]["score_breakdown"]
+    assert "resume_path" not in records[0]
+
+
+def test_resume_revert_with_reduced_fields_keeps_external_resume_reference():
+    """外部候选人撤销评估传缩减字段集：清评估字段但保留简历文件引用。
+
+    外部记录的受管简历副本就是档案本体，引用被清会失去原件且无法再评分。
+    """
+    records = [{
+        "geek_id": "ext-1",
+        "job_name": "Java",
+        "source": "external",
+        "rule_score": 65,
+        "llm_adjustment": 0,
+        "match_score": 77,
+        "recommend_level": "强烈推荐",
+        "resume_eval_adjustment": 12,
+        "resume_eval_at": "20260817_100000",
+        "resume_file": "resumes/ext-1.docx",
+        "resume_original_name": "鲍佳佳.docx",
+        "resume_imported_at": "2026-08-17 10:00:00",
+        "score_breakdown": {"resume_adjustment": 12, "total": 77},
+    }]
+    active = dict(records[0])
+    temp_dir, _backend, controller = _controller(records)
+    try:
+        outcome = controller.revert_resume_evaluation(
+            active,
+            resolve_rule_score=lambda candidate: candidate["rule_score"],
+            recalc_recommend_level=lambda score: "推荐" if score >= 65 else "待定",
+            resume_state_fields=("resume_eval_adjustment", "resume_eval_at"),
+        )
+    finally:
+        temp_dir.cleanup()
+
+    assert outcome.updated is True
+    assert records[0]["resume_file"] == "resumes/ext-1.docx"
+    assert records[0]["resume_original_name"] == "鲍佳佳.docx"
+    assert records[0]["resume_imported_at"] == "2026-08-17 10:00:00"
+    assert "resume_eval_adjustment" not in records[0]
+    assert "resume_eval_at" not in records[0]

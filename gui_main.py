@@ -51,6 +51,7 @@ import gui_contact_queue
 import gui_config_page
 import gui_data_maintenance_dialogs
 import gui_education_page
+import gui_external_edit_dialog
 import gui_feedback_support
 import gui_home_page
 import gui_input_support
@@ -73,6 +74,7 @@ from result_controller import (
     candidate_query_match,
     result_cache_key,
     result_sort_value,
+    candidate_result_score,
 )
 from gui_app_shell import PAGE_SPECS, TRAFFIC_LIGHT_BASE_SIZE, PageIndex
 import run_presenter
@@ -85,12 +87,6 @@ from ui_windowing import (
     place_window_centered as _place_window_centered,
 )
 from subprocess_utils import hidden_subprocess
-
-subprocess = hidden_subprocess(subprocess)
-
-logger = logging.getLogger(__name__)
-
-
 from collections import Counter
 from candidate_workflow import (
     CONTACTED_FOLLOWUP_STATUSES,
@@ -101,6 +97,7 @@ from candidate_workflow import (
     default_next_followup_at,
     derive_candidate_decision,
     format_followup_due_at,
+    is_external_candidate,
     normalize_followup_at,
     summarize_daily_candidate_actions,
 )
@@ -193,7 +190,22 @@ from resume_parser import (
     UnsupportedResumeFormatError,
     parse_resume_text,
 )
+from legacy_doc_converter import LegacyDocConversionError
 import gui_dialogs
+import gui_external_import_dialog
+from external_import_service import (
+    BATCH_STATUS_FAILED,
+    BATCH_STATUS_IMPORTED,
+    BATCH_STATUS_REJECTED,
+    BATCH_STATUS_SKIPPED_DUPLICATE,
+    ExternalImportDuplicateError,
+    ExternalImportPersistenceError,
+    find_external_duplicate,
+    guess_name_from_filename,
+    import_external_candidate as _import_external_candidate_record,
+    import_external_candidates as _import_external_candidates_batch,
+    update_external_candidate_profile,
+)
 from ui_messagebox import messagebox
 
 # ========== 路径常量 - 解决相对路径问题 ==========
@@ -204,6 +216,9 @@ from paths import (
     ensure_config_files,
     get_api_config_path,
 )
+
+subprocess = hidden_subprocess(subprocess)
+logger = logging.getLogger(__name__)
 
 CONFIG_PATH = BASE_DIR / "job_config.json"
 CANDIDATES_PATH = BASE_DIR / "candidates_all.json"
@@ -2862,8 +2877,9 @@ class BossFilterGUI:
             )
             if has_image:
                 from education_certificate import likely_supports_vision
-                if not likely_supports_vision(dict(self.api_config or {})):
-                    model_name = str((self.api_config or {}).get("model") or "未配置")
+                edu_config = self._get_education_api_config()
+                if not likely_supports_vision(edu_config):
+                    model_name = str(edu_config.get("model") or "未配置")
                     messagebox.show_notice(
                         "图片识别模型提醒",
                         headline="当前模型可能无法识别图片",
@@ -2873,7 +2889,7 @@ class BossFilterGUI:
                         detail=(
                             "可选视觉模型示例：\n"
                             "国外：GPT-4o / GPT-4.1、Claude Sonnet 4、Gemini 2.5 Pro\n"
-                            "国内：qwen3.7-plus、mimo-v2.5、GLM-5V、Kimi K2.5、MiniMax-M2.7"
+                            "国内：qwen3.7-plus、mimo-v2.5、GLM-5V、Kimi K2.5、MiniMax-M3"
                         ),
                         parent=self.root,
                     )
@@ -3229,7 +3245,7 @@ class BossFilterGUI:
                     detail=(
                         "可选视觉模型示例：\n"
                         "国外：GPT-4o / GPT-4.1、Claude Sonnet 4、Gemini 2.5 Pro\n"
-                        "国内：qwen3.7-plus、mimo-v2.5、GLM-5V、Kimi K2.5、MiniMax-M2.7\n\n"
+                        "国内：qwen3.7-plus、mimo-v2.5、GLM-5V、Kimi K2.5、MiniMax-M3\n\n"
                         "PDF 使用文本提取，不受图片模型限制。"
                     ),
                     yes_label="仍然尝试",
@@ -4281,6 +4297,7 @@ class BossFilterGUI:
         salary, exp = self._parse_salary_exp(
             candidate.get('summary', ''),
             candidate.get('structured'),
+            record=candidate,
         )
         ai_adjustment = candidate.get('llm_adjustment')
         resume_adjustment = candidate.get('resume_eval_adjustment')
@@ -4602,6 +4619,12 @@ class BossFilterGUI:
                         "fetched_models": config.get("fetched_models", {}),
                         "llm_read_timeout": config.get("llm_read_timeout"),
                         "education_model_ref": config.get("education_model_ref"),
+                        "external_import_ai_enhance": bool(
+                            config.get("external_import_ai_enhance")
+                        ),
+                        "external_import_ai_resume_eval": bool(
+                            config.get("external_import_ai_resume_eval")
+                        ),
                     }
 
                     # 从 keyring 读取所有 saved_models 的 API Key（按服务商）
@@ -4673,6 +4696,20 @@ class BossFilterGUI:
             text=f"✓ 学历核验模型已设为 {provider_display} / {model_config.get('model', '')}",
             foreground=self.colors['success'],
         )
+
+    def _set_external_import_ai_enhance(self, enabled):
+        """持久化外部导入「AI 增强识别」开关（用户级偏好，随模型配置保存）。"""
+        if not hasattr(self, 'api_config') or not self.api_config:
+            return
+        self.api_config["external_import_ai_enhance"] = bool(enabled)
+        self._save_api_config_to_file()
+
+    def _set_external_import_ai_resume_eval(self, enabled):
+        """持久化外部导入“AI 简历评估”独立授权开关。"""
+        if not hasattr(self, 'api_config') or not self.api_config:
+            return
+        self.api_config["external_import_ai_resume_eval"] = bool(enabled)
+        self._save_api_config_to_file()
 
     def _test_assigned_model(self, role):
         """复用模型库连通性测试，测试指定用途当前实际使用的模型。"""
@@ -4859,8 +4896,14 @@ class BossFilterGUI:
 
     def _update_ai_eval_status(self):
         """更新 AI 评估状态标签和 checkbox 默认值（根据当前 API Key 是否已配置）"""
-        if not hasattr(self, 'ai_status_label'):
+        label = getattr(self, 'ai_status_label', None)
+        if label is None:
             return  # UI 尚未创建完成
+        try:
+            if not label.winfo_exists():
+                return  # 运行页已重建，旧标签随页面销毁
+        except tk.TclError:
+            return
         has_key = bool(self.api_config.get("api_key"))
         has_model_config = bool(
             has_key
@@ -7800,7 +7843,12 @@ class BossFilterGUI:
                 try:
                     callback()
                 except Exception as e:
-                    print(f"[UI 队列] 回调执行失败: {e}")
+                    # 带上回调身份：页面重建后迟到的回调打控件是已知竞态，
+                    # 仅记异常文本无法定位是哪个回调。
+                    callback_name = getattr(
+                        callback, "__qualname__", None
+                    ) or getattr(callback, "__name__", None) or type(callback).__name__
+                    print(f"[UI 队列] 回调执行失败（{callback_name}）: {e}")
         except queue.Empty:
             pass
         self.root.after(50, self._process_ui_queue)
@@ -8473,9 +8521,9 @@ class BossFilterGUI:
 
 
     @staticmethod
-    def _parse_salary_exp(summary, structured=None):
+    def _parse_salary_exp(summary, structured=None, record=None):
         """Keep the historical GUI entry point as a presenter delegate."""
-        return candidate_presenter.parse_salary_experience(summary, structured)
+        return candidate_presenter.parse_salary_experience(summary, structured, record=record)
 
 
     def _capture_run_request(self):
@@ -9147,6 +9195,8 @@ class BossFilterGUI:
             return "尚未记录后续处理结果"
         if item.group == "待完成简历评估":
             return "已导入简历，尚未重新评分"
+        if item.group == "待外部联系":
+            return self._clip_table_text(reason or "尚未通过来源渠道联系", 28)
         if item.group == "待打招呼":
             if "重新扫描" in action:
                 return "缺少联系条件，需重新扫描岗位"
@@ -9223,6 +9273,7 @@ class BossFilterGUI:
             greet_sent=bool(candidate.get("greet_sent")),
             followup_status=followup_status,
             blacklisted=bool(candidate.get("blacklisted")),
+            is_external=is_external_candidate(candidate),
         )
         callbacks = gui_candidate_menus.WorkflowCandidateMenuCallbacks(
             view_detail=lambda: self._open_candidate_review_workbench(candidate),
@@ -9253,10 +9304,10 @@ class BossFilterGUI:
             ),
             verify_sent=lambda: self._focus_candidate_in_greet_queue(candidate),
             import_resume=lambda: (
-                self._import_resume(
-                    None,
-                    candidate=candidate,
-                    parent=parent,
+                (
+                    self._retry_external_resume_evaluation(candidate, parent=parent)
+                    if is_external_candidate(candidate)
+                    else self._import_resume(None, candidate=candidate, parent=parent)
                 ),
                 refresh_later(),
             ),
@@ -9616,7 +9667,7 @@ class BossFilterGUI:
         matches = [
             candidate for candidate in filtered_ref[0]
             if candidate.get('name') == values[0]
-            and str(candidate.get('match_score', '')) == str(values[score_index])
+            and str(candidate_result_score(candidate)) == str(values[score_index])
         ]
         return matches[0] if len(matches) == 1 else None
 
@@ -9815,6 +9866,7 @@ class BossFilterGUI:
             has_resume_adjustment=(
                 candidate.get("resume_eval_adjustment") is not None
             ),
+            can_edit_external_info=self._candidate_can_edit_external_info(candidate),
             needs_review=decision.review_status == "pending",
             can_confirm_review=can_confirm_review,
             queue_action=queue_action,
@@ -9823,14 +9875,23 @@ class BossFilterGUI:
         callbacks = gui_candidate_menus.CandidateContextMenuCallbacks(
             view_detail=show_detail_fn,
             evaluate_ai=lambda: self._ai_eval_selected_candidates([candidate]),
-            import_resume=lambda: self._import_resume(
+            import_resume=lambda: (
+                self._retry_external_resume_evaluation(candidate, parent=parent)
+                if is_external_candidate(candidate)
+                else self._import_resume(
+                    None,
+                    candidate=candidate,
+                    parent=parent,
+                    tree=tree,
+                    tree_item=tree_item,
+                )
+            ),
+            revert_resume_evaluation=lambda: self._revert_resume_eval(
                 None,
                 candidate=candidate,
                 parent=parent,
-                tree=tree,
-                tree_item=tree_item,
             ),
-            revert_resume_evaluation=lambda: self._revert_resume_eval(
+            edit_external_info=lambda: self._edit_external_candidate_info(
                 None,
                 candidate=candidate,
                 parent=parent,
@@ -9903,7 +9964,7 @@ class BossFilterGUI:
             return None
         score = values[score_index]
         for c in getattr(self, 'result_tree_data', []):
-            if c.get('name') == name and str(c.get('match_score', '')) == str(score):
+            if c.get('name') == name and str(candidate_result_score(c)) == str(score):
                 return c
         return None
 
@@ -9956,6 +10017,231 @@ class BossFilterGUI:
             timestamp=timestamp,
         )
 
+    def _show_resume_file_error(self, exc, filepath, parent=None):
+        """Show the shared dialog for resume parse/copy/persist failures."""
+        if isinstance(exc, ResumeParserDependencyError):
+            messagebox.show_notice(
+                f"无法解析 {exc.format_name} 简历",
+                headline=f"当前环境缺少 {exc.format_name} 解析组件",
+                message=f"安装 {exc.package_name} 后可继续导入该文件。",
+                detail=f"安装命令：pip install {exc.package_name}",
+                parent=self.root,
+            )
+            return
+        if isinstance(exc, ResumeTextReadError):
+            is_html = exc.format_name == "HTML"
+            messagebox.show_failure(
+                "读取简历",
+                headline="未能读取 HTML 简历" if is_html else "未能读取简历文本",
+                message="无法使用常见编码读取这个文件。",
+                detail=Path(filepath).name,
+                notice=(
+                    "请确认文件内容完整后重试。"
+                    if is_html
+                    else "请确认文件是有效的纯文本文件后重试。"
+                ),
+                parent=parent or self.root,
+            )
+            return
+        if isinstance(exc, LegacyDocConversionError):
+            messagebox.show_notice(
+                "无法导入简历",
+                headline="旧版 .doc 自动转换未完成",
+                message=exc.reason,
+                detail=Path(filepath).name,
+                notice=(
+                    "可手动用 Word 打开后「另存为」.docx 再导入；"
+                    "反复失败请确认本机 Word 能正常打开该文件。"
+                ),
+                parent=parent or self.root,
+            )
+            return
+        if isinstance(exc, UnsupportedResumeFormatError):
+            messagebox.show_notice(
+                "无法导入简历",
+                headline="不支持这种文件格式",
+                message="请选择 PDF、Word（含旧版 .doc）、TXT、MD、RTF 或 HTML 文件。",
+                metrics=(("当前格式", exc.extension or "无扩展名"),),
+                detail=Path(filepath).name,
+                parent=parent or self.root,
+            )
+            return
+        if isinstance(exc, ResumeContentTooShortError):
+            messagebox.show_notice(
+                "简历内容过少",
+                headline="提取到的文本不足以评估",
+                message="这个文件可能不是有效简历，或主要内容无法被当前解析器读取。",
+                metrics=(("提取文本", f"{exc.text_length} 字"),),
+                notice="可将文件转换为可复制文本的 PDF 或 DOCX 后重试。",
+                parent=parent or self.root,
+            )
+            return
+        if isinstance(exc, ResumeCopyError):
+            messagebox.show_failure(
+                "保存简历",
+                headline="简历文件未保存",
+                message="无法将所选文件复制到受管简历目录。",
+                detail=str(exc),
+                notice="请检查磁盘空间和目录写入权限后重试。",
+                parent=parent or self.root,
+            )
+            return
+        if isinstance(exc, ResumePersistenceError):
+            messagebox.show_failure(
+                "保存简历",
+                headline="简历保存状态需要核对",
+                message="候选人数据保存过程未能正常结束。",
+                detail=str(exc),
+                notice=(
+                    "无法确认最终写入状态，新副本已保留；"
+                    "请刷新后运行简历存储体检。"
+                    if exc.copy_retained
+                    else "候选人引用未写入，新复制的简历已回收。"
+                ),
+                parent=parent or self.root,
+            )
+            return
+        if isinstance(exc, ResumeCandidateNotFoundError):
+            messagebox.show_failure(
+                "保存简历",
+                headline="简历未关联到候选人",
+                message="本地候选人记录已发生变化，本次导入没有保存。",
+                notice="请刷新候选人列表后重新导入。",
+                parent=parent or self.root,
+            )
+            return
+        messagebox.show_failure(
+            "解析简历",
+            headline="简历文件解析失败",
+            message="没有从所选文件中提取到可用内容。",
+            detail=str(exc),
+            notice="请检查文件是否损坏，或转换为 PDF、DOCX 后重试。",
+            parent=parent or self.root,
+        )
+
+    def _retry_external_resume_evaluation(self, candidate, *, parent=None):
+        """Evaluate an external candidate again using its already managed resume text."""
+        _parent = parent or self.root
+        if not is_external_candidate(candidate):
+            return False
+        resume_text = str(candidate.get("summary") or "")
+        if len(resume_text.strip()) < 50:
+            messagebox.show_failure(
+                "简历评估",
+                headline="没有可用于评估的完整简历文本",
+                message="该外部候选人的简历内容缺失或过短。",
+                notice="请重新导入候选人简历。",
+                parent=_parent,
+            )
+            return False
+        geek_id = str(candidate.get("geek_id") or "")
+        if geek_id and geek_id in self._ai_evaluating_ids:
+            messagebox.showinfo("提示", "该候选人的简历正在评估中。", parent=_parent)
+            return False
+        job_requirement, rule = self._get_job_requirement_for_candidates([candidate])
+        if not job_requirement or not rule:
+            messagebox.show_notice(
+                "简历评估",
+                headline="没有找到对应岗位规则",
+                message="请先恢复或重新保存该候选人的归属岗位。",
+                parent=_parent,
+            )
+            return False
+        api_config = self.api_config
+        api_key = self._get_api_key_cached(
+            api_config.get("api_provider", ""), api_config.get("base_url", "")
+        )
+        if not api_key:
+            messagebox.showwarning(
+                "API Key 缺失",
+                "请先在「模型配置」页配置 API Key。",
+                parent=_parent,
+            )
+            return False
+        model_label = " / ".join(
+            part
+            for part in (
+                str(api_config.get("api_provider") or "").strip(),
+                str(api_config.get("model") or "").strip(),
+            )
+            if part
+        ) or "当前默认 AI 模型"
+        if not messagebox.ask_confirmation(
+            "简历评估",
+            headline=f"重新评估 {candidate.get('name') or '该候选人'}？",
+            message="将使用已有完整简历重新计算 AI 调整分。",
+            metrics=(("授权模型", model_label), ("发送范围", "简历文本前 6000 字")),
+            yes_label="开始评估",
+            no_label="取消",
+            parent=_parent,
+        ):
+            return False
+
+        if geek_id:
+            self._ai_evaluating_ids.add(geek_id)
+        self.refresh_results(force=True)
+        hard_conditions = self._format_ai_hard_conditions(rule)
+        name = str(candidate.get("name") or "未命名候选人")
+
+        def _worker():
+            failure = ""
+            try:
+                from llm_eval import evaluate_with_resume
+
+                controller = _candidate_controller_for(self)
+                result = controller.evaluate_resume(
+                    candidate,
+                    resume_text,
+                    job_requirement,
+                    api_config,
+                    api_key,
+                    hard_conditions,
+                    evaluator=evaluate_with_resume,
+                )
+                if not result.success:
+                    failure = result.reason or "模型未返回有效评估结果"
+                elif not controller.persist_resume_evaluation(candidate):
+                    failure = "候选人记录已变化，评估结果没有保存"
+            except Exception as exc:
+                failure = str(exc)
+
+            def _done():
+                self._ai_evaluating_ids.discard(geek_id)
+                self.refresh_results(force=True)
+                self.refresh_home_stats()
+                if failure:
+                    self.append_log(f"[外部简历评估] ✗ {name}: {failure}")
+                    messagebox.show_failure(
+                        "简历评估",
+                        headline=f"{name} 的简历评估未完成",
+                        message="候选人原有记录已保留。",
+                        detail=failure,
+                        notice="修复模型配置或刷新候选人后可再次重试。",
+                        parent=_parent,
+                    )
+                    return
+                adjustment = int(candidate.get("resume_eval_adjustment") or 0)
+                sign = "+" if adjustment > 0 else ""
+                self.append_log(
+                    f"[外部简历评估] ✓ {name}: {sign}{adjustment} "
+                    f"→ 总分 {candidate.get('match_score', '?')}"
+                )
+                messagebox.show_result(
+                    "简历评估",
+                    headline=f"{name} 的简历评估已完成",
+                    metrics=(
+                        ("评估调整", f"{sign}{adjustment}"),
+                        ("最终分", str(candidate.get("match_score", "?"))),
+                    ),
+                    detail=str(candidate.get("resume_eval_reason") or ""),
+                    parent=_parent,
+                )
+
+            self.run_on_ui(_done)
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return True
+
     def _import_resume(self, item, candidate=None, parent=None, tree=None, tree_item=None):
         """导入候选人简历文件并触发二次 AI 评估。"""
         candidate = self._resolve_candidate(item, candidate)
@@ -9967,9 +10253,9 @@ class BossFilterGUI:
         filepath = filedialog.askopenfilename(
             title=f"导入简历 — {candidate.get('name', '')}",
             filetypes=[
-                ("简历文件", "*.pdf *.docx *.txt *.md *.rtf *.html"),
+                ("简历文件", "*.pdf *.docx *.doc *.txt *.md *.rtf *.html"),
                 ("PDF 文件", "*.pdf"),
-                ("Word 文件", "*.docx"),
+                ("Word 文件", "*.docx *.doc"),
                 ("文本文件", "*.txt *.md"),
                 ("RTF 文件", "*.rtf"),
                 ("HTML 文件", "*.html *.htm"),
@@ -9988,93 +10274,8 @@ class BossFilterGUI:
                 persister=persist_candidate_resume,
             )
             resume_text = import_outcome.resume_text
-        except ResumeParserDependencyError as exc:
-            messagebox.show_notice(
-                f"无法解析 {exc.format_name} 简历",
-                headline=f"当前环境缺少 {exc.format_name} 解析组件",
-                message=f"安装 {exc.package_name} 后可继续导入该文件。",
-                detail=f"安装命令：pip install {exc.package_name}",
-                parent=self.root,
-            )
-            return
-        except ResumeTextReadError as exc:
-            is_html = exc.format_name == "HTML"
-            messagebox.show_failure(
-                "读取简历",
-                headline="未能读取 HTML 简历" if is_html else "未能读取简历文本",
-                message="无法使用常见编码读取这个文件。",
-                detail=Path(filepath).name,
-                notice=(
-                    "请确认文件内容完整后重试。"
-                    if is_html
-                    else "请确认文件是有效的纯文本文件后重试。"
-                ),
-                parent=parent or self.root,
-            )
-            return
-        except UnsupportedResumeFormatError as exc:
-            messagebox.show_notice(
-                "无法导入简历",
-                headline="不支持这种文件格式",
-                message="请选择 PDF、DOCX、TXT、MD、RTF 或 HTML 文件。",
-                metrics=(("当前格式", exc.extension or "无扩展名"),),
-                detail=Path(filepath).name,
-                parent=parent or self.root,
-            )
-            return
-        except ResumeContentTooShortError as exc:
-            messagebox.show_notice(
-                "简历内容过少",
-                headline="提取到的文本不足以评估",
-                message="这个文件可能不是有效简历，或主要内容无法被当前解析器读取。",
-                metrics=(("提取文本", f"{exc.text_length} 字"),),
-                notice="可将文件转换为可复制文本的 PDF 或 DOCX 后重试。",
-                parent=parent or self.root,
-            )
-            return
-        except ResumeCopyError as exc:
-            messagebox.show_failure(
-                "保存简历",
-                headline="简历文件未保存",
-                message="无法将所选文件复制到受管简历目录。",
-                detail=str(exc),
-                notice="请检查磁盘空间和目录写入权限后重试。",
-                parent=parent or self.root,
-            )
-            return
-        except ResumePersistenceError as exc:
-            messagebox.show_failure(
-                "保存简历",
-                headline="简历保存状态需要核对",
-                message="候选人数据保存过程未能正常结束。",
-                detail=str(exc),
-                notice=(
-                    "无法确认最终写入状态，新副本已保留；"
-                    "请刷新后运行简历存储体检。"
-                    if exc.copy_retained
-                    else "候选人引用未写入，新复制的简历已回收。"
-                ),
-                parent=parent or self.root,
-            )
-            return
-        except ResumeCandidateNotFoundError:
-            messagebox.show_failure(
-                "保存简历",
-                headline="简历未关联到候选人",
-                message="本地候选人记录已发生变化，本次导入没有保存。",
-                notice="请刷新候选人列表后重新导入。",
-                parent=parent or self.root,
-            )
-            return
-        except Exception as e:
-            messagebox.show_failure(
-                "解析简历",
-                headline="简历文件解析失败",
-                message="没有从所选文件中提取到可用内容。",
-                detail=str(e),
-                notice="请检查文件是否损坏，或转换为 PDF、DOCX 后重试。",
-                parent=parent or self.root,
-            )
+        except Exception as exc:
+            self._show_resume_file_error(exc, filepath, parent)
             return
         if import_outcome.cleanup.failure_count:
             self.append_log(
@@ -10165,13 +10366,18 @@ class BossFilterGUI:
                     hard_conditions,
                     evaluator=evaluate_with_resume,
                 )
+                persistence_error = ""
                 if result.success:
-                    controller.persist_resume_evaluation(candidate)
+                    try:
+                        if not controller.persist_resume_evaluation(candidate):
+                            persistence_error = "候选人记录已变化，评估结果没有保存"
+                    except Exception as exc:
+                        persistence_error = f"评估结果保存失败：{exc}"
 
                 def _on_done():
                     self.refresh_results()
                     self.refresh_home_stats()
-                    if result.success:
+                    if result.success and not persistence_error:
                         sign = "+" if result.adjustment > 0 else ""
                         self.append_log(
                             f"[简历评估] ✓ {name}: {sign}{result.adjustment} "
@@ -10188,12 +10394,13 @@ class BossFilterGUI:
                             parent=_parent,
                         )
                     else:
-                        self.append_log(f"[简历评估] ✗ {name}: {result.reason}")
+                        failure = persistence_error or result.reason
+                        self.append_log(f"[简历评估] ✗ {name}: {failure}")
                         messagebox.show_failure(
                             "简历二次评估",
                             headline=f"{name} 的简历评估未完成",
                             message="简历已保留，候选人分数没有更新。",
-                            detail=result.reason,
+                            detail=failure,
                             notice="请检查模型配置或网络连接后重试。",
                             parent=_parent,
                         )
@@ -10221,6 +10428,988 @@ class BossFilterGUI:
 
         threading.Thread(target=_eval_worker, daemon=True).start()
 
+    def _run_external_import_batch(self, paths, form, callbacks):
+        """后台批量导入外部简历，并对通过筛选者并发完成简历 AI 评估。
+
+        由导入对话框在批量模式下调用；返回停止函数供“取消导入”使用。
+        所有 Tk 更新经 run_on_ui 回到 UI 线程。
+        """
+        job_rules = self._get_job_rules_cached()
+        rule = job_rules.get(form.job_name)
+        if not isinstance(rule, dict) or not rule:
+            messagebox.showerror(
+                "导入外部候选人",
+                f"没有找到岗位「{form.job_name}」的配置，请刷新后重试。",
+                parent=self.root,
+            )
+            callbacks.on_all_done(None, "岗位配置缺失，批量导入未开始。")
+            return lambda: None
+
+        # 配置与密钥在 UI 线程读取后随闭包传入工作线程。
+        api_config = self.api_config
+        api_key = self._get_api_key_cached(
+            api_config.get("api_provider", ""),
+            api_config.get("base_url", ""),
+        )
+        job_requirement = rule.get("original_requirement", "") or (
+            f"岗位：{form.job_name}，{rule.get('min_exp', 0)}年经验，"
+            f"{rule.get('edu', '不限')}学历"
+        )
+        hard_conditions = self._format_ai_hard_conditions(rule)
+        controller = _candidate_controller_for(self)
+        stop_event = threading.Event()
+        profile_enhancer = self._build_external_profile_enhancer(
+            getattr(form, "ai_enhance", False),
+            stop_event=stop_event,
+        )
+
+        def _ui(fn, *args):
+            self.run_on_ui(lambda: fn(*args))
+
+        ui_callbacks = gui_external_import_dialog.ExternalImportBatchCallbacks(
+            on_progress=lambda *args: _ui(callbacks.on_progress, *args),
+            on_import_done=lambda *args: _ui(callbacks.on_import_done, *args),
+            on_eval_progress=lambda *args: _ui(callbacks.on_eval_progress, *args),
+            on_all_done=lambda *args: _ui(callbacks.on_all_done, *args),
+        )
+
+        def _batch_worker():
+            from bossmaster import extract_summary_info
+
+            try:
+                summary = _import_external_candidates_batch(
+                    paths,
+                    job_name=form.job_name,
+                    rule=rule,
+                    source_channel=form.source_channel,
+                    source_note=form.source_note,
+                    candidates_path=CANDIDATES_PATH,
+                    base_dir=BASE_DIR,
+                    parser=self._external_resume_parser,
+                    summary_info_extractor=extract_summary_info,
+                    profile_enhancer=profile_enhancer,
+                    progress_callback=ui_callbacks.on_progress,
+                    stop_event=stop_event,
+                )
+            except Exception as exc:
+                def _fatal(error=exc):
+                    self.append_log(f"[外部批量导入] ✗ 导入异常中断：{error}")
+                    self.refresh_results(force=True)
+                    self.refresh_home_stats()
+                    messagebox.show_failure(
+                        "导入外部候选人",
+                        headline="批量导入异常中断",
+                        message="已完成的导入会保留。",
+                        detail=str(error),
+                        parent=self.root,
+                    )
+                    callbacks.on_all_done(None, "批量导入异常中断，已完成的导入保留。")
+                self.run_on_ui(_fatal)
+                return
+
+            imported = [
+                item for item in summary.items
+                if item.status == BATCH_STATUS_IMPORTED
+            ]
+            profile_note = self._external_profile_batch_note(summary)
+            # 自动简历评估只覆盖通过筛选线（≥55 分）的导入者；
+            # 低分保留在淘汰记录的候选人不自动消耗 AI 配额，可右键手动补评。
+            eval_targets = [
+                item for item in imported
+                if item.score >= SCORE_THRESHOLD_PASS
+            ]
+
+            def _after_import():
+                self.refresh_results(force=True)
+                self.refresh_home_stats()
+                self.append_log(
+                    f"[外部批量导入] 成功 {len(imported)}，未通过 "
+                    f"{summary.count(BATCH_STATUS_REJECTED)}，重复跳过 "
+                    f"{summary.count(BATCH_STATUS_SKIPPED_DUPLICATE)}，失败 "
+                    f"{summary.count(BATCH_STATUS_FAILED)}"
+                )
+                for item in summary.items:
+                    if item.status == BATCH_STATUS_FAILED:
+                        self.append_log(
+                            f"[外部批量导入] ✗ {item.name}：{item.reason}"
+                        )
+                callbacks.on_import_done(summary)
+            self.run_on_ui(_after_import)
+
+            if stop_event.is_set():
+                self.run_on_ui(
+                    lambda: callbacks.on_all_done(
+                        summary,
+                        f"已取消；已导入的候选人保留，未开始简历评估{profile_note}。",
+                    )
+                )
+                return
+            if not getattr(form, "ai_resume_eval", False):
+                self.run_on_ui(
+                    lambda: callbacks.on_all_done(
+                        summary,
+                        f"已按本次选择跳过 AI 简历评估{profile_note}。",
+                    )
+                )
+                return
+            if not eval_targets:
+                self.run_on_ui(
+                    lambda: callbacks.on_all_done(
+                        summary,
+                        f"没有通过筛选的候选人，未进行简历评估{profile_note}。",
+                    )
+                )
+                return
+            if not api_key:
+                self.run_on_ui(
+                    lambda: callbacks.on_all_done(
+                        summary,
+                        "未配置 API Key，已跳过简历评估；"
+                        "可稍后通过右键菜单逐个补评"
+                        f"{profile_note}。",
+                    )
+                )
+                return
+
+            def _mark_resume_evaluating():
+                for item in eval_targets:
+                    geek_id = str(item.candidate.get("geek_id", ""))
+                    if geek_id:
+                        self._ai_evaluating_ids.add(geek_id)
+                self.refresh_results(force=True)
+
+            self.run_on_ui(_mark_resume_evaluating)
+
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            eval_total = len(eval_targets)
+            eval_state = {"done": 0, "ok": 0, "fail": 0}
+
+            def _eval_one(item):
+                from llm_eval import evaluate_with_resume
+
+                try:
+                    result = controller.evaluate_resume(
+                        item.candidate,
+                        item.resume_text,
+                        job_requirement,
+                        api_config,
+                        api_key,
+                        hard_conditions,
+                        evaluator=evaluate_with_resume,
+                    )
+                except Exception as exc:
+                    return False, str(exc)
+                if result.success:
+                    try:
+                        if not controller.persist_resume_evaluation(item.candidate):
+                            return False, "候选人记录已变化，评估结果没有保存"
+                    except Exception as exc:
+                        return False, f"评估结果保存失败：{exc}"
+                    return True, ""
+                return False, result.reason
+
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                futures = {pool.submit(_eval_one, item): item for item in eval_targets}
+                for future in as_completed(futures):
+                    item = futures[future]
+                    ok, reason = future.result()
+                    eval_state["done"] += 1
+                    eval_state["ok" if ok else "fail"] += 1
+
+                    def _eval_done(item=item, ok=ok, reason=reason):
+                        geek_id = str(item.candidate.get("geek_id", ""))
+                        self._ai_evaluating_ids.discard(geek_id)
+                        self.refresh_results()
+                        if ok:
+                            adjustment = item.candidate.get("resume_eval_adjustment", 0)
+                            sign = "+" if adjustment > 0 else ""
+                            self.append_log(
+                                f"[外部批量导入] ✓ {item.name}: {sign}{adjustment} "
+                                f"→ 总分 {item.candidate.get('match_score', '?')}"
+                            )
+                        else:
+                            self.append_log(
+                                f"[外部批量导入] ✗ {item.name} 简历评估：{reason}"
+                            )
+                        callbacks.on_eval_progress(
+                            eval_state["done"], eval_total, item.name
+                        )
+
+                    self.run_on_ui(_eval_done)
+
+            line = f"简历评估完成 {eval_state['ok']} 人"
+            if eval_state["fail"]:
+                line += f"，{eval_state['fail']} 人未完成（可右键补评）"
+            line += f"{profile_note}。"
+
+            def _all_done(final_line=line):
+                self.refresh_results(force=True)
+                self.refresh_home_stats()
+                callbacks.on_all_done(summary, final_line)
+            self.run_on_ui(_all_done)
+
+        threading.Thread(target=_batch_worker, daemon=True).start()
+        return stop_event.set
+
+    def _remember_external_preview(self, file_path: str, text: str) -> None:
+        """Cache the preview parse so the import itself skips a second Word run."""
+        try:
+            stat = Path(file_path).stat()
+        except OSError:
+            return
+        cache = getattr(self, "_external_preview_cache", None)
+        if cache is None:
+            cache = self._external_preview_cache = {}
+        cache[str(Path(file_path).resolve())] = (stat.st_mtime, stat.st_size, text)
+
+    def _external_resume_parser(self, path: str | Path) -> str:
+        """parse_resume_text wrapper reusing the dialog preview parse when fresh."""
+        key = str(Path(path).resolve())
+        entry = getattr(self, "_external_preview_cache", {}).get(key)
+        if entry:
+            try:
+                stat = Path(path).stat()
+            except OSError:
+                stat = None
+            if stat is not None and stat.st_mtime == entry[0] and stat.st_size == entry[1]:
+                return entry[2]
+        return parse_resume_text(path)
+
+    def _build_external_profile_enhancer(self, enabled, stop_event=None):
+        """构造外部导入「AI 增强识别」闭包；开关关闭或无 API Key 时返回 None。
+
+        配置与密钥在 UI 线程读取后随闭包传入工作线程；批量模式捕获
+        stop_event，置位时 enhancer 返回 None（静默跳过，不记失败）。
+        """
+        if not enabled:
+            return None
+        api_config = self.api_config
+        api_key = self._get_api_key_cached(
+            api_config.get("api_provider", ""),
+            api_config.get("base_url", ""),
+        )
+        if not api_key:
+            return None
+        config_snapshot = dict(api_config)
+
+        def _enhance(resume_text, regex_info):
+            import resume_ai_profile  # 惰性加载：开关关闭时不付模块成本
+
+            return resume_ai_profile.extract_profile_with_ai(
+                resume_text,
+                regex_info,
+                config_snapshot,
+                api_key,
+                stop_event=stop_event,
+            )
+
+        return _enhance
+
+    @staticmethod
+    def _external_profile_note(candidate):
+        """兼容门面：画像说明由纯 Presenter 生成。"""
+        return candidate_presenter.external_profile_note(candidate)
+
+    @staticmethod
+    def _external_profile_batch_note(summary):
+        """兼容门面：批量画像说明由纯 Presenter 生成。"""
+        return candidate_presenter.external_profile_batch_note(summary)
+
+    def import_external_candidate(self):
+        """导入一位外部渠道候选人：解析简历、规则评分并可选 AI 评估。"""
+        job_rules = self._get_job_rules_cached()
+        job_names = [name for name in job_rules if name != "default"]
+        if not job_names:
+            messagebox.show_notice(
+                "导入外部候选人",
+                headline="还没有可用的岗位配置",
+                message="外部候选人必须归属到一个已保存的岗位。",
+                notice="请先在「岗位配置」页创建并保存岗位，再导入候选人。",
+                parent=self.root,
+            )
+            return
+
+        default_job = str(self.result_job_var.get() or "").strip() \
+            if hasattr(self, "result_job_var") else ""
+        if default_job not in job_names:
+            default_job = job_names[0]
+
+        self._external_preview_cache = {}  # 缓存生命周期 = 一次对话框会话
+
+        def _preview_file(file_path):
+            try:
+                text = parse_resume_text(file_path)
+            except Exception as exc:
+                return False, f"无法解析：{exc}"
+            self._remember_external_preview(file_path, text)
+            return True, f"已提取 {len(text)} 字，导入后将基于简历全文评分。"
+
+        def _on_confirm(form):
+            return self._run_external_import(form, job_rules, dialog_widgets[0])
+
+        # AI 增强开关仅在默认模型与 API Key 都可用时可开启
+        api_config = self.api_config
+        ai_enhance_available = bool(
+            api_config.get("api_provider")
+            and api_config.get("model")
+            and self._get_api_key_cached(
+                api_config.get("api_provider", ""),
+                api_config.get("base_url", ""),
+            )
+        )
+        ai_model_label = " / ".join(
+            part
+            for part in (
+                str(api_config.get("api_provider") or "").strip(),
+                str(api_config.get("model") or "").strip(),
+            )
+            if part
+        )
+
+        dialog_widgets = [
+            gui_external_import_dialog.show_external_import_dialog(
+                self,
+                self.root,
+                font_family=FONT_FAMILY,
+                job_names=job_names,
+                default_job=default_job,
+                preview_file=_preview_file,
+                name_guesser=guess_name_from_filename,
+                run_batch=self._run_external_import_batch,
+                on_confirm=_on_confirm,
+                ai_enhance_available=ai_enhance_available,
+                ai_enhance_initial=bool(api_config.get("external_import_ai_enhance")),
+                on_ai_enhance_toggle=self._set_external_import_ai_enhance,
+                ai_resume_eval_available=ai_enhance_available,
+                ai_resume_eval_initial=bool(
+                    api_config.get("external_import_ai_resume_eval")
+                ),
+                on_ai_resume_eval_toggle=self._set_external_import_ai_resume_eval,
+                ai_model_label=ai_model_label,
+                switch_factory=self.widget_support.create_switch,
+            )
+        ]
+
+    def _run_external_import(self, form, job_rules, import_widgets=None):
+        """单份外部导入：前置确认后后台执行事务，完成回 UI 线程展示结果。
+
+        返回 True 表示后台导入已启动（对话框转入进行中视图，由完成回调
+        经 ``close_dialog`` 关闭）；岗位缺失或查重确认被取消时返回 False。
+        """
+        rule = job_rules.get(form.job_name)
+        if not isinstance(rule, dict) or not rule:
+            messagebox.showerror(
+                "导入外部候选人",
+                f"没有找到岗位「{form.job_name}」的配置，请刷新后重试。",
+                parent=self.root,
+            )
+            return False
+
+        duplicate = find_external_duplicate(
+            load_candidates_all(CANDIDATES_PATH),
+            name=form.name,
+            job_uuid=rule.get("job_uuid"),
+        )
+        if duplicate is not None:
+            proceed = messagebox.ask_confirmation(
+                "导入外部候选人",
+                headline=f"该岗位下已存在同名外部候选人「{form.name}」",
+                message="继续导入将创建一条新的候选人记录。",
+                notice="如需替换已有记录，请先核对并移除旧记录后重新导入。",
+                yes_label="仍然导入",
+                no_label="取消",
+                parent=self.root,
+            )
+            if not proceed:
+                return False
+        allow_duplicate = duplicate is not None
+
+        from bossmaster import extract_summary_info
+
+        profile_enhancer = self._build_external_profile_enhancer(
+            getattr(form, "ai_enhance", False)
+        )
+
+        def _on_failed(kind, exc):
+            if import_widgets is not None:
+                import_widgets.close_dialog()
+            if kind == "persistence":
+                messagebox.show_failure(
+                    "导入外部候选人",
+                    headline="候选人保存状态需要核对",
+                    message="候选人数据保存过程未能正常结束。",
+                    detail=str(exc),
+                    notice=(
+                        "无法确认最终写入状态，简历副本已保留；"
+                        "请刷新后检查候选人列表。"
+                        if exc.copy_retained
+                        else "候选人记录未写入，简历副本已回收。"
+                    ),
+                    parent=self.root,
+                )
+            elif kind == "duplicate":
+                messagebox.show_notice(
+                    "导入外部候选人",
+                    headline="检测到并发产生的同名记录",
+                    message=str(exc),
+                    notice=(
+                        "候选人未重复写入，但简历副本清理失败；请运行简历存储体检。"
+                        if exc.copy_retained
+                        else "候选人未重复写入，新简历副本已回收。"
+                    ),
+                    parent=self.root,
+                )
+            elif kind == "value":
+                messagebox.showerror("导入外部候选人", str(exc), parent=self.root)
+            else:
+                self._show_resume_file_error(exc, form.file_path, self.root)
+
+        def _worker():
+            try:
+                outcome = _import_external_candidate_record(
+                    form.file_path,
+                    name=form.name,
+                    job_name=form.job_name,
+                    rule=rule,
+                    source_channel=form.source_channel,
+                    source_note=form.source_note,
+                    candidates_path=CANDIDATES_PATH,
+                    base_dir=BASE_DIR,
+                    parser=self._external_resume_parser,
+                    summary_info_extractor=extract_summary_info,
+                    profile_enhancer=profile_enhancer,
+                    allow_duplicate=allow_duplicate,
+                )
+            except ExternalImportDuplicateError as exc:
+                self.run_on_ui(lambda e=exc: _on_failed("duplicate", e))
+            except ExternalImportPersistenceError as exc:
+                self.run_on_ui(lambda e=exc: _on_failed("persistence", e))
+            except ValueError as exc:
+                self.run_on_ui(lambda e=exc: _on_failed("value", e))
+            except Exception as exc:
+                self.run_on_ui(lambda e=exc: _on_failed("parse", e))
+            else:
+                self.run_on_ui(
+                    lambda: self._finish_external_import(
+                        form, rule, outcome, import_widgets
+                    )
+                )
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return True
+
+    def _finish_external_import(self, form, rule, outcome, import_widgets=None):
+        """导入完成后的 UI 呈现：关闭进度视图、结果弹窗与简历评估派发。"""
+        if import_widgets is not None:
+            import_widgets.close_dialog()
+        candidate = outcome.candidate
+        name = candidate.get("name", form.name)
+        profile_note = self._external_profile_note(candidate)
+        profile_block = f"\n\n{profile_note}" if profile_note else ""
+        self.append_log(
+            f"[外部导入] {name}（{form.source_channel}）→ "
+            f"{candidate.get('recommend_level', '?')} {candidate.get('match_score', 0)} 分"
+        )
+
+        if not outcome.passed:
+            reference_note = ""
+            if outcome.reference_score > 0:
+                reference_note = (
+                    f"\n\n参考匹配分 {outcome.reference_score} 分"
+                    "（剔除硬条件后估算，不影响淘汰结论）"
+                )
+            messagebox.show_notice(
+                "导入外部候选人",
+                headline=f"{name} 未通过筛选",
+                message=f"{outcome.rejection_reason}{reference_note}{profile_block}",
+                notice="记录已保留在「淘汰记录」中，可导入后补充人工反馈。",
+                parent=self.root,
+            )
+            self.refresh_results()
+            self.refresh_home_stats()
+            return
+
+        score = outcome.score
+        level = candidate.get("recommend_level", "")
+        if score < SCORE_THRESHOLD_PASS:
+            messagebox.show_notice(
+                "导入外部候选人",
+                headline=f"{name} 已完成导入",
+                message=profile_note,
+                metrics=(
+                    ("筛选评分", f"{score} 分"),
+                    ("通过线", f"{SCORE_THRESHOLD_PASS} 分"),
+                    ("记录去向", "淘汰记录"),
+                ),
+                metrics_first=True,
+                notice="未自动进行 AI 评估；可在右键菜单手动发起。",
+                parent=self.root,
+            )
+            self.refresh_results()
+            self.refresh_home_stats()
+            return
+        if not getattr(form, "ai_resume_eval", False):
+            messagebox.show_result(
+                "导入外部候选人",
+                headline=f"{name} 已完成导入",
+                message=profile_note,
+                metrics=(
+                    ("筛选评分", f"{score} 分"),
+                    ("推荐等级", level),
+                ),
+                metrics_first=True,
+                notice="已按本次选择跳过 AI 简历评估；可通过右键菜单单独发起。",
+                parent=self.root,
+            )
+            self.refresh_results()
+            self.refresh_home_stats()
+            return
+        api_config = self.api_config
+        api_key = self._get_api_key_cached(
+            api_config.get("api_provider", ""),
+            api_config.get("base_url", ""),
+        )
+        if not api_key:
+            messagebox.show_notice(
+                "导入外部候选人",
+                headline=f"{name} 已完成导入",
+                message=profile_note,
+                metrics=(
+                    ("筛选评分", f"{score} 分"),
+                    ("推荐等级", level),
+                ),
+                metrics_first=True,
+                notice="未配置 API Key，已跳过 AI 评估；可在右键菜单补评。",
+                parent=self.root,
+            )
+            self.refresh_results()
+            self.refresh_home_stats()
+            return
+
+        job_requirement = rule.get("original_requirement", "") or (
+            f"岗位：{form.job_name}，{rule.get('min_exp', 0)}年经验，"
+            f"{rule.get('edu', '不限')}学历"
+        )
+        hard_conditions = self._format_ai_hard_conditions(rule)
+        _parent = self.root
+
+        # 立即刷新结果页：候选人带着规则分先出现，AI 列显示“评估中”，
+        # 避免后台评估期间页面毫无变化、误以为卡死。
+        geek_id = str(candidate.get("geek_id", ""))
+        if geek_id:
+            self._ai_evaluating_ids.add(geek_id)
+        self.refresh_results(force=True)
+        self.refresh_home_stats()
+
+        def _eval_worker():
+            try:
+                from llm_eval import evaluate_with_resume
+
+                self.run_on_ui(
+                    lambda: self.append_log(f"[外部导入] 正在评估 {name} 的简历...")
+                )
+                controller = _candidate_controller_for(self)
+                result = controller.evaluate_resume(
+                    candidate,
+                    outcome.resume_text,
+                    job_requirement,
+                    api_config,
+                    api_key,
+                    hard_conditions,
+                    evaluator=evaluate_with_resume,
+                )
+                persistence_error = ""
+                if result.success:
+                    try:
+                        if not controller.persist_resume_evaluation(candidate):
+                            persistence_error = "候选人记录已变化，评估结果没有保存"
+                    except Exception as exc:
+                        persistence_error = f"评估结果保存失败：{exc}"
+
+                def _on_done():
+                    self._ai_evaluating_ids.discard(geek_id)
+                    self.refresh_results()
+                    self.refresh_home_stats()
+                    if result.success and not persistence_error:
+                        sign = "+" if result.adjustment > 0 else ""
+                        self.append_log(
+                            f"[外部导入] ✓ {name}: {sign}{result.adjustment} "
+                            f"→ 总分 {candidate.get('match_score', '?')}"
+                        )
+                        messagebox.show_result(
+                            "导入外部候选人",
+                            headline=f"{name} 的导入与简历评估已完成",
+                            metrics=(
+                                ("筛选评分", f"{score} 分（{level}）"),
+                                ("评估调整", f"{sign}{result.adjustment}"),
+                                ("最终分", str(candidate.get("match_score", "?"))),
+                            ),
+                            detail=(
+                                f"{profile_note}\n\n{candidate.get('resume_eval_reason', '')}"
+                                if profile_note
+                                else candidate.get("resume_eval_reason", "")
+                            ),
+                            parent=_parent,
+                        )
+                    else:
+                        failure = persistence_error or result.reason
+                        self.append_log(f"[外部导入] ✗ {name} 简历评估：{failure}")
+                        messagebox.show_failure(
+                            "导入外部候选人",
+                            headline=f"{name} 已导入，简历评估未完成",
+                            message=f"筛选评分 {score} 分（{level}）已保存。{profile_block}",
+                            detail=failure,
+                            notice="可稍后通过右键菜单重新进行简历评估。",
+                            parent=_parent,
+                        )
+
+                self.run_on_ui(_on_done)
+
+            except Exception as exc:
+                def _on_error(error=exc):
+                    self._ai_evaluating_ids.discard(geek_id)
+                    self.append_log(f"[外部导入] ✗ {name} 简历评估异常：{error}")
+                    self.refresh_results()
+                    self.refresh_home_stats()
+                    messagebox.show_failure(
+                        "导入外部候选人",
+                        headline=f"{name} 已导入，简历评估未完成",
+                        message=f"筛选评分 {score} 分（{level}）已保存。{profile_block}",
+                        detail=str(error),
+                        notice="可稍后通过右键菜单重新进行简历评估。",
+                        parent=_parent,
+                    )
+
+                self.run_on_ui(_on_error)
+
+        threading.Thread(target=_eval_worker, daemon=True).start()
+
+    def _candidate_can_edit_external_info(self, candidate):
+        """仅外部渠道导入的候选人开放信息编辑（含归属岗位调整）。"""
+        return is_external_candidate(candidate)
+
+    def _edit_external_candidate_info(self, item, candidate=None, parent=None):
+        """弹出编辑对话框，手工修正外部候选人的画像字段与归属岗位。"""
+        candidate = self._resolve_candidate(item, candidate)
+        if not candidate:
+            return
+        _parent = parent or self.root
+        if not is_external_candidate(candidate):
+            messagebox.showerror(
+                "编辑候选人信息",
+                "只有外部渠道导入的候选人支持编辑信息。",
+                parent=_parent,
+            )
+            return
+        current_job = str(candidate.get("job_name") or "")
+        job_names = [
+            name
+            for name, rule in self._get_job_rules_cached().items()
+            if name != "default" and isinstance(rule, dict) and rule
+        ]
+        if current_job and current_job not in job_names:
+            job_names = [current_job, *job_names]
+        initial = {
+            field: str(candidate.get(field) or "")
+            for field in (
+                "gender", "age", "education", "exp_years",
+                "salary", "city", "job_status", "school", "company",
+            )
+        }
+
+        def _on_confirm(form_data):
+            return self._apply_external_profile_update(
+                candidate, form_data, parent=_parent
+            )
+
+        gui_external_edit_dialog.show_external_edit_dialog(
+            self,
+            _parent,
+            font_family=FONT_FAMILY,
+            candidate_name=str(candidate.get("name") or ""),
+            initial=initial,
+            current_job=current_job,
+            job_names=job_names,
+            on_confirm=_on_confirm,
+        )
+
+    def _apply_external_profile_update(self, candidate, form_data, *, parent):
+        """应用编辑结果：按需重筛评分并持久化，随后视情况重新简历评估。"""
+        current_job = str(candidate.get("job_name") or "")
+        job_changed = bool(form_data.job_name) and form_data.job_name != current_job
+        target_job = form_data.job_name if job_changed else current_job
+        rule = self._get_job_rules_cached().get(target_job)
+
+        from bossmaster import extract_summary_info
+
+        name = form_data.name
+        try:
+            outcome = update_external_candidate_profile(
+                candidate,
+                name=form_data.name,
+                fields={
+                    "gender": form_data.gender,
+                    "age": form_data.age,
+                    "education": form_data.education,
+                    "exp_years": form_data.exp_years,
+                    "salary": form_data.salary,
+                    "city": form_data.city,
+                    "job_status": form_data.job_status,
+                    "school": form_data.school,
+                    "company": form_data.company,
+                },
+                candidates=load_candidates_all(CANDIDATES_PATH),
+                rule=rule,
+                job_name=form_data.job_name if job_changed else "",
+                summary_info_extractor=extract_summary_info,
+            )
+        except ValueError as exc:
+            messagebox.showerror("编辑候选人信息", str(exc), parent=parent)
+            return False
+
+        controller = _candidate_controller_for(self)
+        target_job_uuid = (
+            outcome.updates.get("job_uuid") or candidate.get("job_uuid")
+        )
+
+        def _validate_latest(records):
+            duplicate = find_external_duplicate(
+                records,
+                name=name,
+                job_uuid=target_job_uuid,
+                exclude_geek_id=str(candidate.get("geek_id") or ""),
+            )
+            if duplicate is not None:
+                raise ValueError(f"岗位「{target_job}」下已存在同名外部候选人")
+
+        try:
+            saved = controller.reassign_job(
+                candidate,
+                outcome.updates,
+                outcome.cleared_fields,
+                validate_latest=_validate_latest,
+            )
+        except ValueError as exc:
+            messagebox.showerror("编辑候选人信息", str(exc), parent=parent)
+            return False
+        if not saved:
+            messagebox.showerror(
+                "编辑候选人信息",
+                "候选人数据保存失败，修改未生效。",
+                parent=parent,
+            )
+            return False
+
+        if not outcome.refiltered:
+            self.append_log(f"[编辑信息] {name}: 已保存展示字段修改")
+            self.refresh_results()
+            self.refresh_home_stats()
+            messagebox.show_result(
+                "编辑候选人信息",
+                headline=f"{name} 的信息已保存",
+                notice="姓名、毕业学校、最近公司的修改不参与重新评分。",
+                parent=parent,
+            )
+            return True
+
+        score = outcome.score
+        level = candidate.get("recommend_level", "")
+        if outcome.job_changed:
+            self.append_log(
+                f"[编辑信息] {name}: {current_job} → {target_job}，"
+                f"新岗位评分 {score} 分（{level}）"
+            )
+        else:
+            self.append_log(
+                f"[编辑信息] {name}: 画像修正后重新评分 {score} 分（{level}）"
+            )
+        self.refresh_results()
+        self.refresh_home_stats()
+
+        if not outcome.passed:
+            messagebox.show_notice(
+                "编辑候选人信息",
+                headline=f"{name} 的信息已保存",
+                message=f"按岗位规则重新评分为 {score} 分，未通过筛选。",
+                detail=outcome.rejection_reason or None,
+                notice="记录保留在「淘汰记录」中。",
+                parent=parent,
+            )
+            return True
+
+        # 调岗后旧评估已清除需要重评；画像修正保留既有评估（简历没变），
+        # 仅当从未做过简历评估且达到通过线时才自动补评
+        already_evaluated = bool(candidate.get("resume_eval_at"))
+        if already_evaluated or score < SCORE_THRESHOLD_PASS:
+            notice = (
+                "已有的简历评估结果继续有效。"
+                if already_evaluated
+                else "未达到简历评估分数线，未进行 AI 评估。"
+            )
+            messagebox.show_result(
+                "编辑候选人信息",
+                headline=f"{name} 的信息已保存",
+                metrics=(("重新评分", f"{score} 分（{level}）"),),
+                notice=notice,
+                parent=parent,
+            )
+            return True
+
+        api_config = self.api_config
+        if not api_config.get("external_import_ai_resume_eval"):
+            messagebox.show_result(
+                "编辑候选人信息",
+                headline=f"{name} 的信息已保存",
+                metrics=(("重新评分", f"{score} 分（{level}）"),),
+                notice="未授权自动发送简历；可通过右键菜单单独发起简历评估。",
+                parent=parent,
+            )
+            return True
+        api_key = self._get_api_key_cached(
+            api_config.get("api_provider", ""),
+            api_config.get("base_url", ""),
+        )
+        if not api_key:
+            messagebox.show_notice(
+                "编辑候选人信息",
+                headline=f"{name} 的信息已保存",
+                message=f"重新评分为 {score} 分（{level}）。",
+                notice="未配置 API Key，已跳过 AI 简历评估；可稍后通过右键菜单补评。",
+                parent=parent,
+            )
+            return True
+
+        model_label = " / ".join(
+            part
+            for part in (
+                str(api_config.get("api_provider") or "").strip(),
+                str(api_config.get("model") or "").strip(),
+            )
+            if part
+        ) or "当前默认 AI 模型"
+        if not messagebox.ask_confirmation(
+            "编辑候选人信息",
+            headline=f"{name} 的信息已保存，是否重新进行简历评估？",
+            message="将按修改后的岗位与画像重新计算 AI 调整分。",
+            metrics=(
+                ("授权模型", model_label),
+                ("发送范围", "简历文本前 6000 字"),
+            ),
+            yes_label="开始评估",
+            no_label="暂不评估",
+            parent=parent,
+        ):
+            messagebox.show_result(
+                "编辑候选人信息",
+                headline=f"{name} 的信息已保存",
+                metrics=(("重新评分", f"{score} 分（{level}）"),),
+                notice="未发送简历；可通过右键菜单单独发起简历评估。",
+                parent=parent,
+            )
+            return True
+
+        job_requirement = rule.get("original_requirement", "") or (
+            f"岗位：{target_job}，{rule.get('min_exp', 0)}年经验，"
+            f"{rule.get('edu', '不限')}学历"
+        )
+        hard_conditions = self._format_ai_hard_conditions(rule)
+        resume_text = str(candidate.get("summary") or "")
+        geek_id = str(candidate.get("geek_id", ""))
+        if geek_id:
+            self._ai_evaluating_ids.add(geek_id)
+        self.refresh_results(force=True)
+
+        def _eval_worker():
+            try:
+                from llm_eval import evaluate_with_resume
+
+                self.run_on_ui(
+                    lambda: self.append_log(
+                        f"[编辑信息] 正在按岗位规则评估 {name} 的简历..."
+                    )
+                )
+                result = controller.evaluate_resume(
+                    candidate,
+                    resume_text,
+                    job_requirement,
+                    api_config,
+                    api_key,
+                    hard_conditions,
+                    evaluator=evaluate_with_resume,
+                )
+                persistence_error = ""
+                if result.success:
+                    try:
+                        if not controller.persist_resume_evaluation(candidate):
+                            persistence_error = "候选人记录已变化，评估结果没有保存"
+                    except Exception as exc:
+                        persistence_error = f"评估结果保存失败：{exc}"
+
+                def _on_done():
+                    self._ai_evaluating_ids.discard(geek_id)
+                    self.refresh_results()
+                    self.refresh_home_stats()
+                    if result.success and not persistence_error:
+                        sign = "+" if result.adjustment > 0 else ""
+                        self.append_log(
+                            f"[编辑信息] ✓ {name}: {sign}{result.adjustment} "
+                            f"→ 总分 {candidate.get('match_score', '?')}"
+                        )
+                        metrics = [("重新评分", f"{score} 分（{level}）")]
+                        if outcome.job_changed:
+                            metrics.insert(
+                                0, ("归属岗位", f"{current_job} → {target_job}")
+                            )
+                        metrics.extend(
+                            [
+                                ("评估调整", f"{sign}{result.adjustment}"),
+                                ("最终分", str(candidate.get("match_score", "?"))),
+                            ]
+                        )
+                        messagebox.show_result(
+                            "编辑候选人信息",
+                            headline=f"{name} 的信息修改与重新评估已完成",
+                            metrics=tuple(metrics),
+                            detail=candidate.get("resume_eval_reason", ""),
+                            parent=parent,
+                        )
+                    else:
+                        failure = persistence_error or result.reason
+                        self.append_log(
+                            f"[编辑信息] ✗ {name} 简历评估：{failure}"
+                        )
+                        messagebox.show_failure(
+                            "编辑候选人信息",
+                            headline=f"{name} 的信息已保存，简历评估未完成",
+                            message=f"重新评分 {score} 分（{level}）已保存。",
+                            detail=failure,
+                            notice="可稍后通过右键菜单重新进行简历评估。",
+                            parent=parent,
+                        )
+
+                self.run_on_ui(_on_done)
+
+            except Exception as exc:
+                def _on_error(error=exc):
+                    self._ai_evaluating_ids.discard(geek_id)
+                    self.append_log(f"[编辑信息] ✗ {name} 简历评估异常：{error}")
+                    self.refresh_results()
+                    self.refresh_home_stats()
+                    messagebox.show_failure(
+                        "编辑候选人信息",
+                        headline=f"{name} 的信息已保存，简历评估未完成",
+                        message=f"重新评分 {score} 分（{level}）已保存。",
+                        detail=str(error),
+                        notice="可稍后通过右键菜单重新进行简历评估。",
+                        parent=parent,
+                    )
+
+                self.run_on_ui(_on_error)
+
+        threading.Thread(target=_eval_worker, daemon=True).start()
+        return True
+
     def _revert_resume_eval(self, item, candidate=None, parent=None):
         """撤销简历评估：清空简历数据和二次评估结果，回退分数。"""
         from llm_eval import _recalc_recommend_level, _resolve_rule_score
@@ -10231,11 +11420,31 @@ class BossFilterGUI:
 
         _parent = parent or self.root
         name = candidate.get('name', '')
+        external = is_external_candidate(candidate)
+        # 外部候选人的受管简历副本就是档案本体（导入即挂接），撤销评估只清
+        # 评估字段，必须保留简历文件引用，否则记录失去原件且无法重新评分
+        resume_state_fields = RESUME_STATE_FIELDS
+        if external:
+            resume_state_fields = tuple(
+                field
+                for field in RESUME_STATE_FIELDS
+                if field
+                not in (
+                    "resume_file",
+                    "resume_artifact_id",
+                    "resume_original_name",
+                    "resume_imported_at",
+                )
+            )
         confirm = messagebox.ask_confirmation(
             "撤销简历评估",
             headline=f"撤销 {name} 的简历评估？",
             message="候选人分数将回退到一次评估状态。",
-            notice="关联的简历文件和二次评估结果将被清除。",
+            notice=(
+                "二次评估结果将被清除，简历文件保留。"
+                if external
+                else "关联的简历文件和二次评估结果将被清除。"
+            ),
             yes_label="撤销评估",
             no_label="保留结果",
             dangerous=True,
@@ -10248,7 +11457,7 @@ class BossFilterGUI:
             candidate,
             resolve_rule_score=_resolve_rule_score,
             recalc_recommend_level=_recalc_recommend_level,
-            resume_state_fields=RESUME_STATE_FIELDS,
+            resume_state_fields=resume_state_fields,
         )
         if not outcome.updated:
             messagebox.showerror(

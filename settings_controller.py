@@ -94,6 +94,8 @@ class SettingsController:
             "providers": {},
             "fetched_models": {},
             "llm_read_timeout": None,
+            "external_import_ai_enhance": False,
+            "external_import_ai_resume_eval": False,
         }
 
     @staticmethod
@@ -184,6 +186,13 @@ class SettingsController:
         education_ref = current_config.get("education_model_ref")
         if education_ref:
             prepared["education_model_ref"] = dict(education_ref)
+        # 外部导入 AI 增强开关是用户级偏好，保存模型时必须透传，否则被抹掉
+        prepared["external_import_ai_enhance"] = bool(
+            current_config.get("external_import_ai_enhance")
+        )
+        prepared["external_import_ai_resume_eval"] = bool(
+            current_config.get("external_import_ai_resume_eval")
+        )
 
         added_count = 0
         updated_count = 0

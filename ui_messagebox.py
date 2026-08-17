@@ -211,8 +211,13 @@ class CenteredMessageBox:
         max_width: int = 660,
         primary_tone: str = "accent",
         default_to_close: bool = False,
+        metrics_first: bool = False,
     ):
-        """Show a compact, sectioned dialog without changing legacy messages."""
+        """Show a compact, sectioned dialog without changing legacy messages.
+
+        ``metrics_first=True`` 时数据条排在正文之前——正文承担次级说明
+        （如 AI 增强明细）、主结论由数据条表达的场景使用。
+        """
         min_width = max(520, int(min_width))
         max_width = max(min_width, int(max_width))
         content_wraplength = max(460, min(580, min_width - 48))
@@ -248,7 +253,7 @@ class CenteredMessageBox:
             wraplength=content_wraplength - 38,
         ).pack(side="left", fill="x", expand=True, anchor="w")
 
-        if message:
+        if message and not metrics_first:
             tk.Label(
                 body,
                 text=str(message),
@@ -286,6 +291,18 @@ class CenteredMessageBox:
                     fg=ui_theme.TEXT_PRIMARY,
                     bg=ui_theme.BG_ZEBRA,
                 ).pack(anchor="w", pady=(2, 0))
+
+        if message and metrics_first:
+            tk.Label(
+                body,
+                text=str(message),
+                font=message_font,
+                fg=ui_theme.TEXT_PRIMARY,
+                bg=ui_theme.BG_CARD,
+                justify="left",
+                anchor="w",
+                wraplength=content_wraplength,
+            ).pack(fill="x", anchor="w", pady=(12, 0))
 
         copy_button = None
         if file_path:
@@ -632,6 +649,7 @@ class CenteredMessageBox:
         notice: str | None = None,
         detail: str | None = None,
         kind: str = "warning",
+        metrics_first: bool = False,
         parent=None,
     ) -> str:
         """Show a structured warning or informational notice."""
@@ -666,6 +684,7 @@ class CenteredMessageBox:
             detail=detail,
             buttons=(("关闭", "close"),),
             close_value="close",
+            metrics_first=metrics_first,
             parent=resolved_parent,
         ))
 
