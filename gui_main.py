@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.29"
+__version__ = "2.30"
 
 import json
 import logging
@@ -54,6 +54,7 @@ import gui_education_page
 import gui_external_edit_dialog
 import gui_feedback_support
 import gui_home_page
+import home_presenter
 import gui_input_support
 import gui_job_review
 import gui_app_shell
@@ -114,6 +115,7 @@ from filtering import GENDER_VALUES
 from contact_queue import (
     count_pending_contact_queue,
     load_contact_queue,
+    load_contact_queue_snapshot,
     load_pending_contact_queue_count,
     save_contact_queue,
 )
@@ -478,6 +480,11 @@ _DEFAULT_UI_CONFIG = {
     'window_min_height': 750,        # 最小窗口高度
     'sidebar_width': 230,            # 侧边栏宽度
     'content_max_width': 1480,       # 普通功能页最大内容宽度，避免全屏后横向失衡
+    'home_content_max_width': 1360,  # 首页行动工作台最大内容宽度
+    'home_page_padding_x': 32,       # 首页高保真稿宽屏左右边距
+    'home_page_padding_x_medium': 24,# 首页 1380px 以下左右边距
+    'home_page_padding_y': 28,       # 首页常规上下边距
+    'home_page_padding_y_compact': 20, # 首页 820px 以下上边距
     'page_padding_x': 35,            # 页面左右边距
     'page_padding_y': 25,            # 页面上下边距
     'card_padding': 20,              # 卡片内边距
@@ -1002,6 +1009,12 @@ class BossFilterGUI:
         self._stats_last_time = None
         self._home_stats_fingerprint = None
         self._home_stats_last_job = None
+        self._home_health_refresh_token = 0
+        self._home_health_check_running = False
+        self._home_job_options = None
+        self._run_job_options = None
+        self._result_job_options = None
+        self._stats_job_options = None
         self._skills_tree_fingerprint = None
         self._required_list_fingerprint = None
 
@@ -1018,6 +1031,7 @@ class BossFilterGUI:
         self._pending_page_builds = set()
         self._page_width_policy_after_id = None
         self._highlighted_page_index = None
+        self._active_page_widget = None
 
         # 设置样式
         gui_style_setup.setup_styles(self)
@@ -1252,7 +1266,7 @@ class BossFilterGUI:
         try:
             current_page = PageIndex(getattr(self, 'current_page_index', PageIndex.HOME))
             refresh_action = {
-                PageIndex.HOME: self.refresh_home_stats,
+                PageIndex.HOME: lambda: self.refresh_home_stats(force=True),
                 PageIndex.RESULTS: lambda: self.refresh_results(force=True),
                 PageIndex.STATS: self.refresh_stats,
             }.get(current_page)
@@ -1409,8 +1423,8 @@ class BossFilterGUI:
         self.pages_frame.pack(
             fill="both",
             expand=True,
-            padx=int(UI_CONFIG['page_padding_x'] * self.dpi_scale * self.zoom_factor),
-            pady=int(UI_CONFIG['page_padding_y'] * self.dpi_scale * self.zoom_factor),
+            padx=0,
+            pady=0,
         )
         self.main_frame.bind(
             "<Configure>",
@@ -1454,6 +1468,7 @@ class BossFilterGUI:
             self.main_frame, background=footer_bg,
             highlightthickness=1, highlightbackground=self.colors['border'],
         )
+        self.status_bar = status_bar
         status_bar.pack(side="bottom", fill="x")
         status_font = (FONT_FAMILY, int(10 * self.font_scale))
         self.status_bar_left_var = tk.StringVar(value="")
@@ -1472,12 +1487,18 @@ class BossFilterGUI:
         self.main_frame = ttk.Frame(self.root, style='Page.TFrame')
         self.main_frame.pack(fill="both", expand=True)
         self._last_page_pack_padx = None
+        self._last_page_pack_pady = None
         self.pages_frame = ttk.Frame(self.main_frame, style='Page.TFrame')
         self.pages_frame.pack(
             fill="both",
             expand=True,
-            padx=int(UI_CONFIG['page_padding_x'] * self.dpi_scale * self.zoom_factor),
-            pady=int(UI_CONFIG['page_padding_y'] * self.dpi_scale * self.zoom_factor),
+            padx=0,
+            pady=0,
+        )
+        self.main_frame.bind(
+            "<Configure>",
+            lambda _event: self.app_shell.schedule_page_width_policy(),
+            add="+",
         )
         self.home_page = None
         self.config_page = None
@@ -1494,6 +1515,8 @@ class BossFilterGUI:
         key: str,
         callback: Callable[[], None],
         page_index: int | None = None,
+        *,
+        delay_ms: int = 0,
     ) -> None:
         """Run coalesced UI work after redraw and skip it after navigation."""
         if key in self._pending_idle_tasks:
@@ -1512,7 +1535,10 @@ class BossFilterGUI:
             except tk.TclError:
                 return
 
-        self.root.after_idle(_run)
+        if delay_ms > 0:
+            self.root.after(delay_ms, _run)
+        else:
+            self.root.after_idle(_run)
 
     def _create_result_date_entry(self, parent, **kwargs):
         """创建结果页日期控件；只在结果页构建时加载 tkcalendar。"""
@@ -1534,6 +1560,7 @@ class BossFilterGUI:
             run_page_index=PageIndex.RUN,
             result_page_index=PageIndex.RESULTS,
             config_page_index=PageIndex.CONFIG,
+            education_page_index=PageIndex.EDUCATION,
         )
         self._home_page_widgets = widgets
         self.home_page = widgets.page
@@ -1541,6 +1568,33 @@ class BossFilterGUI:
         self.home_job_combo = widgets.job_combo
         self.home_stats_vars = widgets.stats_vars
         self.home_stats_labels = widgets.stats_labels
+        self.home_task_vars = widgets.task_vars
+        self.home_task_action_vars = widgets.task_action_vars
+        self.home_task_labels = widgets.task_labels
+        self.home_task_widgets = widgets.task_widgets
+        self.home_task_total_var = widgets.task_total_var
+        self.home_task_headline_prefix_var = widgets.task_headline_prefix_var
+        self.home_task_headline_suffix_var = widgets.task_headline_suffix_var
+        self.home_health_vars = widgets.health_vars
+        self.home_health_note_vars = widgets.health_note_vars
+        self.home_health_labels = widgets.health_labels
+        self.home_health_widgets = widgets.health_widgets
+        self.home_readiness_title_var = widgets.readiness_title_var
+        self.home_readiness_note_var = widgets.readiness_note_var
+        self.home_scan_summary_var = widgets.scan_summary_var
+        self.home_scan_status_var = widgets.scan_status_var
+        self.home_scan_status_label = widgets.scan_status_label
+        self._home_health_displays = {
+            "api": home_presenter.StatusDisplay(
+                "检测中", "neutral", "正在读取本机安全凭据"
+            ),
+            "browser": home_presenter.StatusDisplay(
+                "检测中", "neutral", "正在检查本机 Chrome"
+            ),
+            "storage": home_presenter.StatusDisplay(
+                "检测中", "neutral", "正在读取候选人数据"
+            ),
+        }
 
     def create_config_page(self) -> None:
         """同步创建岗位配置页，供需要立即访问控件的内部流程使用。"""
@@ -1702,7 +1756,9 @@ class BossFilterGUI:
         if job_rules is None:
             job_rules = self._get_job_rules_cached()
         jobs = ["全部岗位"] + list(job_rules.keys())
-        self.job_combo['values'] = jobs
+        if jobs != getattr(self, "_run_job_options", None):
+            self.job_combo['values'] = jobs
+            self._run_job_options = jobs
 
         current = str(self.job_select_var.get() or "").strip()
         if prefer_current and current in jobs and current:
@@ -1805,7 +1861,7 @@ class BossFilterGUI:
         backup_summary: str = "",
         restore_summary: str = "",
     ) -> str:
-        """Build the two-line backup/restore activity note."""
+        """Build the compact backup/restore activity note."""
         return _DATA_MAINTENANCE_CONTROLLER.backup_note(
             getattr(self, "_run_preferences", {}) or {},
             backup_at=backup_at,
@@ -4028,30 +4084,34 @@ class BossFilterGUI:
         """显示首页"""
         if self.home_page is None:
             self.create_home_page()
-        self.hide_all_pages()
-        self.home_page.pack(fill="both", expand=True)
-        self.current_page_index = PageIndex.HOME
-        self.app_shell.schedule_page_width_policy()
-        self.update_nav_highlight()
+        self.app_shell.activate_page(self.home_page, PageIndex.HOME)
         # 刷新岗位过滤列表
         try:
             job_rules = self._get_job_rules_cached()
-            jobs = ["全部岗位"] + list(job_rules.keys())
-            self.home_job_combo['values'] = jobs
+            jobs = ("全部岗位", *job_rules.keys())
+            if jobs != getattr(self, "_home_job_options", None):
+                self.home_job_combo['values'] = jobs
+                self._home_job_options = jobs
         except Exception:
             pass
         self._defer_ui_work(
-            "home_stats", self.refresh_home_stats, page_index=PageIndex.HOME
+            "home_stats",
+            self.refresh_home_stats,
+            page_index=PageIndex.HOME,
+            delay_ms=20,
+        )
+        self._defer_ui_work(
+            "home_status",
+            self.refresh_home_status,
+            page_index=PageIndex.HOME,
+            delay_ms=160,
         )
 
     def show_page_config(self):
         """显示配置页面"""
         if self.config_page is None:
             self.create_config_page()
-        self.hide_all_pages()
-        self.config_page.pack(fill="both", expand=True)
-        self.current_page_index = PageIndex.CONFIG
-        self.app_shell.schedule_page_width_policy()
+        self.app_shell.activate_page(self.config_page, PageIndex.CONFIG)
         # 刷新技能树和必要条件列表
         if self.job_rules:
             self._defer_ui_work(
@@ -4060,8 +4120,8 @@ class BossFilterGUI:
                 page_index=PageIndex.CONFIG,
             )
         # 始终显示详细结果区域（基本信息、技能关键词、必要条件、话术模板）
-        self.result_detail_frame.pack(fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
-        self.update_nav_highlight()
+        if not self.result_detail_frame.winfo_manager():
+            self.result_detail_frame.pack(fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
         # 重新绑定滚轮事件（覆盖动态创建的控件）
         self.scroll_support.bind_mousewheel(
             self.config_canvas,
@@ -4072,11 +4132,7 @@ class BossFilterGUI:
         """显示运行页面"""
         if self.run_page is None:
             self.create_run_page()
-        self.hide_all_pages()
-        self.run_page.pack(fill="both", expand=True)
-        self.current_page_index = PageIndex.RUN
-        self.app_shell.schedule_page_width_policy()
-        self.update_nav_highlight()
+        self.app_shell.activate_page(self.run_page, PageIndex.RUN)
         # 恢复浏览器自动检测（仅检测连接，不启动浏览器）
         self._start_browser_auto_check()
         # 刷新岗位选择列表
@@ -4095,16 +4151,14 @@ class BossFilterGUI:
         """显示结果页面"""
         if self.result_page is None:
             self.create_result_page()
-        self.hide_all_pages()
-        self.result_page.pack(fill="both", expand=True)
-        self.current_page_index = PageIndex.RESULTS
-        self.app_shell.schedule_page_width_policy()
-        self.update_nav_highlight()
+        self.app_shell.activate_page(self.result_page, PageIndex.RESULTS)
         # 刷新岗位过滤列表
         try:
             job_rules = self._get_job_rules_cached()
             jobs = ["全部岗位"] + list(job_rules.keys())
-            self.result_job_combo['values'] = jobs
+            if jobs != getattr(self, "_result_job_options", None):
+                self.result_job_combo['values'] = jobs
+                self._result_job_options = jobs
         except Exception:
             pass
         self._defer_ui_work(
@@ -4115,16 +4169,14 @@ class BossFilterGUI:
         """显示数据统计页面"""
         if self.stats_page is None:
             self.create_stats_page()
-        self.hide_all_pages()
-        self.stats_page.pack(fill="both", expand=True)
-        self.current_page_index = PageIndex.STATS
-        self.app_shell.schedule_page_width_policy()
-        self.update_nav_highlight()
+        self.app_shell.activate_page(self.stats_page, PageIndex.STATS)
         # 刷新岗位过滤列表
         try:
             job_rules = self._get_job_rules_cached()
             jobs = ["全部岗位"] + list(job_rules.keys())
-            self.stats_job_combo['values'] = jobs
+            if jobs != getattr(self, "_stats_job_options", None):
+                self.stats_job_combo['values'] = jobs
+                self._stats_job_options = jobs
         except Exception:
             pass
         self._defer_ui_work(
@@ -4135,11 +4187,7 @@ class BossFilterGUI:
         """显示学历核验页面。"""
         if self.education_page is None:
             self.create_education_page()
-        self.hide_all_pages()
-        self.education_page.pack(fill="both", expand=True)
-        self.current_page_index = PageIndex.EDUCATION
-        self.app_shell.schedule_page_width_policy()
-        self.update_nav_highlight()
+        self.app_shell.activate_page(self.education_page, PageIndex.EDUCATION)
         self.scroll_support.bind_mousewheel(
             self.education_canvas,
             self.education_scrollable_frame,
@@ -4152,11 +4200,7 @@ class BossFilterGUI:
         # 配置文件已在启动时读取；在页面首次绘制前回填普通字段，避免短暂显示空下拉框。
         # 普通字段先回填，API Key 等页面首帧绘制后再到后台读取。
         self._load_api_config_to_ui_if_needed()
-        self.hide_all_pages()
-        self.api_config_page.pack(fill="both", expand=True)
-        self.current_page_index = PageIndex.SETTINGS
-        self.app_shell.schedule_page_width_policy()
-        self.update_nav_highlight()
+        self.app_shell.activate_page(self.api_config_page, PageIndex.SETTINGS)
         # 重新绑定滚轮事件（覆盖动态创建的控件）
         self.scroll_support.bind_mousewheel(
             self.api_canvas,
@@ -4216,66 +4260,431 @@ class BossFilterGUI:
             ("result_contact_pending",),
         )
 
-    def refresh_home_stats(self):
-        """刷新首页统计"""
-        selected_job = self.home_job_var.get() if hasattr(self, 'home_job_var') else ""
-        if CANDIDATES_PATH.exists():
-            stat = CANDIDATES_PATH.stat()
-            fingerprint = (stat.st_mtime, stat.st_size)
-            if (fingerprint == self._home_stats_fingerprint
-                    and selected_job == self._home_stats_last_job):
-                return
-            self._home_stats_fingerprint = fingerprint
-            self._home_stats_last_job = selected_job
-        else:
-            if self._home_stats_fingerprint is None and self._home_stats_last_job == selected_job:
-                return
-            self._home_stats_fingerprint = None
-            self._home_stats_last_job = selected_job
-            for var in self.home_stats_vars.values():
-                var.set("0")
-            return
-
+    @staticmethod
+    def _home_file_fingerprint(path):
+        """Return one stable cache component while preserving stat failures."""
         try:
-            if CANDIDATES_PATH.exists():
+            stat = path.stat()
+        except FileNotFoundError:
+            return str(path), None
+        except OSError as exc:
+            return str(path), type(exc).__name__
+        return str(path), stat.st_mtime_ns, stat.st_size
+
+    def _compute_home_dashboard_fingerprint(self):
+        """Cover candidate data, contact state, and the selected candidate scope."""
+        selected_job = self.home_job_var.get() if hasattr(self, "home_job_var") else ""
+        return (
+            self._home_file_fingerprint(CANDIDATES_PATH),
+            self._home_file_fingerprint(CONTACT_QUEUE_PATH),
+            selected_job,
+        )
+
+    def _home_tone_color(self, tone: str) -> str:
+        color_key = {
+            "success": "home_success",
+            "warning": "home_warning",
+            "danger": "home_danger",
+        }.get(tone, "home_secondary")
+        return self.colors[color_key]
+
+    def _apply_home_health(self, key: str, display) -> None:
+        """Apply one presenter-owned health result to existing Tk variables."""
+        if not getattr(self, "home_health_vars", None):
+            return
+        displays = getattr(self, "_home_health_displays", {})
+        if displays.get(key) == display:
+            return
+        self.home_health_vars[key].set(display.text)
+        self.home_health_note_vars[key].set(display.note)
+        self.home_health_labels[key].configure(
+            foreground=self._home_tone_color(display.tone)
+        )
+        widgets = getattr(self, "home_health_widgets", {}).get(key)
+        if widgets is not None:
+            gui_home_page.update_health_widget(
+                widgets,
+                self.colors,
+                tone=display.tone,
+                action=display.action,
+            )
+        displays[key] = display
+        self._home_health_displays = displays
+        readiness = home_presenter.build_readiness_display(displays)
+        if hasattr(self, "home_readiness_title_var"):
+            self.home_readiness_title_var.set(readiness.title)
+            self.home_readiness_note_var.set(readiness.note)
+            page_widgets = getattr(self, "_home_page_widgets", None)
+            if page_widgets is not None:
+                gui_home_page.update_readiness_banner(
+                    page_widgets,
+                    self.colors,
+                    readiness.tone,
+                )
+
+    def _apply_home_scan_display(self) -> None:
+        """Render only an actual persisted scanner terminal record."""
+        if not hasattr(self, "home_scan_summary_var"):
+            return
+        display = home_presenter.format_scan_display(
+            (getattr(self, "_run_preferences", None) or {}).get("last_scan")
+        )
+        if display == getattr(self, "_home_scan_display", None):
+            return
+        self.home_scan_summary_var.set(display.summary)
+        self.home_scan_status_var.set(display.status)
+        self.home_scan_status_label.configure(
+            foreground=self._home_tone_color(display.tone)
+        )
+        self._home_scan_display = display
+
+    def refresh_home_stats(self, *, force: bool = False):
+        """Refresh scoped metrics and mutually exclusive next-action counts."""
+        if not getattr(self, "home_stats_vars", None):
+            return
+        fingerprint = self._compute_home_dashboard_fingerprint()
+        if not force and fingerprint == getattr(self, "_home_stats_fingerprint", None):
+            self._apply_home_scan_display()
+            return
+        selected_job = self.home_job_var.get() if hasattr(self, "home_job_var") else ""
+
+        candidates = []
+        candidate_error = ""
+        queue_items = []
+        queue_error = ""
+        candidate_exists = CANDIDATES_PATH.exists()
+        try:
+            if candidate_exists:
                 candidates = load_candidates_all(CANDIDATES_PATH)
-                candidates = [c for c in candidates if not c.get('blacklisted')]
+        except Exception as exc:
+            candidate_error = str(exc)
+            logger.warning("刷新首页候选人数据失败：%s", exc)
+        try:
+            snapshot = load_contact_queue_snapshot(CONTACT_QUEUE_PATH)
+            queue_items = snapshot.get("items", []) if isinstance(snapshot, dict) else []
+        except Exception as exc:
+            queue_error = str(exc)
+            logger.warning("刷新首页联系清单失败：%s", exc)
 
-                # 岗位过滤
-                if selected_job != "全部岗位":
-                    candidates = [
-                        c for c in candidates
-                        if normalize_job_name(c.get('job_name')) == normalize_job_name(selected_job)
-                    ]
-
-                # 淘汰结论优先于历史分数，首页与结果页使用同一决策口径。
-                candidates = [
-                    c for c in candidates
-                    if derive_candidate_decision(c).screening_result
-                    in {'强烈推荐', '推荐', '待定'}
-                ]
-
-                total = len(candidates)
-                greeted = sum(1 for c in candidates if c.get('greet_sent', False))
-                strong = sum(
-                    1 for c in candidates
-                    if derive_candidate_decision(c).screening_result == '强烈推荐'
+        task_error = candidate_error or queue_error
+        # Failed reads must never become a sticky cache hit. This also makes F5
+        # a real retry when the files themselves have not changed.
+        self._home_stats_fingerprint = None if task_error else fingerprint
+        if candidate_error:
+            for var in self.home_stats_vars.values():
+                var.set("—")
+        else:
+            summary = home_presenter.build_home_candidate_summary(
+                candidates,
+                queue_items if not queue_error else (),
+                selected_job,
+            )
+            self.home_stats_vars["total_home"].set(str(summary.passed))
+            self.home_stats_vars["strong_home"].set(str(summary.strong))
+            self.home_stats_vars["recommended_home"].set(str(summary.recommended))
+            self.home_stats_vars["greeted_home"].set(str(summary.greeted))
+        if task_error:
+            if candidate_error:
+                task_headline = "候选人数据暂不可用"
+                task_note = "候选人数据暂时不可用，请稍后刷新"
+            else:
+                task_headline = "联系清单暂不可用"
+                task_note = "联系清单暂时不可用，无法准确判断当前任务"
+            self.home_task_headline_prefix_var.set(task_headline)
+            self.home_task_total_var.set("")
+            self.home_task_headline_suffix_var.set("")
+            for key, var in self.home_task_vars.items():
+                var.set("—")
+                self.home_task_action_vars[key].set("数据暂不可用")
+                value_label, action_label, _color_key = self.home_task_labels[key]
+                value_label.configure(foreground=self.colors["home_danger"])
+                action_label.configure(foreground=self.colors["home_danger"])
+                widgets = getattr(self, "home_task_widgets", {}).get(key)
+                if widgets is not None:
+                    gui_home_page.update_task_widget(
+                        widgets,
+                        self.colors,
+                        count=0,
+                        priority=False,
+                        error=True,
+                        error_note=task_note,
+                    )
+        else:
+            task_counts = {
+                "pending_verification": summary.pending_verification,
+                "pending_review": summary.pending_review,
+                "pending_contact": summary.pending_contact,
+            }
+            total = sum(task_counts.values())
+            if total:
+                self.home_task_headline_prefix_var.set("今天有")
+                self.home_task_total_var.set(str(total))
+                self.home_task_headline_suffix_var.set("位候选人需要处理")
+            else:
+                self.home_task_headline_prefix_var.set("今天没有待处理事项")
+                self.home_task_total_var.set("")
+                self.home_task_headline_suffix_var.set("")
+            priority_key = next(
+                (key for key in ("pending_verification", "pending_review", "pending_contact") if task_counts[key]),
+                "",
+            )
+            action_text = {
+                "pending_verification": "查看待核实  →",
+                "pending_review": "查看待复核  →",
+                "pending_contact": "查看待联系  →",
+            }
+            for key, count in task_counts.items():
+                self.home_task_vars[key].set(str(count))
+                self.home_task_action_vars[key].set(
+                    action_text[key].format(count=count)
+                    if count
+                    else "当前无需处理"
                 )
-                recommended = sum(
-                    1 for c in candidates
-                    if derive_candidate_decision(c).screening_result == '推荐'
+                value_label, action_label, _color_key = self.home_task_labels[key]
+                foreground = (
+                    self.colors.get("home_ink", self.colors["home_primary"])
+                    if count
+                    else self.colors.get("home_muted", self.colors["home_secondary"])
                 )
+                value_label.configure(foreground=foreground)
+                action_label.configure(foreground=foreground)
+                widgets = getattr(self, "home_task_widgets", {}).get(key)
+                if widgets is not None:
+                    gui_home_page.update_task_widget(
+                        widgets,
+                        self.colors,
+                        count=count,
+                        priority=key == priority_key,
+                    )
 
-                self.home_stats_vars['total_home'].set(str(total))
-                self.home_stats_vars['recommended_home'].set(str(recommended))
-                self.home_stats_vars['greeted_home'].set(str(greeted))
-                self.home_stats_vars['strong_home'].set(str(strong))
-        except Exception as e:
-            print(f"刷新首页统计失败：{e}")
+        self._apply_home_health(
+            "storage",
+            home_presenter.storage_display(
+                error=candidate_error,
+                queue_error=queue_error,
+                exists=candidate_exists,
+                candidate_count=len(candidates),
+            ),
+        )
+        self._apply_home_scan_display()
 
-        # 如果当前在数据统计页，同步刷新统计
         if self.current_page_index == PageIndex.STATS:
             self.refresh_stats()
+
+    def refresh_home_todo(self):
+        """Compatibility entry: task counts now share the homepage aggregation."""
+        self.refresh_home_stats()
+
+    def refresh_home_status(self):
+        """Probe keyring and Chrome off the Tk thread without claiming connectivity."""
+        if not getattr(self, "home_health_vars", None):
+            return
+        if getattr(self, "_home_health_check_running", False):
+            return
+        self._home_health_check_running = True
+        self._home_health_refresh_token += 1
+        refresh_token = self._home_health_refresh_token
+        api_config = dict(getattr(self, "api_config", None) or {})
+        provider = str(api_config.get("api_provider") or "").strip()
+        base_url = str(api_config.get("base_url") or "").strip()
+        model = str(api_config.get("model") or "").strip()
+        model_configured = bool(
+            provider and model and not api_config.get("needs_reconfigure")
+        )
+        def _worker():
+            key_state = "missing"
+            if model_configured:
+                try:
+                    key_state = (
+                        "present"
+                        if self._get_api_key_cached(provider, base_url)
+                        else "missing"
+                    )
+                except Exception as exc:
+                    logger.warning("首页读取 API Key 状态失败：%s", exc)
+                    key_state = "error"
+
+            browser_state = "connected"
+            if not getattr(self, "browser_connected", False):
+                try:
+                    addresses = _browser_controller_for(self).address_candidates(
+                        getattr(self, "browser_address", "")
+                    )
+                    browser_state = (
+                        "available"
+                        if any(
+                            is_debug_port_open(address, timeout=0.5)
+                            for address in addresses
+                        )
+                        else "offline"
+                    )
+                except Exception as exc:
+                    logger.warning("首页读取 Chrome 状态失败：%s", exc)
+                    browser_state = "offline"
+
+            def _apply():
+                if refresh_token != self._home_health_refresh_token:
+                    self._home_health_check_running = False
+                    return
+                try:
+                    self._apply_home_health(
+                        "api",
+                        home_presenter.api_key_display(
+                            model_configured=model_configured,
+                            key_state=key_state,
+                        ),
+                    )
+                    self._apply_home_health(
+                        "browser", home_presenter.chrome_display(browser_state)
+                    )
+                finally:
+                    self._home_health_check_running = False
+
+            try:
+                self.run_on_ui(_apply)
+            except Exception:
+                self._home_health_check_running = False
+                raise
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _load_home_action_items(self):
+        """Load queue-aware action items using only the homepage job scope."""
+        candidates = load_candidates_all(CANDIDATES_PATH) if CANDIDATES_PATH.exists() else []
+        selected_job = self.home_job_var.get() if hasattr(self, "home_job_var") else "全部岗位"
+        snapshot = load_contact_queue_snapshot(CONTACT_QUEUE_PATH)
+        queue_items = snapshot.get("items", []) if isinstance(snapshot, dict) else []
+        return (
+            home_presenter.build_home_candidate_actions(
+                candidates,
+                queue_items,
+                selected_job,
+            ),
+            selected_job or "全部岗位",
+        )
+
+    def _show_home_action_group(
+        self,
+        groups,
+        empty_text: str,
+        *,
+        filter_label: str,
+        guidance: str,
+    ) -> None:
+        """Open one filtered slice of the shared daily-action workbench."""
+        try:
+            items, scope = self._load_home_action_items()
+        except Exception as exc:
+            messagebox.showerror(
+                "首页待办",
+                f"读取候选人数据失败：{exc}",
+                parent=self.root,
+            )
+            return
+        filtered_items = [item for item in items if item.group in groups]
+        if not filtered_items:
+            self.feedback_support.show_inline_banner(
+                self.home_page,
+                "info",
+                f"{scope} {empty_text}",
+            )
+            return
+        self._show_daily_candidate_actions_dialog(
+            f"{scope} / 快捷筛选：{filter_label}",
+            filtered_items,
+            groups=groups,
+            load_items=lambda: self._load_home_action_items()[0],
+            title="今日待办",
+            subtitle=f"首页快捷筛选：{filter_label} · {guidance}",
+        )
+
+    def on_home_task_click(self, task_type: str):
+        """Open the work surface that can resolve the selected next action."""
+        if task_type == "pending_verification":
+            self._show_home_action_group(
+                {"发送结果待核实"},
+                "暂无发送结果待核实的候选人。",
+                filter_label="待核实",
+                guidance="核对发送结果，确认后再继续联系",
+            )
+            return
+        if task_type == "pending_review":
+            self._show_home_action_group(
+                {"待复核"},
+                "暂无待复核候选人。",
+                filter_label="待复核",
+                guidance="逐一确认筛选判断，再决定联系或淘汰",
+            )
+            return
+        if task_type != "pending_contact":
+            return
+        self._show_home_action_group(
+            {"待打招呼", "待外部联系"},
+            "暂无待联系候选人。",
+            filter_label="待联系",
+            guidance="按候选人来源完成联系前确认和后续处理",
+        )
+
+    def on_home_health_click(self, status_type: str):
+        """Open the page that can change or inspect one readiness state."""
+        if status_type == "api":
+            self.open_home_system_settings()
+        elif status_type == "browser":
+            self.show_page_run()
+        elif status_type == "storage":
+            self.open_home_data_maintenance()
+
+    def open_home_data_maintenance(self):
+        """Open settings and scroll to the existing data-maintenance section."""
+        def _scroll_to_card():
+            card = getattr(self, "data_maintenance_card", None)
+            if card is None or not card.winfo_exists():
+                return
+            self.root.update_idletasks()
+            content_height = max(1, self.api_scrollable_frame.winfo_reqheight())
+            visible_height = max(1, self.api_canvas.winfo_height())
+            scrollable_height = max(1, content_height - visible_height)
+            offset = max(
+                0,
+                card.winfo_rooty() - self.api_scrollable_frame.winfo_rooty(),
+            )
+            self.api_canvas.yview_moveto(min(1.0, offset / scrollable_height))
+
+        self.app_shell.request_sidebar_page(
+            PageIndex.SETTINGS,
+            on_ready=_scroll_to_card,
+        )
+
+    def open_home_system_settings(self):
+        """Open settings from Home and always start at the top of the page."""
+        def _scroll_to_top():
+            canvas = getattr(self, "api_canvas", None)
+            if canvas is None or not canvas.winfo_exists():
+                return
+            canvas.yview_moveto(0.0)
+
+        self.app_shell.request_sidebar_page(
+            PageIndex.SETTINGS,
+            on_ready=_scroll_to_top,
+        )
+
+    def on_home_todo_click(self, todo_type: str):
+        """Compatibility map for pre-redesign homepage callbacks."""
+        task_type = {
+            "pending_send_home": "pending_contact",
+            "pending_confirm_home": "pending_verification",
+            "pending_review_home": "pending_review",
+        }.get(todo_type, todo_type)
+        self.on_home_task_click(task_type)
+
+    def on_home_status_click(self, status_type: str):
+        """Compatibility map for pre-redesign homepage callbacks."""
+        health_type = {
+            "api_home": "api",
+            "browser_home": "browser",
+            "storage_home": "storage",
+        }.get(status_type, status_type)
+        self.on_home_health_click(health_type)
 
     def _center_window(self, window, width, height):
         """将子窗口相对于主窗口居中"""
@@ -8867,8 +9276,21 @@ class BossFilterGUI:
             lambda: self._apply_run_terminal_event(terminal, outcome, request)
         )
 
+    def _remember_last_scan(self, terminal, request) -> None:
+        """Persist the actual scanner terminal time, scope, and outcome."""
+        preferences = dict(getattr(self, "_run_preferences", None) or {})
+        preferences["last_scan"] = {
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+            "job_name": str(getattr(request, "selected_job", "") or "全部岗位"),
+            "status": home_presenter.classify_run_status(terminal.final_desc),
+        }
+        self._run_preferences = preferences
+        _save_run_preferences(preferences)
+        self._apply_home_scan_display()
+
     def _apply_run_terminal_event(self, terminal, outcome, request):
         """Render one plain terminal event on the Tk main thread."""
+        self._remember_last_scan(terminal, request)
         self._apply_lamp_status(
             self.status_label,
             terminal.status_text,
@@ -9141,11 +9563,26 @@ class BossFilterGUI:
 
 
 
-    def _show_daily_candidate_actions_dialog(self, scope, items):
+    def _show_daily_candidate_actions_dialog(
+        self,
+        scope,
+        items,
+        groups=None,
+        load_items=None,
+        title="今日待办",
+        subtitle="按时间优先级整理候选人，逐项推进下一步",
+    ):
         """Show the daily candidate action queue through its dedicated Tk module."""
+        def filter_groups(action_items):
+            if not groups:
+                return action_items
+            return [item for item in action_items if item.group in groups]
+
         def load_actions():
+            if load_items is not None:
+                return filter_groups(load_items())
             refreshed_candidates, _scope = self._load_candidates_for_daily_actions()
-            return build_daily_candidate_actions(refreshed_candidates)
+            return filter_groups(build_daily_candidate_actions(refreshed_candidates))
 
         def export_report(parent):
             _export_daily_candidate_actions_report(items, parent)
@@ -9153,10 +9590,12 @@ class BossFilterGUI:
         return gui_candidate_actions.show_daily_candidate_actions_dialog(
             self,
             scope,
-            items,
+            filter_groups(items),
             load_actions=load_actions,
             export_report=export_report,
             ui_config=UI_CONFIG,
+            workbench_title=title,
+            workbench_subtitle=subtitle,
         )
 
     def _show_candidate_state_diagnostics_dialog(self, scope, candidates, issues, summary_text):

@@ -885,10 +885,9 @@ def test_gui_widget_support_excludes_business_storage_browser_and_gui_main_depen
     }.isdisjoint(method_names)
     assert "_toggle_result_empty_state" in method_names
     for page_module in (
-        "gui_config_page.py",
-        "gui_education_page.py",
-        "gui_home_page.py",
-        "gui_job_review.py",
+            "gui_config_page.py",
+            "gui_education_page.py",
+            "gui_job_review.py",
         "gui_result_page.py",
         "gui_run_page.py",
         "gui_settings_page.py",
@@ -896,6 +895,9 @@ def test_gui_widget_support_excludes_business_storage_browser_and_gui_main_depen
     ):
         page_source = (ROOT / page_module).read_text(encoding="utf-8")
         assert ".widget_support." in page_source
+    home_source = (ROOT / "gui_home_page.py").read_text(encoding="utf-8")
+    assert ".widget_support." not in home_source
+    assert 'colors["home_surface"]' in home_source
 
 
 def test_gui_layout_support_owns_responsive_layout_without_host_forwarders():
@@ -1317,6 +1319,28 @@ def test_home_page_builder_exposes_an_explicit_widget_bundle():
         "job_combo",
         "stats_vars",
         "stats_labels",
+        "task_vars",
+        "task_action_vars",
+        "task_labels",
+        "task_widgets",
+        "task_total_var",
+        "task_headline_prefix_var",
+        "task_headline_suffix_var",
+        "health_vars",
+        "health_note_vars",
+        "health_labels",
+        "health_widgets",
+        "readiness_title_var",
+        "readiness_note_var",
+        "readiness_banner",
+        "readiness_rail",
+        "readiness_icon_label",
+        "readiness_title_label",
+        "readiness_note_label",
+        "scan_summary_var",
+        "scan_status_var",
+        "scan_status_label",
+        "layout",
     }
 
 
@@ -1346,8 +1370,8 @@ def test_home_page_keeps_data_loading_in_host_and_delegates_navigation_to_shell(
     builder = (ROOT / "gui_home_page.py").read_text(encoding="utf-8")
     source = (ROOT / "gui_main.py").read_text(encoding="utf-8")
     assert "load_candidates_all" not in builder
-    assert "def refresh_home_stats(self):" not in builder
-    assert "def refresh_home_stats(self):" in source
+    assert "def refresh_home_stats(self, *, force" not in builder
+    assert "def refresh_home_stats(self, *, force: bool = False):" in source
     assert "host.refresh_home_stats()" in builder
     assert "host.app_shell.request_sidebar_page(" in builder
 
@@ -1652,6 +1676,8 @@ def test_daily_actions_delegate_keeps_loading_and_export_in_gui_main():
 
     assert result is dialog
     assert loaded == refreshed_items
+    assert kwargs["workbench_title"] == "今日待办"
+    assert kwargs["workbench_subtitle"] == "按时间优先级整理候选人，逐项推进下一步"
     export.assert_called_once_with(items, parent)
 
 

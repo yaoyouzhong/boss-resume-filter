@@ -31,6 +31,23 @@ def setup_styles(host):
     host.font_stat_label = (ui_theme.FONT_FAMILY, int(15 * page_fs))
     host.font_log = (ui_theme.FONT_FAMILY, int(12 * page_fs))
     host.font_table = (ui_theme.FONT_FAMILY, int(12 * page_fs))  # 表格字体
+    home_bold = ui_theme.FONT_FAMILY
+    number_family = ui_theme.FONT_FAMILY
+    host.home_fonts = {
+        "title": (home_bold, max(18, int(26 * page_fs)), "bold"),
+        "hero": (home_bold, max(17, int(24 * page_fs)), "bold"),
+        "hero_number": (number_family, max(23, int(30 * page_fs)), "bold"),
+        "eyebrow": (home_bold, max(9, int(11 * page_fs)), "bold"),
+        "card_heading": (home_bold, max(11, int(15 * page_fs)), "bold"),
+        "summary_heading": (home_bold, max(9, int(12 * page_fs)), "bold"),
+        "task_title": (home_bold, max(12, int(14 * page_fs)), "bold"),
+        "task_number": (number_family, max(21, int(27 * page_fs)), "bold"),
+        "body": (ui_theme.FONT_FAMILY, max(10, int(12 * page_fs))),
+        "meta": (ui_theme.FONT_FAMILY, max(10, int(11 * page_fs))),
+        "action": (home_bold, max(10, int(12 * page_fs)), "bold"),
+        "micro": (ui_theme.FONT_FAMILY, max(8, int(10 * page_fs))),
+        "data_small": (number_family, max(8, int(10 * page_fs))),
+    }
 
     # 设置 Combobox 下拉列表字体（与 font_label 保持一致）
     # 必须用元组格式 + priority 80，确保 Tk option database 正确解析并覆盖默认值
@@ -45,6 +62,7 @@ def setup_styles(host):
     c = host.colors
     style.configure('TFrame', background=c['bg_card'])
     style.configure('Page.TFrame', background=c['bg_main'])
+    style.configure('Home.Page.TFrame', background=c['home_bg'])
     style.configure('TLabel', font=host.font_label, foreground=c['text_primary'],
                     background=c['bg_card'])
 
@@ -110,6 +128,47 @@ def setup_styles(host):
                           ('disabled', c['bg_input'])],
               foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
               bordercolor=[('disabled', c['border'])])
+    home_button_pad = (18, 9)
+    style.configure(
+        'Home.Primary.TButton',
+        font=host.home_fonts["action"],
+        padding=home_button_pad,
+        background=c['home_primary'],
+        foreground='#FFFFFF',
+        bordercolor=c['home_primary'],
+        focuscolor=c['home_primary_pressed'],
+        lightcolor=c['home_primary'],
+        darkcolor=c['home_primary'],
+    )
+    style.map(
+        'Home.Primary.TButton',
+        background=[
+            ('pressed', c['home_primary_pressed']),
+            ('active', c['home_primary_hover']),
+            ('disabled', c['bg_input']),
+        ],
+        foreground=[('disabled', c['text_muted'])],
+        bordercolor=[('focus', c['home_primary_pressed'])],
+    )
+    style.configure(
+        'Home.Secondary.TButton',
+        font=host.home_fonts["action"],
+        padding=home_button_pad,
+        background=c['home_surface'],
+        foreground=c['home_ink'],
+        bordercolor=c['home_border'],
+        focuscolor=c['home_primary'],
+        lightcolor=c['home_surface'],
+        darkcolor=c['home_surface'],
+    )
+    style.map(
+        'Home.Secondary.TButton',
+        background=[
+            ('pressed', c['home_primary_tint']),
+            ('active', c['home_surface_quiet']),
+        ],
+        bordercolor=[('focus', c['home_primary'])],
+    )
     # 工作台主动作：与普通按钮保持相同字号和内边距，仅用颜色区分主次。
     style.configure('Workbench.Primary.TButton', font=host.font_label, padding=(15, 8),
                     background=c['primary'], foreground='#FFFFFF',

@@ -105,10 +105,12 @@ def show_daily_candidate_actions_dialog(
     load_actions: LoadActions,
     export_report: ExportReport,
     ui_config: Mapping[str, Any],
+    workbench_title: str = "今日待办",
+    workbench_subtitle: str = "按时间优先级整理候选人，逐项推进下一步",
 ) -> tk.Toplevel:
     """Build and show the daily actions dialog without reading or writing business data."""
     win = create_toplevel(self.root)
-    win.title("今日待办")
+    win.title(workbench_title)
     win.transient(self.root)
     win.withdraw()
     scale = self.dpi_scale * self.zoom_factor
@@ -145,8 +147,8 @@ def show_daily_candidate_actions_dialog(
     gui_candidate_workbench.create_header(
         self,
         body,
-        "今日待办",
-        "按时间优先级整理候选人，逐项推进下一步",
+        workbench_title,
+        workbench_subtitle,
         scope,
     )
     metric_vars = gui_candidate_workbench.create_metrics(self, body, (
@@ -511,7 +513,7 @@ def show_daily_candidate_actions_dialog(
             f"下一步：{item.action}",
         ])
         self.input_support.show_text_dialog(
-            "今日待办详情",
+            f"{workbench_title}详情",
             detail,
             width=620,
             height=360,

@@ -136,11 +136,12 @@ class DataMaintenanceController:
         )
         backup_line = f"最近备份：{cls.format_time(backup_value)}"
         restore_line = f"最近恢复：{cls.format_time(restore_value)}"
+        lines = [f"{backup_line}  ·  {restore_line}"]
         if backup_summary:
-            backup_line += f" · {backup_summary}"
+            lines.append(f"本次备份：{backup_summary}")
         if restore_summary:
-            restore_line += f" · {restore_summary}"
-        return f"{backup_line}\n{restore_line}"
+            lines.append(f"本次恢复：{restore_summary}")
+        return "\n".join(lines)
 
     @classmethod
     def diagnostic_note(

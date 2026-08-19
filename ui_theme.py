@@ -49,6 +49,31 @@ BORDER = "#E2E8F0"           # 常规边框
 BORDER_STRONG = "#CBD5E1"    # 按钮/输入框边框
 
 # ---------------------------------------------------------------------------
+# 首页工作台（局部视觉体系，不改变其他页面与侧边栏）
+# ---------------------------------------------------------------------------
+HOME_BG = "#F3F6FA"
+HOME_SURFACE = "#FFFFFF"
+HOME_SURFACE_QUIET = "#F8FAFC"
+HOME_INK = "#172033"
+HOME_INK_SOFT = "#2B3950"
+HOME_SECONDARY = "#65748B"
+HOME_MUTED = "#7D8BA0"
+HOME_BORDER = "#DCE3EC"
+HOME_BORDER_SOFT = "#E8EDF3"
+HOME_PRIMARY = "#2563EB"
+HOME_PRIMARY_HOVER = "#1D55D5"
+HOME_PRIMARY_PRESSED = "#1E40AF"
+HOME_PRIMARY_TINT = "#EDF4FF"
+HOME_ACTIVE_ROW = "#F7FAFF"
+HOME_PRIMARY_BORDER = "#BFD2F2"
+HOME_SUCCESS = "#27835D"
+HOME_SUCCESS_TINT = "#EDF8F2"
+HOME_WARNING = "#C77716"
+HOME_WARNING_TINT = "#FFF7EA"
+HOME_DANGER = "#C33D3D"
+HOME_DANGER_TINT = "#FDECEC"
+
+# ---------------------------------------------------------------------------
 # 表格行标签底色
 # ---------------------------------------------------------------------------
 BG_TREE_HIGH = "#E8F5E9"     # 强烈推荐行
@@ -158,6 +183,27 @@ def build_palette():
         "text_sidebar_version": TEXT_SIDEBAR_VERSION,
         "border": BORDER,
         "border_strong": BORDER_STRONG,
+        "home_bg": HOME_BG,
+        "home_surface": HOME_SURFACE,
+        "home_surface_quiet": HOME_SURFACE_QUIET,
+        "home_ink": HOME_INK,
+        "home_ink_soft": HOME_INK_SOFT,
+        "home_secondary": HOME_SECONDARY,
+        "home_muted": HOME_MUTED,
+        "home_border": HOME_BORDER,
+        "home_border_soft": HOME_BORDER_SOFT,
+        "home_primary": HOME_PRIMARY,
+        "home_primary_hover": HOME_PRIMARY_HOVER,
+        "home_primary_pressed": HOME_PRIMARY_PRESSED,
+        "home_primary_tint": HOME_PRIMARY_TINT,
+        "home_active_row": HOME_ACTIVE_ROW,
+        "home_primary_border": HOME_PRIMARY_BORDER,
+        "home_success": HOME_SUCCESS,
+        "home_success_tint": HOME_SUCCESS_TINT,
+        "home_warning": HOME_WARNING,
+        "home_warning_tint": HOME_WARNING_TINT,
+        "home_danger": HOME_DANGER,
+        "home_danger_tint": HOME_DANGER_TINT,
         "banner_info_bg": BANNER_INFO_BG,
         "banner_warning_bg": BANNER_WARNING_BG,
         "banner_error_bg": BANNER_ERROR_BG,
