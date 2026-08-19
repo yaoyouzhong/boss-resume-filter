@@ -438,6 +438,7 @@ def build_settings_content_steps(
         padx=int(25 * self.dpi_scale * self.zoom_factor),
         pady=int(15 * self.dpi_scale * self.zoom_factor),
     )
+    self.data_maintenance_card = data_card
     ttk.Label(
         data_card,
         text=(
@@ -450,6 +451,8 @@ def build_settings_content_steps(
         wraplength=int(900 * self.dpi_scale * self.zoom_factor),
         justify="left",
     ).pack(anchor="w")
+
+    yield
 
     data_button_row = ttk.Frame(data_card, style="TFrame")
     data_button_row.pack(
@@ -498,6 +501,8 @@ def build_settings_content_steps(
         padx=(int(10 * self.dpi_scale * self.zoom_factor), 0),
     )
 
+    yield
+
     self.data_backup_status_var = tk.StringVar(
         value=self._data_backup_note_text()
     )
@@ -507,6 +512,7 @@ def build_settings_content_steps(
         font=self.font_label,
         foreground=self.colors["text_secondary"],
         background=self.colors["bg_card"],
+        wraplength=int(1050 * self.dpi_scale * self.zoom_factor),
         justify="left",
     ).pack(anchor="w", pady=(int(10 * self.dpi_scale * self.zoom_factor), 0))
 

@@ -298,6 +298,8 @@ def build_run_page_steps(
         cursor="hand2",
     )
 
+    yield
+
     host.scan_advanced_details_frame = ttk.Frame(param_frame, style='TFrame')
     advanced_inner = ttk.Frame(host.scan_advanced_details_frame, style='TFrame')
     advanced_inner.pack(fill="x")
@@ -318,6 +320,8 @@ def build_run_page_steps(
     _spin_pad = int(5 * host.dpi_scale * host.zoom_factor)
     _advanced_row_pady = int(7 * host.dpi_scale * host.zoom_factor)
     advanced_inner.columnconfigure(0, minsize=_run_control_lead_width)
+
+    yield
 
     def _create_advanced_setting_label(row_index, label_text):
         setting_label = ttk.Label(
@@ -420,6 +424,8 @@ def build_run_page_steps(
     host._timeout_hint_label.pack(
         side="left", padx=(host.inline_note_gap, 0)
     )
+
+    yield
 
     # 3. 扫描信息补全
     _create_advanced_setting_label(2, "扫描增强:")
@@ -534,6 +540,8 @@ def build_run_page_steps(
     host.greet_context_risk_label.pack(
         side="left", padx=(host.inline_note_gap, 0)
     )
+
+    yield
 
     _muted_text = host.colors.get('text_muted', ui_theme.TEXT_MUTED)
     _warning_text = host.colors.get('warning_text', ui_theme.WARNING_TEXT)

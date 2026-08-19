@@ -127,6 +127,8 @@ def build_config_page_steps(
     btn_more.pack(side="right", padx=(int(8 * self.dpi_scale * self.zoom_factor), 0))
     self._context_menus.append(more_menu)
 
+    yield
+
     icon_plus_small = self.icons.button('plus', self.colors['success'])
     btn_add = ttk.Button(select_frame, image=icon_plus_small, text="新建", compound=tk.LEFT, command=self.add_job)
     btn_add._icon_ref = icon_plus_small
@@ -151,6 +153,8 @@ def build_config_page_steps(
         side="left",
         padx=(self.inline_note_gap, int(8 * self.dpi_scale * self.zoom_factor)),
     )
+
+    yield
 
     # ===== 新建岗位步骤引导条 =====
     _fs = self.dpi_scale * self.zoom_factor
@@ -469,6 +473,8 @@ def build_config_page_steps(
         font=self.font_label,
         background=self.colors['bg_card'],
     ).pack(side="left")
+
+    yield
 
     row_salary = ttk.Frame(basic_frame, style='TFrame')
     row_salary.pack(
@@ -806,6 +812,8 @@ def build_config_page_steps(
     self.required_listbox.bind("<Motion>", _on_req_motion)
     self.required_listbox.bind("<Leave>", _on_req_leave)
 
+    yield
+
     # 必要条件编辑 - 条件类型选择 + 关键词（逗号分隔）
     required_edit_frame = ttk.Frame(required_frame, style='TFrame')
     required_edit_frame.pack(fill="x")
@@ -816,6 +824,9 @@ def build_config_page_steps(
                                     values=["简单匹配", "OR（满足任一）", "AND（全部满足）"],
                                     width=12, state="readonly", font=self.font_label)
     cond_type_combo.pack(side="left", padx=int(3 * self.dpi_scale * self.zoom_factor))
+
+    yield
+
     ttk.Label(required_edit_frame, text="关键词:", font=self.font_label,
              background=self.colors['bg_card']).pack(side="left", padx=(int(5 * self.dpi_scale * self.zoom_factor), 0))
     self.new_required_var = tk.StringVar()
@@ -824,6 +835,8 @@ def build_config_page_steps(
     self.input_support.bind_entry_context_menu(required_edit)
     ttk.Button(required_edit_frame, text="添加", command=self.add_required_condition).pack(side="left", padx=(int(8 * self.dpi_scale * self.zoom_factor), int(3 * self.dpi_scale * self.zoom_factor)))
     ttk.Button(required_edit_frame, text="删除选中", command=self.delete_required_condition).pack(side="left", padx=(int(3 * self.dpi_scale * self.zoom_factor), 0))
+
+    yield
 
     self._job_config_review_targets = {
         "requirement": ConfigReviewTarget(

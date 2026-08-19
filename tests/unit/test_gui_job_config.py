@@ -41,6 +41,10 @@ from storage import load_candidates_all, save_candidates_all
 def _make_app_shell(host):
     if not hasattr(host, "layout_support"):
         host.layout_support = Mock()
+    if not hasattr(host, "feedback_support"):
+        host.feedback_support = Mock()
+    if "_browser_auto_check_id" not in getattr(host, "__dict__", {}):
+        host._stop_browser_auto_check = Mock()
     shell = gui_app_shell.AppShell(
         host,
         ui_config=gui_main.UI_CONFIG,
@@ -65,8 +69,10 @@ def _make_layout_support(host):
     )
 
 
-def test_app_shell_clears_tooltips_before_hiding_cached_pages():
+def test_app_shell_clears_tooltips_before_explicitly_hiding_cached_pages():
     pages = [Mock() for _ in range(7)]
+    for page in pages:
+        page.winfo_manager.return_value = "place"
     host = types.SimpleNamespace(
         _stop_browser_auto_check=Mock(),
         feedback_support=Mock(),
@@ -91,7 +97,47 @@ def test_app_shell_clears_tooltips_before_hiding_cached_pages():
     host._stop_browser_auto_check.assert_called_once_with()
     host.feedback_support.hide_all_tooltips.assert_called_once_with()
     for page in pages:
-        page.pack_forget.assert_called_once_with()
+        page.place_forget.assert_called_once_with()
+
+
+def test_app_shell_raises_cached_page_without_resizing_inactive_siblings():
+    active_page = Mock()
+    active_page.winfo_manager.return_value = "place"
+    sibling_page = Mock()
+    sibling_page.winfo_manager.return_value = "place"
+    sibling_page.winfo_width.return_value = 1200
+    sibling_page.winfo_height.return_value = 800
+    loading_frame = Mock()
+    loading_frame.winfo_manager.return_value = ""
+    host = types.SimpleNamespace(
+        _stop_browser_auto_check=Mock(),
+        feedback_support=Mock(),
+        _page_loading_frame=loading_frame,
+        _active_page_widget=sibling_page,
+        current_page_index=PageIndex.HOME,
+    )
+    shell = gui_app_shell.AppShell(
+        host,
+        ui_config=gui_main.UI_CONFIG,
+        font_family="Test Font",
+        font_family_semibold="Test Font Semibold",
+        version="test",
+    )
+    shell.apply_page_width_policy = Mock()
+    shell.schedule_page_width_policy = Mock()
+    shell.update_nav_highlight = Mock()
+
+    shell.activate_page(active_page, PageIndex.RESULTS)
+
+    assert host.current_page_index == PageIndex.RESULTS
+    assert host._active_page_widget is active_page
+    active_page.lift.assert_called_once_with()
+    active_page.place.assert_not_called()
+    active_page.place_configure.assert_not_called()
+    sibling_page.place_forget.assert_not_called()
+    sibling_page.pack_forget.assert_not_called()
+    sibling_page.place_configure.assert_not_called()
+    shell.apply_page_width_policy.assert_called_once_with()
 
 
 def test_job_config_list_tooltips_use_managed_replacement_and_empty_area_guard():
@@ -455,6 +501,9 @@ class _FakePackFrame:
 
     def pack_forget(self):
         self.manager = ""
+
+    def lift(self):
+        return None
 
 
 class _SearchSortResultTree:
@@ -1464,6 +1513,7 @@ class _FakeTree:
         self._width = width
         self.displaycolumns = "#all"
         self.column_options = {}
+        self.column_write_count = 0
         self.items = {}
 
     def winfo_width(self):
@@ -1477,6 +1527,9 @@ class _FakeTree:
         self.displaycolumns = kwargs["displaycolumns"]
 
     def column(self, column, **kwargs):
+        if not kwargs:
+            return self.column_options.get(column, {})
+        self.column_write_count += 1
         self.column_options[column] = kwargs
 
     def exists(self, item):
@@ -1628,6 +1681,24 @@ def test_stats_tree_columns_expand_with_available_width():
     ) == 1398
 
 
+def test_tree_layouts_skip_identical_column_targets():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = _FakeRoot()
+    gui.result_tree = _FakeTree(1250)
+    gui.stats_tree = _FakeTree(1200)
+    layout = _make_layout_support(gui)
+
+    layout.update_result_tree_columns()
+    result_writes = gui.result_tree.column_write_count
+    layout.update_result_tree_columns()
+    assert gui.result_tree.column_write_count == result_writes
+
+    layout.update_stats_tree_columns()
+    stats_writes = gui.stats_tree.column_write_count
+    layout.update_stats_tree_columns()
+    assert gui.stats_tree.column_write_count == stats_writes
+
+
 def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.root = _FakeRoot(state="zoomed", width=3840, height=2000)
@@ -1706,6 +1777,13 @@ def test_layout_support_expands_page_widgets_only_for_tall_windows():
     )
     gui.log_text.configure.assert_called_once_with(height=min(40, 20 + extra_rows))
     assert gui.model_list_tree.height == min(12, layout.get_model_list_max_rows())
+
+    layout.update_config_page_dynamic_heights()
+    layout.update_run_page_dynamic_heights()
+    layout.update_model_list_height()
+    gui.requirement_text.configure.assert_called_once()
+    gui.skills_tree.configure.assert_called_once()
+    gui.log_text.configure.assert_called_once()
 
     gui.root = _FakeRoot(height=900, screen_height=1080)
     assert layout.is_tall_window() is False
@@ -2253,10 +2331,10 @@ def test_system_settings_populates_model_controls_before_page_is_visible():
     assert "self._load_api_config_to_ui_if_needed()" in show_block
     assert "_defer_ui_work(\"api_config_to_ui\"" not in show_block
     assert show_block.index("self._load_api_config_to_ui_if_needed()") < show_block.index(
-        "self.api_config_page.pack"
+        "self.app_shell.activate_page"
     )
     assert show_block.index("self._schedule_api_key_resolution()") > show_block.index(
-        "self.api_config_page.pack"
+        "self.app_shell.activate_page"
     )
 
 
@@ -2432,6 +2510,46 @@ def test_deferred_page_work_is_skipped_after_navigation():
     callback.assert_called_once_with()
 
 
+def test_deferred_page_work_can_wait_until_after_the_first_frame():
+    class FakeRoot:
+        def __init__(self):
+            self.scheduled = []
+
+        def after(self, delay, callback):
+            self.scheduled.append((delay, callback))
+
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = FakeRoot()
+    gui.current_page_index = PageIndex.HOME
+    gui._pending_idle_tasks = set()
+    callback = Mock()
+
+    gui._defer_ui_work(
+        "home_status",
+        callback,
+        page_index=PageIndex.HOME,
+        delay_ms=160,
+    )
+
+    assert gui.root.scheduled[0][0] == 160
+    callback.assert_not_called()
+    gui.root.scheduled[0][1]()
+    callback.assert_called_once_with()
+
+
+def test_home_page_uses_shared_page_stack_before_deferred_refreshes():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    show_block = source[source.index("    def show_page_home(self):") :]
+    show_block = show_block[: show_block.index("\n    def show_page_config")]
+
+    assert "self.app_shell.activate_page(self.home_page, PageIndex.HOME)" in show_block
+    assert show_block.index("self.app_shell.activate_page") < show_block.index(
+        '"home_stats"'
+    )
+    assert "delay_ms=20" in show_block
+    assert "delay_ms=160" in show_block
+
+
 def test_sidebar_first_open_paints_loading_frame_before_building_page():
     class FakeRoot:
         def __init__(self):
@@ -2526,7 +2644,7 @@ def test_sidebar_first_open_advances_staged_page_one_chunk_per_callback():
     assert gui.root.scheduled == []
 
 
-def test_sidebar_first_open_cancels_staged_page_after_navigation():
+def test_sidebar_first_open_finishes_and_caches_staged_page_after_navigation():
     class FakeRoot:
         def __init__(self):
             self.scheduled = []
@@ -2551,7 +2669,7 @@ def test_sidebar_first_open_cancels_staged_page_after_navigation():
         gui.run_page = partial_page
         events.append("first")
         yield
-        events.append("must-not-run")
+        events.append("complete")
 
     _make_app_shell(gui).request_page_first_open(
         2, "run_page", "运行控制", staged_creator, show_page
@@ -2559,10 +2677,9 @@ def test_sidebar_first_open_cancels_staged_page_after_navigation():
     gui.root.scheduled.pop(0)[1]()
     gui.current_page_index = 0
     gui.root.scheduled.pop(0)[1]()
-
-    assert events == ["first"]
-    partial_page.destroy.assert_called_once_with()
-    assert gui.run_page is None
+    assert events == ["first", "complete"]
+    partial_page.destroy.assert_not_called()
+    assert gui.run_page is partial_page
     assert gui._pending_page_builds == set()
     show_page.assert_not_called()
 
@@ -2666,6 +2783,7 @@ def test_global_shortcuts_do_not_bind_unsafe_candidate_snapshot_save():
 
 def test_page_specs_cover_each_sidebar_identity_once():
     assert tuple(PAGE_SPECS) == tuple(PageIndex)
+    assert PAGE_SPECS[PageIndex.HOME].full_width is False
     assert PAGE_SPECS[PageIndex.RESULTS].full_width is False
     assert PAGE_SPECS[PageIndex.STATS].full_width is False
     assert PAGE_SPECS[PageIndex.SETTINGS].page_attr == "api_config_page"
@@ -2697,7 +2815,7 @@ def test_f5_refreshes_home_without_rebuilding_hidden_results():
 
     gui._shortcut_refresh()
 
-    gui.refresh_home_stats.assert_called_once_with()
+    gui.refresh_home_stats.assert_called_once_with(force=True)
     gui.refresh_results.assert_not_called()
     gui.refresh_stats.assert_not_called()
 
@@ -2858,7 +2976,7 @@ def test_home_and_result_empty_state_use_staged_navigation_entrypoint():
     result_block = Path("gui_result_page.py").read_text(encoding="utf-8")
 
     assert "command=lambda: host.app_shell.request_sidebar_page(run_page_index)" in home_block
-    assert "command=lambda: host.app_shell.request_sidebar_page(result_page_index)" in home_block
+    assert "host.app_shell.request_sidebar_page(result_page_index)" in home_block
     assert "command=lambda: host.app_shell.request_sidebar_page(config_page_index)" in home_block
     assert "action_command=lambda: host.app_shell.request_sidebar_page(run_page_index)" in result_block
     assert "command=host.show_page_run" not in home_block
@@ -3014,22 +3132,282 @@ def test_status_reset_does_not_overwrite_newer_operation_status():
 def test_stats_page_uses_centered_width_policy():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.pages_frame = Mock()
+    gui.pages_frame.winfo_width.return_value = 2400
+    gui.pages_frame.winfo_height.return_value = 900
     gui.main_frame = Mock()
     gui.main_frame.winfo_width.return_value = 2400
+    gui.main_frame.winfo_height.return_value = 900
     gui.dpi_scale = 1.0
     gui.zoom_factor = 1.0
     gui.current_page_index = 5
     gui._last_page_pack_padx = None
     gui._last_page_pack_pady = None
     gui.layout_support = Mock()
+    gui._active_page_widget = Mock()
+    gui._active_page_widget.winfo_manager.return_value = ""
 
     shell = _make_app_shell(gui)
     gui_app_shell.AppShell.apply_page_width_policy(shell)
 
-    assert gui.pages_frame.pack_configure.call_args.kwargs["padx"] == max(
+    expected_pad = max(
         int(gui_main.UI_CONFIG["page_padding_x"]),
         (2400 - int(gui_main.UI_CONFIG["content_max_width"])) // 2,
     )
+    assert gui._active_page_widget.place.call_args.kwargs["x"] == 0
+    assert gui._active_page_widget.place.call_args.kwargs["width"] == 2400
+    gui._active_page_widget.configure.assert_called_once_with(
+        padding=(
+            expected_pad,
+            int(gui_main.UI_CONFIG["page_padding_y"]),
+            expected_pad,
+            int(gui_main.UI_CONFIG["page_padding_y"]),
+        )
+    )
+    gui.pages_frame.pack_configure.assert_not_called()
+
+
+def test_home_page_uses_its_tighter_workbench_width_policy():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.pages_frame = Mock()
+    gui.pages_frame.winfo_width.return_value = 2400
+    gui.pages_frame.winfo_height.return_value = 900
+    gui.main_frame = Mock()
+    gui.main_frame.winfo_width.return_value = 2400
+    gui.main_frame.winfo_height.return_value = 900
+    gui.root = Mock()
+    gui.root.winfo_width.return_value = 2400
+    gui.root.winfo_height.return_value = 900
+    gui.dpi_scale = 1.0
+    gui.zoom_factor = 1.0
+    gui.current_page_index = PageIndex.HOME
+    gui._last_page_pack_padx = None
+    gui._last_page_pack_pady = None
+    gui.layout_support = Mock()
+    gui._active_page_widget = Mock()
+    gui._active_page_widget.winfo_manager.return_value = ""
+
+    shell = _make_app_shell(gui)
+    gui_app_shell.AppShell.apply_page_width_policy(shell)
+
+    expected_pad = max(
+        int(gui_main.UI_CONFIG["home_page_padding_x"]),
+        (2400 - int(gui_main.UI_CONFIG["home_content_max_width"])) // 2,
+    )
+    assert gui._active_page_widget.place.call_args.kwargs["x"] == 0
+    assert gui._active_page_widget.place.call_args.kwargs["y"] == 0
+    assert gui._active_page_widget.place.call_args.kwargs["width"] == 2400
+    gui._active_page_widget.configure.assert_called_once_with(
+        padding=(
+            expected_pad,
+            int(gui_main.UI_CONFIG["home_page_padding_y"]),
+            expected_pad,
+            12,
+        )
+    )
+    assert gui._last_page_pack_pady == (
+        int(gui_main.UI_CONFIG["home_page_padding_y"]),
+        12,
+    )
+    gui.layout_support.update_home_page_layout.assert_called_once_with()
+
+
+def test_page_width_policy_coalesces_configure_storm_without_timer_starvation():
+    root = Mock()
+    root.after.return_value = "layout-after"
+    host = types.SimpleNamespace(
+        root=root,
+        _page_width_policy_after_id=None,
+    )
+    shell = gui_app_shell.AppShell(
+        host,
+        ui_config=gui_main.UI_CONFIG,
+        font_family="Test Font",
+        font_family_semibold="Test Font Semibold",
+        version="test",
+    )
+    shell.apply_page_width_policy = Mock()
+
+    shell.schedule_page_width_policy()
+    first_callback = root.after.call_args.args[1]
+    shell.schedule_page_width_policy()
+    shell.schedule_page_width_policy()
+
+    root.after.assert_called_once_with(60, first_callback)
+    root.after_cancel.assert_not_called()
+    first_callback()
+    assert host._page_width_policy_after_id is None
+    shell.apply_page_width_policy.assert_called_once_with()
+
+
+def test_page_width_policy_does_not_rewrite_unchanged_page_geometry():
+    page = Mock()
+    page.winfo_manager.return_value = "place"
+    page.place_info.return_value = {
+        "x": "0",
+        "y": "0",
+        "width": "1200",
+        "height": "800",
+        "relwidth": "",
+        "relheight": "",
+    }
+    host = types.SimpleNamespace(
+        root=_FakeRoot(width=1200, height=800),
+        main_frame=Mock(),
+        pages_frame=Mock(),
+        dpi_scale=1.0,
+        zoom_factor=1.0,
+        current_page_index=PageIndex.STATS,
+        _active_page_widget=page,
+        _last_page_pack_padx=None,
+        _last_page_pack_pady=None,
+        layout_support=Mock(),
+    )
+    host.main_frame.winfo_width.return_value = 1200
+    host.pages_frame.winfo_width.return_value = 1200
+    host.pages_frame.winfo_height.return_value = 800
+    shell = gui_app_shell.AppShell(
+        host,
+        ui_config=gui_main.UI_CONFIG,
+        font_family="Test Font",
+        font_family_semibold="Test Font Semibold",
+        version="test",
+    )
+
+    shell.apply_page_width_policy()
+    shell.apply_page_width_policy()
+
+    page.configure.assert_called_once()
+    page.place_configure.assert_not_called()
+
+
+def test_home_layout_uses_shell_controlled_page_viewport():
+    page = Mock()
+    page.winfo_width.return_value = 1200
+    page.winfo_height.return_value = 800
+    layout = types.SimpleNamespace(
+        header_controls=Mock(),
+        workspace=Mock(),
+        action_panel=Mock(),
+        readiness_panel=Mock(),
+        maintenance_frame=Mock(),
+        task_grid=Mock(),
+        health_list=Mock(),
+        tools_content=Mock(),
+        tool_tiles=(Mock(), Mock()),
+        action_header=Mock(),
+        candidate_strip=Mock(),
+        tools_band=Mock(),
+        header=Mock(),
+    )
+    bundle = types.SimpleNamespace(
+        page=page,
+        layout=layout,
+        task_widgets={
+            "pending_review": types.SimpleNamespace(action_box=Mock()),
+        },
+    )
+    host = types.SimpleNamespace(
+        dpi_scale=1.0,
+        zoom_factor=1.0,
+        font_scale=1.0,
+        root=Mock(),
+        pages_frame=Mock(),
+        _home_page_widgets=bundle,
+    )
+    host.root.winfo_height.return_value = 950
+    host.pages_frame.winfo_width.return_value = 1200
+    host.pages_frame.winfo_height.return_value = 800
+    support = _make_layout_support(host)
+
+    support.update_home_page_layout()
+    first_state = host._home_layout_state
+    support.update_home_page_layout()
+
+    assert first_state == ("wide", False, False, 495)
+    assert host._home_layout_state == first_state
+    assert page.winfo_width.call_count == 2
+    assert page.winfo_height.call_count == 2
+    layout.workspace.configure.assert_called_once_with(height=495)
+    for tile in layout.tool_tiles:
+        assert tile.configure.call_args.kwargs["height"] == 72
+    assert layout.tools_band.configure.call_args.kwargs["height"] == 100
+
+
+def test_standalone_education_content_schedules_responsive_layout_updates():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[source.index("    def create_education_main_content(self):") :]
+    block = block[: block.index("\n    def _defer_ui_work")]
+
+    assert 'self.main_frame.bind(' in block
+    assert '"<Configure>"' in block
+    assert "self.app_shell.schedule_page_width_policy()" in block
+    assert "self._last_page_pack_pady = None" in block
+
+
+def test_home_page_scales_its_content_width_with_effective_dpi():
+    """The logical 1360px workbench must not collapse on a DPI-aware 4K display."""
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.pages_frame = Mock()
+    gui.pages_frame.winfo_width.return_value = 3000
+    gui.pages_frame.winfo_height.return_value = 1700
+    gui.main_frame = Mock()
+    gui.main_frame.winfo_width.return_value = 3000
+    gui.main_frame.winfo_height.return_value = 1700
+    gui.root = Mock()
+    gui.root.winfo_width.return_value = 3200
+    gui.root.winfo_height.return_value = 1800
+    gui.dpi_scale = 1.5
+    gui.zoom_factor = 1.0
+    gui.current_page_index = PageIndex.HOME
+    gui._last_page_pack_padx = None
+    gui._last_page_pack_pady = None
+    gui.layout_support = Mock()
+    gui._active_page_widget = Mock()
+    gui._active_page_widget.winfo_manager.return_value = ""
+
+    shell = _make_app_shell(gui)
+    gui_app_shell.AppShell.apply_page_width_policy(shell)
+
+    scaled_max_width = int(
+        gui_main.UI_CONFIG["home_content_max_width"]
+        * gui.dpi_scale
+        * gui.zoom_factor
+    )
+    expected_pad = max(
+        int(gui_main.UI_CONFIG["home_page_padding_x"] * gui.dpi_scale),
+        (3000 - scaled_max_width) // 2,
+    )
+    assert gui._active_page_widget.place.call_args.kwargs["x"] == 0
+    assert gui._active_page_widget.place.call_args.kwargs["width"] == 3000
+    assert gui._active_page_widget.configure.call_args.kwargs["padding"][0] == expected_pad
+
+
+def test_home_job_selector_keeps_room_for_job_names_without_dominating_header():
+    home_source = Path("gui_home_page.py").read_text(encoding="utf-8")
+    layout_source = Path("gui_layout_support.py").read_text(encoding="utf-8")
+
+    assert "for column, width in enumerate((270, 98, 126))" in home_source
+    assert "width=26" in home_source
+    assert 'minsize=px(270 if mode == "wide" else 250)' in layout_source
+
+
+def test_home_page_root_supports_the_shared_cached_page_padding_policy():
+    home_source = Path("gui_home_page.py").read_text(encoding="utf-8")
+    style_source = Path("gui_style_setup.py").read_text(encoding="utf-8")
+
+    assert 'page = ttk.Frame(host.pages_frame, style="Home.Page.TFrame")' in home_source
+    assert "style.configure('Home.Page.TFrame', background=c['home_bg'])" in style_source
+
+
+def test_home_uses_the_same_today_workbench_language_as_the_result_page():
+    home_source = Path("gui_home_page.py").read_text(encoding="utf-8")
+    main_source = Path("gui_main.py").read_text(encoding="utf-8")
+
+    assert 'text="今日待办"' in home_source
+    assert 'text="今日行动"' not in home_source
+    assert 'title="今日待办"' in main_source
+    assert '"pending_review": "查看待复核  →"' in main_source
+    assert '"pending_contact": "查看待联系  →"' in main_source
 
 
 def test_stats_tree_reflows_after_its_rendered_width_changes():
@@ -3043,21 +3421,27 @@ def test_stats_tree_reflows_after_its_rendered_width_changes():
 def test_job_config_page_releases_bottom_padding_but_preserves_header_position():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.pages_frame = Mock()
+    gui.pages_frame.winfo_width.return_value = 1400
+    gui.pages_frame.winfo_height.return_value = 900
     gui.main_frame = Mock()
     gui.main_frame.winfo_width.return_value = 1400
+    gui.main_frame.winfo_height.return_value = 900
     gui.dpi_scale = 1.0
     gui.zoom_factor = 1.0
     gui.current_page_index = PageIndex.CONFIG
     gui._last_page_pack_padx = None
     gui._last_page_pack_pady = None
     gui.layout_support = Mock()
+    gui._active_page_widget = Mock()
+    gui._active_page_widget.winfo_manager.return_value = ""
 
     shell = _make_app_shell(gui)
     gui_app_shell.AppShell.apply_page_width_policy(shell)
 
-    assert gui.pages_frame.pack_configure.call_args.kwargs["pady"] == (
-        gui_main.UI_CONFIG["page_padding_y"] - 15
-    )
+    expected_y = gui_main.UI_CONFIG["page_padding_y"] - 15
+    padding = gui._active_page_widget.configure.call_args.kwargs["padding"]
+    assert padding[1] == expected_y
+    assert padding[3] == expected_y
     config_block = Path("gui_config_page.py").read_text(encoding="utf-8")
     assert "self.widget_support.create_page_header(" in config_block
     assert 'self.config_page, "岗位配置", top_padding=15' in config_block
@@ -6757,7 +7141,7 @@ def test_information_and_workbench_windows_do_not_lock_main_window():
 def test_daily_actions_dialog_uses_time_groups_then_business_and_review_subgroups():
     daily_block = Path("gui_candidate_actions.py").read_text(encoding="utf-8")
 
-    assert 'win.title("今日待办")' in daily_block
+    assert "win.title(workbench_title)" in daily_block
     assert 'win.title("今日候选人待办")' not in daily_block
     assert "for timing_index, timing_group in enumerate(ACTION_TIMING_ORDER):" in daily_block
     assert 'text=f"{timing_group}  {len(timing_items)}"' in daily_block
@@ -6766,7 +7150,7 @@ def test_daily_actions_dialog_uses_time_groups_then_business_and_review_subgroup
     assert 'child_iid, "end", iid=review_iid,' in daily_block
     assert 'text=f"{category}  {len(category_items)}"' in daily_block
     assert 'open=(group == "待复核")' in daily_block
-    assert '"按时间优先级整理候选人，逐项推进下一步"' in daily_block
+    assert "workbench_subtitle" in daily_block
     assert '("due", "需处理", counts["due"], self.colors["primary"])' in daily_block
     assert 'columns = ("name", "job", "score", "task", "key_info", "due")' in daily_block
     assert '("task", "任务类型", 165, "center")' in daily_block
@@ -8251,24 +8635,46 @@ def test_strong_recommendation_uses_registered_emphasized_thumb_icon():
 
 
 def test_home_page_strong_recommendation_uses_emphasized_thumb_icon():
-    """首页与筛选结果页统一使用点赞加光芒表达强烈推荐。"""
+    """首页保留强烈推荐这一候选人概览语义。"""
     source = Path("gui_home_page.py").read_text(encoding="utf-8")
-    home_block = source[source.index("cards_data = ["):]
-    home_block = home_block[:home_block.index("\n    stats_vars")]
+    home_block = source[source.index("stats_data = ("):]
+    home_block = home_block[:home_block.index("\n    for key")]
 
-    assert '"strong_recommend"' in home_block
-    assert '"强烈推荐"' in home_block
-    assert '"star"' not in home_block
+    assert '("strong_home", "强烈推荐",' in home_block
 
 
 def test_home_page_renames_total_candidates_to_passed_filter():
-    """首页第一张卡片展示通过筛选，并使用放大的原双人图案。"""
+    """首页候选人概览第一项仍是通过筛选，不展示累计总人数。"""
     source = Path("gui_home_page.py").read_text(encoding="utf-8")
-    home_block = source[source.index("cards_data = ["):]
-    home_block = home_block[:home_block.index("\n    stats_vars")]
+    home_block = source[source.index("stats_data = ("):]
+    home_block = home_block[:home_block.index("\n    for key")]
 
-    assert '("passed_filter", "通过筛选", "total_home"' in home_block
+    assert '("total_home", "通过筛选",' in home_block
     assert '"累计候选人"' not in home_block
+
+
+def test_home_tools_put_education_before_external_import():
+    source = Path("gui_home_page.py").read_text(encoding="utf-8")
+    tools = source[source.index("tool_specs = ("):]
+    tools = tools[:tools.index("\n    for column")]
+
+    assert tools.index('"学历核验"') < tools.index('"导入外部候选人"')
+    maintenance = source[source.index("maintenance_actions = ("):]
+    maintenance = maintenance[:maintenance.index("\n    for index")]
+    assert '"数据备份与恢复"' in maintenance
+    assert '"系统设置"' in maintenance
+    assert "host.open_home_system_settings" in maintenance
+
+
+def test_home_tool_notes_have_enough_width_and_height_to_render_fully():
+    home_source = Path("gui_home_page.py").read_text(encoding="utf-8")
+    layout_source = Path("gui_layout_support.py").read_text(encoding="utf-8")
+
+    assert "grid_columnconfigure(1, minsize=px(236))" in home_source
+    assert "grid_columnconfigure(2, minsize=px(266))" in home_source
+    assert 'font=fonts["meta"]' in home_source
+    assert "height=px(72)" in layout_source
+    assert "tools_row_height = px(94 if compact else 100)" in layout_source
 
 
 def test_stats_page_strong_recommendation_uses_emphasized_thumb_icon():
@@ -9868,8 +10274,7 @@ def test_data_maintenance_notes_restore_persisted_success_times():
     }
 
     assert gui._data_backup_note_text() == (
-        "最近备份：2026-07-31 09:05\n"
-        "最近恢复：2026-07-30 18:40"
+        "最近备份：2026-07-31 09:05  ·  最近恢复：2026-07-30 18:40"
     )
     assert gui._diagnostic_export_note_text() == "最近导出：暂无记录"
 
@@ -9954,9 +10359,8 @@ def test_export_data_backup_reports_verified_counts():
 
     create.assert_called_once_with(gui_main.BASE_DIR, result["path"])
     gui.data_backup_status_var.set.assert_called_with(
-        "最近备份：2026-07-31 09:05 · "
-        "岗位 2 个，候选人 18 人，联系清单 4 项，简历副本 3 份\n"
-        "最近恢复：2026-07-30 18:40"
+        "最近备份：2026-07-31 09:05  ·  最近恢复：2026-07-30 18:40\n"
+        "本次备份：岗位 2 个，候选人 18 人，联系清单 4 项，简历副本 3 份"
     )
     remember.assert_called_once_with("backup")
     show_result.assert_called_once_with(
@@ -10082,9 +10486,8 @@ def test_restore_data_backup_uses_structured_confirmation_and_result():
     restore.assert_called_once_with(gui_main.BASE_DIR, "D:/safe/backup.zip")
     remember.assert_called_once_with("restore")
     gui._set_data_backup_status.assert_called_with(
-        "最近备份：2026-07-31 09:05\n"
-        "最近恢复：2026-07-31 10:15 · "
-        "岗位 2 个，候选人 18 人，联系清单 4 项，简历副本 3 份，"
+        "最近备份：2026-07-31 09:05  ·  最近恢复：2026-07-31 10:15\n"
+        "本次恢复：岗位 2 个，候选人 18 人，联系清单 4 项，简历副本 3 份，"
         "另有 2 条记录未自动关联岗位"
     )
     show_result.assert_called_once_with(

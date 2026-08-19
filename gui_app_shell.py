@@ -42,7 +42,11 @@ class PageSpec:
 
 PAGE_SPECS = {
     PageIndex.HOME: PageSpec(
-        "home", "首页", "home_page", "create_home_page", "show_page_home"
+        "home",
+        "首页",
+        "home_page",
+        "create_home_page",
+        "show_page_home",
     ),
     PageIndex.CONFIG: PageSpec(
         "briefcase", "岗位配置", "config_page", "_create_config_page_steps", "show_page_config"
@@ -114,6 +118,7 @@ class AppShellHost(Protocol):
     _page_width_policy_after_id: str | None
     _last_page_pack_padx: int | None
     _last_page_pack_pady: int | None
+    _active_page_widget: tk.Widget | None
     main_frame: tk.Widget
     pages_frame: tk.Widget
     home_page: tk.Widget | None
@@ -178,6 +183,7 @@ class AppShell:
         self.font_family = font_family
         self.font_family_semibold = font_family_semibold
         self.version = version
+        self._page_padding_states: dict[int, tuple[int, int, int]] = {}
 
     def create_sidebar(self) -> None:
         """Build the left navigation sidebar and retain its visual state."""
@@ -440,9 +446,12 @@ class AppShell:
                     logger.exception("%s页面就绪回调失败", title)
 
         def paint_loading_frame() -> None:
-            self.hide_all_pages()
+            self.deactivate_page_activity()
+            host._active_page_widget = None
             host._page_loading_var.set(f"正在打开{title}…")
-            host._page_loading_frame.pack(fill="both", expand=True)
+            if not host._page_loading_frame.winfo_manager():
+                host._page_loading_frame.pack(fill="both", expand=True)
+            host._page_loading_frame.lift()
             host.current_page_index = page_index
             self.schedule_page_width_policy()
             self.update_nav_highlight()
@@ -470,10 +479,12 @@ class AppShell:
                 setattr(host, page_attr, None)
 
         def advance(iterator: Iterator[object] | None = None) -> None:
-            if getattr(host, "current_page_index", None) != page_index:
+            if (
+                iterator is None
+                and getattr(host, "current_page_index", None) != page_index
+            ):
                 host._pending_page_builds.discard(page_attr)
                 host._pending_page_ready_callbacks.pop(page_attr, None)
-                discard_partial_page()
                 return
             host._pending_page_builds.discard(page_attr)
             try:
@@ -490,6 +501,11 @@ class AppShell:
                 if getattr(host, "current_page_index", None) == page_index:
                     show_page()
                     run_ready_callbacks()
+                else:
+                    # Once staged construction has started, finish and cache the
+                    # page instead of destroying a half-built widget tree. This
+                    # avoids stale host references and duplicate context menus.
+                    host._pending_page_ready_callbacks.pop(page_attr, None)
                 return
             except Exception as exc:
                 logger.exception("首次创建%s页面失败", title)
@@ -510,13 +526,10 @@ class AppShell:
         host.root.after(30, advance)
 
     def schedule_page_width_policy(self) -> None:
-        """Debounce content-width recalculation during resize and navigation."""
+        """Coalesce layout work without starving it during configure storms."""
         host = self.host
         if host._page_width_policy_after_id is not None:
-            try:
-                host.root.after_cancel(host._page_width_policy_after_id)
-            except tk.TclError:
-                pass
+            return
 
         def apply_policy() -> None:
             host._page_width_policy_after_id = None
@@ -531,9 +544,34 @@ class AppShell:
             return
 
         scale = host.dpi_scale * host.zoom_factor
-        base_pad_x = int(self.ui_config["page_padding_x"] * scale)
-        base_pad_y = int(self.ui_config["page_padding_y"] * scale)
         current_page = getattr(host, "current_page_index", PageIndex.HOME)
+        if current_page == PageIndex.HOME:
+            try:
+                root_width = int(host.root.winfo_width())
+                root_height = int(host.root.winfo_height())
+            except (tk.TclError, ValueError, AttributeError):
+                root_width = root_height = 0
+            logical_root_width = root_width / max(scale, 0.01) if root_width else 0
+            logical_root_height = root_height / max(scale, 0.01) if root_height else 0
+            base_pad_x = int(
+                self.ui_config[
+                    "home_page_padding_x_medium"
+                    if logical_root_width and logical_root_width <= 1380
+                    else "home_page_padding_x"
+                ]
+                * scale
+            )
+            base_pad_y = int(
+                self.ui_config[
+                    "home_page_padding_y_compact"
+                    if logical_root_height and logical_root_height <= 820
+                    else "home_page_padding_y"
+                ]
+                * scale
+            )
+        else:
+            base_pad_x = int(self.ui_config["page_padding_x"] * scale)
+            base_pad_y = int(self.ui_config["page_padding_y"] * scale)
         full_width_pages = {
             page for page, page_spec in PAGE_SPECS.items() if page_spec.full_width
         }
@@ -544,30 +582,102 @@ class AppShell:
                 available_width = max(0, host.main_frame.winfo_width())
             except tk.TclError:
                 available_width = 0
-            max_content_width = int(self.ui_config["content_max_width"] * scale)
+            width_key = (
+                "home_content_max_width"
+                if current_page == PageIndex.HOME
+                else "content_max_width"
+            )
+            max_content_width = int(
+                self.ui_config[width_key]
+                * scale
+            )
             extra_pad = max(0, (available_width - max_content_width) // 2)
             target_pad_x = max(base_pad_x, extra_pad)
 
-        target_pad_y = (
-            max(0, base_pad_y - int(15 * scale))
-            if current_page == PageIndex.CONFIG
-            else base_pad_y
-        )
-        if (
-            host._last_page_pack_padx != target_pad_x
-            or host._last_page_pack_pady != target_pad_y
-        ):
-            host._last_page_pack_padx = target_pad_x
-            host._last_page_pack_pady = target_pad_y
-            host.pages_frame.pack_configure(padx=target_pad_x, pady=target_pad_y)
-
+        target_pad_y: int | tuple[int, int]
+        if current_page == PageIndex.HOME:
+            # Preserve a small visual stop below the tools band. The responsive
+            # workspace yields this space first on compact-height windows.
+            target_pad_y = (base_pad_y, int(12 * scale))
+        elif current_page == PageIndex.CONFIG:
+            target_pad_y = max(0, base_pad_y - int(15 * scale))
+        else:
+            target_pad_y = base_pad_y
+        host._last_page_pack_padx = target_pad_x
+        host._last_page_pack_pady = target_pad_y
+        self._resize_active_page_to_viewport(target_pad_x, target_pad_y)
         self._refresh_current_page_layout(current_page)
+
+    def _resize_active_page_to_viewport(
+        self,
+        padx: int,
+        pady: int | tuple[int, int],
+    ) -> None:
+        """Resize only the active page; inactive cached pages keep frozen geometry."""
+        host = self.host
+        page = getattr(host, "_active_page_widget", None)
+        if page is None:
+            return
+        try:
+            if isinstance(pady, tuple):
+                pad_top, pad_bottom = (int(pady[0]), int(pady[1]))
+            else:
+                pad_top = pad_bottom = int(pady)
+            padding_state = (int(padx), pad_top, pad_bottom)
+            page_key = id(page)
+            if self._page_padding_states.get(page_key) != padding_state:
+                page.configure(
+                    padding=(int(padx), pad_top, int(padx), pad_bottom)
+                )
+                self._page_padding_states[page_key] = padding_state
+
+            try:
+                target_width = max(1, int(host.pages_frame.winfo_width()))
+                target_height = max(1, int(host.pages_frame.winfo_height()))
+            except (tk.TclError, TypeError, ValueError):
+                target_width = target_height = 1
+            manager = page.winfo_manager()
+            if manager != "place":
+                if manager == "pack":
+                    page.pack_forget()
+                elif manager == "grid":
+                    page.grid_forget()
+                page.place(x=0, y=0, width=target_width, height=target_height)
+                return
+            place_info = page.place_info()
+            try:
+                matches_viewport = (
+                    int(place_info.get("x", 0) or 0) == 0
+                    and int(place_info.get("y", 0) or 0) == 0
+                    and int(place_info.get("width", 0) or 0) == target_width
+                    and int(place_info.get("height", 0) or 0) == target_height
+                    and float(place_info.get("relwidth", 0) or 0) == 0.0
+                    and float(place_info.get("relheight", 0) or 0) == 0.0
+                )
+            except (TypeError, ValueError, AttributeError):
+                matches_viewport = False
+            if matches_viewport:
+                return
+            page.place_configure(
+                x=0,
+                y=0,
+                width=target_width,
+                height=target_height,
+                relx=0,
+                rely=0,
+                relwidth=0,
+                relheight=0,
+            )
+        except (tk.TclError, TypeError, ValueError):
+            return
 
     def _refresh_current_page_layout(self, current_page: int) -> None:
         """Delegate page-local responsive updates through the explicit host surface."""
         host = self.host
         layout = host.layout_support
-        if current_page == PageIndex.SETTINGS:
+        if current_page == PageIndex.HOME:
+            layout.update_home_page_layout()
+        elif current_page == PageIndex.SETTINGS:
             layout.update_model_list_height()
             layout.update_model_list_columns()
         elif current_page == PageIndex.CONFIG:
@@ -582,11 +692,43 @@ class AppShell:
         elif current_page == PageIndex.STATS:
             layout.update_stats_tree_columns()
 
-    def hide_all_pages(self) -> None:
-        """Hide all cached pages and stop run-page browser polling."""
+    def deactivate_page_activity(self) -> None:
+        """Stop page-local activity without unmapping cached page widgets."""
         host = self.host
         host._stop_browser_auto_check()
         host.feedback_support.hide_all_tooltips()
+
+    def activate_page(self, page: tk.Widget, page_index: PageIndex | int) -> None:
+        """Raise one cached page while keeping the rest of the page stack mapped."""
+        host = self.host
+        self.deactivate_page_activity()
+        host.current_page_index = PageIndex(page_index)
+        host._active_page_widget = page
+
+        # Apply the destination page policy before it becomes visible. This avoids
+        # briefly painting the previous page's padding and responsive state.
+        self.apply_page_width_policy()
+
+        loading_frame = getattr(host, "_page_loading_frame", None)
+        if loading_frame is not None and loading_frame is not page:
+            try:
+                if loading_frame.winfo_manager() == "pack":
+                    loading_frame.pack_forget()
+            except tk.TclError:
+                pass
+
+        try:
+            page.lift()
+        except tk.TclError:
+            return
+
+        self.schedule_page_width_policy()
+        self.update_nav_highlight()
+
+    def hide_all_pages(self) -> None:
+        """Explicitly unmap every page while preserving the compatibility facade."""
+        host = self.host
+        self.deactivate_page_activity()
         for page in (
             getattr(host, "_page_loading_frame", None),
             host.home_page,
@@ -598,7 +740,17 @@ class AppShell:
             host.education_page,
         ):
             if page is not None:
-                page.pack_forget()
+                try:
+                    manager = page.winfo_manager()
+                    if manager == "place":
+                        page.place_forget()
+                    elif manager == "grid":
+                        page.grid_forget()
+                    elif manager == "pack":
+                        page.pack_forget()
+                except tk.TclError:
+                    pass
+        host._active_page_widget = None
 
     def update_nav_highlight(self) -> None:
         """Update only the previous and current navigation items."""
