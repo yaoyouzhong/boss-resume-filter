@@ -34,8 +34,8 @@ CSS = """
 body {
   color: #172033;
   font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
-  font-size: 10.5pt;
-  line-height: 1.65;
+  font-size: 10.25pt;
+  line-height: 1.6;
   margin: 0;
 }
 h1 { color: #102a43; font-size: 22pt; margin: 0 0 10mm; text-align: center; }
@@ -50,7 +50,7 @@ h2 {
 h3 { color: #334e68; font-size: 12.5pt; margin: 6mm 0 2mm; page-break-after: avoid; }
 p { margin: 2.2mm 0; orphans: 3; widows: 3; }
 ul, ol { margin: 2mm 0 3mm; padding-left: 7mm; }
-li { margin: 1mm 0; }
+li { margin: 0.8mm 0; }
 table { border-collapse: collapse; font-size: 9.5pt; margin: 3mm 0 5mm; width: 100%; }
 thead { display: table-header-group; }
 tr { page-break-inside: avoid; }
