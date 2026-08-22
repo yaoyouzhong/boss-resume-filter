@@ -25,6 +25,17 @@ class InputSupport(Protocol):
 
 
 class FeedbackSupport(Protocol):
+    def show_tooltip(
+        self,
+        text: str,
+        x: int,
+        y: int,
+        tooltip_key: Any = None,
+        *,
+        parent: tk.Misc | None = None,
+        wraplength: int | None = None,
+    ) -> None: ...
+
     def hide_tooltip(self, event: tk.Event | None = None) -> None: ...
 
 
@@ -85,9 +96,13 @@ class EducationPageHost(Protocol):
 
     def _schedule_education_preview_render(self) -> None: ...
 
+    def _show_education_original(self) -> None: ...
+
     def _fill_chsi_page(self) -> None: ...
 
     def _solve_captcha(self) -> None: ...
+
+    def _capture_education_results(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -101,6 +116,7 @@ class EducationPageWidgets:
     current_id: str | None
     item_counter: int
     recognition_running: bool
+    screenshot_running: bool
     manual_rotation: dict[str, int]
     rotation_locked: set[str]
     file_var: tk.StringVar
@@ -117,9 +133,17 @@ class EducationPageWidgets:
     number_var: tk.StringVar
     status_var: tk.StringVar
     warning_var: tk.StringVar
+    batch_status_var: tk.StringVar
+    recognition_progress_frame: tk.Frame
+    recognition_progress_var: tk.DoubleVar
+    recognition_progress_text_var: tk.StringVar
+    recognition_progress_bar: ttk.Progressbar
     recognize_button: ttk.Button
     fill_button: ttk.Button
     captcha_button: ttk.Button
+    screenshot_folder_var: tk.StringVar
+    screenshot_summary_var: tk.StringVar
+    screenshot_button: ttk.Button
 
 
 def build_education_page(
@@ -127,6 +151,7 @@ def build_education_page(
     ui_config: Mapping[str, Any],
     *,
     font_family: str,
+    screenshot_folder: str = "",
 ) -> EducationPageWidgets:
     """Build the education page without reading certificates or accessing AI/browser services."""
     scale = host.dpi_scale * host.zoom_factor
@@ -134,7 +159,7 @@ def build_education_page(
     host.widget_support.create_page_header(
         page,
         "学历核验",
-        "导入毕业证书图片/PDF，识别姓名和证书编号；验证码与手机扫码由 HR 人工完成。",
+        "导入毕业证书图片/PDF，自动识别并提交验证码；手机确认后可批量保存结果页截图。",
     )
 
     scroll_frame = ttk.Frame(page, style="Page.TFrame")
@@ -188,7 +213,9 @@ def build_education_page(
         pady=(0, int(16 * scale)),
     )
     queue_card = queue_content.master
-    queue_columns = ("file", "name", "number", "school", "major", "status")
+    queue_columns = (
+        "file", "name", "number", "school", "major", "status", "screenshot"
+    )
     education_style = ttk.Style()
     education_style.configure(
         "Education.Treeview",
@@ -236,6 +263,7 @@ def build_education_page(
         ("school", "学校", 175),
         ("major", "专业", 210),
         ("status", "状态", 140),
+        ("screenshot", "截图", 100),
     ):
         queue_tree.heading(column, text=title)
         queue_tree.column(
@@ -280,6 +308,189 @@ def build_education_page(
         command=host._remove_selected_education_images,
     )
     host._context_menus.append(queue_menu)
+
+    screenshot_folder_var = tk.StringVar(
+        value=(
+            f"保存到：{screenshot_folder}"
+            if screenshot_folder
+            else "截图保存位置：首次执行第 3 步时选择"
+        )
+    )
+    screenshot_summary_var = tk.StringVar(
+        value="手机确认完成后执行第 3 步；重复运行会自动跳过已有截图。"
+    )
+    queue_batch_area = ttk.Frame(queue_content, style="TFrame")
+    queue_batch_area.grid(
+        row=1,
+        column=0,
+        columnspan=2,
+        sticky="ew",
+        pady=(int(12 * scale), 0),
+    )
+    batch_status_var = tk.StringVar(value="尚未导入证书")
+    batch_header = ttk.Frame(queue_batch_area, style="TFrame")
+    batch_header.pack(fill="x", pady=(0, 8))
+    ttk.Label(
+        batch_header,
+        text="批量核验流程",
+        font=(font_family, int(10 * host.font_scale), "bold"),
+        foreground=host.colors["text_primary"],
+    ).pack(side="left")
+    ttk.Label(
+        batch_header,
+        textvariable=batch_status_var,
+        font=(font_family, int(10 * host.font_scale), "bold"),
+        foreground=host.colors["primary"],
+    ).pack(side="right", padx=(16, 0))
+    queue_batch_actions = ttk.Frame(queue_batch_area, style="TFrame")
+    queue_batch_actions.pack(fill="x")
+    recognize_icon = host.icons.button("search", host.colors["text_primary"])
+    recognize_button = ttk.Button(
+        queue_batch_actions,
+        text=" 1 识别证书",
+        image=recognize_icon,
+        compound=tk.LEFT,
+        command=host._recognize_education_image,
+        state="disabled",
+    )
+    recognize_button._icon_ref = recognize_icon
+    recognize_button.grid(row=0, column=0, sticky="w")
+    ttk.Label(
+        queue_batch_actions,
+        text="→",
+        font=host.font_label,
+        foreground=host.colors["text_secondary"],
+    ).grid(row=0, column=1, padx=8)
+    fill_icon = host.icons.button("play", host.colors["text_primary"])
+    fill_button = ttk.Button(
+        queue_batch_actions,
+        text=" 2 打开学信网验证",
+        image=fill_icon,
+        compound=tk.LEFT,
+        command=host._fill_chsi_page,
+        state="disabled",
+    )
+    fill_button._icon_ref = fill_icon
+    fill_button.grid(row=0, column=2, sticky="w")
+    ttk.Label(
+        queue_batch_actions,
+        text="→",
+        font=host.font_label,
+        foreground=host.colors["text_secondary"],
+    ).grid(row=0, column=3, padx=8)
+    screenshot_icon = host.icons.button("save", host.colors["text_primary"])
+    screenshot_button = ttk.Button(
+        queue_batch_actions,
+        text=" 3 一键批量截图",
+        image=screenshot_icon,
+        compound=tk.LEFT,
+        command=host._capture_education_results,
+        state="disabled",
+    )
+    screenshot_button._icon_ref = screenshot_icon
+    screenshot_button.grid(row=0, column=4, sticky="w")
+
+    recognition_progress_var = tk.DoubleVar(value=0)
+    recognition_progress_text_var = tk.StringVar(value="")
+    recognition_progress_frame = ttk.Frame(
+        queue_batch_actions,
+        style="TFrame",
+    )
+    recognition_progress_frame.grid(
+        row=1,
+        column=0,
+        columnspan=5,
+        sticky="ew",
+        pady=(int(10 * scale), 0),
+    )
+    queue_batch_actions.columnconfigure(4, weight=1)
+    ttk.Label(
+        recognition_progress_frame,
+        textvariable=recognition_progress_text_var,
+        foreground=host.colors["text_secondary"],
+        font=(font_family, int(10 * host.font_scale)),
+        anchor="w",
+        justify="left",
+    ).pack(fill="x", pady=(0, 5))
+    recognition_progress_bar = ttk.Progressbar(
+        recognition_progress_frame,
+        variable=recognition_progress_var,
+        maximum=100,
+        mode="determinate",
+    )
+    recognition_progress_bar.pack(
+        fill="x",
+        pady=(0, int(2 * scale)),
+    )
+    recognition_progress_frame.grid_remove()
+
+    ttk.Separator(queue_batch_area, orient="horizontal").pack(
+        fill="x",
+        pady=(int(12 * scale), int(10 * scale)),
+    )
+    queue_batch_support = ttk.Frame(queue_batch_area, style="TFrame")
+    queue_batch_support.pack(fill="x")
+    captcha_support = ttk.Frame(queue_batch_support, style="TFrame")
+    captcha_support.pack(side="left", anchor="n")
+    ttk.Label(
+        captcha_support,
+        text="异常处理",
+        font=(font_family, int(9 * host.font_scale), "bold"),
+        foreground=host.colors["text_secondary"],
+    ).pack(anchor="w")
+    captcha_icon = host.icons.button("refresh", host.colors["text_primary"])
+    captcha_button = ttk.Button(
+        captcha_support,
+        text=" 重试异常验证码（0）",
+        image=captcha_icon,
+        compound=tk.LEFT,
+        command=host._solve_captcha,
+        state="disabled",
+    )
+    captcha_button._icon_ref = captcha_icon
+    captcha_button.pack(anchor="w", pady=(5, 0))
+
+    def _show_captcha_retry_help(event: tk.Event) -> None:
+        host.feedback_support.show_tooltip(
+            "仅重试队列中待人工验证或验证码识别失败的记录。",
+            event.x_root + 12,
+            event.y_root + 12,
+            tooltip_key="education-captcha-retry",
+            parent=host.root,
+            wraplength=max(280, int(360 * scale)),
+        )
+
+    captcha_button.bind("<Enter>", _show_captcha_retry_help, add="+")
+    captcha_button.bind("<Leave>", host.feedback_support.hide_tooltip, add="+")
+    ttk.Separator(queue_batch_support, orient="vertical").pack(
+        side="left",
+        fill="y",
+        padx=(int(18 * scale), int(18 * scale)),
+    )
+    screenshot_support = ttk.Frame(queue_batch_support, style="TFrame")
+    screenshot_support.pack(side="left", fill="x", expand=True, anchor="n")
+    ttk.Label(
+        screenshot_support,
+        text="截图与保存",
+        font=(font_family, int(9 * host.font_scale), "bold"),
+        foreground=host.colors["text_secondary"],
+    ).pack(anchor="w")
+    ttk.Label(
+        screenshot_support,
+        textvariable=screenshot_summary_var,
+        font=(font_family, int(10 * host.font_scale)),
+        foreground=host.colors["text_primary"],
+        wraplength=max(520, int(820 * scale)),
+        justify="left",
+    ).pack(anchor="w", fill="x", pady=(4, 0))
+    ttk.Label(
+        screenshot_support,
+        textvariable=screenshot_folder_var,
+        font=(font_family, int(10 * host.font_scale)),
+        foreground=host.colors["text_secondary"],
+        wraplength=max(520, int(820 * scale)),
+        justify="left",
+    ).pack(anchor="w", fill="x", pady=(4, 0))
 
     workspace = ttk.Frame(
         content,
@@ -331,6 +542,10 @@ def build_education_page(
         "<Configure>",
         lambda _event: host._schedule_education_preview_render(),
     )
+    preview_label.bind(
+        "<Double-Button-1>",
+        lambda _event: host._show_education_original(),
+    )
     preview_label.pack(fill="both", expand=True)
 
     form = host.widget_support.create_card(
@@ -343,7 +558,7 @@ def build_education_page(
     )
     name_var = tk.StringVar()
     number_var = tk.StringVar()
-    status_var = tk.StringVar(value="等待选择证书")
+    status_var = tk.StringVar(value="请从上方队列选择一张证书查看结果")
     warning_var = tk.StringVar(value="")
 
     ttk.Label(form, text="姓名", font=host.font_label).pack(anchor="w")
@@ -370,42 +585,6 @@ def build_education_page(
         justify="left",
     ).pack(anchor="w", fill="x")
 
-    actions = ttk.Frame(form, style="TFrame")
-    actions.pack(fill="x", pady=(22, 0))
-    recognize_icon = host.icons.button("search", host.colors["text_primary"])
-    recognize_button = ttk.Button(
-        actions,
-        text=" 识别证书",
-        image=recognize_icon,
-        compound=tk.LEFT,
-        command=host._recognize_education_image,
-        state="disabled",
-    )
-    recognize_button._icon_ref = recognize_icon
-    recognize_button.pack(side="left")
-    fill_icon = host.icons.button("play", host.colors["text_primary"])
-    fill_button = ttk.Button(
-        actions,
-        text=" 打开学信网验证",
-        image=fill_icon,
-        compound=tk.LEFT,
-        command=host._fill_chsi_page,
-        state="disabled",
-    )
-    fill_button._icon_ref = fill_icon
-    fill_button.pack(side="left", padx=(10, 0))
-    captcha_icon = host.icons.button("refresh", host.colors["text_primary"])
-    captcha_button = ttk.Button(
-        actions,
-        text=" 重新识别验证码",
-        image=captcha_icon,
-        compound=tk.LEFT,
-        command=host._solve_captcha,
-        state="disabled",
-    )
-    captcha_button._icon_ref = captcha_icon
-    captcha_button.pack(side="left", padx=(10, 0))
-
     ttk.Label(
         form,
         text="识别时图片/PDF 会发送当前配置的 AI 模型，请确认已取得候选人授权。",
@@ -424,6 +603,7 @@ def build_education_page(
         current_id=None,
         item_counter=0,
         recognition_running=False,
+        screenshot_running=False,
         manual_rotation={},
         rotation_locked=set(),
         file_var=file_var,
@@ -440,7 +620,15 @@ def build_education_page(
         number_var=number_var,
         status_var=status_var,
         warning_var=warning_var,
+        batch_status_var=batch_status_var,
+        recognition_progress_frame=recognition_progress_frame,
+        recognition_progress_var=recognition_progress_var,
+        recognition_progress_text_var=recognition_progress_text_var,
+        recognition_progress_bar=recognition_progress_bar,
         recognize_button=recognize_button,
         fill_button=fill_button,
         captcha_button=captcha_button,
+        screenshot_folder_var=screenshot_folder_var,
+        screenshot_summary_var=screenshot_summary_var,
+        screenshot_button=screenshot_button,
     )

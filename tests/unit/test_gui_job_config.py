@@ -1912,6 +1912,7 @@ def test_education_queue_columns_keep_status_visible_on_narrow_screens():
     assert gui.education_queue_tree.column_options["file"]["width"] == 230
     assert gui.education_queue_tree.column_options["major"]["width"] == 210
     assert gui.education_queue_tree.column_options["status"]["width"] == 140
+    assert gui.education_queue_tree.column_options["screenshot"]["width"] == 100
 
     gui.education_queue_tree = _FakeTree(950)
     layout.update_education_queue_columns()
@@ -1922,6 +1923,7 @@ def test_education_queue_columns_keep_status_visible_on_narrow_screens():
     }
     assert sum(widths_1080p.values()) <= 926
     assert widths_1080p["status"] >= 120
+    assert widths_1080p["screenshot"] >= 90
     assert widths_1080p["major"] < 210
 
     gui.education_queue_tree = _FakeTree(1030)
@@ -1933,6 +1935,7 @@ def test_education_queue_columns_keep_status_visible_on_narrow_screens():
     }
     assert sum(widths_2k.values()) <= 1006
     assert widths_2k["status"] >= 120
+    assert widths_2k["screenshot"] >= 90
 
 
 def test_model_list_status_update_changes_only_status_cell():
@@ -4167,10 +4170,13 @@ def test_education_captcha_low_confidence_is_not_auto_submitted():
     assert 'CaptchaResult(False, "待人工验证")' in solve_block
 
 
-def test_education_captcha_retries_three_times_before_manual_fallback():
+def test_education_captcha_retries_five_times_before_manual_fallback():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui._education_browser_lock = threading.Lock()
+    gui._is_browser_page_alive = Mock(return_value=True)
     gui._attempt_captcha_solve = Mock(side_effect=[
+        (False, "待人工验证"),
+        (False, "识别失败"),
         (False, "待人工验证"),
         (False, "识别失败"),
         (False, "待人工验证"),
@@ -4185,15 +4191,62 @@ def test_education_captcha_retries_three_times_before_manual_fallback():
             "张三",
             "123456789012345678",
             on_progress=lambda status, detail: progress.append((status, detail)),
-            max_attempts=3,
         )
 
     assert result == (False, "待人工验证")
-    assert gui._attempt_captcha_solve.call_count == 3
-    assert navigate.call_count == 3
-    assert fill.call_count == 3
-    assert any("2/3" in status for status, _detail in progress)
-    assert any("3/3" in status for status, _detail in progress)
+    assert gui._attempt_captcha_solve.call_count == 5
+    assert navigate.call_count == 5
+    assert fill.call_count == 5
+    assert any("2/5" in status for status, _detail in progress)
+    assert any("5/5" in status for status, _detail in progress)
+
+
+def test_education_captcha_binds_and_checks_the_new_submit_tab():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    current_page = Mock(tab_id="query-tab")
+    submitted_page = Mock(tab_id="submitted-tab")
+    base_page = Mock()
+    base_page.get_tabs.side_effect = [
+        [current_page],
+        [submitted_page, current_page],
+    ]
+    gui.browser_page = base_page
+    gui.education_tabs = {"education_1": current_page}
+    gui._education_browser_lock = threading.RLock()
+    gui._is_browser_page_alive = Mock(return_value=True)
+    gui._get_education_api_config = Mock(return_value={"model": "vision"})
+    gui._get_education_api_key = Mock(return_value="key")
+
+    with (
+        patch(
+            "education_certificate.capture_captcha_variants",
+            return_value=object(),
+        ),
+        patch(
+            "education_certificate.recognize_captcha",
+            return_value=("letter", "AB3", 95),
+        ),
+        patch("education_certificate.fill_captcha_answer", return_value=True),
+        patch("education_certificate.click_chsi_query_button", return_value=True),
+        patch(
+            "education_certificate.check_query_result",
+            return_value=(False, "图片验证码输入有误"),
+        ) as check_result,
+        patch(
+            "education_certificate.resolve_vision_api_config",
+            side_effect=lambda config: config,
+        ),
+        patch("gui_main.time.sleep"),
+    ):
+        success, status = gui._attempt_captcha_solve(
+            current_page,
+            item_id="education_1",
+        )
+
+    assert success is False
+    assert status == "识别失败"
+    assert gui.education_tabs["education_1"] is submitted_page
+    check_result.assert_called_once_with(submitted_page)
 
 
 def test_activate_saved_model_uses_the_full_selected_connection_identity():
@@ -9009,6 +9062,50 @@ def test_education_browser_reuses_live_page():
     assert gui._get_education_tab("edu_1") is live_tab
 
 
+def test_education_browser_reuses_all_initial_new_tab_urls():
+    for blank_url in (
+        "about:blank",
+        "data:,",
+        "chrome://newtab/",
+        "chrome://new-tab-page/",
+        "chrome-search://local-ntp/local-ntp.html",
+    ):
+        gui = object.__new__(BossFilterGUI)
+        blank_page = Mock()
+        blank_page.run_js.return_value = 1
+        blank_page.url = blank_url
+        gui.education_tabs = {}
+        gui.browser_page = blank_page
+        gui.browser_connected = True
+
+        assert gui._get_education_tab("edu_1") is blank_page
+        assert gui.education_tabs == {"edu_1": blank_page}
+        blank_page.new_tab.assert_not_called()
+
+
+def test_education_screenshot_reuses_valid_saved_folder_without_dialog():
+    gui = object.__new__(BossFilterGUI)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        gui.education_screenshot_folder = temp_dir
+        with patch("gui_main.filedialog.askdirectory") as ask_directory:
+            assert gui._select_education_screenshot_folder() is True
+
+        ask_directory.assert_not_called()
+
+
+def test_education_screenshot_requests_folder_when_saved_path_is_missing():
+    gui = object.__new__(BossFilterGUI)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        gui.education_screenshot_folder = str(Path(temp_dir) / "missing")
+        with patch(
+            "gui_main.filedialog.askdirectory",
+            return_value="",
+        ) as ask_directory:
+            assert gui._select_education_screenshot_folder() is False
+
+        ask_directory.assert_called_once()
+
+
 def test_education_browser_rebuilds_after_both_page_objects_disconnect():
     gui = object.__new__(BossFilterGUI)
     stale_tab = Mock()
@@ -9084,6 +9181,7 @@ def test_education_browser_uses_auto_port_for_fresh_page():
         assert len(created_options) == 1
         assert created_options[0].read_file is False
         assert created_options[0].auto_port_called is True
+        live_page.set.window.max.assert_called_once_with()
 
 
 def test_education_queue_saves_manual_edits_to_current_item():
@@ -9112,7 +9210,7 @@ def test_education_queue_saves_manual_edits_to_current_item():
     gui.education_queue_tree.item.assert_called_once()
 
 
-def test_education_queue_disables_parallel_recognition():
+def test_education_queue_disables_later_steps_during_recognition():
     gui = object.__new__(BossFilterGUI)
     gui.education_items = {"education_1": {"path": "certificate.jpg"}}
     gui.education_current_id = "education_1"
@@ -9126,7 +9224,7 @@ def test_education_queue_disables_parallel_recognition():
 
     gui.education_recognize_btn.configure.assert_called_with(state="disabled")
     gui.education_remove_btn.configure.assert_called_with(state="normal")
-    gui.education_fill_btn.configure.assert_called_with(state="normal")
+    gui.education_fill_btn.configure.assert_called_with(state="disabled")
 
 
 def test_education_import_uses_multi_file_dialog():
@@ -9140,16 +9238,775 @@ def test_education_import_uses_multi_file_dialog():
     assert "askopenfilename(" not in block
 
 
+def test_education_multi_import_clears_first_row_focus():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[
+        source.index("def _select_education_images"):
+        source.index("def _refresh_education_queue_summary")
+    ]
+
+    assert "if len(added_ids) == 1:" in block
+    assert "selection_remove(*selected)" in block
+    assert 'self.education_queue_tree.focus("")' in block
+    assert "self.education_current_id = None" in block
+    assert "请从上方队列选择一张证书查看结果" in block
+
+
+def test_education_multi_import_behavior_leaves_queue_unselected():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {}
+    gui.education_item_counter = 0
+    gui.education_current_id = None
+    gui.education_queue_tree = Mock()
+    gui.education_queue_tree.selection.return_value = (
+        "education_1",
+        "education_2",
+    )
+    gui.education_name_var = Mock()
+    gui.education_number_var = Mock()
+    gui.education_status_var = Mock()
+    gui.education_warning_var = Mock()
+    gui.education_batch_status_var = Mock()
+    gui.education_preview_label = Mock()
+    gui.education_screenshot_folder = ""
+    gui._save_current_education_fields = Mock()
+    gui._refresh_education_queue_summary = Mock()
+    gui._get_education_api_config = Mock(return_value={
+        "api_provider": "openai",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4o",
+    })
+    gui.root = Mock()
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        paths = []
+        for filename in ("one.png", "two.png"):
+            path = Path(temp_dir) / filename
+            path.write_bytes(b"test")
+            paths.append(str(path))
+        with patch(
+            "gui_main.filedialog.askopenfilenames",
+            return_value=tuple(paths),
+        ):
+            gui._select_education_images()
+
+    assert len(gui.education_items) == 2
+    assert gui.education_current_id is None
+    gui.education_queue_tree.selection_set.assert_not_called()
+    gui.education_queue_tree.selection_remove.assert_called_once_with(
+        "education_1",
+        "education_2",
+    )
+    gui.education_queue_tree.focus.assert_called_once_with("")
+    gui.education_status_var.set.assert_called_with(
+        "请从上方队列选择一张证书查看结果"
+    )
+
+
+def test_education_recognize_button_always_processes_complete_queue():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[
+        source.index("def _recognize_education_image"):
+        source.index("def _fill_chsi_page")
+    ]
+
+    assert "item_ids = list(self.education_items)" in block
+    assert "_selected_education_item_ids()" not in block
+
+
+def test_education_recognition_exception_restores_actions_for_retry():
+    class ImmediateThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "education_1": {
+            "path": "certificate.pdf",
+            "is_pdf": True,
+            "name": "",
+            "certificate_number": "",
+            "status": "待识别",
+        }
+    }
+    gui.education_current_id = None
+    gui.education_recognition_running = False
+    gui.education_screenshot_running = False
+    gui._save_current_education_fields = Mock()
+    gui._get_education_api_config = Mock(return_value={"model": "minimax-m3"})
+    gui._get_education_api_key = Mock(side_effect=RuntimeError("密钥不可用"))
+    gui._update_education_queue_row = Mock()
+    gui._refresh_education_queue_summary = Mock()
+    gui.run_on_ui = lambda callback: callback()
+
+    with patch("gui_main.threading.Thread", ImmediateThread):
+        gui._recognize_education_image()
+
+    item = gui.education_items["education_1"]
+    assert gui.education_recognition_running is False
+    assert item["status"] == "识别失败"
+    assert item["warnings"] == "密钥不可用"
+    assert gui._refresh_education_queue_summary.call_count == 3
+
+
+def test_education_chsi_button_always_processes_complete_queue():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[
+        source.index("def _fill_chsi_page"):
+        source.index("def _fill_and_solve_captcha")
+    ]
+
+    assert "item_ids = list(self.education_items)" in block
+    assert "_selected_education_item_ids()" not in block
+    assert "!= EDUCATION_RESULT_READY_STATUS" in block
+
+
+def test_education_captcha_retry_scans_all_eligible_failures():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    block = source[
+        source.index("def _solve_captcha"):
+        source.index("def _check_all_captcha_tasks_done")
+    ]
+
+    assert "captcha_retry_item_ids(" in block
+    assert "_selected_education_item_ids()" not in block
+    assert "self._get_education_tab(iid)" not in block
+    assert "self.education_tabs.get(iid)" in block
+
+
+def test_education_captcha_uses_same_image_variants_and_tracks_unknown_result():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    attempt_block = source[
+        source.index("def _attempt_captcha_solve"):
+        source.index("def _solve_captcha")
+    ]
+    watcher_block = source[
+        source.index("def _watch_education_result_page"):
+        source.index("def _restore_education_fill_button_if_done")
+    ]
+
+    assert "capture_captcha_variants" in attempt_block
+    assert 'elif st == "结果未确认"' in source
+    assert '"结果未确认"' in watcher_block
+
+
+def test_education_recognize_enabled_without_current_row():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {"education_1": {"path": "certificate.jpg"}}
+    gui.education_current_id = None
+    gui.education_recognition_running = False
+    gui.education_file_var = Mock()
+    gui.education_remove_btn = Mock()
+    gui.education_recognize_btn = Mock()
+    gui.education_fill_btn = Mock()
+
+    gui._refresh_education_queue_summary()
+
+    gui.education_recognize_btn.configure.assert_called_with(state="normal")
+    gui.education_remove_btn.configure.assert_called_with(state="disabled")
+    gui.education_fill_btn.configure.assert_called_with(state="disabled")
+
+
+def test_education_manual_fields_enable_verification_without_reimporting():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "education_1": {
+            "status": "识别失败",
+            "name": "",
+            "certificate_number": "",
+        }
+    }
+    gui.education_current_id = "education_1"
+    gui.education_recognition_running = False
+    gui.education_screenshot_running = False
+    gui.education_name_var = Mock()
+    gui.education_name_var.get.return_value = " 张三 "
+    gui.education_number_var = Mock()
+    gui.education_number_var.get.return_value = "123456789012345678"
+    gui.education_recognize_btn = Mock()
+    gui.education_fill_btn = Mock()
+    gui._update_education_queue_row = Mock()
+
+    gui._on_education_fields_edited()
+
+    item = gui.education_items["education_1"]
+    assert item["name"] == "张三"
+    assert item["certificate_number"] == "123456789012345678"
+    assert item["status"] == "信息已修改"
+    assert "重新执行第 2 步" in item["detail"]
+    gui.education_fill_btn.configure.assert_called_with(state="normal")
+
+
+def test_education_queue_selection_does_not_erase_recognized_number():
+    class TracedVar:
+        def __init__(self, value=""):
+            self.value = value
+            self.callback = None
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+            if self.callback:
+                self.callback()
+
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "education_1": {
+            "path": "certificate.jpg",
+            "name": "张三",
+            "certificate_number": "123456789012345678",
+            "status": "已识别",
+            "detail": "识别完成",
+            "warnings": "",
+        }
+    }
+    gui.education_current_id = None
+    gui.education_queue_tree = Mock()
+    gui.education_queue_tree.selection.return_value = ("education_1",)
+    gui.education_queue_tree.focus.return_value = "education_1"
+    gui.education_name_var = TracedVar()
+    gui.education_number_var = TracedVar()
+    gui.education_name_var.callback = gui._on_education_fields_edited
+    gui.education_number_var.callback = gui._on_education_fields_edited
+    gui.education_status_var = Mock()
+    gui.education_warning_var = Mock()
+    gui._refresh_education_queue_summary = Mock()
+    gui._render_education_preview = Mock()
+
+    gui._on_education_queue_select()
+
+    item = gui.education_items["education_1"]
+    assert item["certificate_number"] == "123456789012345678"
+    assert gui.education_name_var.get() == "张三"
+    assert gui.education_number_var.get() == "123456789012345678"
+    assert item["status"] == "已识别"
+
+
+def test_education_manual_correction_is_used_by_chsi_preparation():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "education_1": {
+            "name": "识别错误姓名",
+            "certificate_number": "0000",
+            "status": "未查询到记录",
+        }
+    }
+    gui.education_current_id = "education_1"
+    gui.education_name_var = Mock()
+    gui.education_name_var.get.return_value = "张三"
+    gui.education_number_var = Mock()
+    gui.education_number_var.get.return_value = "123456789012345678"
+    gui._update_education_queue_row = Mock()
+
+    gui._save_current_education_fields()
+    preparation = gui_main._EDUCATION_CONTROLLER.prepare_chsi(
+        gui.education_items,
+        ("education_1",),
+        validator=lambda name, number: (name, number),
+    )
+
+    assert preparation.prepared == (
+        ("education_1", "张三", "123456789012345678"),
+    )
+
+
+def test_education_result_and_captcha_states_enable_only_relevant_actions():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "ready": {"status": "核验结果已生成"},
+        "retry": {"status": "验证码识别失败"},
+        "certificate": {"status": "识别失败"},
+    }
+    gui.education_current_id = None
+    gui.education_recognition_running = False
+    gui.education_screenshot_running = False
+    gui.education_file_var = Mock()
+    gui.education_remove_btn = Mock()
+    gui.education_recognize_btn = Mock()
+    gui.education_fill_btn = Mock()
+    gui.education_screenshot_btn = Mock()
+    gui.education_captcha_btn = Mock()
+
+    gui._refresh_education_queue_summary()
+
+    gui.education_screenshot_btn.configure.assert_called_with(state="normal")
+    gui.education_captcha_btn.configure.assert_called_with(
+        text=" 重试异常验证码（1）",
+        state="normal",
+    )
+
+
 def test_education_queue_supports_multi_select_batch_recognition_and_context_menu():
     create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
     recognize_block = Path("education_controller.py").read_text(encoding="utf-8")
 
     assert 'selectmode="extended"' in create_block
-    assert 'text=" 识别证书"' in create_block
+    assert 'text=" 1 识别证书"' in create_block
     assert 'label="识别证书"' in create_block
     assert 'label="删除证书"' in create_block
     assert "ThreadPoolExecutor(max_workers=workers)" in recognize_block
     assert "workers = min(max(1, max_workers), max(1, len(selected)))" in recognize_block
+
+
+def test_education_queue_context_menu_actions_target_only_right_clicked_row():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "education_1": {"path": "one.jpg"},
+        "education_2": {"path": "two.jpg"},
+    }
+    gui.education_queue_tree = Mock()
+    gui.education_queue_tree.identify_row.return_value = "education_2"
+    gui.education_queue_tree.selection.return_value = (
+        "education_1",
+        "education_2",
+    )
+    gui.education_queue_menu = Mock()
+    gui._save_current_education_fields = Mock()
+    gui._on_education_queue_select = Mock()
+    gui._recognize_education_image = Mock()
+    gui._fill_chsi_page = Mock()
+    gui._remove_education_items = Mock()
+
+    gui._show_education_queue_context_menu(
+        types.SimpleNamespace(y=10, x_root=100, y_root=120)
+    )
+
+    gui.education_queue_tree.selection_set.assert_called_once_with("education_2")
+    gui.education_queue_tree.focus.assert_called_once_with("education_2")
+    commands = [
+        menu_call.kwargs["command"]
+        for menu_call in gui.education_queue_menu.add_command.call_args_list
+    ]
+    for command in commands:
+        command()
+
+    gui._recognize_education_image.assert_called_once_with(["education_2"])
+    gui._fill_chsi_page.assert_called_once_with(["education_2"])
+    gui._remove_education_items.assert_called_once_with(["education_2"])
+
+
+def test_education_page_exposes_repeatable_batch_screenshot_controls_and_status():
+    builder = Path("gui_education_page.py").read_text(encoding="utf-8")
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    capture_block = source[
+        source.index("def _capture_education_results"):
+        source.index("def _save_current_education_fields")
+    ]
+
+    assert '("screenshot", "截图", 100)' in builder
+    assert 'text=" 1 识别证书"' in builder
+    assert 'text=" 2 打开学信网验证"' in builder
+    assert 'text=" 3 一键批量截图"' in builder
+    assert 'text=" 选择保存位置"' not in builder
+    assert 'text=" 重试异常验证码（0）"' in builder
+    assert "验证码异常处理（按需）" not in builder
+    assert 'text="异常处理"' in builder
+    assert 'text="截图与保存"' in builder
+    assert "queue_batch_support = ttk.Frame(queue_batch_area" in builder
+    assert "captcha_support = ttk.Frame(queue_batch_support" in builder
+    assert "screenshot_support = ttk.Frame(queue_batch_support" in builder
+    assert "captcha_button.pack(anchor=\"w\", pady=(5, 0))" in builder
+    assert "screenshot_summary_var" in builder
+    assert "recognition_progress_frame" in builder
+    assert "recognition_progress_text_var" in builder
+    assert 'mode="determinate"' in builder
+    progress_block = builder[
+        builder.index("recognition_progress_frame ="):
+        builder.index("recognition_progress_frame.grid_remove()")
+    ]
+    assert 'style="TFrame"' in progress_block
+    assert 'host.colors["primary_light"]' not in progress_block
+    assert "queue_batch_area = ttk.Frame(queue_content" in builder
+    assert "queue_batch_actions = ttk.Frame(queue_batch_area" in builder
+    assert "screenshot_content = host.widget_support.create_card" not in builder
+    assert builder.index('text=" 1 识别证书"') < builder.index(
+        "workspace = ttk.Frame"
+    )
+    assert builder.index('text=" 2 打开学信网验证"') < builder.index(
+        'text=" 3 一键批量截图"'
+    )
+    assert builder.index('text=" 3 一键批量截图"') < builder.index(
+        "workspace = ttk.Frame"
+    )
+    assert "_find_open_education_result_pages(" in capture_block
+    assert "_get_education_tab(None)" not in capture_block
+    assert capture_block.index("result_ready_item_ids(") < capture_block.index(
+        "_select_education_screenshot_folder()"
+    )
+    assert "_EDUCATION_CONTROLLER.capture_result_screenshots(" in capture_block
+    assert "ChsiResultNotReadyError" in capture_block
+    assert "self.run_on_ui(" in capture_block
+    assert "threading.Thread(target=scan_worker" in capture_block
+    assert "self.run_on_ui(lambda: start_capture(assignments))" in capture_block
+
+
+def test_education_screenshot_without_ready_result_does_not_touch_browser():
+    class ImmediateThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "education_1": {
+            "status": "已提交查询",
+            "name": "张三",
+            "certificate_number": "123456789012345678",
+        }
+    }
+    gui.education_screenshot_running = False
+    gui.education_screenshot_summary_var = Mock()
+    gui._save_current_education_fields = Mock()
+    gui._select_education_screenshot_folder = Mock()
+    gui._get_education_tab = Mock()
+    gui._find_open_education_result_pages = Mock(return_value={})
+    gui._apply_recovered_education_result_pages = Mock(return_value=())
+    gui._update_education_workflow_progress = Mock()
+    gui._refresh_education_queue_summary = Mock()
+    gui.education_tabs = {}
+    gui.browser_page = object()
+    gui.run_on_ui = lambda callback: callback()
+    gui.root = Mock()
+
+    with (
+        patch("gui_main.messagebox.showinfo") as showinfo,
+        patch("gui_main.threading.Thread", ImmediateThread),
+    ):
+        gui._capture_education_results()
+
+    gui._get_education_tab.assert_not_called()
+    gui._select_education_screenshot_folder.assert_not_called()
+    showinfo.assert_called_once()
+    assert gui.education_screenshot_running is False
+    gui.education_screenshot_summary_var.set.assert_called_with(
+        "当前 Chrome 未检测到可截图的最终核验结果。"
+    )
+
+
+def test_education_screenshot_cancelled_folder_selection_does_not_touch_browser():
+    class ImmediateThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "education_1": {
+            "status": "核验结果已生成",
+            "name": "张三",
+            "certificate_number": "123456789012345678",
+        }
+    }
+    gui.education_screenshot_running = False
+    gui.education_screenshot_summary_var = Mock()
+    gui._save_current_education_fields = Mock()
+    gui._select_education_screenshot_folder = Mock(return_value=False)
+    gui._get_education_tab = Mock()
+    gui._find_open_education_result_pages = Mock(
+        return_value={"education_1": object()}
+    )
+    gui._apply_recovered_education_result_pages = Mock(
+        return_value=("education_1",)
+    )
+    gui._update_education_workflow_progress = Mock()
+    gui._refresh_education_queue_summary = Mock()
+    gui.education_tabs = {}
+    gui.browser_page = object()
+    gui.run_on_ui = lambda callback: callback()
+
+    with patch("gui_main.threading.Thread", ImmediateThread):
+        gui._capture_education_results()
+
+    gui._select_education_screenshot_folder.assert_called_once_with()
+    gui._get_education_tab.assert_not_called()
+    assert gui.education_screenshot_running is False
+
+
+def test_education_result_watcher_marks_record_ready_on_ui_thread():
+    gui = object.__new__(BossFilterGUI)
+    page = object()
+    gui.education_items = {
+        "education_1": {
+            "status": "已提交查询",
+            "detail": "等待手机确认",
+        }
+    }
+    gui.education_tabs = {}
+    gui.education_current_id = None
+    gui.education_screenshot_summary_var = Mock()
+    gui._education_browser_lock = threading.Lock()
+    gui._update_education_queue_row = Mock()
+    gui._refresh_education_queue_summary = Mock()
+    gui.run_on_ui = lambda callback: callback()
+
+    with patch.object(
+        gui_main._EDUCATION_CONTROLLER,
+        "wait_for_result_page",
+        return_value=True,
+    ):
+        gui._watch_education_result_page("education_1", page, "张三")
+
+    item = gui.education_items["education_1"]
+    assert item["status"] == "核验结果已生成"
+    assert gui.education_tabs["education_1"] is page
+    gui._update_education_queue_row.assert_called_once_with("education_1")
+    gui._refresh_education_queue_summary.assert_called_once_with()
+
+
+def test_education_result_watcher_marks_manual_captcha_as_submitted_on_qr_page():
+    gui = object.__new__(BossFilterGUI)
+    page = object()
+    gui.education_items = {
+        "education_1": {
+            "status": "待人工验证",
+            "detail": "验证码请人工输入",
+        }
+    }
+    gui.education_tabs = {"education_1": page}
+    gui.education_current_id = None
+    gui._education_browser_lock = threading.Lock()
+    gui._update_education_queue_row = Mock()
+    gui._refresh_education_queue_summary = Mock()
+    gui._is_browser_page_alive = Mock(return_value=True)
+    gui.run_on_ui = lambda callback: callback()
+
+    def detect_qr_then_keep_waiting(_page, expected_name, **kwargs):
+        assert kwargs["is_result_text"]("扫码验证", expected_name) is False
+        return False
+
+    with patch.object(
+        gui_main._EDUCATION_CONTROLLER,
+        "wait_for_result_page",
+        side_effect=detect_qr_then_keep_waiting,
+    ):
+        gui._watch_education_result_page("education_1", page, "张三")
+
+    item = gui.education_items["education_1"]
+    assert item["status"] == "等待扫码"
+    assert item["detail"] == "验证码已通过，请使用手机扫码并完成确认。"
+    assert item["warnings"] == "等待学信网显示最终查询结果。"
+    gui._update_education_queue_row.assert_called_once_with("education_1")
+    gui._refresh_education_queue_summary.assert_called_once_with()
+
+
+def test_education_result_watcher_maps_visible_captcha_error_not_unknown_result():
+    gui = object.__new__(BossFilterGUI)
+    page = object()
+    gui.education_items = {
+        "education_1": {
+            "status": "结果未确认",
+            "detail": "等待页面结果",
+        }
+    }
+    gui.education_tabs = {"education_1": page}
+    gui.education_current_id = None
+    gui._education_browser_lock = threading.Lock()
+    gui._update_education_queue_row = Mock()
+    gui._refresh_education_queue_summary = Mock()
+    gui.run_on_ui = lambda callback: callback()
+
+    def detect_error(_page, expected_name, **kwargs):
+        return kwargs["is_result_text"](
+            "图片验证码输入有误。",
+            expected_name,
+        )
+
+    with patch.object(
+        gui_main._EDUCATION_CONTROLLER,
+        "wait_for_result_page",
+        side_effect=detect_error,
+    ):
+        gui._watch_education_result_page("education_1", page, "孙雪莲")
+
+    item = gui.education_items["education_1"]
+    assert item["status"] == "验证码识别失败"
+    assert "明确提示" in item["detail"]
+
+
+def test_education_result_watcher_refreshes_expired_qr_without_retrying_captcha():
+    gui = object.__new__(BossFilterGUI)
+    page = object()
+    gui.education_items = {
+        "education_1": {
+            "status": "等待扫码",
+            "detail": "等待手机确认",
+        }
+    }
+    gui.education_tabs = {"education_1": page}
+    gui.education_current_id = None
+    gui._education_browser_lock = threading.Lock()
+    gui._is_browser_page_alive = Mock(return_value=True)
+    gui._update_education_queue_row = Mock()
+    gui._refresh_education_queue_summary = Mock()
+    gui.run_on_ui = lambda callback: callback()
+
+    def detect_expiry(_page, expected_name, **kwargs):
+        assert kwargs["is_result_text"](
+            "扫码验证 二维码已过期 点击刷新",
+            expected_name,
+        ) is False
+        return False
+
+    with (
+        patch.object(
+            gui_main._EDUCATION_CONTROLLER,
+            "wait_for_result_page",
+            side_effect=detect_expiry,
+        ),
+        patch("education_certificate.refresh_chsi_qr_code", return_value=True),
+    ):
+        gui._watch_education_result_page("education_1", page, "张三")
+
+    item = gui.education_items["education_1"]
+    assert item["status"] == "等待扫码"
+    assert item["detail"] == "二维码已自动刷新，请使用手机扫码并完成确认。"
+
+
+def test_education_result_watcher_recovers_buttons_after_browser_tab_closes():
+    gui = object.__new__(BossFilterGUI)
+    page = object()
+    gui.education_items = {
+        "education_1": {
+            "status": "已提交查询",
+            "detail": "等待手机确认",
+        }
+    }
+    gui.education_tabs = {"education_1": page}
+    gui.education_current_id = None
+    gui._education_browser_lock = threading.Lock()
+    gui._is_browser_page_alive = Mock(return_value=False)
+    gui._update_education_queue_row = Mock()
+    gui._refresh_education_queue_summary = Mock()
+    gui.run_on_ui = lambda callback: callback()
+
+    def report_closed(_page, _expected_name, **kwargs):
+        assert kwargs["interval_seconds"] == 1.0
+        assert kwargs["max_unavailable_checks"] == 3
+        return False
+
+    with patch.object(
+        gui_main._EDUCATION_CONTROLLER,
+        "wait_for_result_page",
+        side_effect=report_closed,
+    ):
+        gui._watch_education_result_page("education_1", page, "张三")
+
+    item = gui.education_items["education_1"]
+    assert item["status"] == "打开失败"
+    assert "重新执行第 2 步" in item["detail"]
+    assert "education_1" not in gui.education_tabs
+    gui._refresh_education_queue_summary.assert_called_once_with()
+
+
+def test_education_result_watcher_marks_not_found_and_requests_info_check():
+    gui = object.__new__(BossFilterGUI)
+    page = object()
+    gui.education_items = {
+        "education_1": {
+            "status": "已提交查询",
+            "detail": "等待手机确认",
+        }
+    }
+    gui.education_tabs = {}
+    gui.education_current_id = None
+    gui.education_screenshot_summary_var = Mock()
+    gui._education_browser_lock = threading.Lock()
+    gui._update_education_queue_row = Mock()
+    gui._refresh_education_queue_summary = Mock()
+    gui.run_on_ui = lambda callback: callback()
+
+    def detect_not_found(_page, expected_name, **kwargs):
+        return kwargs["is_result_text"](
+            "未找到学历信息，可能是因为：输入信息有误",
+            expected_name,
+        )
+
+    with patch.object(
+        gui_main._EDUCATION_CONTROLLER,
+        "wait_for_result_page",
+        side_effect=detect_not_found,
+    ):
+        gui._watch_education_result_page("education_1", page, "张三")
+
+    item = gui.education_items["education_1"]
+    assert item["status"] == "未查询到记录"
+    assert "核对姓名和证书编号" in item["detail"]
+    assert "重新执行第 2 步" in item["warnings"]
+    assert gui.education_tabs["education_1"] is page
+    assert "请核对人员姓名和证书编号" in (
+        gui.education_screenshot_summary_var.set.call_args.args[0]
+    )
+
+
+def test_education_screenshot_existing_file_restores_row_status():
+    from education_certificate import (
+        build_chsi_screenshot_filename,
+        save_chsi_result_screenshot,
+    )
+    from PIL import Image
+    import io
+
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (800, 600), "white").save(image_buffer, format="PNG")
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "education_1": {
+            "path": "certificate.jpg",
+            "name": "张三",
+            "certificate_number": "123456789012345678",
+        }
+    }
+    gui.education_queue_tree = Mock()
+    gui.education_queue_tree.exists.return_value = True
+    gui.education_screenshot_summary_var = Mock()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        gui.education_screenshot_folder = temp_dir
+        target = Path(temp_dir) / build_chsi_screenshot_filename(
+            "张三", "123456789012345678"
+        )
+        save_chsi_result_screenshot(image_buffer.getvalue(), target)
+
+        gui._refresh_education_screenshot_existing_states()
+
+        assert gui.education_items["education_1"]["screenshot_status"] == "已存在"
+        assert gui.education_items["education_1"]["screenshot_path"] == str(
+            target.resolve()
+        )
+    gui.education_screenshot_summary_var.set.assert_called_with(
+        "当前目录：已有 1｜待补 0｜文件异常 0"
+    )
+
+
+def test_education_failed_recognition_is_not_shown_as_waiting_for_screenshot():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "education_1": {
+            "path": "certificate.jpg",
+            "name": "",
+            "certificate_number": "",
+            "status": "识别失败",
+            "screenshot_status": "待截图",
+        }
+    }
+    gui.education_queue_tree = Mock()
+    gui.education_queue_tree.exists.return_value = True
+
+    gui._update_education_queue_row("education_1")
+
+    item = gui.education_items["education_1"]
+    assert item["screenshot_status"] == "待识别"
+    assert "尚未识别完整" in item["screenshot_detail"]
+    values = gui.education_queue_tree.item.call_args.kwargs["values"]
+    assert values[-1] == "待识别"
 
 
 def test_education_selected_ids_preserve_multi_selection():
@@ -9200,7 +10057,8 @@ def test_education_page_has_scroll_container_and_conditional_queue():
     assert '("number", "证书编号", 160)' in create_block
     assert '("major", "专业", 210)' in create_block
     assert "def _on_education_queue_motion" in source
-    assert 'tooltip_columns = {"#1": 0, "#4": 3, "#5": 4}' in source
+    assert 'tooltip_columns = {"#1": 0, "#4": 3, "#5": 4, "#7": 6}' in source
+    assert 'item.get("screenshot_detail")' in source
     assert "self._education_tree_font.measure(full_text)" in source
     assert "if total >= 1" in summary_block
     assert "elif total < 1" in summary_block
@@ -9346,6 +10204,24 @@ def test_education_preview_toolbar_has_rotate_not_flip():
     assert "_reset_education_image_flip" not in source
     assert "_set_education_flip_buttons_enabled" not in source
 
+
+def test_education_preview_double_click_opens_complete_source_image():
+    source = Path("gui_main.py").read_text(encoding="utf-8")
+    create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
+    method_block = source[
+        source.index("def _show_education_original"):
+        source.index("def _rotate_education_image_cw90")
+    ]
+
+    assert '"<Double-Button-1>"' in create_block
+    assert "host._show_education_original()" in create_block
+    assert "def _show_education_original(self)" in create_block
+    assert "_get_education_source_image(" in method_block
+    assert "display_angle" in method_block
+    assert "display_image.thumbnail(" in method_block
+    assert "原图 {original_width} × {original_height} 像素" in method_block
+    assert "Image.open(" not in method_block
+
 def test_education_recognize_disclaimer_text_simplified():
     create_block = Path("gui_education_page.py").read_text(encoding="utf-8")
 
@@ -9368,13 +10244,14 @@ def test_education_remove_current_button_handles_multi_select():
 
 
 def test_education_queue_summary_text_varies_by_count():
-    """total=1 不显示'点击队列切换'，total>1 显示，单位用'张证书'。"""
+    """导入工具栏只显示总数，流程标题右侧显示可执行状态。"""
     from unittest.mock import Mock
     from gui_main import BossFilterGUI as _GUI
 
     gui = object.__new__(_GUI)
     gui.education_items = {"edu_1": {}}
     gui.education_file_var = Mock()
+    gui.education_batch_status_var = Mock()
     gui.education_queue_card = Mock()
     gui.education_queue_card.winfo_manager.return_value = ""
     gui.education_workspace = Mock()
@@ -9391,6 +10268,9 @@ def test_education_queue_summary_text_varies_by_count():
 
     gui._refresh_education_queue_summary()
     gui.education_file_var.set.assert_called_with("已导入 1 张证书")
+    gui.education_batch_status_var.set.assert_called_with(
+        "已导入 1 张 · 待识别 1"
+    )
     gui.education_queue_card.pack.assert_called_once_with(
         fill="x",
         before=gui.education_workspace,
@@ -9401,7 +10281,10 @@ def test_education_queue_summary_text_varies_by_count():
     gui.education_queue_card.winfo_manager.return_value = "pack"
     gui.education_items = {"edu_1": {}, "edu_2": {}}
     gui._refresh_education_queue_summary()
-    gui.education_file_var.set.assert_called_with("已导入 2 张证书，点击队列切换")
+    gui.education_file_var.set.assert_called_with("已导入 2 张证书")
+    gui.education_batch_status_var.set.assert_called_with(
+        "已导入 2 张 · 待识别 2"
+    )
     gui.education_queue_tree.configure.assert_called_with(height=2)
     gui.education_queue_scrollbar.pack.assert_not_called()
 
@@ -9409,7 +10292,134 @@ def test_education_queue_summary_text_varies_by_count():
     gui.education_items = {}
     gui._refresh_education_queue_summary()
     gui.education_file_var.set.assert_called_with("尚未导入毕业证书")
+    gui.education_batch_status_var.set.assert_called_with("尚未导入证书")
     gui.education_queue_card.pack_forget.assert_called_once_with()
+
+
+def test_education_batch_status_reports_recognition_progress_and_failures():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "ready": {"status": "识别成功"},
+        "running": {"status": "识别中"},
+        "pending": {"status": "待识别"},
+        "failed": {"status": "识别失败"},
+        "manual": {"status": "待人工确认"},
+    }
+    gui.education_file_var = Mock()
+    gui.education_batch_status_var = Mock()
+    gui.education_queue_card = Mock()
+    gui.education_queue_card.winfo_manager.return_value = "pack"
+    gui.education_workspace = Mock()
+    gui.education_queue_tree = Mock()
+    gui.education_queue_scrollbar = Mock()
+    gui.education_queue_scrollbar.winfo_manager.return_value = ""
+    gui.education_remove_btn = Mock()
+    gui.education_recognize_btn = Mock()
+    gui.education_fill_btn = Mock()
+    gui.education_current_id = None
+    gui.education_recognition_running = True
+
+    gui._refresh_education_queue_summary()
+
+    gui.education_batch_status_var.set.assert_called_with(
+        "已导入 5 张 · 已识别 1 · 识别中 1 · 待识别 1 · 失败 1 · 待核对 1"
+    )
+
+
+def test_education_recognition_progress_is_visible_and_actionable():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "success": {"status": "已识别"},
+        "manual": {"status": "待人工确认"},
+        "failed": {"status": "识别失败"},
+    }
+    gui.education_recognition_progress_frame = Mock()
+    gui.education_recognition_progress_var = Mock()
+    gui.education_recognition_progress_text_var = Mock()
+
+    gui._update_education_recognition_progress(
+        total=3,
+        completed=2,
+        running=True,
+    )
+
+    gui.education_recognition_progress_var.set.assert_called_with(66.7)
+    progress_text = gui.education_recognition_progress_text_var.set.call_args.args[0]
+    assert "正在识别 2/3" in progress_text
+    assert "完成一张立即显示一张" in progress_text
+    gui.education_recognition_progress_frame.grid.assert_called_once_with()
+
+    gui._update_education_recognition_progress(
+        total=3,
+        completed=0,
+        running=True,
+        progress_percent=55,
+        phase_text="正在读取转正后的证书（并行处理中）",
+    )
+    gui.education_recognition_progress_var.set.assert_called_with(55.0)
+    stage_text = gui.education_recognition_progress_text_var.set.call_args.args[0]
+    assert "正在读取转正后的证书" in stage_text
+
+    gui._update_education_recognition_progress(
+        total=3,
+        completed=3,
+        running=False,
+    )
+    final_text = gui.education_recognition_progress_text_var.set.call_args.args[0]
+    assert "识别完成 3/3" in final_text
+    assert "点击失败记录查看原因" in final_text
+
+
+def test_education_verification_progress_tracks_scan_and_result_counts():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "ready_1": {"status": "核验结果已生成"},
+        "ready_2": {"status": "核验结果已生成"},
+        "waiting_1": {"status": "等待扫码"},
+        "waiting_2": {"status": "等待扫码"},
+        "waiting_3": {"status": "已提交查询"},
+    }
+    gui.education_recognition_progress_frame = Mock()
+    gui.education_recognition_progress_var = Mock()
+    gui.education_recognition_progress_text_var = Mock()
+
+    gui._update_education_verification_progress()
+
+    gui.education_recognition_progress_var.set.assert_called_once_with(40.0)
+    text = gui.education_recognition_progress_text_var.set.call_args.args[0]
+    assert "第 2 步" in text
+    assert "已提交 5/5" in text
+    assert "等待扫码 3" in text
+    assert "已出结果 2" in text
+    gui.education_recognition_progress_frame.grid.assert_called_once_with()
+
+
+def test_education_screenshot_progress_uses_shared_workflow_bar():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "education_1": {"path": "one.png", "name": "张三"},
+        "education_2": {"path": "two.png", "name": "李四"},
+    }
+    gui.education_screenshot_summary_var = Mock()
+    gui.education_recognition_progress_frame = Mock()
+    gui.education_recognition_progress_var = Mock()
+    gui.education_recognition_progress_text_var = Mock()
+    gui._update_education_queue_row = Mock()
+    gui._education_screenshot_total = 2
+    gui._education_screenshot_completed_ids = set()
+
+    gui._apply_education_screenshot_result(types.SimpleNamespace(
+        item_id="education_1",
+        status="已保存",
+        detail="保存成功",
+        path="one-result.png",
+    ))
+
+    gui.education_recognition_progress_var.set.assert_called_once_with(55.0)
+    text = gui.education_recognition_progress_text_var.set.call_args.args[0]
+    assert "第 3 步" in text
+    assert "正在截图 1/2" in text
+    assert "张三 · 已保存" in text
 
 
 def test_education_queue_caps_visible_rows_and_scrolls_after_five_items():
