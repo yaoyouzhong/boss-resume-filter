@@ -347,6 +347,58 @@ def main() -> None:
     root.geometry(normal_geometry)
     root.update()
 
+    import gui_external_import_dialog
+
+    import_widgets = gui_external_import_dialog.show_external_import_dialog(
+        app,
+        root,
+        font_family=gui_main.FONT_FAMILY,
+        job_names=[DEMO_JOB],
+        default_job=DEMO_JOB,
+        on_confirm=lambda _form: False,
+        ai_enhance_available=True,
+        ai_resume_eval_available=True,
+        ai_model_label="qwen-plus",
+        switch_factory=app.widget_support.create_switch,
+    )
+    import_widgets.file_var.set("王晨-高级Java工程师.pdf")
+    import_widgets.name_var.set("王晨")
+    import_widgets.channel_var.set("猎头")
+    import_widgets.note_text.insert("1.0", "重点关注证券项目与大模型应用经验")
+    import_widgets.ai_enhance_var.set(True)
+    import_widgets.ai_resume_eval_var.set(True)
+    import_widgets.window.update_idletasks()
+    import_widgets.window.geometry(
+        f"{max(1120, import_widgets.window.winfo_width())}x"
+        f"{import_widgets.window.winfo_height()}"
+    )
+    capture_dialog(root, "导入外部候选人", "13-external-import.png")
+
+    import gui_external_edit_dialog
+
+    gui_external_edit_dialog.show_external_edit_dialog(
+        app,
+        root,
+        font_family=gui_main.FONT_FAMILY,
+        candidate_name="王晨",
+        initial={
+            "name": "王晨",
+            "gender": "男",
+            "age": "32",
+            "education": "本科",
+            "exp_years": "8",
+            "salary": "30-35K",
+            "city": "南京",
+            "job_status": "在职",
+            "school": "南京理工大学",
+            "company": "某证券科技公司",
+        },
+        current_job=DEMO_JOB,
+        job_names=[DEMO_JOB],
+        on_confirm=lambda _form: False,
+    )
+    capture_dialog(root, "编辑候选人信息", "14-external-edit.png")
+
     app.show_daily_candidate_actions()
     capture_dialog(root, "今日待办", "10-today-tasks.png")
 
@@ -393,7 +445,7 @@ def main() -> None:
         root,
         {
             "current": gui_main.__version__,
-            "latest": "2.28",
+            "latest": "2.31",
             "update_type": "version",
             "changelog_body": (
                 "### 新增功能\n\n"
