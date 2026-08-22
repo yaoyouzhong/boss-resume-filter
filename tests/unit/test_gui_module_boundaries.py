@@ -1253,6 +1253,7 @@ def test_education_page_builder_exposes_an_explicit_widget_bundle():
         "current_id",
         "item_counter",
         "recognition_running",
+        "screenshot_running",
         "manual_rotation",
         "rotation_locked",
         "file_var",
@@ -1269,9 +1270,17 @@ def test_education_page_builder_exposes_an_explicit_widget_bundle():
         "number_var",
         "status_var",
         "warning_var",
+        "batch_status_var",
+        "recognition_progress_frame",
+        "recognition_progress_var",
+        "recognition_progress_text_var",
+        "recognition_progress_bar",
         "recognize_button",
         "fill_button",
         "captcha_button",
+        "screenshot_folder_var",
+        "screenshot_summary_var",
+        "screenshot_button",
     }
 
 
@@ -1307,6 +1316,7 @@ def test_education_page_keeps_ai_browser_and_certificate_actions_in_controller()
         "_recognize_education_image",
         "_fill_chsi_page",
         "_solve_captcha",
+        "_capture_education_results",
     ):
         assert f"host.{method_name}" in builder
         assert f"def {method_name}" in source

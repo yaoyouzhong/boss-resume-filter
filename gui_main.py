@@ -37,7 +37,16 @@ from browser_controller import BrowserController, BrowserRuntime
 from candidate_controller import CandidateController, CandidatePersistence
 from candidate_cleanup import clear_candidates_in_place
 from data_maintenance_controller import DataMaintenanceController
-from education_controller import EducationController
+from education_controller import (
+    EDUCATION_CAPTCHA_MAX_ATTEMPTS,
+    EDUCATION_FORM_EMPTY_STATUS,
+    EDUCATION_QR_EXPIRED_STATUS,
+    EDUCATION_RESULT_NOT_FOUND_STATUS,
+    EDUCATION_RESULT_READY_STATUS,
+    EDUCATION_VERIFICATION_PENDING_STATUSES,
+    EDUCATION_WAITING_FOR_SCAN_STATUS,
+    EducationController,
+)
 from settings_controller import SettingsController
 import candidate_presenter
 import candidate_diagnostics_presenter
@@ -2854,10 +2863,19 @@ class BossFilterGUI:
 
     def create_education_page(self):
         """创建学历核验页面。"""
+        screenshot_folder = str(
+            (getattr(self, "_run_preferences", {}) or {}).get(
+                "education_screenshot_folder"
+            )
+            or ""
+        ).strip()
+        if screenshot_folder and not Path(screenshot_folder).is_dir():
+            screenshot_folder = ""
         widgets = gui_education_page.build_education_page(
             self,
             UI_CONFIG,
             font_family=FONT_FAMILY,
+            screenshot_folder=screenshot_folder,
         )
         self._education_page_widgets = widgets
         self.education_page = widgets.page
@@ -2867,6 +2885,7 @@ class BossFilterGUI:
         self.education_current_id = widgets.current_id
         self.education_item_counter = widgets.item_counter
         self.education_recognition_running = widgets.recognition_running
+        self.education_screenshot_running = widgets.screenshot_running
         self.education_manual_rotation = widgets.manual_rotation
         self.education_rotation_locked = widgets.rotation_locked
         self.education_file_var = widgets.file_var
@@ -2881,11 +2900,32 @@ class BossFilterGUI:
         self.education_preview_label = widgets.preview_label
         self.education_name_var = widgets.name_var
         self.education_number_var = widgets.number_var
+        self._education_field_syncing = False
+        self.education_name_var.trace_add(
+            "write", self._on_education_fields_edited
+        )
+        self.education_number_var.trace_add(
+            "write", self._on_education_fields_edited
+        )
         self.education_status_var = widgets.status_var
         self.education_warning_var = widgets.warning_var
+        self.education_batch_status_var = widgets.batch_status_var
+        self.education_recognition_progress_frame = (
+            widgets.recognition_progress_frame
+        )
+        self.education_recognition_progress_var = widgets.recognition_progress_var
+        self.education_recognition_progress_text_var = (
+            widgets.recognition_progress_text_var
+        )
+        self.education_recognition_progress_bar = widgets.recognition_progress_bar
+        self._education_workflow_progress_stage = ""
         self.education_recognize_btn = widgets.recognize_button
         self.education_fill_btn = widgets.fill_button
         self.education_captcha_btn = widgets.captcha_button
+        self.education_screenshot_folder = screenshot_folder
+        self.education_screenshot_folder_var = widgets.screenshot_folder_var
+        self.education_screenshot_summary_var = widgets.screenshot_summary_var
+        self.education_screenshot_btn = widgets.screenshot_button
 
     def _select_education_images(self):
         """批量导入毕业证书图片并加入待核验队列。"""
@@ -2917,15 +2957,46 @@ class BossFilterGUI:
             path = Path(item["path"])
             self.education_queue_tree.insert(
                 "", "end", iid=item_id,
-                values=(path.name, "", "", "", "", "待识别"),
+                values=(
+                    path.name,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "待识别",
+                    item.get("screenshot_status", "待识别"),
+                ),
             )
 
-        self._refresh_education_queue_summary()
         if added_ids:
-            self.education_queue_tree.selection_set(added_ids[0])
-            self.education_queue_tree.focus(added_ids[0])
-            self.education_queue_tree.see(added_ids[0])
-            self._on_education_queue_select()
+            progress_frame = getattr(
+                self, "education_recognition_progress_frame", None
+            )
+            if progress_frame is not None:
+                progress_frame.grid_remove()
+            self._education_workflow_progress_stage = ""
+            if len(added_ids) == 1:
+                self.education_queue_tree.selection_set(added_ids[0])
+                self.education_queue_tree.focus(added_ids[0])
+                self.education_queue_tree.see(added_ids[0])
+                self._on_education_queue_select()
+            else:
+                selected = self.education_queue_tree.selection()
+                if selected:
+                    self.education_queue_tree.selection_remove(*selected)
+                self.education_queue_tree.focus("")
+                self.education_current_id = None
+                self.education_image_path = None
+                self._set_education_form_fields("", "")
+                self.education_status_var.set(
+                    "请从上方队列选择一张证书查看结果"
+                )
+                self.education_warning_var.set("")
+                self.education_preview_label.configure(
+                    image="",
+                    text="批量导入完成；识别后可点击队列查看每张证书",
+                )
+                self.education_preview_label._image_ref = None
             # 导入了图片文件时检查模型是否支持视觉
             has_image = any(
                 not self.education_items.get(item_id, {}).get("is_pdf")
@@ -2949,6 +3020,9 @@ class BossFilterGUI:
                         ),
                         parent=self.root,
                     )
+        self._refresh_education_queue_summary()
+        if getattr(self, "education_screenshot_folder", ""):
+            self._refresh_education_screenshot_existing_states()
         if invalid_files:
             omitted_count = max(0, len(invalid_files) - 10)
             messagebox.show_notice(
@@ -2974,11 +3048,52 @@ class BossFilterGUI:
         if total == 1:
             self.education_file_var.set("已导入 1 张证书")
         elif total > 1:
-            self.education_file_var.set(f"已导入 {total} 张证书，点击队列切换")
+            self.education_file_var.set(f"已导入 {total} 张证书")
         else:
             self.education_file_var.set("尚未导入毕业证书")
+        batch_status_var = getattr(self, "education_batch_status_var", None)
+        if batch_status_var is not None:
+            pending = sum(
+                str(item.get("status") or "待识别") == "待识别"
+                for item in self.education_items.values()
+            )
+            recognizing = sum(
+                str(item.get("status") or "") == "识别中"
+                for item in self.education_items.values()
+            )
+            failed = sum(
+                str(item.get("status") or "") in {"识别失败", "校验失败"}
+                for item in self.education_items.values()
+            )
+            manual_review = sum(
+                str(item.get("status") or "") == "待人工确认"
+                for item in self.education_items.values()
+            )
+            recognized = max(
+                0,
+                total - pending - recognizing - failed - manual_review,
+            )
+            summary_parts = [f"已导入 {total} 张"] if total else ["尚未导入证书"]
+            if recognized:
+                summary_parts.append(f"已识别 {recognized}")
+            if recognizing:
+                summary_parts.append(f"识别中 {recognizing}")
+            if pending:
+                summary_parts.append(f"待识别 {pending}")
+            if failed:
+                summary_parts.append(f"失败 {failed}")
+            if manual_review:
+                summary_parts.append(f"待核对 {manual_review}")
+            batch_status_var.set(" · ".join(summary_parts))
         queue_card = getattr(self, "education_queue_card", None)
         workspace = getattr(self, "education_workspace", None)
+        if total < 1:
+            progress_frame = getattr(
+                self, "education_recognition_progress_frame", None
+            )
+            if progress_frame is not None:
+                progress_frame.grid_remove()
+            self._education_workflow_progress_stage = ""
         if queue_card is not None:
             if total >= 1 and not queue_card.winfo_manager():
                 queue_card.pack(
@@ -3009,11 +3124,640 @@ class BossFilterGUI:
         has_current = self.education_current_id in self.education_items
         state = "normal" if has_current else "disabled"
         self.education_remove_btn.configure(state=state)
-        recognize_state = (
-            "normal" if has_current and not self.education_recognition_running else "disabled"
+        self._refresh_education_action_states()
+        if getattr(self, "_education_workflow_progress_stage", "") == "verification":
+            self._update_education_verification_progress()
+
+    def _update_education_workflow_progress(
+        self,
+        *,
+        stage: str,
+        percent: float,
+        text: str,
+    ) -> None:
+        """Show one shared progress line for the active three-step workflow."""
+        frame = getattr(self, "education_recognition_progress_frame", None)
+        progress_var = getattr(self, "education_recognition_progress_var", None)
+        text_var = getattr(
+            self, "education_recognition_progress_text_var", None
         )
-        self.education_recognize_btn.configure(state=recognize_state)
-        self.education_fill_btn.configure(state=state)
+        if frame is None or progress_var is None or text_var is None:
+            return
+        self._education_workflow_progress_stage = str(stage or "")
+        progress_var.set(round(max(0.0, min(float(percent), 100.0)), 1))
+        text_var.set(str(text or ""))
+        frame.grid()
+
+    def _update_education_verification_progress(self) -> None:
+        """Summarize CHSI submission, phone confirmation, and final results."""
+        statuses = [
+            str(item.get("status") or "")
+            for item in self.education_items.values()
+        ]
+        total = len(statuses)
+        if not total:
+            return
+        processing = sum(
+            status in {"打开中", "识别验证码中..."}
+            or status.startswith("正在")
+            for status in statuses
+        )
+        waiting_scan = sum(
+            status in {
+                "已提交查询",
+                EDUCATION_WAITING_FOR_SCAN_STATUS,
+                EDUCATION_QR_EXPIRED_STATUS,
+                "结果未确认",
+            }
+            for status in statuses
+        )
+        ready = statuses.count(EDUCATION_RESULT_READY_STATUS)
+        not_found = statuses.count(EDUCATION_RESULT_NOT_FOUND_STATUS)
+        retry = sum(
+            status in {"待人工验证", "验证码识别失败"}
+            for status in statuses
+        )
+        failed = sum(
+            status in {"打开失败", EDUCATION_FORM_EMPTY_STATUS}
+            for status in statuses
+        )
+        submitted = waiting_scan + ready + not_found
+        resolved = ready + not_found
+        if processing:
+            percent = (submitted + retry + failed) * 100 / total
+            text = (
+                f"第 2 步：正在打开学信网 · 已提交 {submitted}/{total} · "
+                f"处理中 {processing} · 异常 {retry + failed}"
+            )
+        else:
+            percent = resolved * 100 / max(1, submitted + retry + failed)
+            text = (
+                f"第 2 步：已提交 {submitted}/{total} · 等待扫码 {waiting_scan} · "
+                f"已出结果 {ready}"
+            )
+            if not_found:
+                text += f" · 未查到 {not_found}"
+            if retry + failed:
+                text += f" · 异常 {retry + failed}"
+        self._update_education_workflow_progress(
+            stage="verification",
+            percent=percent,
+            text=text,
+        )
+
+    def _update_education_recognition_progress(
+        self,
+        *,
+        total: int,
+        completed: int,
+        running: bool,
+        progress_percent: float | None = None,
+        phase_text: str = "",
+    ) -> None:
+        """Show batch recognition progress next to the action that started it."""
+        total = max(1, int(total))
+        completed = max(0, min(int(completed), total))
+        statuses = [
+            str(item.get("status") or "")
+            for item in self.education_items.values()
+        ]
+        success = statuses.count("已识别")
+        manual = statuses.count("待人工确认")
+        failed = statuses.count("识别失败")
+        percent = (
+            completed * 100 / total
+            if progress_percent is None
+            else max(0.0, min(float(progress_percent), 100.0))
+        )
+        if running:
+            text = (
+                f"正在识别 {completed}/{total} · 成功 {success} · "
+                f"待核对 {manual} · 失败 {failed}"
+            )
+            if phase_text:
+                text += f"｜{phase_text}"
+            else:
+                text += "｜完成一张立即显示一张"
+        else:
+            text = (
+                f"识别完成 {completed}/{total} · 成功 {success} · "
+                f"待核对 {manual} · 失败 {failed}"
+            )
+            if failed:
+                text += "｜点击失败记录查看原因，可重新识别"
+            elif manual:
+                text += "｜请先核对并补全关键字段"
+            else:
+                text += "｜请核对姓名和证书编号后执行第 2 步"
+        self._update_education_workflow_progress(
+            stage="recognition",
+            percent=percent,
+            text=f"第 1 步：{text}",
+        )
+
+    def _refresh_education_action_states(self):
+        """Refresh all education action buttons from one state snapshot."""
+        action_states = _EDUCATION_CONTROLLER.action_states(
+            self.education_items,
+            recognition_running=bool(self.education_recognition_running),
+            screenshot_running=bool(
+                getattr(self, "education_screenshot_running", False)
+            ),
+        )
+        self.education_recognize_btn.configure(
+            state="normal" if action_states.recognize else "disabled"
+        )
+        self.education_fill_btn.configure(
+            state="normal" if action_states.verify else "disabled"
+        )
+        screenshot_btn = getattr(self, "education_screenshot_btn", None)
+        if screenshot_btn is not None:
+            screenshot_btn.configure(
+                state="normal" if action_states.screenshot else "disabled"
+            )
+        retry_ids = _EDUCATION_CONTROLLER.captcha_retry_item_ids(
+            self.education_items
+        )
+        captcha_btn = getattr(self, "education_captcha_btn", None)
+        if captcha_btn is not None:
+            captcha_btn.configure(
+                text=f" 重试异常验证码（{len(retry_ids)}）",
+                state="normal" if action_states.retry_captcha else "disabled",
+            )
+
+    def _on_education_fields_edited(self, *_trace_args):
+        """Keep the current queue item and action gate in sync while editing."""
+        if getattr(self, "_education_field_syncing", False):
+            return
+        item = self.education_items.get(self.education_current_id)
+        if not item:
+            return
+        name = self.education_name_var.get().strip()
+        certificate_number = self.education_number_var.get().strip()
+        if (
+            item.get("name") == name
+            and item.get("certificate_number") == certificate_number
+        ):
+            return
+        item["name"] = name
+        item["certificate_number"] = certificate_number
+        previous_status = str(item.get("status") or "待识别")
+        editable_terminal_statuses = {
+            "待识别",
+            "已识别",
+            "识别失败",
+            "待人工确认",
+            "校验失败",
+            "打开失败",
+            EDUCATION_RESULT_NOT_FOUND_STATUS,
+            EDUCATION_RESULT_READY_STATUS,
+        }
+        if previous_status in editable_terminal_statuses:
+            item["status"] = "信息已修改"
+            item["detail"] = "姓名或证书编号已修改，请重新执行第 2 步。"
+            item["warnings"] = "请确认修改内容与证书原件一致。"
+            if previous_status == EDUCATION_RESULT_READY_STATUS:
+                item["screenshot_status"] = ""
+                item["screenshot_detail"] = ""
+                item["screenshot_path"] = ""
+                item.pop("_screenshot_primary_status", None)
+        self._update_education_queue_row(self.education_current_id)
+        self._refresh_education_action_states()
+
+    def _set_education_form_fields(
+        self,
+        name: str,
+        certificate_number: str,
+    ) -> None:
+        """Load queue values into both editors without treating them as edits."""
+        self._education_field_syncing = True
+        try:
+            self.education_name_var.set(name)
+            self.education_number_var.set(certificate_number)
+        finally:
+            self._education_field_syncing = False
+
+    def _select_education_screenshot_folder(self):
+        """Reuse a valid saved directory; otherwise ask for a new one."""
+        current_text = str(
+            getattr(self, "education_screenshot_folder", "") or ""
+        ).strip()
+        current = Path(current_text) if current_text else None
+        if current is not None and current.is_dir():
+            return True
+
+        options = {"title": "第 3 步：选择学历查询结果截图保存位置"}
+        if current is not None and current.parent.is_dir():
+            options["initialdir"] = str(current.parent)
+        selected = filedialog.askdirectory(**options)
+        if not selected:
+            return False
+        folder = Path(selected)
+        if not folder.is_dir():
+            messagebox.showerror(
+                "保存位置不可用",
+                "所选截图保存目录不存在或无法访问。",
+                parent=self.root,
+            )
+            return False
+        self.education_screenshot_folder = str(folder.resolve())
+        self.education_screenshot_folder_var.set(
+            f"保存到：{self.education_screenshot_folder}"
+        )
+        self._save_current_education_fields()
+        preferences = dict(getattr(self, "_run_preferences", {}) or {})
+        preferences["education_screenshot_folder"] = (
+            self.education_screenshot_folder
+        )
+        self._run_preferences = preferences
+        _save_run_preferences(preferences)
+        self._refresh_education_screenshot_existing_states()
+        return True
+
+    def _refresh_education_screenshot_existing_states(self):
+        """按当前保存目录恢复已有截图状态，不覆盖任何文件。"""
+        folder_text = str(
+            getattr(self, "education_screenshot_folder", "") or ""
+        )
+        folder = Path(folder_text) if folder_text else None
+        if folder is None or not folder.is_dir():
+            return
+        from education_certificate import (
+            build_chsi_screenshot_filename,
+            is_valid_chsi_screenshot,
+        )
+
+        existing = 0
+        invalid = 0
+        for item_id, item in self.education_items.items():
+            target = folder / build_chsi_screenshot_filename(
+                str(item.get("name") or ""),
+                str(item.get("certificate_number") or ""),
+            )
+            if target.exists() and is_valid_chsi_screenshot(target):
+                item["screenshot_status"] = "已存在"
+                item["screenshot_detail"] = "同一规格截图已存在"
+                item["screenshot_path"] = str(target.resolve())
+                existing += 1
+            elif target.exists():
+                item["screenshot_status"] = "文件异常"
+                item["screenshot_detail"] = "同名文件不是有效截图，未覆盖"
+                item["screenshot_path"] = str(target.resolve())
+                invalid += 1
+            else:
+                item["screenshot_status"] = ""
+                item["screenshot_detail"] = ""
+                item["screenshot_path"] = ""
+                item.pop("_screenshot_primary_status", None)
+            self._update_education_queue_row(item_id)
+        pending = max(0, len(self.education_items) - existing - invalid)
+        self.education_screenshot_summary_var.set(
+            f"当前目录：已有 {existing}｜待补 {pending}｜文件异常 {invalid}"
+        )
+
+    def _apply_education_screenshot_result(self, result):
+        """在 Tk 主线程应用一条截图进度或最终结果。"""
+        item = self.education_items.get(result.item_id)
+        if item is None:
+            return
+        item["screenshot_status"] = result.status
+        item["screenshot_detail"] = result.detail
+        item["screenshot_path"] = result.path
+        self._update_education_queue_row(result.item_id)
+        name = str(item.get("name") or Path(item["path"]).stem)
+        self.education_screenshot_summary_var.set(
+            f"正在批量截图：{name} · {result.status} · {result.detail}"
+        )
+        total = max(
+            1,
+            int(getattr(self, "_education_screenshot_total", 1) or 1),
+        )
+        completed_ids = getattr(
+            self, "_education_screenshot_completed_ids", set()
+        )
+        if result.status != "截图中":
+            completed_ids.add(result.item_id)
+        self._education_screenshot_completed_ids = completed_ids
+        completed = min(len(completed_ids), total)
+        percent = 10 + completed * 90 / total
+        self._update_education_workflow_progress(
+            stage="screenshot",
+            percent=percent,
+            text=(
+                f"第 3 步：正在截图 {completed}/{total} · "
+                f"{name} · {result.status}"
+            ),
+        )
+
+    def _find_open_education_result_pages(
+        self,
+        items,
+        candidate_ids,
+        existing_pages,
+    ) -> dict[str, object]:
+        """Read the connected Chrome once and match its final-result tabs."""
+        from education_certificate import (
+            is_chsi_result_text,
+            read_chsi_result_page_text,
+        )
+
+        base_page = getattr(self, "browser_page", None)
+        if not self._is_browser_page_alive(base_page):
+            return {}
+        with self._education_browser_lock:
+            open_pages = list(base_page.get_tabs() or [])
+            return _EDUCATION_CONTROLLER.assign_open_result_pages(
+                items,
+                candidate_ids,
+                open_pages,
+                existing_pages,
+                page_alive=self._is_browser_page_alive,
+                read_text=read_chsi_result_page_text,
+                is_result_text=is_chsi_result_text,
+            )
+
+    def _apply_recovered_education_result_pages(self, assignments) -> tuple[str, ...]:
+        """Apply matched final-result tabs on the Tk thread."""
+        recovered: list[str] = []
+        for item_id, page in assignments.items():
+            item = self.education_items.get(item_id)
+            if item is None:
+                continue
+            self.education_tabs[item_id] = page
+            if item.get("status") != EDUCATION_RESULT_READY_STATUS:
+                item["status"] = EDUCATION_RESULT_READY_STATUS
+                item["detail"] = "已从当前学信网页面恢复最终核验结果。"
+                item["warnings"] = ""
+                self._update_education_queue_row(item_id)
+            recovered.append(item_id)
+        if recovered:
+            self._refresh_education_queue_summary()
+        return tuple(recovered)
+
+    def _reconcile_open_education_result_pages(self) -> tuple[str, ...]:
+        """Recover final results from the already connected CHSI browser only."""
+        candidate_ids = tuple(
+            item_id
+            for item_id, item in self.education_items.items()
+            if item.get("status") in {
+                *EDUCATION_VERIFICATION_PENDING_STATUSES,
+                EDUCATION_RESULT_READY_STATUS,
+            }
+        )
+        if not candidate_ids:
+            return ()
+        try:
+            assignments = self._find_open_education_result_pages(
+                self.education_items,
+                candidate_ids,
+                self.education_tabs,
+            )
+        except Exception:
+            return ()
+        return self._apply_recovered_education_result_pages(assignments)
+
+    def _capture_education_results(self):
+        """保存已生成的核验结果；无结果时不连接或启动浏览器。"""
+        if not self.education_items or getattr(
+            self, "education_screenshot_running", False
+        ):
+            return
+        self._save_current_education_fields()
+        action_states = _EDUCATION_CONTROLLER.action_states(
+            self.education_items,
+            recognition_running=bool(
+                getattr(self, "education_recognition_running", False)
+            ),
+            screenshot_running=bool(self.education_screenshot_running),
+        )
+        if not action_states.screenshot:
+            return
+        base_page = getattr(self, "browser_page", None)
+        self.education_screenshot_running = True
+        self.education_screenshot_summary_var.set(
+            "正在检查当前 Chrome 中的最终核验结果…"
+        )
+        self._update_education_workflow_progress(
+            stage="screenshot",
+            percent=5,
+            text="第 3 步：正在检查 Chrome 结果页…",
+        )
+        self._refresh_education_queue_summary()
+
+        candidate_ids = tuple(
+            item_id
+            for item_id, item in self.education_items.items()
+            if item.get("status") in {
+                *EDUCATION_VERIFICATION_PENDING_STATUSES,
+                EDUCATION_RESULT_READY_STATUS,
+            }
+        )
+        items_snapshot = {
+            item_id: dict(item)
+            for item_id, item in self.education_items.items()
+        }
+        existing_pages = dict(self.education_tabs)
+
+        def start_capture(assignments):
+            """Continue on the Tk thread after the browser scan finishes."""
+            self._apply_recovered_education_result_pages(assignments)
+            item_ids = list(
+                _EDUCATION_CONTROLLER.result_ready_item_ids(
+                    self.education_items
+                )
+            )
+            if not item_ids:
+                self.education_screenshot_running = False
+                self.education_screenshot_summary_var.set(
+                    "当前 Chrome 未检测到可截图的最终核验结果。"
+                )
+                self._update_education_workflow_progress(
+                    stage="screenshot",
+                    percent=0,
+                    text="第 3 步：未检测到最终核验结果",
+                )
+                self._refresh_education_queue_summary()
+                messagebox.showinfo(
+                    "尚无可截图结果",
+                    "当前 Chrome 只有查询表单、验证码或扫码页面，"
+                    "尚未出现最终核验结果；未启动新的浏览器。",
+                    parent=self.root,
+                )
+                return
+            if not self._select_education_screenshot_folder():
+                self.education_screenshot_running = False
+                self._update_education_workflow_progress(
+                    stage="screenshot",
+                    percent=0,
+                    text="第 3 步：已取消选择截图保存位置",
+                )
+                self._refresh_education_queue_summary()
+                return
+            folder_text = str(
+                getattr(self, "education_screenshot_folder", "") or ""
+            )
+            if not folder_text or not Path(folder_text).is_dir():
+                self.education_screenshot_running = False
+                self._update_education_workflow_progress(
+                    stage="screenshot",
+                    percent=0,
+                    text="第 3 步：截图保存位置不可用",
+                )
+                self._refresh_education_queue_summary()
+                return
+            if not self._is_browser_page_alive(base_page):
+                self.education_screenshot_running = False
+                self._update_education_workflow_progress(
+                    stage="screenshot",
+                    percent=0,
+                    text="第 3 步：结果页面已关闭",
+                )
+                self._refresh_education_queue_summary()
+                messagebox.showerror(
+                    "结果页面已关闭",
+                    "程序记录中有可截图结果，但对应 Chrome 已关闭；"
+                    "请重新打开学信网验证并生成结果页。",
+                    parent=self.root,
+                )
+                return
+
+            item_snapshot = {
+                item_id: dict(self.education_items[item_id])
+                for item_id in item_ids
+            }
+            page_snapshot = {
+                item_id: self.education_tabs.get(item_id)
+                for item_id in item_ids
+                if self.education_tabs.get(item_id) is not None
+            }
+            page_snapshot.update(
+                {
+                    item_id: page
+                    for item_id, page in assignments.items()
+                    if item_id in item_ids
+                }
+            )
+            self._education_screenshot_total = len(item_ids)
+            self._education_screenshot_completed_ids = set()
+            self.education_screenshot_summary_var.set(
+                f"正在截图 0/{len(item_ids)} 个核验结果…"
+            )
+            self._update_education_workflow_progress(
+                stage="screenshot",
+                percent=10,
+                text=f"第 3 步：正在截图 0/{len(item_ids)}",
+            )
+
+            def worker():
+                from education_certificate import (
+                    ChsiResultNotReadyError,
+                    build_chsi_screenshot_filename,
+                    capture_chsi_result_png,
+                    is_valid_chsi_screenshot,
+                    save_chsi_result_screenshot,
+                )
+
+                def page_alive(page):
+                    with self._education_browser_lock:
+                        return self._is_browser_page_alive(page)
+
+                def capture(page, name):
+                    with self._education_browser_lock:
+                        return capture_chsi_result_png(page, name)
+
+                def on_progress(result):
+                    self.run_on_ui(
+                        lambda current=result: (
+                            self._apply_education_screenshot_result(current)
+                        )
+                    )
+
+                try:
+                    result = _EDUCATION_CONTROLLER.capture_result_screenshots(
+                        item_snapshot,
+                        item_ids,
+                        page_snapshot,
+                        folder_text,
+                        filename_builder=build_chsi_screenshot_filename,
+                        existing_validator=is_valid_chsi_screenshot,
+                        page_alive=page_alive,
+                        capture=capture,
+                        save=save_chsi_result_screenshot,
+                        is_not_ready_error=lambda error: isinstance(
+                            error, ChsiResultNotReadyError
+                        ),
+                        on_progress=on_progress,
+                    )
+                except Exception as error:
+                    error_text = (
+                        str(error).splitlines()[0][:300]
+                        or type(error).__name__
+                    )
+
+                    def finish_error():
+                        self.education_screenshot_running = False
+                        self.education_screenshot_summary_var.set(
+                            f"批量截图未完成：{error_text}"
+                        )
+                        self._update_education_workflow_progress(
+                            stage="screenshot",
+                            percent=0,
+                            text=f"第 3 步：截图失败 · {error_text}",
+                        )
+                        self._refresh_education_queue_summary()
+
+                    self.run_on_ui(finish_error)
+                    return
+
+                def finish():
+                    self.education_screenshot_running = False
+                    summary = (
+                        f"共 {len(result.items)} 项｜新保存 {result.saved}｜"
+                        f"已跳过 {result.skipped}｜待补 {result.pending}｜"
+                        f"失败 {result.failed}"
+                    )
+                    self.education_screenshot_summary_var.set(summary)
+                    self._update_education_workflow_progress(
+                        stage="screenshot",
+                        percent=100,
+                        text=f"第 3 步：截图完成 · {summary}",
+                    )
+                    self._refresh_education_queue_summary()
+
+                self.run_on_ui(finish)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def scan_worker():
+            try:
+                assignments = self._find_open_education_result_pages(
+                    items_snapshot,
+                    candidate_ids,
+                    existing_pages,
+                )
+            except Exception as error:
+                error_text = (
+                    str(error).splitlines()[0][:300]
+                    or type(error).__name__
+                )
+
+                def finish_scan_error():
+                    self.education_screenshot_running = False
+                    self.education_screenshot_summary_var.set(
+                        f"结果页检查失败：{error_text}"
+                    )
+                    self._update_education_workflow_progress(
+                        stage="screenshot",
+                        percent=0,
+                        text=f"第 3 步：结果页检查失败 · {error_text}",
+                    )
+                    self._refresh_education_queue_summary()
+
+                self.run_on_ui(finish_scan_error)
+                return
+            self.run_on_ui(lambda: start_capture(assignments))
+
+        threading.Thread(target=scan_worker, daemon=True).start()
 
     def _save_current_education_fields(self):
         """将当前编辑框内容保存回队列项。"""
@@ -3030,6 +3774,30 @@ class BossFilterGUI:
         item = self.education_items.get(item_id)
         if not item or not self.education_queue_tree.exists(item_id):
             return
+        primary_status = str(item.get("status") or "待识别")
+        screenshot_status = str(item.get("screenshot_status") or "")
+        file_states = {"已保存", "已存在", "文件异常"}
+        readiness_states = {
+            "",
+            "待截图",
+            "待识别",
+            "待验证",
+            "验证中",
+            "待结果",
+            "无需截图",
+        }
+        previous_primary = item.get("_screenshot_primary_status")
+        if screenshot_status not in file_states and (
+            screenshot_status in readiness_states
+            or previous_primary != primary_status
+        ):
+            screenshot_status, screenshot_detail = (
+                _EDUCATION_CONTROLLER.screenshot_readiness(item)
+            )
+            item["screenshot_status"] = screenshot_status
+            item["screenshot_detail"] = screenshot_detail
+            item["screenshot_path"] = ""
+        item["_screenshot_primary_status"] = primary_status
         self.education_queue_tree.item(
             item_id,
             values=(
@@ -3039,6 +3807,7 @@ class BossFilterGUI:
                 item.get("school", ""),
                 item.get("major", ""),
                 item.get("status", "待识别"),
+                item.get("screenshot_status", "待识别"),
             ),
         )
 
@@ -3057,8 +3826,10 @@ class BossFilterGUI:
             return
         self.education_current_id = next_id
         self.education_image_path = item["path"]
-        self.education_name_var.set(item.get("name", ""))
-        self.education_number_var.set(item.get("certificate_number", ""))
+        self._set_education_form_fields(
+            str(item.get("name") or ""),
+            str(item.get("certificate_number") or ""),
+        )
         self.education_status_var.set(item.get("detail") or item.get("status", "待识别"))
         self.education_warning_var.set(item.get("warnings", ""))
         self._refresh_education_queue_summary()
@@ -3069,7 +3840,7 @@ class BossFilterGUI:
         tree = self.education_queue_tree
         item_id = tree.identify_row(event.y)
         column_id = tree.identify_column(event.x)
-        tooltip_columns = {"#1": 0, "#4": 3, "#5": 4}
+        tooltip_columns = {"#1": 0, "#4": 3, "#5": 4, "#7": 6}
         value_index = tooltip_columns.get(column_id)
         if not item_id or value_index is None:
             self.feedback_support.hide_tooltip()
@@ -3078,7 +3849,13 @@ class BossFilterGUI:
         if len(values) <= value_index:
             self.feedback_support.hide_tooltip()
             return
-        full_text = str(values[value_index] or "")
+        if column_id == "#7":
+            item = self.education_items.get(item_id) or {}
+            full_text = str(
+                item.get("screenshot_detail") or values[value_index] or ""
+            )
+        else:
+            full_text = str(values[value_index] or "")
         cell_bbox = tree.bbox(item_id, column_id)
         if (
             not full_text
@@ -3105,27 +3882,29 @@ class BossFilterGUI:
         )
 
     def _show_education_queue_context_menu(self, event):
-        """右键队列行；保留已有多选，未选中行则切换为单选。"""
+        """右键队列行，并把菜单动作严格限定到该行。"""
         item_id = self.education_queue_tree.identify_row(event.y)
         if not item_id:
             return
-        if item_id not in self.education_queue_tree.selection():
-            self._save_current_education_fields()
-            self.education_queue_tree.selection_set(item_id)
+        self._save_current_education_fields()
+        self.education_queue_tree.selection_set(item_id)
         self.education_queue_tree.focus(item_id)
         self._on_education_queue_select()
 
         # 重建右键菜单
         self.education_queue_menu.delete(0, "end")
         self.education_queue_menu.add_command(
-            label="识别证书", command=self._recognize_education_image
+            label="识别证书",
+            command=lambda iid=item_id: self._recognize_education_image([iid]),
         )
         self.education_queue_menu.add_command(
-            label="学信网验证", command=self._fill_chsi_page
+            label="学信网验证",
+            command=lambda iid=item_id: self._fill_chsi_page([iid]),
         )
         self.education_queue_menu.add_separator()
         self.education_queue_menu.add_command(
-            label="删除证书", command=self._remove_selected_education_images
+            label="删除证书",
+            command=lambda iid=item_id: self._remove_education_items([iid]),
         )
 
         self.education_queue_menu.tk_popup(event.x_root, event.y_root)
@@ -3175,8 +3954,7 @@ class BossFilterGUI:
             self._on_education_queue_select()
         else:
             self.education_image_path = None
-            self.education_name_var.set("")
-            self.education_number_var.set("")
+            self._set_education_form_fields("", "")
             self.education_status_var.set("等待导入图片/PDF")
             self.education_warning_var.set("")
             self.education_preview_label.configure(
@@ -3251,6 +4029,118 @@ class BossFilterGUI:
             label.configure(image="", text=f"图片预览失败：{error}")
 
 
+    def _show_education_original(self):
+        """在独立大窗口中显示当前证书的完整源图，而不是预览缩略图。"""
+        item_id = self.education_current_id
+        item = self.education_items.get(item_id) if item_id else None
+        if not item:
+            return
+        if item.get("is_pdf"):
+            messagebox.showinfo(
+                "查看 PDF",
+                "当前记录是 PDF 文档，没有可双击放大的图片预览。",
+                parent=self.root,
+            )
+            return
+        path = Path(str(item.get("path") or ""))
+        if not path.is_file():
+            messagebox.showerror(
+                "无法查看原图",
+                "证书原文件不存在或已被移动。",
+                parent=self.root,
+            )
+            return
+
+        existing = getattr(self, "_education_original_window", None)
+        try:
+            if existing is not None and existing.winfo_exists():
+                existing.destroy()
+        except tk.TclError:
+            pass
+
+        rotation_locked = getattr(self, "education_rotation_locked", set())
+        if item_id in rotation_locked:
+            display_angle = self.education_manual_rotation.get(item_id, 0)
+        else:
+            display_angle = int(item.get("auto_rotation", 0) or 0)
+
+        source_image = None
+        display_image = None
+        try:
+            from PIL import Image, ImageTk
+
+            source_image = self._get_education_source_image(
+                path,
+                item_id,
+                display_angle,
+            ).copy()
+            original_width, original_height = source_image.size
+            max_width = max(640, int(self.root.winfo_screenwidth() * 0.9))
+            max_height = max(480, int(self.root.winfo_screenheight() * 0.82))
+            display_image = source_image.copy()
+            display_image.thumbnail(
+                (max_width - 32, max_height - 84),
+                Image.Resampling.LANCZOS,
+            )
+
+            win = create_toplevel(self.root)
+            win.title(f"证书原图 - {path.name}")
+            win.transient(self.root)
+            win.configure(bg=self.colors["bg_card"])
+            win.withdraw()
+
+            photo = ImageTk.PhotoImage(display_image, master=win)
+            image_label = tk.Label(
+                win,
+                image=photo,
+                bg=self.colors["bg_card"],
+                borderwidth=0,
+            )
+            image_label.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+            image_label._image_ref = photo
+            ttk.Label(
+                win,
+                text=(
+                    f"原图 {original_width} × {original_height} 像素"
+                    "｜当前按屏幕等比显示｜按 Esc 关闭"
+                ),
+                font=self.font_label,
+                foreground=self.colors["text_secondary"],
+            ).pack(pady=(0, 10))
+
+            def close_original():
+                self._education_original_window = None
+                if win.winfo_exists():
+                    win.destroy()
+
+            win.protocol("WM_DELETE_WINDOW", close_original)
+            width = max(520, display_image.width + 24)
+            height = max(400, display_image.height + 70)
+            _place_window_centered(
+                win,
+                width,
+                height,
+                parent=self.root,
+                max_width_ratio=0.92,
+                max_height_ratio=0.88,
+            )
+            self._education_original_window = win
+            win.deiconify()
+            win.lift()
+            win.focus_force()
+        except Exception as error:
+            messagebox.showerror(
+                "无法查看原图",
+                f"证书图片读取失败：{error}",
+                parent=self.root,
+            )
+        finally:
+            if source_image is not None:
+                source_image.close()
+            if display_image is not None:
+                display_image.close()
+
+
     def _rotate_education_image_cw90(self):
         """将当前显示方向顺转90°并锁定为人工方向。"""
         item_id = self.education_current_id
@@ -3272,14 +4162,27 @@ class BossFilterGUI:
         """获取学历核验使用的 API 配置。优先 education_model_ref，回退默认 AI 模型。"""
         return _EDUCATION_CONTROLLER.resolve_api_config(self.api_config or {})
 
-    def _recognize_education_image(self):
-        """最多三路并发识别当前选中的毕业证书。"""
+    def _recognize_education_image(self, item_ids=None):
+        """识别指定证书；工具栏调用时最多三路并发识别完整队列。"""
         self._save_current_education_fields()
-        item_ids = self._selected_education_item_ids()
+        if item_ids is None:
+            item_ids = list(self.education_items)
+        else:
+            item_ids = [
+                item_id for item_id in item_ids
+                if item_id in self.education_items
+            ]
         if not item_ids:
-            messagebox.showinfo("请选择图片", "请先选择毕业证书。", parent=self.root)
+            messagebox.showinfo("请导入证书", "请先导入毕业证书。", parent=self.root)
             return
-        if self.education_recognition_running:
+        action_states = _EDUCATION_CONTROLLER.action_states(
+            self.education_items,
+            recognition_running=bool(self.education_recognition_running),
+            screenshot_running=bool(
+                getattr(self, "education_screenshot_running", False)
+            ),
+        )
+        if not action_states.recognize:
             return
         # 学历核验专用配置（优先 education_model_ref，回退默认 AI 模型）
         edu_config = self._get_education_api_config()
@@ -3313,8 +4216,16 @@ class BossFilterGUI:
         from education_certificate import resolve_vision_api_config
         vision_config = resolve_vision_api_config(edu_config)
         vision_model = str(vision_config.get("model") or "当前模型")
+        rotation_locked = getattr(self, "education_rotation_locked", set())
+        manual_rotation = getattr(self, "education_manual_rotation", {})
         for item_id in item_ids:
             item = self.education_items[item_id]
+            if item_id in rotation_locked:
+                item["recognition_rotation"] = int(
+                    manual_rotation.get(item_id, 0)
+                )
+            else:
+                item.pop("recognition_rotation", None)
             item["status"] = "识别中"
             item["detail"] = f"正在使用 {vision_model} 识别证书..."
             item["warnings"] = ""
@@ -3324,53 +4235,142 @@ class BossFilterGUI:
             self.education_status_var.set(current_item["detail"])
             self.education_warning_var.set("")
         self._refresh_education_queue_summary()
+        self._update_education_recognition_progress(
+            total=len(item_ids),
+            completed=0,
+            running=True,
+            progress_percent=3,
+            phase_text=f"正在启动 {len(item_ids)} 张并行识别",
+        )
 
         def worker():
             from education_certificate import (
                 recognize_certificate_image,
                 recognize_certificate_pdf,
             )
+            completed_ids: set[str] = set()
+            stage_percent = dict.fromkeys(item_ids, 0)
 
-            results = _EDUCATION_CONTROLLER.recognize_documents(
-                self.education_items,
-                item_ids,
-                vision_config,
-                self._get_education_api_key(vision_config) or "",
-                recognize_image=recognize_certificate_image,
-                recognize_pdf=recognize_certificate_pdf,
-            )
+            def refresh_progress(phase_text: str = ""):
+                overall_percent = sum(stage_percent.values()) / len(item_ids)
+                self._update_education_recognition_progress(
+                    total=len(item_ids),
+                    completed=len(completed_ids),
+                    running=True,
+                    progress_percent=overall_percent,
+                    phase_text=phase_text,
+                )
 
-            def show_results():
+            def apply_one_result(item_id, result, error_text):
+                if item_id in completed_ids:
+                    return
                 updated_ids = _EDUCATION_CONTROLLER.apply_recognition_results(
                     self.education_items,
-                    results,
+                    {item_id: (result, error_text)},
                 )
-                for item_id in updated_ids:
-                    self._update_education_queue_row(item_id)
-                current = self.education_items.get(self.education_current_id)
-                if current and self.education_current_id in results:
-                    self.education_name_var.set(current.get("name", ""))
-                    self.education_number_var.set(
-                        current.get("certificate_number", "")
+                if not updated_ids:
+                    return
+                completed_ids.add(item_id)
+                stage_percent[item_id] = 100
+                self._update_education_queue_row(item_id)
+                if self.education_current_id == item_id:
+                    current = self.education_items.get(item_id)
+                    if current:
+                        self._set_education_form_fields(
+                            str(current.get("name") or ""),
+                            str(current.get("certificate_number") or ""),
+                        )
+                        self.education_status_var.set(current.get("detail", ""))
+                        self.education_warning_var.set(
+                            current.get("warnings", "")
+                        )
+                        self._render_education_preview()
+                self._refresh_education_queue_summary()
+                refresh_progress("继续处理其余证书")
+
+            def apply_stage(item_id, stage, percent):
+                if item_id in completed_ids or item_id not in stage_percent:
+                    return
+                stage_percent[item_id] = max(
+                    stage_percent[item_id],
+                    max(0, min(int(percent), 99)),
+                )
+                refresh_progress(f"{stage}（并行处理中）")
+
+            def on_result(item_id, result, error_text):
+                self.run_on_ui(
+                    lambda item_id=item_id, result=result, error_text=error_text: (
+                        apply_one_result(item_id, result, error_text)
                     )
-                    self.education_status_var.set(current.get("detail", ""))
-                    self.education_warning_var.set(
-                        current.get("warnings", "")
+                )
+
+            def on_stage(item_id, stage, percent):
+                self.run_on_ui(
+                    lambda item_id=item_id, stage=stage, percent=percent: (
+                        apply_stage(item_id, stage, percent)
                     )
-                    self._render_education_preview()
+                )
+
+            try:
+                results = _EDUCATION_CONTROLLER.recognize_documents(
+                    self.education_items,
+                    item_ids,
+                    vision_config,
+                    self._get_education_api_key(vision_config) or "",
+                    recognize_image=recognize_certificate_image,
+                    recognize_pdf=recognize_certificate_pdf,
+                    on_result=on_result,
+                    on_stage=on_stage,
+                )
+            except Exception as error:
+                error_text = str(error) or type(error).__name__
+                results = {
+                    item_id: (None, error_text)
+                    for item_id in item_ids
+                }
+
+            def show_results():
+                for item_id, (result, error_text) in results.items():
+                    apply_one_result(item_id, result, error_text)
                 self.education_recognition_running = False
                 self._refresh_education_queue_summary()
+                self._update_education_recognition_progress(
+                    total=len(item_ids),
+                    completed=len(completed_ids),
+                    running=False,
+                )
 
             self.run_on_ui(show_results)
         threading.Thread(target=worker, daemon=True).start()
 
-    def _fill_chsi_page(self):
-        """打开学信网验证页；多选时每个候选人分配独立 tab 并行执行。"""
+    def _fill_chsi_page(self, item_ids=None):
+        """验证指定证书；工具栏调用时处理完整队列。"""
         self._save_current_education_fields()
-        item_ids = self._selected_education_item_ids()
+        if item_ids is None:
+            item_ids = list(self.education_items)
+        else:
+            item_ids = [
+                item_id for item_id in item_ids
+                if item_id in self.education_items
+            ]
         if not item_ids:
-            messagebox.showinfo("请选择图片", "请先从队列选择图片。", parent=self.root)
+            messagebox.showinfo("请导入证书", "请先导入毕业证书。", parent=self.root)
             return
+        action_states = _EDUCATION_CONTROLLER.action_states(
+            self.education_items,
+            recognition_running=bool(self.education_recognition_running),
+            screenshot_running=bool(
+                getattr(self, "education_screenshot_running", False)
+            ),
+        )
+        if not action_states.verify:
+            return
+        item_ids = [
+            item_id
+            for item_id in item_ids
+            if self.education_items[item_id].get("status")
+            != EDUCATION_RESULT_READY_STATUS
+        ]
 
         from education_certificate import validate_chsi_fields
         preparation = _EDUCATION_CONTROLLER.prepare_chsi(
@@ -3381,6 +4381,7 @@ class BossFilterGUI:
         prepared = list(preparation.prepared)
         for item_id in preparation.invalid_ids:
             self._update_education_queue_row(item_id)
+        self._refresh_education_queue_summary()
 
         if not prepared:
             messagebox.showwarning(
@@ -3390,7 +4391,11 @@ class BossFilterGUI:
             )
             return
 
-        self.education_fill_btn.configure(state="disabled")
+        self._update_education_workflow_progress(
+            stage="verification",
+            percent=0,
+            text=f"第 2 步：正在准备 0/{len(prepared)} 个学信网页面…",
+        )
         for item_id, _, _ in prepared:
             item = self.education_items.get(item_id)
             if item:
@@ -3398,6 +4403,7 @@ class BossFilterGUI:
                 item["detail"] = "正在连接浏览器并打开学信网..."
                 item["warnings"] = ""
                 self._update_education_queue_row(item_id)
+        self._refresh_education_queue_summary()
         first_item = self.education_items.get(prepared[0][0])
         if first_item:
             self.education_status_var.set(first_item["detail"])
@@ -3415,7 +4421,7 @@ class BossFilterGUI:
                     item["detail"] = "浏览器连接失败"
                     item["warnings"] = str(error)
                     self._update_education_queue_row(item_id)
-            self.education_fill_btn.configure(state="normal")
+            self._refresh_education_queue_summary()
             return
 
         # 在主线程串行创建所有 tab（DrissionPage.new_tab 不支持并发）
@@ -3431,36 +4437,40 @@ class BossFilterGUI:
                     item["detail"] = "创建标签页失败"
                     item["warnings"] = str(error)
                     self._update_education_queue_row(item_id)
+        self._refresh_education_queue_summary()
 
         # 每个候选人一个独立 worker，并行执行（tab 已预分配，不再并发创建）
-        import time
         for idx, (item_id, name, certificate_number) in enumerate(prepared):
             tab = tabs.get(item_id)
             if tab is None:
                 continue
-            # 错开启动时间，避免同时请求触发风控
-            if idx > 0:
-                time.sleep(1.5)
             def worker(
                 iid=item_id, n=name, cn=certificate_number, page=tab,
             ):
+                last_captcha_detail = {"value": ""}
+
                 # 进度回调：实时更新队列状态列和详情
                 def on_progress(status_text: str, detail: str):
+                    if detail:
+                        last_captcha_detail["value"] = detail
+
                     def _update(iid=iid, s=status_text, d=detail):
                         item = self.education_items.get(iid)
                         if item:
                             item["status"] = s
                             item["detail"] = d
                             self._update_education_queue_row(iid)
+                            self._refresh_education_queue_summary()
                     self.run_on_ui(_update)
 
-                max_attempts = 3
+                max_attempts = EDUCATION_CAPTCHA_MAX_ATTEMPTS
                 try:
                     on_progress("正在加载学信网页面...", "")
                     success, status = self._fill_and_solve_captcha(
                         page,
                         n,
                         cn,
+                        item_id=iid,
                         on_progress=on_progress,
                         max_attempts=max_attempts,
                     )
@@ -3479,45 +4489,351 @@ class BossFilterGUI:
                         if self.education_current_id == iid:
                             self.education_status_var.set(queue_item["detail"])
                             self.education_warning_var.set(err)
-                        self._set_captcha_btn_state("normal")
+                        self._refresh_education_queue_summary()
                         self._restore_education_fill_button_if_done()
                     self.run_on_ui(show_error)
                     return
+                result_page = self.education_tabs.get(iid, page)
                 # 显示最终结果
-                def show_success(iid=iid, ok=success, st=status):
+                def show_success(
+                    iid=iid,
+                    ok=success,
+                    st=status,
+                    result_page=result_page,
+                    expected_name=n,
+                    failure_detail=last_captcha_detail["value"],
+                ):
                     queue_item = self.education_items.get(iid)
                     if not queue_item:
                         return
-                    if ok:
+                    if (
+                        queue_item.get("status") == "打开失败"
+                        and st != "打开失败"
+                    ):
+                        self._restore_education_fill_button_if_done()
+                        return
+                    if st == "打开失败":
+                        self.education_tabs.pop(iid, None)
+                        queue_item["status"] = "打开失败"
+                        queue_item["detail"] = (
+                            "学信网页面已关闭或连接中断，可重新执行第 2 步。"
+                        )
+                        queue_item["warnings"] = ""
+                    elif ok:
                         queue_item["status"] = "已提交查询"
                         queue_item["detail"] = "验证码已识别并自动提交查询，请等待页面显示二维码。"
                         queue_item["warnings"] = "验证码通过后按页面提示使用手机扫码。"
+                    elif st == "结果未确认":
+                        queue_item["status"] = "结果未确认"
+                        queue_item["detail"] = "验证码已提交，但页面结果尚未确认，请检查对应浏览器标签页。"
+                        queue_item["warnings"] = "程序会继续监测二维码和最终结果，请勿重复提交。"
                     elif st == "识别失败":
-                        queue_item["status"] = "识别失败"
-                        queue_item["detail"] = f"验证码识别错误（已尝试 {max_attempts} 次），请点击「重新识别验证码」重试。"
+                        queue_item["status"] = "验证码识别失败"
+                        queue_item["detail"] = (
+                            f"验证码识别错误（已尝试 {max_attempts} 次），"
+                            "可使用第 2 步下方的“重试异常验证码”。"
+                            f"最后一次：{failure_detail or '网站判定验证码错误'}。"
+                        )
                         queue_item["warnings"] = ""
                     else:
                         queue_item["status"] = "待人工验证"
-                        queue_item["detail"] = "已填写姓名和证书编号，验证码请人工输入"
+                        queue_item["detail"] = (
+                            "验证码自动识别未完成："
+                            f"{failure_detail or '模型未返回可提交结果'}。"
+                            "可在浏览器中人工输入。"
+                        )
                         queue_item["warnings"] = "验证码通过后按页面提示使用手机扫码。"
                     self._update_education_queue_row(iid)
                     if self.education_current_id == iid:
                         self.education_status_var.set(queue_item["detail"])
                         self.education_warning_var.set(queue_item["warnings"])
-                    self._set_captcha_btn_state("normal")
+                    self._refresh_education_queue_summary()
                     self._restore_education_fill_button_if_done()
+                    if st != "打开失败":
+                        threading.Thread(
+                            target=self._watch_education_result_page,
+                            args=(iid, result_page, expected_name),
+                            daemon=True,
+                        ).start()
                 self.run_on_ui(show_success)
-            threading.Thread(target=worker, daemon=True).start()
+            # 错开请求以降低网站风控概率，但不在 Tk 主线程中 sleep。
+            self.root.after(
+                idx * 1500,
+                lambda task=worker: threading.Thread(
+                    target=task,
+                    daemon=True,
+                ).start(),
+            )
+
+    def _watch_education_result_page(self, item_id, page, expected_name):
+        """Keep one queue row synchronized with its currently bound CHSI tab."""
+        from education_certificate import (
+            classify_chsi_terminal_result,
+            classify_chsi_page_state,
+            is_chsi_result_text,
+            is_chsi_qr_confirmation_text,
+            read_chsi_page_snapshot,
+            refresh_chsi_qr_code,
+        )
+
+        detected_result = {"kind": ""}
+        qr_state_reported = {"value": False}
+        current_page_ref = {
+            "value": self.education_tabs.get(item_id, page),
+        }
+        last_snapshot = {"value": {}}
+        last_qr_refresh = {"at": 0.0}
+
+        def page_alive(_current_page):
+            with self._education_browser_lock:
+                return self._is_browser_page_alive(current_page_ref["value"])
+
+        def read_text(_current_page):
+            with self._education_browser_lock:
+                current_page = current_page_ref["value"]
+                snapshot = read_chsi_page_snapshot(current_page)
+                state = classify_chsi_page_state(snapshot)
+                if state not in {"record", "not_found"}:
+                    base_page = getattr(self, "browser_page", None)
+                    try:
+                        open_pages = (
+                            list(base_page.get_tabs() or [])
+                            if self._is_browser_page_alive(base_page)
+                            else []
+                        )
+                    except Exception:
+                        open_pages = []
+                    matches = _EDUCATION_CONTROLLER.assign_open_result_pages(
+                        {
+                            item_id: {
+                                "name": expected_name,
+                                "certificate_number": str(
+                                    self.education_items.get(item_id, {}).get(
+                                        "certificate_number"
+                                    )
+                                    or ""
+                                ),
+                            }
+                        },
+                        (item_id,),
+                        open_pages,
+                        {},
+                        page_alive=self._is_browser_page_alive,
+                        read_text=lambda candidate: str(
+                            read_chsi_page_snapshot(candidate).get("text") or ""
+                        ),
+                        is_result_text=is_chsi_result_text,
+                    )
+                    matched_page = matches.get(item_id)
+                    if matched_page is not None:
+                        current_page_ref["value"] = matched_page
+                        snapshot = read_chsi_page_snapshot(matched_page)
+                last_snapshot["value"] = snapshot
+                return str(snapshot.get("text") or "")
+
+        def is_terminal_result(text, _expected_name):
+            snapshot = dict(last_snapshot["value"] or {})
+            snapshot["text"] = text
+            page_state = classify_chsi_page_state(snapshot)
+            if page_state == "captcha_error":
+                detected_result["kind"] = "captcha_error"
+                return True
+            if page_state == "query_empty":
+                detected_result["kind"] = "query_empty"
+                return True
+            if page_state == "qr_expired":
+                now = time.monotonic()
+                refreshed = False
+                if now - last_qr_refresh["at"] >= 2.0:
+                    last_qr_refresh["at"] = now
+                    try:
+                        with self._education_browser_lock:
+                            refreshed = refresh_chsi_qr_code(
+                                current_page_ref["value"]
+                            )
+                    except Exception:
+                        refreshed = False
+
+                def show_qr_expired():
+                    item = self.education_items.get(item_id)
+                    if not item:
+                        return
+                    item["status"] = (
+                        EDUCATION_WAITING_FOR_SCAN_STATUS
+                        if refreshed
+                        else EDUCATION_QR_EXPIRED_STATUS
+                    )
+                    item["detail"] = (
+                        "二维码已自动刷新，请使用手机扫码并完成确认。"
+                        if refreshed
+                        else "二维码已过期，请在学信网页面点击“刷新”。"
+                    )
+                    item["warnings"] = "等待学信网显示最终查询结果。"
+                    self._update_education_queue_row(item_id)
+                    self._refresh_education_queue_summary()
+
+                self.run_on_ui(show_qr_expired)
+                return False
+            if (
+                not qr_state_reported["value"]
+                and (
+                    page_state == "qr_waiting"
+                    or is_chsi_qr_confirmation_text(text)
+                )
+            ):
+                qr_state_reported["value"] = True
+
+                def show_waiting_for_scan():
+                    item = self.education_items.get(item_id)
+                    if not item or item.get("status") not in {
+                        "待人工验证",
+                        "验证码识别失败",
+                        "结果未确认",
+                        "已提交查询",
+                        EDUCATION_WAITING_FOR_SCAN_STATUS,
+                        EDUCATION_QR_EXPIRED_STATUS,
+                    }:
+                        return
+                    item["status"] = EDUCATION_WAITING_FOR_SCAN_STATUS
+                    item["detail"] = "验证码已通过，请使用手机扫码并完成确认。"
+                    item["warnings"] = "等待学信网显示最终查询结果。"
+                    self._update_education_queue_row(item_id)
+                    if self.education_current_id == item_id:
+                        self.education_status_var.set(item["detail"])
+                        self.education_warning_var.set(item["warnings"])
+                    self._refresh_education_queue_summary()
+
+                self.run_on_ui(show_waiting_for_scan)
+            kind = classify_chsi_terminal_result(text)
+            if kind:
+                detected_result["kind"] = kind
+            return bool(kind)
+
+        ready = _EDUCATION_CONTROLLER.wait_for_result_page(
+            page,
+            expected_name,
+            page_alive=page_alive,
+            read_text=read_text,
+            is_result_text=is_terminal_result,
+            sleep=time.sleep,
+            max_checks=1800,
+            interval_seconds=1.0,
+            max_unavailable_checks=3,
+        )
+        if not ready:
+            try:
+                still_connected = page_alive(page)
+            except Exception:
+                still_connected = False
+            if still_connected:
+                return
+
+            def show_disconnected():
+                item = self.education_items.get(item_id)
+                if not item or item.get("status") not in {
+                    "已提交查询",
+                    "待人工验证",
+                    "验证码识别失败",
+                    "结果未确认",
+                    EDUCATION_WAITING_FOR_SCAN_STATUS,
+                    EDUCATION_QR_EXPIRED_STATUS,
+                    EDUCATION_FORM_EMPTY_STATUS,
+                }:
+                    return
+                self.education_tabs.pop(item_id, None)
+                item["status"] = "打开失败"
+                item["detail"] = (
+                    "学信网页面已关闭或连接中断，可重新执行第 2 步。"
+                )
+                item["warnings"] = ""
+                self._update_education_queue_row(item_id)
+                if self.education_current_id == item_id:
+                    self.education_status_var.set(item["detail"])
+                    self.education_warning_var.set("")
+                self._refresh_education_queue_summary()
+
+            self.run_on_ui(show_disconnected)
+            return
+
+        def show_ready():
+            item = self.education_items.get(item_id)
+            if not item or item.get("status") not in {
+                "已提交查询",
+                "待人工验证",
+                "验证码识别失败",
+                "结果未确认",
+                EDUCATION_WAITING_FOR_SCAN_STATUS,
+                EDUCATION_QR_EXPIRED_STATUS,
+                EDUCATION_FORM_EMPTY_STATUS,
+                EDUCATION_RESULT_READY_STATUS,
+            }:
+                return
+            self.education_tabs[item_id] = current_page_ref["value"]
+            if detected_result["kind"] == "captcha_error":
+                item["status"] = "验证码识别失败"
+                item["detail"] = (
+                    "学信网页面明确提示图片验证码输入有误，可立即重试。"
+                )
+                item["warnings"] = ""
+            elif detected_result["kind"] == "query_empty":
+                item["status"] = EDUCATION_FORM_EMPTY_STATUS
+                item["detail"] = (
+                    "学信网查询页仍在，但姓名、证书编号和验证码均为空，"
+                    "请重新执行第 2 步。"
+                )
+                item["warnings"] = "浏览器连接正常，不属于打开失败。"
+            elif detected_result["kind"] == "not_found":
+                item["status"] = EDUCATION_RESULT_NOT_FOUND_STATUS
+                item["detail"] = (
+                    "学信网未查询到该人员的学历记录，请核对姓名和证书编号。"
+                )
+                item["warnings"] = (
+                    "请核对姓名、证书编号是否与证书原件一致；"
+                    "如有误，修正后重新执行第 2 步。"
+                )
+            else:
+                item["status"] = EDUCATION_RESULT_READY_STATUS
+                item["detail"] = "手机确认完成，已检测到学信网最终核验结果。"
+                item["warnings"] = ""
+            self._update_education_queue_row(item_id)
+            if self.education_current_id == item_id:
+                self.education_status_var.set(item["detail"])
+                self.education_warning_var.set(item["warnings"])
+            ready_count = len(
+                _EDUCATION_CONTROLLER.result_ready_item_ids(
+                    self.education_items
+                )
+            )
+            not_found_count = sum(
+                item.get("status") == EDUCATION_RESULT_NOT_FOUND_STATUS
+                for item in self.education_items.values()
+            )
+            summary_parts = []
+            if not_found_count:
+                summary_parts.append(
+                    f"未查询到记录 {not_found_count} 个，请核对人员姓名和证书编号"
+                )
+            if ready_count:
+                summary_parts.append(
+                    f"正常核验结果 {ready_count} 个，可执行第 3 步批量截图"
+                )
+            if summary_parts:
+                self.education_screenshot_summary_var.set(
+                    "；".join(summary_parts) + "。"
+                )
+            self._refresh_education_queue_summary()
+
+        self.run_on_ui(show_ready)
 
     def _restore_education_fill_button_if_done(self):
         """全部学信网任务结束后恢复批量核验按钮。"""
-        active_statuses = {"打开中", "识别验证码中..."}
         if any(
-            item.get("status") in active_statuses
+            str(item.get("status") or "") in {"打开中", "识别验证码中..."}
+            or str(item.get("status") or "").startswith("正在")
             for item in self.education_items.values()
         ):
             return
-        self.education_fill_btn.configure(state="normal")
+        self._refresh_education_queue_summary()
 
     def _log_education_error(
         self,
@@ -3525,9 +4841,7 @@ class BossFilterGUI:
         error: Exception,
         item_id: str | None = None,
     ) -> None:
-        """记录独立核验的浏览器错误，便于定位无控制台 EXE 的失败原因。"""
-        if not self.standalone_education:
-            return
+        """记录学历核验的浏览器错误，便于定位无控制台 EXE 的失败原因。"""
         try:
             log_dir = (
                 Path(os.environ.get("LOCALAPPDATA") or Path.home())
@@ -3544,16 +4858,11 @@ class BossFilterGUI:
         except OSError:
             pass
 
-    def _set_captcha_btn_state(self, state: str):
-        """安全设置"重新识别验证码"按钮状态。"""
-        btn = getattr(self, "education_captcha_btn", None)
-        if btn is not None:
-            btn.configure(state=state)
-
     def _fill_and_solve_captcha(
         self, page, name: str, certificate_number: str,
+        item_id: str | None = None,
         on_progress: "Callable[[str, str], None] | None" = None,
-        max_attempts: int = 3,
+        max_attempts: int = EDUCATION_CAPTCHA_MAX_ATTEMPTS,
     ) -> tuple[bool, str]:
         """Fill the CHSI form and delegate bounded captcha retries."""
         from education_certificate import fill_chsi_query_page, navigate_to_chsi
@@ -3564,20 +4873,26 @@ class BossFilterGUI:
             certificate_number,
             navigate=navigate_to_chsi,
             fill_query=fill_chsi_query_page,
-            attempt=self._attempt_captcha_solve,
+            attempt=lambda current_page, **kwargs: self._attempt_captcha_solve(
+                current_page,
+                item_id=item_id,
+                **kwargs,
+            ),
             browser_lock=self._education_browser_lock,
             on_progress=on_progress,
             max_attempts=max_attempts,
             sleep=time.sleep,
+            page_alive=self._is_browser_page_alive,
         )
         return result.successful, result.status
     def _attempt_captcha_solve(
-        self, page, *, on_progress: "Callable[[str, str], None] | None" = None,
+        self, page, *, item_id: str | None = None,
+        on_progress: "Callable[[str, str], None] | None" = None,
     ) -> tuple[bool, str]:
         """Capture, recognize, and submit one captcha through the controller."""
         from education_certificate import (
             CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE,
-            capture_captcha_image,
+            capture_captcha_variants,
             check_query_result,
             click_chsi_query_button,
             fill_captcha_answer,
@@ -3586,37 +4901,95 @@ class BossFilterGUI:
         )
 
         config = self._get_education_api_config()
+        submitted_page = {"value": page}
+
+        def click_and_bind_result_page(current_page):
+            """Bind the tab opened by this exact submit while the shared lock is held."""
+            base_page = getattr(self, "browser_page", None)
+            tab_owner = (
+                base_page
+                if self._is_browser_page_alive(base_page)
+                else current_page
+            )
+            try:
+                before_pages = list(tab_owner.get_tabs() or [])
+            except Exception:
+                before_pages = []
+            before_ids = {
+                _EDUCATION_CONTROLLER.page_identity(candidate)
+                for candidate in before_pages
+            }
+            if not click_chsi_query_button(current_page):
+                return False
+
+            deadline = time.monotonic() + 1.2
+            while True:
+                try:
+                    current_tabs = list(tab_owner.get_tabs() or [])
+                except Exception:
+                    current_tabs = []
+                new_tabs = [
+                    candidate
+                    for candidate in current_tabs
+                    if (
+                        _EDUCATION_CONTROLLER.page_identity(candidate)
+                        not in before_ids
+                        and self._is_browser_page_alive(candidate)
+                    )
+                ]
+                if new_tabs:
+                    submitted_page["value"] = new_tabs[0]
+                    if item_id:
+                        self.education_tabs[item_id] = new_tabs[0]
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+            return True
+
+        def check_submitted_page(_current_page):
+            return check_query_result(submitted_page["value"])
+
         result = _EDUCATION_CONTROLLER.attempt_captcha(
             page,
             config=config,
             api_key=self._get_education_api_key(config),
             browser_lock=self._education_browser_lock,
             min_confidence=CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE,
-            capture_image=capture_captcha_image,
+            capture_image=capture_captcha_variants,
             recognize=recognize_captcha,
             fill_answer=fill_captcha_answer,
-            click_query=click_chsi_query_button,
-            check_result=check_query_result,
+            click_query=click_and_bind_result_page,
+            check_result=check_submitted_page,
             resolve_vision_config=resolve_vision_api_config,
             on_progress=on_progress,
             sleep=time.sleep,
         )
         return result.successful, result.status
     def _solve_captcha(self):
-        """手动点击"重新识别验证码"按钮的入口，支持多选批量重试失败项。"""
-        self._set_captcha_btn_state("disabled")
-        item_ids = self._selected_education_item_ids()
-
-        # 筛选失败的项
-        failed_statuses = {"待人工验证", "识别失败", "打开失败"}
-        failed_items = [
-            item_id for item_id in item_ids
-            if self.education_items.get(item_id, {}).get("status") in failed_statuses
-        ]
+        """Retry every captcha-specific failure in the education queue."""
+        failed_items = list(
+            _EDUCATION_CONTROLLER.captcha_retry_item_ids(
+                self.education_items
+            )
+        )
 
         if not failed_items:
-            messagebox.showinfo("提示", "所选候选人都已成功提交，无需重试。", parent=self.root)
-            self._set_captcha_btn_state("normal")
+            messagebox.showinfo(
+                "没有验证码失败项",
+                "当前队列没有待人工验证或验证码识别失败的记录。",
+                parent=self.root,
+            )
+            self._refresh_education_queue_summary()
+            return
+        action_states = _EDUCATION_CONTROLLER.action_states(
+            self.education_items,
+            recognition_running=bool(self.education_recognition_running),
+            screenshot_running=bool(
+                getattr(self, "education_screenshot_running", False)
+            ),
+        )
+        if not action_states.retry_captcha:
             return
 
         # 更新所有失败项的状态
@@ -3627,6 +5000,7 @@ class BossFilterGUI:
                 item["detail"] = "正在刷新验证码并重新识别..."
                 item["warnings"] = ""
                 self._update_education_queue_row(item_id)
+        self._refresh_education_queue_summary()
 
         first_item = self.education_items.get(failed_items[0])
         if first_item:
@@ -3637,9 +5011,24 @@ class BossFilterGUI:
         for item_id in failed_items:
             def worker(iid=item_id):
                 try:
-                    page = self._get_education_tab(iid)
                     item = self.education_items.get(iid) or {}
+                    page = self.education_tabs.get(iid)
+                    with self._education_browser_lock:
+                        page_available = (
+                            page is not None
+                            and self._is_browser_page_alive(page)
+                        )
+                    if not page_available:
+                        raise RuntimeError(
+                            "对应学信网页面已关闭，请重新执行第 2 步"
+                        )
+                    expected_name = str(item.get("name") or "")
+                    last_captcha_detail = {"value": ""}
+
                     def _retry_progress(status_text: str, detail: str, iid=iid):
+                        if detail:
+                            last_captcha_detail["value"] = detail
+
                         def _update(iid=iid, s=status_text, d=detail):
                             item = self.education_items.get(iid)
                             if item:
@@ -3651,23 +5040,58 @@ class BossFilterGUI:
                         page,
                         str(item.get("name") or ""),
                         str(item.get("certificate_number") or ""),
+                        item_id=iid,
                         on_progress=_retry_progress,
-                        max_attempts=3,
+                        max_attempts=EDUCATION_CAPTCHA_MAX_ATTEMPTS,
                     )
-                    def show_result(iid=iid, ok=success, st=status):
+                    result_page = self.education_tabs.get(iid, page)
+                    def show_result(
+                        iid=iid,
+                        ok=success,
+                        st=status,
+                        result_page=result_page,
+                        name=expected_name,
+                        failure_detail=last_captcha_detail["value"],
+                    ):
                         item = self.education_items.get(iid)
                         if item:
-                            if ok:
+                            if (
+                                item.get("status") == "打开失败"
+                                and st != "打开失败"
+                            ):
+                                self._check_all_captcha_tasks_done()
+                                return
+                            if st == "打开失败":
+                                self.education_tabs.pop(iid, None)
+                                item["status"] = "打开失败"
+                                item["detail"] = (
+                                    "学信网页面已关闭或连接中断，"
+                                    "可重新执行第 2 步。"
+                                )
+                                item["warnings"] = ""
+                            elif ok:
                                 item["status"] = "已提交查询"
                                 item["detail"] = "验证码已识别并自动提交查询，请等待页面显示二维码。"
                                 item["warnings"] = "验证码通过后按页面提示使用手机扫码。"
+                            elif st == "结果未确认":
+                                item["status"] = "结果未确认"
+                                item["detail"] = "验证码已提交，但页面结果尚未确认，请检查对应浏览器标签页。"
+                                item["warnings"] = "程序会继续监测二维码和最终结果，请勿重复提交。"
                             elif st == "识别失败":
-                                item["status"] = "识别失败"
-                                item["detail"] = "验证码连续 3 次识别错误，请再次点击「重新识别验证码」重试。"
+                                item["status"] = "验证码识别失败"
+                                item["detail"] = (
+                                    f"验证码连续 {EDUCATION_CAPTCHA_MAX_ATTEMPTS} 次识别错误，"
+                                    "可再次使用“重试异常验证码”。"
+                                    f"最后一次：{failure_detail or '网站判定验证码错误'}。"
+                                )
                                 item["warnings"] = ""
                             else:
                                 item["status"] = "待人工验证"
-                                item["detail"] = "验证码连续 3 次自动识别失败，请人工输入。"
+                                item["detail"] = (
+                                    "验证码自动识别未完成："
+                                    f"{failure_detail or '模型未返回可提交结果'}。"
+                                    "请在浏览器中人工输入。"
+                                )
                                 item["warnings"] = ""
                             self._update_education_queue_row(iid)
                             if self.education_current_id == iid:
@@ -3675,15 +5099,21 @@ class BossFilterGUI:
                                 self.education_warning_var.set(item["warnings"])
                         # 所有任务完成后才恢复按钮状态
                         self._check_all_captcha_tasks_done()
+                        if st != "打开失败":
+                            threading.Thread(
+                                target=self._watch_education_result_page,
+                                args=(iid, result_page, name),
+                                daemon=True,
+                            ).start()
                     self.run_on_ui(show_result)
                 except Exception as error:
                     error_text = str(error)
-                    self._log_education_error("重新识别验证码", error, iid)
+                    self._log_education_error("重试验证码", error, iid)
                     def show_error(iid=iid, err=error_text):
                         item = self.education_items.get(iid)
                         if item:
-                            item["status"] = "识别失败"
-                            item["detail"] = "验证码识别出错"
+                            item["status"] = "打开失败"
+                            item["detail"] = "对应学信网页面不可用，请重新执行第 2 步"
                             item["warnings"] = err
                             self._update_education_queue_row(iid)
                             if self.education_current_id == iid:
@@ -3696,9 +5126,10 @@ class BossFilterGUI:
     def _check_all_captcha_tasks_done(self):
         """检查是否所有验证码识别任务都已完成，完成则恢复按钮状态。"""
         for item in self.education_items.values():
-            if item.get("status") == "识别验证码中...":
+            status = str(item.get("status") or "")
+            if status in {"打开中", "识别验证码中..."} or status.startswith("正在"):
                 return  # 还有任务在进行中
-        self._set_captcha_btn_state("normal")
+        self._refresh_education_queue_summary()
 
     @staticmethod
     def _is_browser_page_alive(page) -> bool:
@@ -3756,7 +5187,30 @@ class BossFilterGUI:
         page = ChromiumPage(options)
         if not self._is_browser_page_alive(page):
             raise RuntimeError("Chrome 已启动，但页面连接失败")
+        self._maximize_education_browser_page(page)
         return page
+
+    @staticmethod
+    def _maximize_education_browser_page(page) -> bool:
+        """Best-effort maximize before CHSI tabs navigate and lay themselves out."""
+        try:
+            page.set.window.max()
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_blank_education_browser_url(url: object) -> bool:
+        """Recognize the blank/new-tab URLs Chromium may expose at startup."""
+        normalized = str(url or "").strip().lower()
+        return (
+            not normalized
+            or normalized.startswith("about:blank")
+            or normalized.startswith("data:,")
+            or normalized.startswith("chrome://newtab")
+            or normalized.startswith("chrome://new-tab-page")
+            or normalized.startswith("chrome-search://local-ntp")
+        )
 
     def _get_education_tab(self, item_id: str | None):
         """获取候选人专属 tab；item_id 为 None 时仅确保 base 浏览器连接就绪。"""
@@ -3764,12 +5218,14 @@ class BossFilterGUI:
         if item_id is None:
             base_page = self.browser_page
             if self._is_browser_page_alive(base_page):
+                self._maximize_education_browser_page(base_page)
                 return None
             self.browser_page = None
             self.browser_connected = False
             if self._try_reconnect_browser():
                 candidate = self.browser_page
                 if self._is_browser_page_alive(candidate):
+                    self._maximize_education_browser_page(candidate)
                     return None
                 self.browser_page = None
                 self.browser_connected = False
@@ -3812,6 +5268,16 @@ class BossFilterGUI:
                 base_page = page
 
         # 在 base 上创建新 tab
+        try:
+            base_url = str(getattr(base_page, "url", "") or "").strip().lower()
+        except Exception:
+            base_url = ""
+        if (
+            self._is_blank_education_browser_url(base_url)
+            and base_page not in self.education_tabs.values()
+        ):
+            self.education_tabs[item_id] = base_page
+            return base_page
         try:
             tab = base_page.new_tab()
             if not self._is_browser_page_alive(tab):

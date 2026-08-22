@@ -143,7 +143,7 @@ boss-resume-filter/
 - `*_controller.py` 只编排指定领域的业务状态和外部依赖，接收普通数据、协议对象与显式依赖，返回 dataclass 结果或事件；不得导入 `tkinter` 或 `gui_main`，不得持有 Tk 控件。工作线程只能发出普通事件，统一由 `gui_main.py:run_on_ui()` 更新 Tk。
 - `result_controller.py` 负责候选人结果集合的读取快照、展示范围、筛选、排序、统计和结果视图状态；`candidate_controller.py` 负责简历导入/复评、人工复核、反馈、跟进、屏蔽和删除动作。两者不得直接渲染控件，候选人写入必须通过显式注入的原子持久化依赖。
 - `settings_controller.py` 负责编排模型配置、模型目录和连通性结果，API Key 必须由调用方逐次显式传入且不得缓存；`data_maintenance_controller.py` 负责编排备份、恢复和候选人清理，文件动作必须通过显式依赖执行。
-- `education_controller.py` 负责证书识别、学信网页面填写和验证码流程状态，不得更新 Tk；`browser_controller.py` 负责 Chrome 启停/重连、页面状态去抖和进程生命周期，并复用 `browser_connection.py`，不得决定扫描或联系业务动作。
+- `education_controller.py` 负责证书识别、学信网页面填写、验证码流程状态，以及查询结果截图的待处理/跳过/成功/失败批量编排；截图文件命名、结果页检测、浏览器内容捕获和图片规格化由 `education_certificate.py` 提供显式依赖，控制器只接收普通数据与回调并返回结构化结果，不得更新 Tk；`browser_controller.py` 负责 Chrome 启停/重连、页面状态去抖和进程生命周期，并复用 `browser_connection.py`，不得决定扫描或联系业务动作。
 - `contact_controller.py` 负责联系清单准备、发送前复核、暂停恢复、失败/待核实状态机和发送事件；`run_controller.py` 负责扫描会话、停止信号、进度事件、终态摘要和异常保存。两者必须复用既有联系门禁、`StopRequested` 和持久化语义，不得从工作线程直接调用 Tk。
 - `*_presenter.py` 只接收普通 Python 数据并返回文本或结构化展示结果；不得导入 `tkinter`、`gui_main`、候选人存储或网络模块，不得读写文件。
 - `candidate_cleanup.py` 只在调用方提供的候选人列表上执行按岗位/全部范围的清理与保留策略并返回统计；不得读写文件、导入 GUI、存储或网络模块。
@@ -169,7 +169,7 @@ boss-resume-filter/
 - `gui_feedback_support.py` 只负责 Tooltip 窗口的创建/定位/销毁、不同 Tooltip 槽位的生命周期，以及页面顶部 inline 横幅的创建/自动关闭；允许导入 Tk、主题和窗口定位模块，但不得判断候选人字段、解释提示文本、读取业务数据、访问存储/浏览器/网络或导入 `gui_main`。页面和工作台决定“显示什么、何时显示”并调用 `host.feedback_support`，`BossFilterGUI` 不保留同名转发方法。
 - `gui_widget_support.py` 只负责页面标题、通用卡片、自绘开关、通用空态和状态图标等无业务语义的 Tk 控件原语；允许读取宿主显式提供的主题、字体、缩放、图标缓存和 UI 尺寸配置，但不得决定页面布局流程、候选人/岗位/联系状态、读取业务数据、访问存储/浏览器/网络或导入 `gui_main`。页面直接调用 `host.widget_support`；结果页空态显隐、表格列宽和业务回调仍留在对应页面或宿主，`BossFilterGUI` 不保留同名控件工厂转发方法。
 - `gui_layout_support.py` 只负责窗口高屏/最大化判断、首页工作区和工具带的响应式布局、页面局部高度、结果统计紧凑态，以及结果/统计/模型/学历表格的响应式列宽；允许导入 Tk、`ui_layout` 并读取宿主显式提供的控件引用、缩放和 UI 尺寸配置，但不得读取业务数据、改变筛选口径、访问存储/浏览器/网络或导入 `gui_main`。`gui_app_shell.py` 和页面模块直接调用 `host.layout_support`，`BossFilterGUI` 不保留同名布局转发方法。
-- `gui_education_page.py` 只负责学历核验页的 Tk 控件、队列列表、页面局部状态和事件绑定；证书读取与识别、模型调用、学信网填写、验证码和浏览器操作必须通过显式 Host 回调留在 `gui_main.py`，不得导入存储、AI、浏览器、网络或 `gui_main`。
+- `gui_education_page.py` 只负责学历核验页的 Tk 控件、队列列表、页面局部状态和事件绑定；证书读取与识别、模型调用、学信网填写、验证码、结果截图、保存目录读写和浏览器操作必须通过显式 Host 回调留在 `gui_main.py`，不得导入存储、AI、浏览器、网络或 `gui_main`。
 - `gui_home_page.py` 只负责首页标题、岗位范围控件、任务工作区、运行准备、最近扫描、候选人摘要和常用工作入口的 Tk 构建、局部视觉状态与事件绑定；岗位加载、任务与统计口径、健康检测和候选人明细必须通过显式 Host 回调留在 `gui_main.py`，页面导航统一调用 `host.app_shell`；不得读取存储或导入网络、浏览器、`gui_main`。首页仍是启动时唯一立即创建的业务页，不得因拆分引入隐藏页预构建。
 - `resume_parser.py` 只把本地 PDF、DOCX、TXT、MD、RTF 或 HTML 简历转为文本并抛出可预期的分类异常；旧版 .doc 先嗅探实际格式：HTML/MHT 伪格式（招聘网站导出常见）不启动 Word，直接按 HTML 解析（MHT 经 MIME 提取 HTML 部分），真 OLE2 二进制才委托 `legacy_doc_converter` 在本机 Word 提取全文为临时 TXT 后解析并清理临时目录，TXT 产物需把 Word 换行符与表格分隔符归一化；不得导入 `tkinter`、`gui_main`、候选人存储或网络模块，不得修改候选人数据或受管简历引用。
 - `legacy_doc_converter.py` 只负责旧版 .doc 的本机全文提取：经系统 PowerShell 驱动本机 Word COM，隐身、禁用宏，90 秒超时（含大量嵌入对象的老 .doc 实测打开可达 50 秒）；统一经受保护视图（Protected View）打开——与直接打开提取结果等价，且不会被信任中心"文件阻止"策略拒绝——随后遍历全部故事层（StoryRanges，含文本框）提取全文写成临时 .txt；失败抛出 `LegacyDocConversionError`（含未安装 Word、Word 启动失败、信任中心策略阻止、超时、空产物分类）；成功时返回临时 .txt 路径并由调用方清理父目录，自身失败路径必须清理临时目录；允许导入 `subprocess`/`subprocess_utils`，不得导入 `tkinter`、`gui_main`、存储或网络模块，不得访问网络。
