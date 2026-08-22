@@ -730,7 +730,7 @@ class LayoutSupport:
         self._remember_state("model_columns", state)
 
     def update_education_queue_columns(self) -> None:
-        """Keep the education-queue status column visible on 1080p screens."""
+        """Keep education workflow and screenshot statuses visible on narrow screens."""
         tree = getattr(self.host, "education_queue_tree", None)
         if tree is None:
             return
@@ -741,6 +741,7 @@ class LayoutSupport:
             "school": 175,
             "major": 210,
             "status": 140,
+            "screenshot": 100,
         }
         min_widths = {
             "file": 150,
@@ -749,6 +750,7 @@ class LayoutSupport:
             "school": 130,
             "major": 150,
             "status": 120,
+            "screenshot": 90,
         }
         widths = dict(base_widths)
         try:
@@ -758,14 +760,18 @@ class LayoutSupport:
 
         overflow = sum(widths.values()) - available_width
         if available_width > 0 and overflow > 0:
-            for column in ("major", "file", "school", "name", "number", "status"):
+            for column in (
+                "major", "file", "school", "name", "number", "status", "screenshot"
+            ):
                 reducible = max(0, widths[column] - min_widths[column])
                 reduction = min(reducible, overflow)
                 widths[column] -= reduction
                 overflow -= reduction
                 if overflow <= 0:
                     break
-        columns = ("file", "name", "number", "school", "major", "status")
+        columns = (
+            "file", "name", "number", "school", "major", "status", "screenshot"
+        )
         state = (
             id(tree),
             tuple((column, widths[column]) for column in columns),
