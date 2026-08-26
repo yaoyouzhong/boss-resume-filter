@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="BOSS 简历筛选器：本地优先的候选人获取、规则筛选、人工复核、联系跟进与招聘复盘工作台。">
+  <meta name="theme-color" content="#081522">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="BOSS 简历筛选器｜有证据的招聘处理流程">
+  <meta property="og:description" content="从候选人获取和简历导入，到规则筛选、人工复核、联系跟进与复盘，在一个本地桌面工作台中完成。">
+  <meta property="og:image" content="https://raw.githubusercontent.com/yaoyouzhong/boss-resume-filter/master/.github/assets/product-demo-poster.png">
+  <link rel="canonical" href="https://yaoyouzhong.github.io/boss-resume-filter/">
+  <link rel="stylesheet" href="site.css">
+  <title>BOSS 简历筛选器｜本地优先的招聘工作台</title>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="site-header">
+    <div class="nav-wrap">
+      <a class="brand" href="#top" aria-label="BOSS 简历筛选器首页">
+        <span class="brand-mark" aria-hidden="true">B</span>
+        <span>BOSS 简历筛选器</span>
+      </a>
+      <nav class="primary-nav" aria-label="页面导航">
+        <a href="#workflow">工作流</a>
+        <a href="#capabilities">能力</a>
+        <a href="#privacy">数据边界</a>
+      </nav>
+      <a class="nav-download" href="https://github.com/yaoyouzhong/boss-resume-filter/releases/latest">下载最新版</a>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <div class="hero-copy">
+        <p class="eyebrow">本地桌面招聘工作台 · Windows / macOS</p>
+        <h1>把候选人处理，<br>变成一条有证据的流程。</h1>
+        <p class="hero-lead">
+          从 BOSS 推荐候选人和外部简历，到规则筛选、人工复核、联系跟进与岗位复盘；
+          每个结论保留分数、命中证据和处理状态，信息不足时回到人工判断。
+        </p>
+        <div class="hero-actions" aria-label="主要操作">
+          <a class="button button-primary" href="https://github.com/yaoyouzhong/boss-resume-filter/releases/latest/download/BOSS_ResumeFilter.exe">下载 Windows 版</a>
+          <a class="button button-secondary" href="#demo">查看完整演示</a>
+        </div>
+        <ul class="trust-line" aria-label="产品边界">
+          <li>默认本机处理</li>
+          <li>AI 按需开启</li>
+          <li>联系前人工确认</li>
+        </ul>
+      </div>
+
+      <aside class="evidence-ledger" aria-label="合成数据工作台示意">
+        <div class="ledger-head">
+          <div>
+            <span class="ledger-kicker">今日队列</span>
+            <strong>先处理最需要判断的人</strong>
+          </div>
+          <span class="demo-label">合成数据示意</span>
+        </div>
+        <div class="queue-list">
+          <div class="queue-item queue-alert">
+            <span class="queue-index">01</span>
+            <div><strong>待核实</strong><small>发送结果不明确</small></div>
+            <b>2</b>
+          </div>
+          <div class="queue-item queue-review">
+            <span class="queue-index">02</span>
+            <div><strong>待复核</strong><small>证据不足或存在冲突</small></div>
+            <b>3</b>
+          </div>
+          <div class="queue-item queue-ready">
+            <span class="queue-index">03</span>
+            <div><strong>待联系</strong><small>已通过规则与人工检查</small></div>
+            <b>5</b>
+          </div>
+        </div>
+        <div class="readiness">
+          <span>运行准备</span>
+          <div><i class="signal signal-ok"></i>API Key <strong>已配置</strong></div>
+          <div><i class="signal signal-warn"></i>Chrome <strong>待连接</strong></div>
+          <div><i class="signal signal-ok"></i>本地数据 <strong>10 条</strong></div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="proof-strip" aria-label="产品要点">
+      <div><strong>一人一项待办</strong><span>避免同一候选人在多个队列重复出现</span></div>
+      <div><strong>筛选证据可追溯</strong><span>分数、关键词、硬条件和人工反馈分开保留</span></div>
+      <div><strong>中断后可恢复</strong><span>扫描、联系和跟进状态持续保存</span></div>
+    </section>
+
+    <section class="section demo-section" id="demo">
+      <div class="section-heading">
+        <p class="eyebrow">完整演示</p>
+        <h2>38 秒，走完一条真实工作链路</h2>
+        <p>岗位配置、候选人获取、可解释筛选、人工复核和联系跟进。演示只使用合成数据。</p>
+      </div>
+      <div class="demo-frame">
+        <img
+          class="demo-motion"
+          src="https://raw.githubusercontent.com/yaoyouzhong/boss-resume-filter/master/.github/assets/product-demo-preview.gif"
+          alt="BOSS 简历筛选器从岗位配置到联系跟进的 38 秒合成数据演示"
+          width="960"
+          height="540"
+        >
+        <img
+          class="demo-static"
+          src="https://raw.githubusercontent.com/yaoyouzhong/boss-resume-filter/master/.github/assets/product-demo-poster.png"
+          alt="BOSS 简历筛选器产品演示封面"
+          width="1600"
+          height="900"
+        >
+      </div>
+      <p class="media-note">
+        系统启用“减少动态效果”时显示静态封面。
+        <a href="https://github.com/yaoyouzhong/boss-resume-filter/raw/refs/heads/master/.github/assets/product-demo.mp4">下载高清 MP4</a>
+      </p>
+    </section>
+
+    <section class="section workflow-section" id="workflow">
+      <div class="section-heading compact-heading">
+        <p class="eyebrow">处理顺序</p>
+        <h2>判断发生在哪里，证据就留在哪里</h2>
+      </div>
+      <ol class="workflow-track">
+        <li>
+          <span class="step-number">01</span>
+          <h3>配置岗位</h3>
+          <p>解析招聘需求，核对硬条件、技能权重和配置冲突。</p>
+        </li>
+        <li>
+          <span class="step-number">02</span>
+          <h3>获取候选人</h3>
+          <p>读取 BOSS 推荐候选人，或导入猎头、内推等外部简历。</p>
+        </li>
+        <li>
+          <span class="step-number">03</span>
+          <h3>筛选评估</h3>
+          <p>先检查硬条件，再计算技能分；AI 只作为可选辅助证据。</p>
+        </li>
+        <li>
+          <span class="step-number">04</span>
+          <h3>人工复核</h3>
+          <p>集中处理临界分数、信息缺失和画像冲突。</p>
+        </li>
+        <li>
+          <span class="step-number">05</span>
+          <h3>联系复盘</h3>
+          <p>发送前确认，维护回复与跟进，并按岗位复盘误推误杀。</p>
+        </li>
+      </ol>
+    </section>
+
+    <section class="section capabilities-section" id="capabilities">
+      <div class="section-heading compact-heading">
+        <p class="eyebrow">核心能力</p>
+        <h2>不是一个评分按钮，而是一套处理工作台</h2>
+      </div>
+      <div class="capability-ledger">
+        <article>
+          <span class="capability-code">A / INPUT</span>
+          <h3>候选人获取与简历导入</h3>
+          <p>自动滚动获取 BOSS 推荐候选人；批量导入 PDF、DOCX、旧版 DOC、TXT、MD、RTF 和 HTML 简历。</p>
+        </article>
+        <article>
+          <span class="capability-code">B / DECISION</span>
+          <h3>规则、AI 与人工复核分层</h3>
+          <p>硬条件先行，技能评分保留拆解；AI 不覆盖明确硬条件，证据不足时进入人工复核。</p>
+        </article>
+        <article>
+          <span class="capability-code">C / ACTION</span>
+          <h3>联系、跟进与岗位复盘</h3>
+          <p>联系清单发送前确认，结果不明确时暂停；维护回复、约面、下次跟进和岗位反馈样本。</p>
+        </article>
+      </div>
+
+      <figure class="product-screen">
+        <img src="assets/user-guide/01-home.png" alt="招聘工作台首页：今日待办、运行准备和候选人摘要" width="2063" height="1190" loading="lazy">
+        <figcaption>
+          <strong>招聘工作台</strong>
+          <span>待办优先级、运行准备、最近扫描和候选人摘要集中在首页。</span>
+        </figcaption>
+      </figure>
+      <p class="center-link"><a href="https://github.com/yaoyouzhong/boss-resume-filter/blob/master/GUI%20使用说明.md">查看完整图文使用手册</a></p>
+    </section>
+
+    <section class="section privacy-section" id="privacy">
+      <div class="privacy-copy">
+        <p class="eyebrow">数据边界</p>
+        <h2>默认在本机完成，外部 AI 不是必经路径</h2>
+        <p>
+          简历解析、规则筛选、候选人状态和备份默认保存在本机。启用 AI 能力时，界面显示模型和发送范围；API Key 保存在系统安全凭据中。
+        </p>
+        <ul>
+          <li>不会自动发送整库候选人数据、备份或 Chrome 登录状态。</li>
+          <li>AI 只补充证据，不替代明确的硬条件与人工决定。</li>
+          <li>备份 ZIP 当前不加密，应保存到受控目录。</li>
+        </ul>
+        <a href="https://github.com/yaoyouzhong/boss-resume-filter/blob/master/SECURITY.md">阅读安全策略</a>
+      </div>
+      <img
+        class="privacy-diagram"
+        src="https://raw.githubusercontent.com/yaoyouzhong/boss-resume-filter/master/diagram/local-first-data-flow/local-first-data-flow%402x.png"
+        alt="BOSS 简历筛选器本地优先数据流"
+        width="2880"
+        height="1520"
+        loading="lazy"
+      >
+    </section>
+
+    <section class="download-section" id="download">
+      <div>
+        <p class="eyebrow">开始使用</p>
+        <h2>先下载，再按图文手册完成第一次筛选。</h2>
+        <p>普通用户无需安装 Python。首次使用需要 Chrome，并保持 BOSS 账号已登录。</p>
+      </div>
+      <div class="download-actions">
+        <a class="button button-light" href="https://github.com/yaoyouzhong/boss-resume-filter/releases/latest/download/BOSS_ResumeFilter.exe">Windows 安装包</a>
+        <a class="button button-outline-light" href="https://github.com/yaoyouzhong/boss-resume-filter/releases/latest/download/BOSS_ResumeFilter.dmg">macOS 安装包</a>
+        <a class="text-link-light" href="https://gitee.com/yaoyouzhong/boss-resume-filter/releases">国内镜像下载</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+      <span>BOSS 简历筛选器</span>
+    <nav aria-label="页脚导航">
+      <a href="https://github.com/yaoyouzhong/boss-resume-filter">GitHub 仓库</a>
+      <a href="https://github.com/yaoyouzhong/boss-resume-filter/blob/master/DISCLAIMER.md">使用声明</a>
+      <a href="https://github.com/yaoyouzhong/boss-resume-filter/blob/master/CHANGELOG.md">更新记录</a>
+    </nav>
+  </footer>
+</body>
+</html>
