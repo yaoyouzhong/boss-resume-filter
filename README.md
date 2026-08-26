@@ -1,3 +1,5 @@
+> 🌐 **[进入产品主页：38 秒演示、完整功能说明和最新版下载](https://yaoyouzhong.github.io/boss-resume-filter/)**
+
 <h1 align="center">BOSS 简历筛选器</h1>
 
 <p align="center">
