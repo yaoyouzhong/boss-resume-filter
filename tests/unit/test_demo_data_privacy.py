@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import runpy
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -14,6 +15,8 @@ DEMO_PATHS = (
     ASSET_DIR / "demo-candidates.json",
     ASSET_DIR / "demo-candidates-menu.json",
 )
+README_DEMO_GENERATOR = ROOT / "scripts" / "generate_readme_demo.py"
+USER_GUIDE_DIR = ROOT / "docs" / "assets" / "user-guide"
 
 
 def _load_generator():
@@ -63,3 +66,31 @@ def test_public_demo_candidates_expose_no_direct_identifiers_or_real_data_path()
         assert all(item["demo_data_origin"] == "fully_synthetic" for item in records)
         assert all(str(item["geek_id"]).startswith("DEMO-") for item in records)
         assert all("演示岗位" in str(item["job_name"]) for item in records)
+
+
+def test_readme_video_uses_only_allowlisted_synthetic_screenshots():
+    namespace = runpy.run_path(
+        str(README_DEMO_GENERATOR),
+        run_name="readme_demo_generator",
+    )
+    screenshot_names = {
+        scene.screenshot
+        for scene in namespace["SCENES"]
+        if scene.screenshot is not None
+    }
+
+    assert namespace["SCREENSHOT_DIR"] == USER_GUIDE_DIR
+    assert screenshot_names == {
+        "01-home.png",
+        "02-job-config-full.png",
+        "04-run-full.png",
+        "05-results.png",
+        "11-review-workbench.png",
+        "12-contact-workbench.png",
+    }
+    assert all((USER_GUIDE_DIR / name).is_file() for name in screenshot_names)
+
+    generator_source = README_DEMO_GENERATOR.read_text(encoding="utf-8")
+    assert "candidates_all.json" not in generator_source
+    assert "api_config.json" not in generator_source
+    assert "chrome_profile" not in generator_source.lower()
