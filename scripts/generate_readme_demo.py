@@ -11,6 +11,7 @@ import math
 import shutil
 import subprocess as _subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,6 +35,8 @@ ASSET_DIR = ROOT / ".github" / "assets"
 SCREENSHOT_DIR = ROOT / "docs" / "assets" / "user-guide"
 VIDEO_PATH = ASSET_DIR / "product-demo.mp4"
 POSTER_PATH = ASSET_DIR / "product-demo-poster.png"
+PREVIEW_GIF_PATH = ASSET_DIR / "product-demo-preview.gif"
+GITHUB_GIF_LIMIT_BYTES = 10 * 1024 * 1024
 
 NAVY = "#07111f"
 SLATE = "#0f1c2e"
@@ -358,15 +361,75 @@ def _encode_video(scene_images: list[Image.Image]) -> None:
         raise RuntimeError(f"FFmpeg failed with exit code {return_code}: {error}")
 
 
+def _encode_preview_gif() -> None:
+    """Generate a GitHub-compatible inline preview under the 10 MB limit."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("FFmpeg is required to regenerate the README demo")
+
+    with tempfile.TemporaryDirectory(prefix="boss-readme-demo-") as temp_dir:
+        palette_path = Path(temp_dir) / "palette.png"
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                str(VIDEO_PATH),
+                "-vf",
+                "fps=4,scale=960:-1:flags=lanczos,"
+                "palettegen=max_colors=64:stats_mode=diff",
+                str(palette_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                str(VIDEO_PATH),
+                "-i",
+                str(palette_path),
+                "-lavfi",
+                "fps=4,scale=960:-1:flags=lanczos[x];"
+                "[x][1:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle",
+                "-loop",
+                "0",
+                str(PREVIEW_GIF_PATH),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    gif_size = PREVIEW_GIF_PATH.stat().st_size
+    if gif_size > GITHUB_GIF_LIMIT_BYTES:
+        raise RuntimeError(
+            "README preview GIF exceeds GitHub's 10 MB limit: "
+            f"{gif_size / 1024 / 1024:.2f} MB"
+        )
+
+
 def main() -> int:
-    """Generate the README poster and MP4 demo."""
+    """Generate the README poster, MP4, and inline GIF demo."""
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
     scene_images = _build_scenes()
     scene_images[0].save(POSTER_PATH, format="PNG", optimize=True)
     _encode_video(scene_images)
+    _encode_preview_gif()
     duration = sum(scene.duration for scene in SCENES)
     print(f"Generated {POSTER_PATH.relative_to(ROOT)}")
     print(f"Generated {VIDEO_PATH.relative_to(ROOT)} ({duration:.1f}s, {WIDTH}x{HEIGHT}, {FPS} fps)")
+    print(
+        f"Generated {PREVIEW_GIF_PATH.relative_to(ROOT)} "
+        f"({duration:.1f}s, 960x540, 4 fps)"
+    )
     return 0
 
 

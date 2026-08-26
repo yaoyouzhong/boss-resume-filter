@@ -7,6 +7,8 @@ from pathlib import Path
 import re
 import runpy
 
+from PIL import Image
+
 
 ROOT = Path(__file__).resolve().parents[2]
 ASSET_DIR = ROOT / "docs" / "assets" / "ai-recruitment-ppt"
@@ -94,3 +96,19 @@ def test_readme_video_uses_only_allowlisted_synthetic_screenshots():
     assert "candidates_all.json" not in generator_source
     assert "api_config.json" not in generator_source
     assert "chrome_profile" not in generator_source.lower()
+
+
+def test_readme_gif_is_animated_and_within_github_limit():
+    namespace = runpy.run_path(
+        str(README_DEMO_GENERATOR),
+        run_name="readme_demo_generator",
+    )
+    preview_path = namespace["PREVIEW_GIF_PATH"]
+
+    assert preview_path.is_file()
+    assert preview_path.stat().st_size <= namespace["GITHUB_GIF_LIMIT_BYTES"]
+    with Image.open(preview_path) as image:
+        assert image.format == "GIF"
+        assert image.size == (960, 540)
+        assert image.is_animated
+        assert image.n_frames > 100
