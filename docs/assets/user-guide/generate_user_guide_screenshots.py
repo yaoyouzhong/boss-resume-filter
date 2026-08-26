@@ -205,40 +205,47 @@ def capture_widget(widget: tk.Widget, filename: str) -> None:
         # Screen capture can return only the desktop when this script is run
         # from a background terminal.  PrintWindow renders the actual Tk
         # window and is independent of desktop focus or overlap.
-        import ctypes
-        import win32con
-        import win32gui
-        import win32ui
-
-        hwnd = widget.winfo_id()
-        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-        width = right - left
-        height = bottom - top
-        window_dc = win32gui.GetWindowDC(hwnd)
-        source_dc = win32ui.CreateDCFromHandle(window_dc)
-        memory_dc = source_dc.CreateCompatibleDC()
-        bitmap = win32ui.CreateBitmap()
-        bitmap.CreateCompatibleBitmap(source_dc, width, height)
-        memory_dc.SelectObject(bitmap)
         try:
-            ctypes.windll.user32.PrintWindow(hwnd, memory_dc.GetSafeHdc(), 2)
-            info = bitmap.GetInfo()
-            bits = bitmap.GetBitmapBits(True)
-            image = Image.frombuffer(
-                "RGB",
-                (info["bmWidth"], info["bmHeight"]),
-                bits,
-                "raw",
-                "BGRX",
-                0,
-                1,
-            )
-            image.save(OUT_DIR / filename)
-        finally:
-            win32gui.DeleteObject(bitmap.GetHandle())
-            memory_dc.DeleteDC()
-            source_dc.DeleteDC()
-            win32gui.ReleaseDC(hwnd, window_dc)
+            import ctypes
+            import win32con
+            import win32gui
+            import win32ui
+        except ImportError:
+            x = widget.winfo_rootx()
+            y = widget.winfo_rooty()
+            w = widget.winfo_width()
+            h = widget.winfo_height()
+            ImageGrab.grab(bbox=(x, y, x + w, y + h)).save(OUT_DIR / filename)
+        else:
+            hwnd = widget.winfo_id()
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            width = right - left
+            height = bottom - top
+            window_dc = win32gui.GetWindowDC(hwnd)
+            source_dc = win32ui.CreateDCFromHandle(window_dc)
+            memory_dc = source_dc.CreateCompatibleDC()
+            bitmap = win32ui.CreateBitmap()
+            bitmap.CreateCompatibleBitmap(source_dc, width, height)
+            memory_dc.SelectObject(bitmap)
+            try:
+                ctypes.windll.user32.PrintWindow(hwnd, memory_dc.GetSafeHdc(), 2)
+                info = bitmap.GetInfo()
+                bits = bitmap.GetBitmapBits(True)
+                image = Image.frombuffer(
+                    "RGB",
+                    (info["bmWidth"], info["bmHeight"]),
+                    bits,
+                    "raw",
+                    "BGRX",
+                    0,
+                    1,
+                )
+                image.save(OUT_DIR / filename)
+            finally:
+                win32gui.DeleteObject(bitmap.GetHandle())
+                memory_dc.DeleteDC()
+                source_dc.DeleteDC()
+                win32gui.ReleaseDC(hwnd, window_dc)
     else:
         x = widget.winfo_rootx()
         y = widget.winfo_rooty()
