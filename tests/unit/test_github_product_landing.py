@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[2]
 DOCS_DIR = ROOT / "docs"
 INDEX_PATH = DOCS_DIR / "index.html"
 CSS_PATH = DOCS_DIR / "site.css"
+README_PATH = ROOT / "README.md"
+PRODUCT_HOME_URL = "https://yaoyouzhong.github.io/boss-resume-filter/"
 
 
 class _LandingParser(HTMLParser):
@@ -96,3 +98,12 @@ def test_github_product_landing_states_product_and_data_boundaries() -> None:
 
     assert "releases/latest" in html
     assert "下载最新版" in html
+
+
+def test_readme_leads_with_the_product_homepage_entry() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    first_content_line = next(line for line in readme.splitlines() if line.strip())
+
+    assert PRODUCT_HOME_URL in first_content_line
+    assert "进入产品主页" in first_content_line
+    assert readme.index(PRODUCT_HOME_URL) < readme.index('<h1 align="center">')
