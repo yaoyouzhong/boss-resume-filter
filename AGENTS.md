@@ -8,6 +8,7 @@
 boss-resume-filter/
 ├── .github/              # GitHub 工作流、品牌资产、Issue/PR 模板和仓库社区配置
 ├── diagram/              # README 使用的可缩放数据流和架构图；每个主题单独子目录
+├── docs/                 # GitHub Pages 产品首页、图文手册、演示截图和办公交付材料
 ├── gui_main.py            # 图形界面主程序（v2.31）
 ├── bossmaster.py          # BOSS 扫描、筛选、联系和导出主程序
 ├── education_tool*.py     # 独立学历核验工具入口、配置与安全

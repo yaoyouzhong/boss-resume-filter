@@ -52,6 +52,7 @@ tmp/
 build_log*.txt
 test_output.txt
 *.html
+!docs/index.html
 .last_update_check
 .boss_access_guard.json*
 .run_preferences.json
