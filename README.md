@@ -21,9 +21,9 @@
 > 当前发布版本：v2.31 学历核验与批量结果截图（版本号 v2.31）
 
 <p align="center">
-  <a href=".github/assets/product-demo.mp4"><img alt="40 秒产品演示：从岗位配置到联系跟进" src=".github/assets/product-demo-poster.png"></a>
+  <img alt="38 秒产品演示：从岗位配置到联系跟进" src=".github/assets/product-demo-preview.gif">
   <br>
-  <sub>点击观看 38 秒完整流程 · 全程使用合成数据，不含真实候选人信息</sub>
+  <sub>自动播放 38 秒完整流程 · <a href=".github/assets/product-demo.mp4?raw=1">下载高清 MP4</a> · 全程使用合成数据</sub>
 </p>
 
 > **使用边界**：本项目不是 BOSS 直聘官方工具。浏览器自动化、候选人信息读取和联系功能可能触发平台风控、限流或账号限制；使用前请阅读完整的 [使用声明](DISCLAIMER.md)。
@@ -113,9 +113,13 @@ python education_tool.py
 
 ## 界面预览
 
-| 筛选结果 | 学历核验 |
-|---|---|
-| ![筛选结果与候选人操作](docs/assets/user-guide/05-results.png) | ![毕业证识别与学历核验](docs/assets/user-guide/09-education.png) |
+### 筛选结果
+
+![筛选结果与候选人操作](docs/assets/user-guide/05-results.png)
+
+### 学历核验
+
+![毕业证识别与学历核验](docs/assets/user-guide/09-education.png)
 
 更多页面和完整操作步骤见 [图文使用手册](GUI%20使用说明.md)。
 
