@@ -218,6 +218,6 @@ boss-resume-filter/
 
 ## 项目与 License
 
-项目由姚有忠主导设计与开发，并使用 [Claude Code](https://www.anthropic.com/claude-code) 和 [OpenAI Codex](https://openai.com/codex/) 辅助实现、审查、测试与文档维护。
+项目由 yaoyouzhong 主导设计与开发，并使用 [Claude Code](https://www.anthropic.com/claude-code) 和 [OpenAI Codex](https://openai.com/codex/) 辅助实现、审查、测试与文档维护。
 
 License：[MIT](LICENSE)

@@ -107,3 +107,5 @@ def test_readme_leads_with_the_product_homepage_entry() -> None:
     assert PRODUCT_HOME_URL in first_content_line
     assert "进入产品主页" in first_content_line
     assert readme.index(PRODUCT_HOME_URL) < readme.index('<h1 align="center">')
+    assert "项目由 yaoyouzhong 主导设计与开发" in readme
+    assert "\u59da\u6709\u5fe0" not in readme
