@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用手册与常见问题
+    url: https://github.com/yaoyouzhong/boss-resume-filter/blob/master/GUI%20%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.md
+    about: 先查看安装、Chrome 连接、模型配置和常见问题。
+  - name: 私密报告安全漏洞
+    url: https://github.com/yaoyouzhong/boss-resume-filter/security/advisories/new
+    about: 漏洞细节不应通过公开 Issue 提交。

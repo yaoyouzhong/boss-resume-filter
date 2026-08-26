@@ -6,6 +6,7 @@
 
 ```text
 boss-resume-filter/
+├── .github/              # GitHub 工作流、品牌资产、Issue/PR 模板和仓库社区配置
 ├── gui_main.py            # 图形界面主程序（v2.31）
 ├── bossmaster.py          # BOSS 扫描、筛选、联系和导出主程序
 ├── education_tool*.py     # 独立学历核验工具入口、配置与安全

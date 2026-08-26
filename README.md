@@ -136,6 +136,7 @@ python education_tool.py
 | [图文使用手册](GUI%20使用说明.md) | 首页、岗位配置、模型配置、运行、结果复核、学历核验和统计的完整操作 |
 | [更新记录](CHANGELOG.md) | 全部公开版本的功能和体验变化 |
 | [使用声明](DISCLAIMER.md) | 平台风控、账号、数据和使用责任边界 |
+| [安全策略](SECURITY.md) | 漏洞私密报告渠道、脱敏要求和安全支持范围 |
 | [部署说明](DEPLOYMENT.md) | 环境准备与部署方式 |
 | [打包指南](PACKAGING.md) | Windows 和 macOS 安装包构建 |
 | [项目规范](AGENTS.md) | 模块职责、测试要求和交付流程 |
@@ -205,4 +206,4 @@ boss-resume-filter/
 
 项目由姚有忠主导设计与开发，并使用 [Claude Code](https://www.anthropic.com/claude-code) 和 [OpenAI Codex](https://openai.com/codex/) 辅助实现、审查、测试与文档维护。
 
-License：MIT
+License：[MIT](LICENSE)
