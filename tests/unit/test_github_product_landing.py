@@ -1,6 +1,7 @@
 """Static contracts for the repository-native GitHub Pages landing page."""
 from __future__ import annotations
 
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -12,6 +13,13 @@ INDEX_PATH = DOCS_DIR / "index.html"
 CSS_PATH = DOCS_DIR / "site.css"
 README_PATH = ROOT / "README.md"
 PRODUCT_HOME_URL = "https://yaoyouzhong.github.io/boss-resume-filter/"
+USER_GUIDE_PATH = DOCS_DIR / "BOSS招聘系统操作说明-图文版.md"
+USER_GUIDE_LINK = "docs/BOSS招聘系统操作说明-图文版.md"
+USER_GUIDE_GITHUB_URL = (
+    "https://github.com/yaoyouzhong/boss-resume-filter/blob/master/docs/"
+    "BOSS%E6%8B%9B%E8%81%98%E7%B3%BB%E7%BB%9F%E6%93%8D%E4%BD%9C%E8%AF%B4%E6%98%8E-"
+    "%E5%9B%BE%E6%96%87%E7%89%88.md"
+)
 
 
 class _LandingParser(HTMLParser):
@@ -109,3 +117,28 @@ def test_readme_leads_with_the_product_homepage_entry() -> None:
     assert readme.index(PRODUCT_HOME_URL) < readme.index('<h1 align="center">')
     assert "项目由 yaoyouzhong 主导设计与开发" in readme
     assert "\u59da\u6709\u5fe0" not in readme
+
+
+def test_github_home_uses_the_illustrated_guide_and_shows_run_control() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    landing = INDEX_PATH.read_text(encoding="utf-8")
+    guide = USER_GUIDE_PATH.read_text(encoding="utf-8")
+
+    assert "GUI%20使用说明.md" not in readme
+    assert readme.count(USER_GUIDE_LINK) == 5
+    assert f"{USER_GUIDE_LINK}#十四常见问题处理" in readme
+    guide_images = re.findall(r"!\[[^\]]*\]\(([^)]+)\)", guide)
+    assert len(guide_images) >= 10
+    assert all(
+        (USER_GUIDE_PATH.parent / unquote(urlparse(reference).path)).is_file()
+        for reference in guide_images
+    )
+    assert USER_GUIDE_GITHUB_URL in landing
+    assert "blob/master/GUI%20使用说明.md" not in landing
+
+    results_heading = readme.index("### 筛选结果")
+    run_heading = readme.index("### 运行控制")
+    education_heading = readme.index("### 学历核验")
+    assert results_heading < run_heading < education_heading
+    assert "![运行控制与筛选参数](docs/assets/user-guide/04-run-full.png)" in readme
+    assert (DOCS_DIR / "assets" / "user-guide" / "04-run-full.png").is_file()
