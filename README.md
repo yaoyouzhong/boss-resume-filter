@@ -16,7 +16,7 @@
   <strong><a href="https://github.com/yaoyouzhong/boss-resume-filter/releases/latest/download/BOSS_ResumeFilter.exe">Windows 下载</a></strong>
   · <strong><a href="https://github.com/yaoyouzhong/boss-resume-filter/releases/latest/download/BOSS_ResumeFilter.dmg">macOS 下载</a></strong>
   · <a href="https://gitee.com/yaoyouzhong/boss-resume-filter/releases">国内镜像</a>
-  · <a href="GUI%20使用说明.md">图文使用手册</a>
+  · <a href="docs/BOSS招聘系统操作说明-图文版.md">图文使用手册</a>
   · <a href="CHANGELOG.md">更新记录</a>
 </p>
 
@@ -119,11 +119,15 @@ python education_tool.py
 
 ![筛选结果与候选人操作](docs/assets/user-guide/05-results.png)
 
+### 运行控制
+
+![运行控制与筛选参数](docs/assets/user-guide/04-run-full.png)
+
 ### 学历核验
 
 ![毕业证识别与学历核验](docs/assets/user-guide/09-education.png)
 
-更多页面和完整操作步骤见 [图文使用手册](GUI%20使用说明.md)。
+更多页面和完整操作步骤见 [图文使用手册](docs/BOSS招聘系统操作说明-图文版.md)。
 
 ## 筛选与联系原则
 
@@ -133,7 +137,7 @@ python education_tool.py
 - **联系前再次确认**：图形界面先生成联系清单，人工确认后发送；无法确认发送成功时进入待核实，不记录为已联系。
 - **重复执行可恢复**：候选人与岗位组合去重，保留已有反馈、跟进、屏蔽和沟通状态。
 
-推荐等级默认按规则分划分：强烈推荐 `75–100`、推荐 `65–74`、待定 `55–64`。详细字段、评分口径和联系状态以程序界面及 [图文使用手册](GUI%20使用说明.md) 为准。
+推荐等级默认按规则分划分：强烈推荐 `75–100`、推荐 `65–74`、待定 `55–64`。详细字段、评分口径和联系状态以程序界面及 [图文使用手册](docs/BOSS招聘系统操作说明-图文版.md) 为准。
 
 ## 数据安全与运行要求
 
@@ -147,7 +151,7 @@ python education_tool.py
 
 | 文档 | 内容 |
 |---|---|
-| [图文使用手册](GUI%20使用说明.md) | 首页、岗位配置、模型配置、运行、结果复核、学历核验和统计的完整操作 |
+| [图文使用手册](docs/BOSS招聘系统操作说明-图文版.md) | 首页、岗位配置、模型配置、运行、结果复核、学历核验和统计的完整操作 |
 | [更新记录](CHANGELOG.md) | 全部公开版本的功能和体验变化 |
 | [使用声明](DISCLAIMER.md) | 平台风控、账号、数据和使用责任边界 |
 | [安全策略](SECURITY.md) | 漏洞私密报告渠道、脱敏要求和安全支持范围 |
@@ -155,7 +159,7 @@ python education_tool.py
 | [打包指南](PACKAGING.md) | Windows 和 macOS 安装包构建 |
 | [项目规范](AGENTS.md) | 模块职责、测试要求和交付流程 |
 
-常见问题见图文使用手册的[常见问题](GUI%20使用说明.md#常见问题)部分。
+常见问题见图文使用手册的[常见问题](docs/BOSS招聘系统操作说明-图文版.md#十四常见问题处理)部分。
 
 ## 最近版本
 
