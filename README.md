@@ -115,13 +115,17 @@ python education_tool.py
 
 ## 界面预览
 
-### 筛选结果
+### 岗位配置
 
-![筛选结果与候选人操作](docs/assets/user-guide/05-results.png)
+![岗位要求与筛选规则配置](docs/assets/user-guide/02-job-config-full.png)
 
 ### 运行控制
 
 ![运行控制与筛选参数](docs/assets/user-guide/04-run-full.png)
+
+### 筛选结果
+
+![筛选结果与候选人操作](docs/assets/user-guide/05-results.png)
 
 ### 学历核验
 

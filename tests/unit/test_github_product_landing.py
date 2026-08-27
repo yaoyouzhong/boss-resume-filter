@@ -119,7 +119,7 @@ def test_readme_leads_with_the_product_homepage_entry() -> None:
     assert "\u59da\u6709\u5fe0" not in readme
 
 
-def test_github_home_uses_the_illustrated_guide_and_shows_run_control() -> None:
+def test_github_home_uses_the_illustrated_guide_and_expected_preview_sequence() -> None:
     readme = README_PATH.read_text(encoding="utf-8")
     landing = INDEX_PATH.read_text(encoding="utf-8")
     guide = USER_GUIDE_PATH.read_text(encoding="utf-8")
@@ -136,9 +136,12 @@ def test_github_home_uses_the_illustrated_guide_and_shows_run_control() -> None:
     assert USER_GUIDE_GITHUB_URL in landing
     assert "blob/master/GUI%20使用说明.md" not in landing
 
-    results_heading = readme.index("### 筛选结果")
+    job_heading = readme.index("### 岗位配置")
     run_heading = readme.index("### 运行控制")
+    results_heading = readme.index("### 筛选结果")
     education_heading = readme.index("### 学历核验")
-    assert results_heading < run_heading < education_heading
+    assert job_heading < run_heading < results_heading < education_heading
+    assert "![岗位要求与筛选规则配置](docs/assets/user-guide/02-job-config-full.png)" in readme
     assert "![运行控制与筛选参数](docs/assets/user-guide/04-run-full.png)" in readme
+    assert (DOCS_DIR / "assets" / "user-guide" / "02-job-config-full.png").is_file()
     assert (DOCS_DIR / "assets" / "user-guide" / "04-run-full.png").is_file()
