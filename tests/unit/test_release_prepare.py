@@ -246,6 +246,33 @@ def test_readme_replacement_keeps_three_detailed_versions_and_collapses_history(
     assert "图形界面主程序（v2.22）" in updated
 
 
+def test_readme_replacement_accepts_current_development_section_boundary():
+    readme = """> 当前发布版本：v2.21 旧标题（版本号 v2.21）
+
+## 最近版本
+
+### v2.21 标题 21
+
+- 说明
+
+### v2.20 标题 20
+
+- 说明
+
+## 开发与验证
+
+原有内容
+
+├── gui_main.py            # 图形界面主程序（v2.21）
+"""
+    title, body = release_prepare.parse_release_notes(VALID_NOTES, "2.22")
+
+    updated = release_prepare._replace_readme(readme, "2.22", title, body)
+
+    assert "## 开发与验证\n\n原有内容" in updated
+    assert "### v2.22 候选人跟进闭环" in updated
+
+
 def test_execute_rejects_wrong_authorization_before_inspection():
     with patch.object(release_prepare, "inspect_repository") as inspect:
         with _raises(release_prepare.ReleasePreparationError, "授权不匹配"):

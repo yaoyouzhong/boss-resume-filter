@@ -399,7 +399,10 @@ def _replace_readme(content: str, version: str, title: str, body: str) -> str:
         _fail("README.md 无法定位当前发布版本标识")
 
     start_match = re.search(r"^###\s+v\d+\.\d+", content, re.MULTILINE)
-    end_match = re.search(r"^##\s+🚀", content, re.MULTILINE)
+    end_match = re.compile(r"^##\s+", re.MULTILINE).search(
+        content,
+        start_match.end() if start_match else 0,
+    )
     if not start_match or not end_match or end_match.start() <= start_match.start():
         _fail("README.md 无法定位版本摘要区域")
     region = content[start_match.start():end_match.start()]
