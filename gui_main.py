@@ -1517,11 +1517,11 @@ class BossFilterGUI:
 
     def create_education_main_content(self):
         """创建独立学历核验工具的单页内容。"""
-        self.main_frame = ttk.Frame(self.root, style='Page.TFrame')
+        self.main_frame = ttk.Frame(self.root, style='EducationTool.TFrame')
         self.main_frame.pack(fill="both", expand=True)
         self._last_page_pack_padx = None
         self._last_page_pack_pady = None
-        self.pages_frame = ttk.Frame(self.main_frame, style='Page.TFrame')
+        self.pages_frame = ttk.Frame(self.main_frame, style='EducationTool.TFrame')
         self.pages_frame.pack(
             fill="both",
             expand=True,
@@ -1654,13 +1654,16 @@ class BossFilterGUI:
     def _create_api_config_page_steps(self) -> Iterator[None]:
         """创建 API 配置页面"""
         # 创建带滚动条的页面
-        self.api_config_page = ttk.Frame(self.pages_frame, style='Page.TFrame')
+        standalone = bool(getattr(self, "standalone_education", False))
+        page_style = 'EducationTool.TFrame' if standalone else 'Page.TFrame'
+        self.api_config_page = ttk.Frame(self.pages_frame, style=page_style)
 
         # 创建可滚动容器（macOS Tk 9.0+ 用 Text，其他用 Canvas）
         self.api_canvas, self.api_scrollable_frame = (
             self.scroll_support.create_scroll_container(
                 self.api_config_page,
-                self.colors['bg_card'],
+                self.colors['home_bg'] if standalone else self.colors['bg_card'],
+                content_style=page_style if standalone else "TFrame",
             )
         )
 
@@ -4513,41 +4516,14 @@ class BossFilterGUI:
             self.education_status_var.set(first_item["detail"])
             self.education_warning_var.set("")
 
-        # 确保 base 浏览器连接就绪（串行，只执行一次）
-        try:
-            self._get_education_tab(None)
-        except Exception as error:
-            self._log_education_error("连接浏览器", error)
-            for item_id, _, _ in prepared:
-                item = self.education_items.get(item_id)
-                if item:
-                    item["status"] = "打开失败"
-                    item["detail"] = "浏览器连接失败"
-                    item["warnings"] = str(error)
-                    self._update_education_queue_row(item_id)
-            self._refresh_education_queue_summary()
-            return
-
-        # 在主线程串行创建所有 tab（DrissionPage.new_tab 不支持并发）
-        tabs: dict[str, object] = {}
-        for item_id, _, _ in prepared:
-            try:
-                tabs[item_id] = self._get_education_tab(item_id)
-            except Exception as error:
-                self._log_education_error("创建标签页", error, item_id)
-                item = self.education_items.get(item_id)
-                if item:
-                    item["status"] = "打开失败"
-                    item["detail"] = "创建标签页失败"
-                    item["warnings"] = str(error)
-                    self._update_education_queue_row(item_id)
-        self._refresh_education_queue_summary()
-
-        # 每个候选人一个独立 worker，并行执行（tab 已预分配，不再并发创建）
-        for idx, (item_id, name, certificate_number) in enumerate(prepared):
-            tab = tabs.get(item_id)
-            if tab is None:
-                continue
+        def schedule_verification_worker(
+            item_id: str,
+            name: str,
+            certificate_number: str,
+            tab: object,
+            delay_ms: int,
+        ) -> None:
+            """Queue one prepared tab without waiting for the remaining tabs."""
             def worker(
                 iid=item_id, n=name, cn=certificate_number, page=tab,
             ):
@@ -4660,14 +4636,118 @@ class BossFilterGUI:
                             daemon=True,
                         ).start()
                 self.run_on_ui(show_success)
-            # 错开请求以降低网站风控概率，但不在 Tk 主线程中 sleep。
-            self.root.after(
-                idx * 1500,
-                lambda task=worker: threading.Thread(
-                    target=task,
-                    daemon=True,
-                ).start(),
-            )
+
+            def queue_worker() -> None:
+                item = self.education_items.get(item_id)
+                if item and not str(item.get("status") or "").startswith("正在"):
+                    item["status"] = "打开中"
+                    item["detail"] = "学信网页面已准备，等待错峰启动..."
+                    self._update_education_queue_row(item_id)
+                    self._refresh_education_queue_summary()
+                self.root.after(
+                    max(0, int(delay_ms)),
+                    lambda task=worker: threading.Thread(
+                        target=task,
+                        daemon=True,
+                    ).start(),
+                )
+
+            self.run_on_ui(queue_worker)
+
+        def prepare_browser_and_tabs() -> None:
+            """Connect Chrome and pipeline tab creation with verification work."""
+            total = len(prepared)
+            self.run_on_ui(lambda: self._update_education_workflow_progress(
+                stage="verification",
+                percent=2,
+                text="第 2 步：正在启动或连接 Chrome…",
+            ))
+            try:
+                self._get_education_tab(None)
+            except Exception as error:
+                error_text = str(error)
+                self._log_education_error("连接浏览器", error)
+
+                def show_connection_error(err=error_text) -> None:
+                    for iid, _, _ in prepared:
+                        item = self.education_items.get(iid)
+                        if item:
+                            item["status"] = "打开失败"
+                            item["detail"] = "浏览器连接失败"
+                            item["warnings"] = err
+                            self._update_education_queue_row(iid)
+                    self._update_education_workflow_progress(
+                        stage="verification",
+                        percent=0,
+                        text="第 2 步：Chrome 连接失败",
+                    )
+                    self._refresh_education_queue_summary()
+                    self._restore_education_fill_button_if_done()
+
+                self.run_on_ui(show_connection_error)
+                return
+
+            self.run_on_ui(lambda: self._update_education_workflow_progress(
+                stage="verification",
+                percent=5,
+                text=f"第 2 步：Chrome 已连接，正在准备 1/{total} 个页面…",
+            ))
+            created_count = 0
+            next_start_at = time.monotonic()
+            for item_id, name, certificate_number in prepared:
+                try:
+                    tab = self._get_education_tab(item_id)
+                except Exception as error:
+                    error_text = str(error)
+                    self._log_education_error("创建标签页", error, item_id)
+
+                    def show_tab_error(iid=item_id, err=error_text) -> None:
+                        item = self.education_items.get(iid)
+                        if item:
+                            item["status"] = "打开失败"
+                            item["detail"] = "创建标签页失败"
+                            item["warnings"] = err
+                            self._update_education_queue_row(iid)
+                        self._refresh_education_queue_summary()
+
+                    self.run_on_ui(show_tab_error)
+                    continue
+
+                # 第一张页面准备好后立即启动；后续仅补齐距离上一任务的
+                # 1.5 秒间隔。创建页面所耗时间会抵扣等待，兼顾速度和风控。
+                now = time.monotonic()
+                delay_ms = max(
+                    0,
+                    int((next_start_at - now) * 1000),
+                )
+                next_start_at = max(next_start_at, now) + 1.5
+                schedule_verification_worker(
+                    item_id,
+                    name,
+                    certificate_number,
+                    tab,
+                    delay_ms,
+                )
+                created_count += 1
+                self.run_on_ui(
+                    lambda count=created_count: (
+                        self._update_education_workflow_progress(
+                            stage="verification",
+                            percent=min(18, 5 + int(13 * count / total)),
+                            text=(
+                                f"第 2 步：已启动 {count}/{total} 个验证任务，"
+                                "正在识别验证码…"
+                            ),
+                        )
+                    )
+                )
+
+            self.run_on_ui(self._restore_education_fill_button_if_done)
+
+        threading.Thread(
+            target=prepare_browser_and_tabs,
+            daemon=True,
+        ).start()
 
     def _watch_education_result_page(self, item_id, page, expected_name):
         """Keep one queue row synchronized with its currently bound CHSI tab."""
@@ -5286,20 +5366,21 @@ class BossFilterGUI:
         # Chrome，避免默认 9222 调试端口不可用时等待超时再报打开失败。
         options = ChromiumOptions(read_file=False)
         options.auto_port()
+        try:
+            screen_width = int(self.root.winfo_screenwidth())
+            screen_height = int(self.root.winfo_screenheight())
+        except Exception:
+            screen_width, screen_height = 1536, 960
+        window_width = max(960, min(1360, screen_width - 160))
+        window_height = max(640, min(900, screen_height - 140))
+        options.set_argument(
+            "--window-size",
+            f"{window_width},{window_height}",
+        )
         page = ChromiumPage(options)
         if not self._is_browser_page_alive(page):
             raise RuntimeError("Chrome 已启动，但页面连接失败")
-        self._maximize_education_browser_page(page)
         return page
-
-    @staticmethod
-    def _maximize_education_browser_page(page) -> bool:
-        """Best-effort maximize before CHSI tabs navigate and lay themselves out."""
-        try:
-            page.set.window.max()
-            return True
-        except Exception:
-            return False
 
     @staticmethod
     def _is_blank_education_browser_url(url: object) -> bool:
@@ -5320,14 +5401,12 @@ class BossFilterGUI:
         if item_id is None:
             base_page = self.browser_page
             if self._is_browser_page_alive(base_page):
-                self._maximize_education_browser_page(base_page)
                 return None
             self.browser_page = None
             self.browser_connected = False
             if self._try_reconnect_browser():
                 candidate = self.browser_page
                 if self._is_browser_page_alive(candidate):
-                    self._maximize_education_browser_page(candidate)
                     return None
                 self.browser_page = None
                 self.browser_connected = False

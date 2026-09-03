@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+import tkinter.font as tkfont
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from tkinter import ttk
@@ -52,6 +53,7 @@ class WidgetSupport:
         title: str,
         subtitle: str | None = None,
         top_padding: int = 0,
+        trailing_builder: Callable[[tk.Misc], None] | None = None,
     ) -> ttk.Frame:
         """Create the shared page title card and return its inner frame."""
         host = self.host
@@ -68,8 +70,15 @@ class WidgetSupport:
         )
         inner = ttk.Frame(card, style="PageHeaderInner.TFrame")
         inner.pack(fill="x", padx=(padding, padding), pady=(padding, padding))
+        label_parent: tk.Misc = inner
+        if trailing_builder is not None:
+            trailing = ttk.Frame(inner, style="PageHeaderInner.TFrame")
+            trailing.pack(side="right", anchor="n", padx=(padding, 0))
+            trailing_builder(trailing)
+            label_parent = ttk.Frame(inner, style="PageHeaderInner.TFrame")
+            label_parent.pack(side="left", fill="x", expand=True)
         ttk.Label(
-            inner,
+            label_parent,
             text=title,
             font=host.font_section,
             foreground=host.colors["text_primary"],
@@ -77,13 +86,164 @@ class WidgetSupport:
         ).pack(anchor="w")
         if subtitle:
             ttk.Label(
-                inner,
+                label_parent,
                 text=subtitle,
                 font=host.font_label,
                 foreground=host.colors["text_secondary"],
                 background=host.colors["bg_card"],
             ).pack(anchor="w", pady=(int(8 * scale), 0))
         return inner
+
+    def create_navigation_button(
+        self,
+        parent: tk.Misc,
+        *,
+        text: str,
+        icon_name: str,
+        command: Callable[[], Any],
+        surface_color: str | None = None,
+    ) -> tk.Canvas:
+        """Create a compact rounded icon-and-text button for page navigation."""
+        from PIL import Image, ImageDraw, ImageTk
+
+        host = self.host
+        scale = self.scale
+        button_font = host.font_label
+        icon_size = max(17, int(round(18 * scale)))
+        gap = max(7, int(round(8 * scale)))
+        horizontal_padding = max(14, int(round(16 * scale)))
+        text_width = tkfont.Font(font=button_font).measure(text)
+        width = horizontal_padding * 2 + icon_size + gap + text_width
+        height = max(38, int(round(40 * scale)))
+        body_height = height - max(2, int(round(3 * scale)))
+        radius = max(7, int(round(ui_theme.RADIUS_LG * scale)))
+        outer_background = surface_color or host.colors["bg_main"]
+        canvas = tk.Canvas(
+            parent,
+            width=width,
+            height=height,
+            bg=outer_background,
+            highlightthickness=0,
+            bd=0,
+            cursor="hand2",
+            takefocus=1,
+        )
+        icon = host.icons.get(
+            icon_name,
+            icon_size,
+            host.colors["primary_dark"],
+        )
+        state = {"hover": False, "pressed": False, "focus": False}
+
+        def draw_background() -> None:
+            supersample = 4
+            image = Image.new(
+                "RGBA",
+                (width * supersample, height * supersample),
+                outer_background,
+            )
+            draw = ImageDraw.Draw(image)
+            shadow_offset = max(1, int(round(2 * scale))) * supersample
+            body_bottom = body_height * supersample - 1
+            draw.rounded_rectangle(
+                (
+                    supersample,
+                    shadow_offset,
+                    width * supersample - supersample - 1,
+                    body_bottom + shadow_offset,
+                ),
+                radius=radius * supersample,
+                fill=host.colors["border"],
+            )
+            if state["pressed"]:
+                fill = host.colors.get("home_primary_border", ui_theme.PRIMARY_PALE)
+            elif state["hover"]:
+                fill = host.colors["banner_info_bg"]
+            else:
+                fill = host.colors.get("home_primary_tint", host.colors["banner_info_bg"])
+            outline = (
+                host.colors["primary"]
+                if state["focus"] or state["hover"]
+                else host.colors.get("home_primary_border", ui_theme.PRIMARY_PALE)
+            )
+            outline_width = (2 if state["focus"] else 1) * supersample
+            draw.rounded_rectangle(
+                (
+                    supersample,
+                    0,
+                    width * supersample - supersample - 1,
+                    body_bottom,
+                ),
+                radius=radius * supersample,
+                fill=fill,
+                outline=outline,
+                width=outline_width,
+            )
+            image = image.resize((width, height), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(image)
+            canvas._navigation_background = photo
+            canvas.itemconfigure("background", image=photo)
+
+        center_y = body_height // 2
+        canvas.create_image(
+            width // 2,
+            height // 2,
+            tags="background",
+        )
+        canvas.create_image(
+            horizontal_padding + icon_size // 2,
+            center_y,
+            image=icon,
+            tags="content",
+        )
+        canvas.create_text(
+            horizontal_padding + icon_size + gap,
+            center_y,
+            text=text,
+            font=button_font,
+            fill=host.colors["primary_dark"],
+            anchor="w",
+            tags="content",
+        )
+        canvas._navigation_icon = icon
+        canvas.tag_raise("content")
+
+        def set_state(key: str, value: bool) -> None:
+            state[key] = value
+            draw_background()
+            canvas.tag_raise("content")
+
+        def release(event: tk.Event) -> str:
+            was_pressed = state["pressed"]
+            set_state("pressed", False)
+            if (
+                was_pressed
+                and 0 <= int(event.x) < int(canvas.winfo_width())
+                and 0 <= int(event.y) < int(canvas.winfo_height())
+            ):
+                command()
+            return "break"
+
+        def press(_event: tk.Event) -> str:
+            canvas.focus_set()
+            set_state("pressed", True)
+            return "break"
+
+        def keyboard_activate(_event: tk.Event) -> str:
+            command()
+            return "break"
+
+        canvas.bind("<Enter>", lambda _event: set_state("hover", True))
+        canvas.bind("<Leave>", lambda _event: set_state("hover", False))
+        canvas.bind("<ButtonPress-1>", press)
+        canvas.bind("<ButtonRelease-1>", release)
+        canvas.bind("<space>", keyboard_activate)
+        canvas.bind("<Return>", keyboard_activate)
+        canvas.bind("<FocusIn>", lambda _event: set_state("focus", True))
+        canvas.bind("<FocusOut>", lambda _event: set_state("focus", False))
+        draw_background()
+        canvas.tag_raise("content")
+        return canvas
 
     def create_card(
         self,
@@ -98,6 +258,7 @@ class WidgetSupport:
         if padding is None:
             padding = int(self.ui_config["label_frame_padding"] * self.scale)
         title_font = pack_options.pop("title_font", host.font_label)
+        content_style = pack_options.pop("content_style", "TFrame")
         card = tk.Frame(
             parent,
             bg=host.colors["bg_card"],
@@ -128,7 +289,7 @@ class WidgetSupport:
             pady=(int(padding * 0.7), int(padding * 0.7)),
         )
         tk.Frame(card, bg=host.colors["border"], height=1).pack(fill="x")
-        content = ttk.Frame(card, style="TFrame")
+        content = ttk.Frame(card, style=content_style)
         content.pack(fill="both", expand=True, padx=padding, pady=padding)
         return content
 

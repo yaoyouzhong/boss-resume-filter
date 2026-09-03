@@ -1007,6 +1007,21 @@ def test_disclosure_chevrons_are_registered_as_line_icons():
             assert image.getbbox() is not None
 
 
+def test_standalone_education_navigation_icons_are_registered_and_distinct():
+    for name in ("ai_spark", "arrow_left"):
+        assert name in icons.ICON_REGISTRY
+    model_icon = icons.ICON_REGISTRY["ai_spark"](
+        48, "#64748B", (0, 0, 0, 0), 4
+    )
+    back_icon = icons.ICON_REGISTRY["arrow_left"](
+        48, "#64748B", (0, 0, 0, 0), 4
+    )
+
+    assert model_icon.getbbox() is not None
+    assert back_icon.getbbox() is not None
+    assert model_icon.tobytes() != back_icon.tobytes()
+
+
 def test_checkbox_icons_are_registered_as_box_and_checkmark_states():
     assert "checkbox_off" in icons.ICON_REGISTRY
     assert "checkbox_on" in icons.ICON_REGISTRY
@@ -9182,6 +9197,9 @@ def test_education_browser_recovers_if_chrome_closes_before_new_tab():
 
 def test_education_browser_uses_auto_port_for_fresh_page():
     gui = object.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.root.winfo_screenwidth.return_value = 2060
+    gui.root.winfo_screenheight.return_value = 1190
     live_page = Mock()
     created_options = []
 
@@ -9189,9 +9207,13 @@ def test_education_browser_uses_auto_port_for_fresh_page():
         def __init__(self, read_file=True):
             self.read_file = read_file
             self.auto_port_called = False
+            self.arguments = {}
 
         def auto_port(self):
             self.auto_port_called = True
+
+        def set_argument(self, name, value=None):
+            self.arguments[name] = value
 
     def fake_chromium_page(options=None):
         if options is None:
@@ -9207,7 +9229,8 @@ def test_education_browser_uses_auto_port_for_fresh_page():
         assert len(created_options) == 1
         assert created_options[0].read_file is False
         assert created_options[0].auto_port_called is True
-        live_page.set.window.max.assert_called_once_with()
+        assert created_options[0].arguments == {"--window-size": "1360,900"}
+        live_page.set.window.max.assert_not_called()
 
 
 def test_education_queue_saves_manual_edits_to_current_item():
@@ -9388,6 +9411,106 @@ def test_education_chsi_button_always_processes_complete_queue():
     assert "item_ids = list(self.education_items)" in block
     assert "_selected_education_item_ids()" not in block
     assert "!= EDUCATION_RESULT_READY_STATUS" in block
+    assert "def prepare_browser_and_tabs()" in block
+    assert "target=prepare_browser_and_tabs" in block
+    assert "schedule_verification_worker(" in block
+    assert "next_start_at = max(next_start_at, now) + 1.5" in block
+    assert "idx * 1500" not in block
+
+
+def test_education_chsi_starts_first_verification_before_preparing_second_tab():
+    events = []
+
+    class ImmediateThread:
+        def __init__(self, *, target, daemon, args=()):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            self.target(*self.args)
+
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "education_1": {
+            "name": "张三",
+            "certificate_number": "123456789012345678",
+            "status": "已识别",
+        },
+        "education_2": {
+            "name": "李四",
+            "certificate_number": "876543210987654321",
+            "status": "已识别",
+        },
+    }
+    gui.education_current_id = None
+    gui.education_tabs = {}
+    gui.education_recognition_running = False
+    gui.education_screenshot_running = False
+    gui.education_status_var = Mock()
+    gui.education_warning_var = Mock()
+    gui.root = Mock()
+    gui.root.after.side_effect = lambda _delay, callback: callback()
+    gui.run_on_ui = lambda callback: callback()
+    gui._save_current_education_fields = Mock()
+    gui._update_education_queue_row = Mock()
+    gui._refresh_education_queue_summary = Mock()
+    gui._update_education_workflow_progress = Mock()
+    gui._restore_education_fill_button_if_done = Mock()
+    gui._log_education_error = Mock()
+    gui._watch_education_result_page = Mock()
+
+    pages = {
+        "education_1": object(),
+        "education_2": object(),
+    }
+
+    def get_tab(item_id):
+        events.append(("tab", item_id))
+        return None if item_id is None else pages[item_id]
+
+    def verify(_page, _name, _number, *, item_id, **_kwargs):
+        events.append(("verify", item_id))
+        return True, "已提交查询"
+
+    gui._get_education_tab = get_tab
+    gui._fill_and_solve_captcha = verify
+
+    with patch("gui_main.threading.Thread", ImmediateThread):
+        gui._fill_chsi_page()
+
+    assert events == [
+        ("tab", None),
+        ("tab", "education_1"),
+        ("verify", "education_1"),
+        ("tab", "education_2"),
+        ("verify", "education_2"),
+    ]
+
+
+def test_standalone_education_navigation_buttons_share_visual_language():
+    education_source = Path("gui_education_page.py").read_text(encoding="utf-8")
+    settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
+    widget_source = Path("gui_widget_support.py").read_text(encoding="utf-8")
+    main_source = Path("gui_main.py").read_text(encoding="utf-8")
+
+    assert 'text="模型配置"' in education_source
+    assert 'icon_name="ai_spark"' in education_source
+    assert 'text="返回学历核验"' in settings_source
+    assert 'icon_name="arrow_left"' in settings_source
+    assert "create_navigation_button(" in education_source
+    assert "create_navigation_button(" in settings_source
+    assert 'host.colors["banner_info_bg"]' in widget_source
+    assert "ui_theme.PRIMARY_PALE" in widget_source
+    assert 'canvas.bind("<FocusIn>"' in widget_source
+    assert "button_font = host.font_label" in widget_source
+    assert "FONT_FAMILY_SEMIBOLD" not in widget_source
+    assert "canvas.winfo_width()" in widget_source
+    assert "canvas.winfo_height()" in widget_source
+    assert "trailing_builder=_build_settings_navigation if standalone else None" in education_source
+    assert "trailing_builder=_build_education_navigation if standalone else None" in settings_source
+    assert 'page_style = "EducationTool.TFrame" if standalone else "Page.TFrame"' in education_source
+    assert "'EducationTool.TFrame' if standalone else 'Page.TFrame'" in main_source
+    assert 'content_style=page_style if standalone else "TFrame"' in main_source
 
 
 def test_education_captcha_retry_scans_all_eligible_failures():

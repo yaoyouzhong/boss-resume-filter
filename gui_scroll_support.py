@@ -73,11 +73,12 @@ class ScrollSupport:
         bg_color: str,
         *,
         auto_hide_scrollbar: bool = False,
+        content_style: str = "TFrame",
     ) -> tuple[tk.Canvas, ttk.Frame]:
         """Create a Canvas-backed scrolling container and its content frame."""
         canvas = tk.Canvas(parent, bg=bg_color, highlightthickness=0)
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        container = ttk.Frame(canvas, style="TFrame")
+        container = ttk.Frame(canvas, style=content_style)
         canvas_window = canvas.create_window((0, 0), window=container, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
         sync_after_id = None

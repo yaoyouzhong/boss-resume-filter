@@ -45,15 +45,15 @@ def build_settings_content_steps(
     api_container = self.api_scrollable_frame
     standalone = bool(getattr(self, "standalone_education", False))
 
-    if standalone:
-        navigation = ttk.Frame(api_container, style="Page.TFrame")
-        navigation.pack(fill="x", pady=(0, int(10 * self.dpi_scale * self.zoom_factor)))
-        back_button = ttk.Button(
-            navigation,
+    def _build_education_navigation(parent: tk.Misc) -> None:
+        back_button = self.widget_support.create_navigation_button(
+            parent,
             text="返回学历核验",
+            icon_name="arrow_left",
             command=self.show_page_education,
+            surface_color=self.colors["bg_card"],
         )
-        back_button.pack(side="right")
+        back_button.pack()
 
     # 系统设置页面标题
     self.widget_support.create_page_header(
@@ -64,7 +64,16 @@ def build_settings_content_steps(
             if standalone
             else None
         ),
+        trailing_builder=_build_education_navigation if standalone else None,
     )
+
+    page_card_pad_x = 0 if standalone else int(25 * self.dpi_scale * self.zoom_factor)
+    page_card_gap = int(16 * self.dpi_scale * self.zoom_factor)
+    page_card_pack = {
+        "fill": "x" if standalone else "both",
+        "expand": not standalone,
+        "padx": page_card_pad_x,
+    }
 
     # 新电脑提示：检测到已保存配置但 API Key 丢失
     self.reconfig_card = None
@@ -88,8 +97,12 @@ def build_settings_content_steps(
     yield
 
     # 模型用途分配
-    assignment_card = self.widget_support.create_card(api_container, "使用中的模型",
-        fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(20 * self.dpi_scale * self.zoom_factor))
+    assignment_card = self.widget_support.create_card(
+        api_container,
+        "使用中的模型",
+        **page_card_pack,
+        pady=(0, page_card_gap) if standalone else int(20 * self.dpi_scale * self.zoom_factor),
+    )
     assignment_frame = ttk.Frame(assignment_card, style='TFrame')
     assignment_frame.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor),
                           pady=int(15 * self.dpi_scale * self.zoom_factor))
@@ -203,8 +216,12 @@ def build_settings_content_steps(
     yield
 
     # 模型接入配置
-    config_card = self.widget_support.create_card(api_container, "模型接入",
-        fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
+    config_card = self.widget_support.create_card(
+        api_container,
+        "模型接入",
+        **page_card_pack,
+        pady=(0, page_card_gap) if standalone else int(15 * self.dpi_scale * self.zoom_factor),
+    )
 
     # API 配置输入区（服务商、Key、URL、模型名称）
     input_frame = ttk.Frame(config_card, style='TFrame')
@@ -326,8 +343,12 @@ def build_settings_content_steps(
     yield
 
     # 已保存模型列表
-    model_list_card = self.widget_support.create_card(api_container, "已保存模型",
-        fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
+    model_list_card = self.widget_support.create_card(
+        api_container,
+        "已保存模型",
+        **page_card_pack,
+        pady=(0, page_card_gap) if standalone else int(15 * self.dpi_scale * self.zoom_factor),
+    )
 
     # 模型列表 Treeview
     model_columns = ("name", "provider", "compat", "base_url")

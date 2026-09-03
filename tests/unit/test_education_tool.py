@@ -153,6 +153,9 @@ def test_standalone_browser_uses_auto_port_instead_of_fixed_profile():
         def auto_port(self):
             calls.append(("auto_port",))
 
+        def set_argument(self, name, value=None):
+            calls.append(("argument", name, value))
+
     class FakePage:
         def __init__(self, options):
             calls.append(("page", options))
@@ -162,6 +165,9 @@ def test_standalone_browser_uses_auto_port_instead_of_fixed_profile():
 
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui.standalone_education = True
+    gui.root = Mock()
+    gui.root.winfo_screenwidth.return_value = 1920
+    gui.root.winfo_screenheight.return_value = 1080
     fake_module = types.SimpleNamespace(
         ChromiumOptions=FakeOptions,
         ChromiumPage=FakePage,
@@ -172,6 +178,7 @@ def test_standalone_browser_uses_auto_port_instead_of_fixed_profile():
     assert isinstance(page, FakePage)
     assert calls[0] == ("init", False)
     assert calls[1] == ("auto_port",)
+    assert calls[2] == ("argument", "--window-size", "1360,900")
 
 
 def test_standalone_build_contains_no_embedded_secret_pipeline():
