@@ -1,29 +1,35 @@
 {
-  "version": "2.31",
-  "release_date": "2026-08-22",
+  "version": "2.32",
+  "release_date": "2026-09-03",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.31/BOSS_ResumeFilter.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.31/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.31/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.32/BOSS_ResumeFilter.exe",
+    "education_windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.32/EducationCertificateTool.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.32/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.32/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "macos_dmg": {
-      "size": 33947765,
-      "sha256": "0ee0f5a882574287df7e0a470e2482b7442247726a92d485bde063663832a5c7"
+      "size": 33972010,
+      "sha256": "85f472e25d174dab62a1a08124fe1cf288536ed855e8d9b39ef676086381fe42"
     },
     "windows": {
-      "size": 36315058,
-      "sha256": "c879240d78cb80733cbb77873d2f63c334ac5bda64459849012db80debba7ad4"
+      "size": 36338567,
+      "sha256": "7d67581e9759975d3e00ed2e45b630fd7c6fb510c1948061b50606c087d931f1"
     },
     "macos": {
-      "size": 34743310,
-      "sha256": "ab02a5ac30686a8f05c9722b3645f84fae502f7c885570f7c3c6b943e8eb057f"
+      "size": 34771351,
+      "sha256": "2f2218b8b0fd3515296d6b78d7c5cac718eb7c15e82654765fccfcee0bb53dab"
+    },
+    "education_windows": {
+      "size": 36331359,
+      "sha256": "5676e6d644d12b626ea61843c4ce5df358e24a5a5e08495a30d7ceb1ae83d2a6"
     }
   },
-  "release_notes": "### 新增功能\n\n- **学历核验批量闭环**：支持批量导入并识别毕业证书，统一核对姓名和证书编号后，为所有有效记录打开学信网验证；页面同步显示识别、验证码、扫码、查询结果和截图状态，并以同一进度区反馈三个步骤。\n- **学信网结果批量截图**：手机确认并出现结果页后，可一键按统一规格保存仅包含网页内容的结果截图；首次选择的保存位置会自动记忆，重复执行时跳过已有有效截图，查询无记录的项目会明确标记为无需截图。\n\n### 体验优化\n\n- **证书重点字段识别**：加强姓名和证书编号提取，自动校正横竖和倒置图片，支持双击查看原图及人工旋转；多张证书并行识别并逐条显示进度，识别结果可在提交前手工修正。\n- **验证码与页面状态识别**：验证码支持字符和算术题，识别失败后快速重试并在连续失败时转人工处理；等待扫码、二维码过期、查询无记录、结果已出现、页面关闭和打开失败等状态会按学信网页面实际情况更新。",
+  "release_notes": "### 新增功能\n\n- **独立学历核验助手**：Windows 用户可直接下载单文件工具，独立完成毕业证书识别、学信网核验和结果截图，无需启动完整的 BOSS 简历筛选器。\n- **独立模型配置**：工具内可保存和切换视觉模型；API Key 保存在当前用户的系统安全凭据中。\n\n### 体验优化\n\n- **识别速度与准确率平衡**：清晰证书优先快速识别，姓名等关键字段存在疑点时再进行重点复核，并保留有限重试，减少无效模型调用和等待时间。\n- **验证码与核验流程**：优化验证码识别与重试机制，缩短核验等待并完善全流程状态反馈。",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.31/BOSS_ResumeFilter.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.31/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.31/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.32/BOSS_ResumeFilter.exe",
+    "education_windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.32/EducationCertificateTool.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.32/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.32/BOSS_ResumeFilter.dmg"
   }
 }
