@@ -78,6 +78,7 @@ class EducationQueueStatusSummary:
     recognition_failed: int
     manual_review: int
     recognized: int
+    manually_completed: int
     verification_not_started: int
     verification_processing: int
     waiting_scan: int
@@ -87,6 +88,11 @@ class EducationQueueStatusSummary:
     result_not_found: int
     verification_attention: int
     verification_failed: int
+
+    @property
+    def information_ready(self) -> int:
+        """Return records ready for CHSI, regardless of automatic/manual origin."""
+        return self.recognized + self.manually_completed
 
 
 @dataclass(frozen=True)
@@ -133,10 +139,18 @@ class EducationController:
         items: Mapping[str, Mapping[str, Any]],
     ) -> EducationQueueStatusSummary:
         """Classify recognition and CHSI stages without conflating them."""
-        statuses = [
-            str(item.get("status") or "待识别")
-            for item in items.values()
-        ]
+        item_states = []
+        for item in items.values():
+            status = str(item.get("status") or "待识别")
+            fields_ready = bool(
+                str(item.get("name") or "").strip()
+                and str(item.get("certificate_number") or "").strip()
+            )
+            manually_edited = bool(item.get("manually_edited")) or (
+                status == "信息已修改"
+            )
+            item_states.append((status, fields_ready, manually_edited))
+        statuses = [state[0] for state in item_states]
         total = len(statuses)
         recognition_pending = statuses.count("待识别")
         recognizing = statuses.count("识别中")
@@ -144,14 +158,30 @@ class EducationController:
             status in {"识别失败", "校验失败"}
             for status in statuses
         )
-        manual_review = statuses.count("待人工确认")
+        manual_review = statuses.count("待人工确认") + sum(
+            status == "信息已修改" and not fields_ready
+            for status, fields_ready, _manually_edited in item_states
+        )
+        manually_completed = sum(
+            manually_edited
+            and fields_ready
+            and status not in {
+                "待识别",
+                "识别中",
+                "识别失败",
+                "校验失败",
+                "待人工确认",
+            }
+            for status, fields_ready, manually_edited in item_states
+        )
         recognized = max(
             0,
             total
             - recognition_pending
             - recognizing
             - recognition_failed
-            - manual_review,
+            - manual_review
+            - manually_completed,
         )
         return EducationQueueStatusSummary(
             total=total,
@@ -160,9 +190,11 @@ class EducationController:
             recognition_failed=recognition_failed,
             manual_review=manual_review,
             recognized=recognized,
+            manually_completed=manually_completed,
             verification_not_started=sum(
                 status in {"已识别", "识别成功"}
-                for status in statuses
+                or (status == "信息已修改" and fields_ready)
+                for status, fields_ready, _manually_edited in item_states
             ),
             verification_processing=sum(
                 status in {"打开中", "识别验证码中..."}
@@ -523,6 +555,7 @@ class EducationController:
                         )
                     ),
                     "warnings": "；".join(result.warnings),
+                    "manually_edited": False,
                 })
                 continue
             item["status"] = "识别失败"

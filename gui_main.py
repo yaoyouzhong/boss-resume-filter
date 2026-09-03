@@ -3112,6 +3112,55 @@ class BossFilterGUI:
                 parent=self.root,
             )
 
+    def _refresh_education_batch_status(self) -> None:
+        """Render a quiet, queue-wide recognition and CHSI status ledger."""
+        batch_status_var = getattr(self, "education_batch_status_var", None)
+        if batch_status_var is None:
+            return
+        summary = _EDUCATION_CONTROLLER.summarize_queue_statuses(
+            self.education_items
+        )
+        if not summary.total:
+            batch_status_var.set("尚未导入证书")
+            return
+        summary_parts = [f"{summary.total} 张证书"]
+        if summary.information_ready:
+            summary_parts.append(
+                f"信息就绪 {summary.information_ready}/{summary.total}"
+            )
+        if summary.recognizing:
+            summary_parts.append(f"识别中 {summary.recognizing}")
+        if summary.recognition_pending:
+            summary_parts.append(f"待识别 {summary.recognition_pending}")
+        if summary.recognition_failed:
+            summary_parts.append(f"识别失败 {summary.recognition_failed}")
+        if summary.manual_review:
+            summary_parts.append(f"待补全 {summary.manual_review}")
+        verification_parts = []
+        if summary.verification_not_started:
+            verification_parts.append(f"待验证 {summary.verification_not_started}")
+        if summary.verification_processing:
+            verification_parts.append(f"验证中 {summary.verification_processing}")
+        if summary.waiting_scan:
+            verification_parts.append(f"等待扫码 {summary.waiting_scan}")
+        if summary.waiting_result:
+            verification_parts.append(f"待结果 {summary.waiting_result}")
+        if summary.qr_expired:
+            verification_parts.append(f"二维码过期 {summary.qr_expired}")
+        if summary.result_ready:
+            verification_parts.append(f"已出结果 {summary.result_ready}")
+        if summary.result_not_found:
+            verification_parts.append(f"未查到 {summary.result_not_found}")
+        if summary.verification_attention:
+            verification_parts.append(f"待处理 {summary.verification_attention}")
+        if summary.verification_failed:
+            verification_parts.append(f"异常 {summary.verification_failed}")
+        summary_parts.append(
+            "学信网 "
+            + (" / ".join(verification_parts) if verification_parts else "尚未开始")
+        )
+        batch_status_var.set("  ·  ".join(summary_parts))
+
     def _refresh_education_queue_summary(self):
         """更新队列数量和按钮状态。"""
         total = len(self.education_items)
@@ -3121,58 +3170,7 @@ class BossFilterGUI:
             self.education_file_var.set(f"已导入 {total} 张证书")
         else:
             self.education_file_var.set("尚未导入毕业证书")
-        batch_status_var = getattr(self, "education_batch_status_var", None)
-        if batch_status_var is not None:
-            summary = _EDUCATION_CONTROLLER.summarize_queue_statuses(
-                self.education_items
-            )
-            summary_parts = [f"已导入 {total} 张"] if total else ["尚未导入证书"]
-            if summary.recognized:
-                summary_parts.append(f"已识别 {summary.recognized}")
-            if summary.recognizing:
-                summary_parts.append(f"识别中 {summary.recognizing}")
-            if summary.recognition_pending:
-                summary_parts.append(f"待识别 {summary.recognition_pending}")
-            if summary.recognition_failed:
-                summary_parts.append(f"失败 {summary.recognition_failed}")
-            if summary.manual_review:
-                summary_parts.append(f"待核对 {summary.manual_review}")
-            summary_text = " · ".join(summary_parts)
-            if total:
-                verification_parts = []
-                if summary.verification_not_started:
-                    verification_parts.append(
-                        f"待验证 {summary.verification_not_started}"
-                    )
-                if summary.verification_processing:
-                    verification_parts.append(
-                        f"验证中 {summary.verification_processing}"
-                    )
-                if summary.waiting_scan:
-                    verification_parts.append(f"等待扫码 {summary.waiting_scan}")
-                if summary.waiting_result:
-                    verification_parts.append(f"待结果 {summary.waiting_result}")
-                if summary.qr_expired:
-                    verification_parts.append(f"二维码过期 {summary.qr_expired}")
-                if summary.result_ready:
-                    verification_parts.append(f"已出结果 {summary.result_ready}")
-                if summary.result_not_found:
-                    verification_parts.append(f"未查到 {summary.result_not_found}")
-                if summary.verification_attention:
-                    verification_parts.append(
-                        f"待处理 {summary.verification_attention}"
-                    )
-                if summary.verification_failed:
-                    verification_parts.append(
-                        f"异常 {summary.verification_failed}"
-                    )
-                verification_text = (
-                    " · ".join(verification_parts)
-                    if verification_parts
-                    else "尚未开始"
-                )
-                summary_text += f"\n学信网：{verification_text}"
-            batch_status_var.set(summary_text)
+        self._refresh_education_batch_status()
         queue_card = getattr(self, "education_queue_card", None)
         workspace = getattr(self, "education_workspace", None)
         if total < 1:
@@ -3290,13 +3288,17 @@ class BossFilterGUI:
         """Show batch recognition progress next to the action that started it."""
         total = max(1, int(total))
         completed = max(0, min(int(completed), total))
-        statuses = [
-            str(item.get("status") or "")
-            for item in self.education_items.values()
-        ]
-        success = statuses.count("已识别")
-        manual = statuses.count("待人工确认")
-        failed = statuses.count("识别失败")
+        summary = _EDUCATION_CONTROLLER.summarize_queue_statuses(
+            self.education_items
+        )
+        success = summary.recognized
+        manually_completed = summary.manually_completed
+        manual = summary.manual_review
+        failed = summary.recognition_failed
+        outcome_text = f"自动识别 {success}"
+        if manually_completed:
+            outcome_text += f" · 人工补全 {manually_completed}"
+        outcome_text += f" · 待核对 {manual} · 失败 {failed}"
         percent = (
             completed * 100 / total
             if progress_percent is None
@@ -3304,8 +3306,7 @@ class BossFilterGUI:
         )
         if running:
             text = (
-                f"正在识别 {completed}/{total} · 成功 {success} · "
-                f"待核对 {manual} · 失败 {failed}"
+                f"正在识别 {completed}/{total} · {outcome_text}"
             )
             if phase_text:
                 text += f"｜{phase_text}"
@@ -3313,8 +3314,7 @@ class BossFilterGUI:
                 text += "｜完成一张立即显示一张"
         else:
             text = (
-                f"识别完成 {completed}/{total} · 成功 {success} · "
-                f"待核对 {manual} · 失败 {failed}"
+                f"识别完成 {completed}/{total} · {outcome_text}"
             )
             if failed:
                 text += "｜点击失败记录查看原因，可重新识别"
@@ -3387,6 +3387,7 @@ class BossFilterGUI:
         }
         if previous_status in editable_terminal_statuses:
             item["status"] = "信息已修改"
+            item["manually_edited"] = True
             item["detail"] = "姓名或证书编号已修改，请重新执行第 2 步。"
             item["warnings"] = "请确认修改内容与证书原件一致。"
             if previous_status == EDUCATION_RESULT_READY_STATUS:
@@ -3395,7 +3396,19 @@ class BossFilterGUI:
                 item["screenshot_path"] = ""
                 item.pop("_screenshot_primary_status", None)
         self._update_education_queue_row(self.education_current_id)
+        self._refresh_education_batch_status()
         self._refresh_education_action_states()
+        if getattr(self, "_education_workflow_progress_stage", "") == "recognition":
+            completed = sum(
+                str(current.get("status") or "待识别")
+                not in {"待识别", "识别中"}
+                for current in self.education_items.values()
+            )
+            self._update_education_recognition_progress(
+                total=len(self.education_items),
+                completed=completed,
+                running=bool(self.education_recognition_running),
+            )
 
     def _set_education_form_fields(
         self,

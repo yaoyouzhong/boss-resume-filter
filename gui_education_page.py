@@ -354,8 +354,8 @@ def build_education_page(
     ttk.Label(
         batch_header,
         textvariable=batch_status_var,
-        font=(font_family, int(10 * host.font_scale), "bold"),
-        foreground=host.colors["primary"],
+        font=(font_family, int(9 * host.font_scale)),
+        foreground=host.colors["text_secondary"],
         justify=tk.RIGHT,
         anchor="e",
     ).pack(side="right", padx=(16, 0))

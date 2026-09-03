@@ -66,6 +66,32 @@ def test_queue_status_summary_separates_recognition_from_chsi_stages():
     assert summary.verification_failed == 1
 
 
+def test_queue_status_summary_counts_completed_manual_edit_as_chsi_ready():
+    items = {
+        "manual": {
+            "status": "信息已修改",
+            "name": "鲍殊",
+            "certificate_number": "102891202305002814",
+        },
+        **{
+            f"recognized_{index}": {
+                "status": "已识别",
+                "name": f"候选人{index}",
+                "certificate_number": str(index).zfill(18),
+            }
+            for index in range(4)
+        },
+    }
+
+    summary = EducationController.summarize_queue_statuses(items)
+
+    assert summary.recognized == 4
+    assert summary.manually_completed == 1
+    assert summary.information_ready == 5
+    assert summary.manual_review == 0
+    assert summary.verification_not_started == 5
+
+
 def test_screenshot_readiness_does_not_claim_failed_items_are_ready():
     assert EducationController.screenshot_readiness({
         "status": EDUCATION_WAITING_FOR_SCAN_STATUS,

@@ -9427,9 +9427,14 @@ def test_education_manual_fields_enable_verification_without_reimporting():
     gui.education_name_var.get.return_value = " 张三 "
     gui.education_number_var = Mock()
     gui.education_number_var.get.return_value = "123456789012345678"
+    gui.education_batch_status_var = Mock()
     gui.education_recognize_btn = Mock()
     gui.education_fill_btn = Mock()
     gui._update_education_queue_row = Mock()
+    gui.education_recognition_progress_frame = Mock()
+    gui.education_recognition_progress_var = Mock()
+    gui.education_recognition_progress_text_var = Mock()
+    gui._education_workflow_progress_stage = "recognition"
 
     gui._on_education_fields_edited()
 
@@ -9437,8 +9442,16 @@ def test_education_manual_fields_enable_verification_without_reimporting():
     assert item["name"] == "张三"
     assert item["certificate_number"] == "123456789012345678"
     assert item["status"] == "信息已修改"
+    assert item["manually_edited"] is True
     assert "重新执行第 2 步" in item["detail"]
     gui.education_fill_btn.configure.assert_called_with(state="normal")
+    gui.education_batch_status_var.set.assert_called_with(
+        "1 张证书  ·  信息就绪 1/1  ·  学信网 待验证 1"
+    )
+    progress_text = (
+        gui.education_recognition_progress_text_var.set.call_args.args[0]
+    )
+    assert "自动识别 0 · 人工补全 1 · 待核对 0" in progress_text
 
 
 def test_education_queue_selection_does_not_erase_recognized_number():
@@ -10270,7 +10283,7 @@ def test_education_queue_summary_text_varies_by_count():
     gui._refresh_education_queue_summary()
     gui.education_file_var.set.assert_called_with("已导入 1 张证书")
     gui.education_batch_status_var.set.assert_called_with(
-        "已导入 1 张 · 待识别 1\n学信网：尚未开始"
+        "1 张证书  ·  待识别 1  ·  学信网 尚未开始"
     )
     gui.education_queue_card.pack.assert_called_once_with(
         fill="x",
@@ -10284,7 +10297,7 @@ def test_education_queue_summary_text_varies_by_count():
     gui._refresh_education_queue_summary()
     gui.education_file_var.set.assert_called_with("已导入 2 张证书")
     gui.education_batch_status_var.set.assert_called_with(
-        "已导入 2 张 · 待识别 2\n学信网：尚未开始"
+        "2 张证书  ·  待识别 2  ·  学信网 尚未开始"
     )
     gui.education_queue_tree.configure.assert_called_with(height=2)
     gui.education_queue_scrollbar.pack.assert_not_called()
@@ -10323,8 +10336,8 @@ def test_education_batch_status_reports_recognition_progress_and_failures():
     gui._refresh_education_queue_summary()
 
     gui.education_batch_status_var.set.assert_called_with(
-        "已导入 5 张 · 已识别 1 · 识别中 1 · 待识别 1 · 失败 1 · 待核对 1"
-        "\n学信网：待验证 1"
+        "5 张证书  ·  信息就绪 1/5  ·  识别中 1  ·  待识别 1"
+        "  ·  识别失败 1  ·  待补全 1  ·  学信网 待验证 1"
     )
 
 
@@ -10351,7 +10364,33 @@ def test_education_batch_status_reports_waiting_for_chsi_scan():
     gui._refresh_education_queue_summary()
 
     gui.education_batch_status_var.set.assert_called_with(
-        "已导入 5 张 · 已识别 5\n学信网：等待扫码 5"
+        "5 张证书  ·  信息就绪 5/5  ·  学信网 等待扫码 5"
+    )
+
+
+def test_education_batch_status_counts_manual_completion_as_chsi_ready():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "manual": {
+            "status": "信息已修改",
+            "name": "鲍殊",
+            "certificate_number": "102891202305002814",
+        },
+        **{
+            f"recognized_{index}": {
+                "status": "已识别",
+                "name": f"候选人{index}",
+                "certificate_number": str(index).zfill(18),
+            }
+            for index in range(4)
+        },
+    }
+    gui.education_batch_status_var = Mock()
+
+    gui._refresh_education_batch_status()
+
+    gui.education_batch_status_var.set.assert_called_once_with(
+        "5 张证书  ·  信息就绪 5/5  ·  学信网 待验证 5"
     )
 
 
