@@ -63,6 +63,16 @@ def setup_styles(host):
     style.configure('TFrame', background=c['bg_card'])
     style.configure('Page.TFrame', background=c['bg_main'])
     style.configure('Home.Page.TFrame', background=c['home_bg'])
+    style.configure('EducationTool.TFrame', background=c['home_bg'])
+    style.configure(
+        'EducationTool.Workbench.TFrame',
+        background=c['home_surface_quiet'],
+    )
+    style.configure(
+        'EducationTool.Workbench.TLabel',
+        background=c['home_surface_quiet'],
+        foreground=c['text_primary'],
+    )
     style.configure('TLabel', font=host.font_label, foreground=c['text_primary'],
                     background=c['bg_card'])
 

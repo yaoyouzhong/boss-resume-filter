@@ -2,6 +2,8 @@
 .env
 api_config.local.json
 api_config.local.corrupted-*.json
+education_tool_config.local.json
+.education_tool_preferences.json
 
 # Python
 __pycache__/

@@ -516,6 +516,26 @@ def _chevron_down(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     return img
 
 
+def _arrow_left(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
+    """Leftward navigation arrow with the same stroke language as chevrons."""
+    img = Image.new('RGBA', (size_px, size_px), bg)
+    d = ImageDraw.Draw(img)
+    S = size_px
+    line_width = max(sw, int(round(_s(2, S))))
+    d.line(
+        [_s(5, S), _s(12, S), _s(19, S), _s(12, S)],
+        fill=fill,
+        width=line_width,
+    )
+    d.line(
+        [_s(11, S), _s(6, S), _s(5, S), _s(12, S), _s(11, S), _s(18, S)],
+        fill=fill,
+        width=line_width,
+        joint='curve',
+    )
+    return img
+
+
 def _thumbs_up(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     """👍 Lucide 图标 — 24×24 轮廓 + 拇指分割线"""
     img = Image.new('RGBA', (size_px, size_px), bg)
@@ -939,6 +959,7 @@ ICON_REGISTRY: Dict[str, Callable] = {
     'strong_recommend': _strong_recommend,
     'chevron_up':   _chevron_up,
     'chevron_down': _chevron_down,
+    'arrow_left':   _arrow_left,
     'mail':         _mail,
     'play':         _play,
     'stop':         _stop,

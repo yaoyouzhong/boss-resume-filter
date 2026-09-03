@@ -944,6 +944,73 @@ def test_release_asset_metadata_from_remote_assets_uses_github_digest():
     }
 
 
+def test_release_asset_contract_adds_standalone_tool_from_v232():
+    assert build._release_asset_names_for_version("v2.31") == (
+        "BOSS_ResumeFilter.exe",
+        "BOSS_ResumeFilter_mac.zip",
+        "BOSS_ResumeFilter.dmg",
+    )
+    assert build._release_asset_names_for_version("2.32") == (
+        "BOSS_ResumeFilter.exe",
+        "EducationCertificateTool.exe",
+        "BOSS_ResumeFilter_mac.zip",
+        "BOSS_ResumeFilter.dmg",
+    )
+    assert build._release_downloads("2.32", source="github")[
+        "education_windows"
+    ].endswith("/v2.32/EducationCertificateTool.exe")
+    assert build._downloads_cn_key("EducationCertificateTool.exe") == (
+        "education_windows"
+    )
+
+
+def test_v232_manifest_requires_standalone_tool_integrity_metadata():
+    version = "2.32"
+    notes = "### 新增功能\n\n- test"
+    github_assets = {
+        name: {
+            "name": name,
+            "size": index,
+            "digest": "sha256:" + str(index) * 64,
+        }
+        for index, name in enumerate(
+            build._release_asset_names_for_version(version),
+            start=1,
+        )
+    }
+    assets = {
+        key: {
+            "size": github_assets[name]["size"],
+            "sha256": build._asset_digest_sha256(github_assets[name]),
+        }
+        for key, name in build._release_asset_items(version)
+    }
+    latest = {
+        "version": version,
+        "downloads": build._release_downloads(version, source="github"),
+        "downloads_cn": build._release_downloads(version, source="gitee"),
+        "assets": assets,
+        "release_notes": notes,
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        dist_dir = tmp_path / "dist"
+        dist_dir.mkdir()
+        (tmp_path / "latest.json").write_text(
+            json.dumps(latest),
+            encoding="utf-8",
+        )
+        with _with_build_context(tmp_path, dist_dir, is_win=True, is_mac=False):
+            assert build._verify_latest_manifest(version, github_assets, notes) is True
+            del latest["assets"]["education_windows"]
+            (tmp_path / "latest.json").write_text(
+                json.dumps(latest),
+                encoding="utf-8",
+            )
+            assert build._verify_latest_manifest(version, github_assets, notes) is False
+
+
 def test_release_workflow_only_runs_when_explicitly_dispatched():
     """A master merge must never publish without the separate release authorization."""
     workflow = (build.BASE_DIR / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
@@ -1050,7 +1117,7 @@ def test_verify_release_assets_complete_uses_size_without_downloading_gitee_asse
         "token": "token",
         "owner": "owner",
         "repo": "repo",
-        "tag": "v9.9.9",
+        "tag": "v2.31",
         "api_base": "https://gitee.example/api",
         "release_id": 1,
         "existing": {},
@@ -1067,7 +1134,7 @@ def test_verify_release_assets_complete_uses_size_without_downloading_gitee_asse
         build._remote_file_sha256 = lambda url, token=None: downloaded.append((url, token))
 
         ok = build._verify_release_assets_complete(
-            "v9.9.9",
+            "v2.31",
             release_cache=release_cache,
             report=lambda _message: None,
         )
@@ -1194,7 +1261,7 @@ def test_collect_github_release_asset_metadata_uses_remote_digest_before_downloa
             )
 
             with _with_build_context(tmp_path, dist_dir, is_win=True, is_mac=False):
-                metadata = build._collect_github_release_asset_metadata("9.9.9")
+                metadata = build._collect_github_release_asset_metadata("2.31")
         finally:
             build._get_github_release_assets = original_get_assets
             build._wait_for_github_release_assets = original_wait
@@ -1254,7 +1321,7 @@ def test_sync_gitee_from_github_skips_download_when_remote_assets_are_reusable()
             "token": "token",
             "owner": "owner",
             "repo": "repo",
-            "tag": "v9.9.9",
+            "tag": "v2.31",
             "api_base": "https://gitee.example/api",
             "release_id": 1,
             "existing": {
@@ -1289,7 +1356,7 @@ def test_sync_gitee_from_github_skips_download_when_remote_assets_are_reusable()
 
             with _with_build_context(tmp_path, dist_dir, is_win=True, is_mac=False):
                 downloads_cn = build._sync_gitee_from_github(
-                    "9.9.9", "title", "notes", need_wait=False, release_cache=release_cache
+                    "2.31", "title", "notes", need_wait=False, release_cache=release_cache
                 )
         finally:
             build._gitee_fetch_assets = original_fetch_assets
@@ -1297,8 +1364,8 @@ def test_sync_gitee_from_github_skips_download_when_remote_assets_are_reusable()
             build._download_from_github_release = original_download
 
     assert downloads_cn == {
-        "macos": "https://gitee.com/owner/repo/releases/download/v9.9.9/BOSS_ResumeFilter_mac.zip",
-        "macos_dmg": "https://gitee.com/owner/repo/releases/download/v9.9.9/BOSS_ResumeFilter.dmg",
+        "macos": "https://gitee.com/owner/repo/releases/download/v2.31/BOSS_ResumeFilter_mac.zip",
+        "macos_dmg": "https://gitee.com/owner/repo/releases/download/v2.31/BOSS_ResumeFilter.dmg",
     }
 
 
@@ -1356,7 +1423,7 @@ def test_sync_gitee_from_github_refreshes_stale_release_cache_before_upload():
 
             with _with_build_context(tmp_path, dist_dir, is_win=True, is_mac=False):
                 downloads_cn = build._sync_gitee_from_github(
-                    "9.9.9", "title", "notes", need_wait=False, release_cache=release_cache
+                    "2.31", "title", "notes", need_wait=False, release_cache=release_cache
                 )
         finally:
             build._gitee_fetch_assets = original_fetch_assets
@@ -1734,7 +1801,7 @@ def test_sync_gitee_from_github_supports_macos_release_waiting_for_windows_exe()
             "token": "token",
             "owner": "owner",
             "repo": "repo",
-            "tag": "v9.9.9",
+            "tag": "v2.31",
             "api_base": "https://gitee.example/api",
             "release_id": 1,
             "existing": {},
@@ -1773,7 +1840,7 @@ def test_sync_gitee_from_github_supports_macos_release_waiting_for_windows_exe()
 
             with _with_build_context(tmp_path, dist_dir, is_win=False, is_mac=True):
                 downloads_cn = build._sync_gitee_from_github(
-                    "9.9.9", "title", "notes", need_wait=False, release_cache=release_cache
+                    "2.31", "title", "notes", need_wait=False, release_cache=release_cache
                 )
         finally:
             build._gitee_fetch_assets = original_fetch_assets
@@ -1785,7 +1852,7 @@ def test_sync_gitee_from_github_supports_macos_release_waiting_for_windows_exe()
     assert download_order == ["BOSS_ResumeFilter.exe"]
     assert upload_order == ["BOSS_ResumeFilter.exe"]
     assert downloads_cn == {
-        "windows": "https://gitee.com/owner/repo/releases/download/v9.9.9/BOSS_ResumeFilter.exe"
+        "windows": "https://gitee.com/owner/repo/releases/download/v2.31/BOSS_ResumeFilter.exe"
     }
 
 
@@ -2166,7 +2233,7 @@ def test_git_push_skips_same_remote_tag_without_force():
 
 
 def test_verify_latest_manifest_matches_public_release_metadata():
-    version = "9.9.9"
+    version = "2.31"
     notes = "### 新增功能\n\n- test"
     github_assets = {
         "BOSS_ResumeFilter.exe": {"size": 111, "digest": "sha256:" + "a" * 64},

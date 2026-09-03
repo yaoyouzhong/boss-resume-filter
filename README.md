@@ -20,7 +20,7 @@
   · <a href="CHANGELOG.md">更新记录</a>
 </p>
 
-> 当前发布版本：v2.31 学历核验与批量结果截图（版本号 v2.31）
+> 当前发布版本：v2.32 独立学历核验助手与识别体验升级（版本号 v2.32）
 
 <p align="center">
   <img alt="38 秒产品演示：从岗位配置到联系跟进" src=".github/assets/product-demo-preview.gif">
@@ -64,6 +64,7 @@
 | 平台 | 下载与启动 |
 |---|---|
 | **Windows** | 下载 [BOSS_ResumeFilter.exe](https://github.com/yaoyouzhong/boss-resume-filter/releases/latest/download/BOSS_ResumeFilter.exe)，双击启动 |
+| **Windows 独立学历核验** | 只需学历核验时，下载 [EducationCertificateTool.exe](https://github.com/yaoyouzhong/boss-resume-filter/releases/latest/download/EducationCertificateTool.exe)，双击启动 |
 | **macOS** | 下载 [BOSS_ResumeFilter.dmg](https://github.com/yaoyouzhong/boss-resume-filter/releases/latest/download/BOSS_ResumeFilter.dmg)，将 App 拖入 Applications；首次打开时右键选择「打开」 |
 | **国内镜像** | GitHub 下载较慢时，使用 [Gitee Release](https://gitee.com/yaoyouzhong/boss-resume-filter/releases) |
 
@@ -108,6 +109,8 @@ python bossmaster.py --greet --ai-eval
 ```bash
 python education_tool.py
 ```
+
+首次运行会进入“模型配置”，填写服务商、Base URL、模型名称和 API Key 后即可使用。独立工具与 BOSS 主程序共用现行学历核验能力，但使用独立配置；API Key 保存在当前用户的系统凭据中，不写入配置文件或可执行文件。详细步骤见 [独立学历证书核验助手操作说明](docs/education-tool-manual.md)。
 
 运行中按 `Ctrl+C` 会保存当前进度；下次运行会跳过已经联系的候选人。
 
@@ -169,6 +172,16 @@ python education_tool.py
 
 README 只保留最近三个版本的摘要；完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
+### v2.32 独立学历核验助手与识别体验升级
+
+**新增功能**
+- **独立学历核验助手**：Windows 用户可直接下载单文件工具，独立完成毕业证书识别、学信网核验和结果截图，无需启动完整的 BOSS 简历筛选器。
+- **独立模型配置**：工具内可保存和切换视觉模型；API Key 保存在当前用户的系统安全凭据中。
+
+**体验优化**
+- **识别速度与准确率平衡**：清晰证书优先快速识别，姓名等关键字段存在疑点时再进行重点复核，并保留有限重试，减少无效模型调用和等待时间。
+- **验证码与核验流程**：优化验证码识别与重试机制，缩短核验等待并完善全流程状态反馈。
+
 ### v2.31 学历核验与批量结果截图
 
 **新增功能**
@@ -186,11 +199,6 @@ README 只保留最近三个版本的摘要；完整历史见 [CHANGELOG.md](CHA
 - 首页增加招聘工作台与运行准备区，集中呈现当前最需要处理的候选人、Chrome、API Key、本地数据和最近扫描状态。
 - 页面改为按需创建并缓存，优化首次打开、连续切换和窗口缩放时的响应。
 
-### v2.29 外部候选人导入与简历识别升级
-
-- 支持批量导入多种格式的外部简历，完成岗位归属、筛选评分、AI 画像和简历评估。
-- 外部候选人可以继续编辑、复核、反馈、跟进和导出，但不会进入 BOSS 联系清单。
-
 ## 开发与验证
 
 稳定回归不依赖浏览器、网络、人工登录或真实岗位配置：
@@ -205,7 +213,7 @@ python tests/test_import.py
 
 ```text
 boss-resume-filter/
-├── gui_main.py            # 图形界面主程序（v2.31）
+├── gui_main.py            # 图形界面主程序（v2.32）
 ├── gui_*_page.py          # 首页、配置、运行、结果、统计、设置、学历页面
 ├── gui_candidate_*.py     # 候选人查看、复核、待办、菜单与状态表单
 ├── gui_*_support.py       # 导航、滚动、输入、反馈、控件和布局支持

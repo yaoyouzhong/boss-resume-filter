@@ -9,7 +9,7 @@ boss-resume-filter/
 ├── .github/              # GitHub 工作流、品牌资产、Issue/PR 模板和仓库社区配置
 ├── diagram/              # README 使用的可缩放数据流和架构图；每个主题单独子目录
 ├── docs/                 # GitHub Pages 产品首页、图文手册、演示截图和办公交付材料
-├── gui_main.py            # 图形界面主程序（v2.31）
+├── gui_main.py            # 图形界面主程序（v2.32）
 ├── bossmaster.py          # BOSS 扫描、筛选、联系和导出主程序
 ├── education_tool*.py     # 独立学历核验工具入口、配置与安全
 ├── *_controller.py        # 领域动作编排；不持有 Tk 控件
@@ -378,7 +378,7 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 
 - 系统设置的“使用中的模型”可显式选择学历核验模型；未指定时跟随默认 AI 模型
 - `api_config.local.json` / 打包后的 `api_config.json` 的 `education_model_ref` 字段存储指定模型（`{api_provider, base_url, model}`），未设置时回退默认 AI 模型
-- 独立学历证书核验助手固定使用 `token-plan.cn-beijing.maas.aliyuncs.com` 的 `kimi-k2.6`
+- 独立学历证书核验助手提供独立“模型配置”页，只保留一个当前识别模型；模型元数据与截图偏好保存在 `%LOCALAPPDATA%\EducationCertificateTool`，不读取 BOSS 主程序配置。API Key 按 provider + base_url 使用独立 `education-certificate-tool` 服务名保存到系统凭据，构建脚本不得接收、生成或打包任何 API Key/秘密载荷。本机构建必须复用仓库隔离的 `pack_venv`，不得直接使用系统 Python 或 Anaconda；`build_education_tool.py --ci` 仅允许 GitHub Actions Windows 发布任务使用
 - 学信网验证支持多选证书并为每人创建独立标签页；系统填写姓名和证书编号、识别图片验证码并提交，识别失败时转人工输入或重试，手机扫码和最终结果确认始终由 HR 完成
 - 正在作为默认 AI 模型或学历核验模型使用的已保存模型，需先在“使用中的模型”中切换后才能删除
 ## 自动更新
@@ -389,7 +389,7 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 - **Windows**：下载 EXE → 校验 SHA256 → `update.bat` 替换重启；脚本须清理 `_PYI_*` 环境变量 + `PYINSTALLER_RESET_ENVIRONMENT=1` 防 DLL 缺失
 - **macOS**：.app 运行→下载 ZIP 替换重启；源码→`git pull`
 - `latest.json` 的 `assets` 记录产物 `size`/`sha256` 供校验
-- **Gitee Release 上传**：Actions 只暂存 GitHub Draft 和双平台产物；本机 `release_dispatch.py` 核对 GitHub 附件 size/SHA256 元数据后立即公开 GitHub 主源，再删除其他历史版本的 Gitee 附件（保留 Release 页面和 tag），并按 EXE→ZIP→DMG 下载、校验和串行镜像本次版本。清理或任一附件失败立即中止，重跑时复用阶段凭证、已验证附件和成功 Actions 构建
+- **Gitee Release 上传**：Actions 只暂存 GitHub Draft 和双平台产物；v2.32 起 Windows 产物同时包含 `BOSS_ResumeFilter.exe` 和 `EducationCertificateTool.exe`。本机 `release_dispatch.py` 核对 GitHub 附件 size/SHA256 元数据后立即公开 GitHub 主源，再删除其他历史版本的 Gitee 附件（保留 Release 页面和 tag），并按 BOSS EXE→学历核验 EXE→ZIP→DMG 下载、校验和串行镜像本次版本。清理或任一附件失败立即中止，重跑时复用阶段凭证、已验证附件和成功 Actions 构建
 - **Gitee 完整性校验**：发布主流程只校验附件齐全和 size 与 GitHub 一致，不回下载大文件；需要逐文件 SHA256 时手动运行 `python build.py --verify-gitee-integrity X.Y.Z`
 - **Gitee Token**：只从本机环境变量读取 `GITEE_TOKEN`（需 projects 权限）；Actions 不保存、不读取该 Token，也禁止上传 Gitee 大文件
 - **发布验收复用**：GitHub/Gitee/`latest.json` 的完整远端验收每轮正式发布只执行一次并保存验收凭证；后续收尾只核对凭证对应的远端提交，不得立即重复整套公开验收

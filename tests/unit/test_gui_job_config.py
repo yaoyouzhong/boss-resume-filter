@@ -22,6 +22,7 @@ import bossmaster
 import run_presenter
 from candidate_workflow import filter_candidates_by_result_view
 from data_maintenance_controller import DataMaintenanceController
+from education_controller import EDUCATION_WAITING_FOR_SCAN_STATUS
 from gui_main import (
     BossFilterGUI,
     PAGE_SPECS,
@@ -1006,6 +1007,21 @@ def test_disclosure_chevrons_are_registered_as_line_icons():
             assert image.getbbox() is not None
 
 
+def test_standalone_education_navigation_icons_are_registered_and_distinct():
+    for name in ("ai_spark", "arrow_left"):
+        assert name in icons.ICON_REGISTRY
+    model_icon = icons.ICON_REGISTRY["ai_spark"](
+        48, "#64748B", (0, 0, 0, 0), 4
+    )
+    back_icon = icons.ICON_REGISTRY["arrow_left"](
+        48, "#64748B", (0, 0, 0, 0), 4
+    )
+
+    assert model_icon.getbbox() is not None
+    assert back_icon.getbbox() is not None
+    assert model_icon.tobytes() != back_icon.tobytes()
+
+
 def test_checkbox_icons_are_registered_as_box_and_checkmark_states():
     assert "checkbox_off" in icons.ICON_REGISTRY
     assert "checkbox_on" in icons.ICON_REGISTRY
@@ -1526,6 +1542,9 @@ class _FakeTree:
     def configure(self, **kwargs):
         self.displaycolumns = kwargs["displaycolumns"]
 
+    def get_children(self):
+        return tuple(self.items)
+
     def column(self, column, **kwargs):
         if not kwargs:
             return self.column_options.get(column, {})
@@ -1736,6 +1755,69 @@ def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
     }
     assert sum(widths_2k.values()) <= 956
     assert widths_2k["provider"] < 240
+
+
+def test_standalone_model_name_column_tracks_content_without_changing_boss_layout():
+    class _MeasureFont:
+        def measure(self, text):
+            return len(text) * 10
+
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = _FakeRoot(state="zoomed", width=3840, height=2000)
+    gui.font_label = ("Test Font", 12)
+    gui.standalone_education = True
+    gui.model_list_tree = _FakeTree(1800)
+    gui.model_list_tree.items = {
+        "short": {"values": ("MiniMax-M3", "MiniMax", "✓ 可用", "https://example.com")},
+    }
+    layout = _make_layout_support(gui)
+
+    with patch("gui_layout_support.tkfont.Font", return_value=_MeasureFont()):
+        layout.update_model_list_columns()
+        short_width = gui.model_list_tree.column_options["name"]["width"]
+        gui.model_list_tree.items["long"] = {
+            "values": (
+                "deepseek-vision-production-model-with-a-considerably-long-name",
+                "DeepSeek",
+                "✓ 可用",
+                "https://example.com",
+            )
+        }
+        layout.update_model_list_columns()
+        long_width = gui.model_list_tree.column_options["name"]["width"]
+
+    assert short_width == 220
+    assert long_width == 520
+
+    boss_gui = BossFilterGUI.__new__(BossFilterGUI)
+    boss_gui.root = _FakeRoot(state="zoomed", width=3840, height=2000)
+    boss_gui.standalone_education = False
+    boss_gui.model_list_tree = _FakeTree(1800)
+    boss_gui.model_list_tree.items = gui.model_list_tree.items
+    boss_layout = _make_layout_support(boss_gui)
+    boss_layout.update_model_list_columns()
+    assert boss_gui.model_list_tree.column_options["name"]["width"] == 400
+
+
+def test_standalone_model_selector_width_tracks_longest_label_only_in_standalone():
+    standalone_gui = BossFilterGUI.__new__(BossFilterGUI)
+    standalone_gui.root = _FakeRoot()
+    standalone_gui.standalone_education = True
+    standalone_gui.default_model_combo = Mock()
+    standalone_layout = _make_layout_support(standalone_gui)
+
+    standalone_layout.update_standalone_model_selector_width(
+        ["MiniMax / MiniMax-M3", "DeepSeek / deepseek-vision-production-model"]
+    )
+    standalone_gui.default_model_combo.configure.assert_called_once_with(width=47)
+
+    boss_gui = BossFilterGUI.__new__(BossFilterGUI)
+    boss_gui.root = _FakeRoot()
+    boss_gui.standalone_education = False
+    boss_gui.default_model_combo = Mock()
+    boss_layout = _make_layout_support(boss_gui)
+    boss_layout.update_standalone_model_selector_width(["DeepSeek / very-long-model-name"])
+    boss_gui.default_model_combo.configure.assert_not_called()
 
 
 def test_layout_support_expands_page_widgets_only_for_tall_windows():
@@ -2295,7 +2377,7 @@ def test_model_settings_use_explicit_role_selectors_not_hidden_actions():
     assert 'text="默认 AI 模型:"' in settings_block
     assert 'text="学历核验模型:"' in settings_block
     assert "label_width_assignment = 14" in settings_block
-    assert "model_choice_width = 34" in settings_block
+    assert "model_choice_width = 46 if standalone else 34" in settings_block
     assert "traffic_light_base_size * self.dpi_scale * self.zoom_factor" in settings_block
     assert "traffic_light_pending" in settings_block
     assert "traffic_light_success" in settings_block
@@ -3280,6 +3362,31 @@ def test_page_width_policy_does_not_rewrite_unchanged_page_geometry():
     shell.apply_page_width_policy()
 
     page.configure.assert_called_once()
+    page.place_configure.assert_not_called()
+
+
+def test_page_width_policy_uses_relative_geometry_until_viewport_is_ready():
+    page = Mock()
+    page.winfo_manager.return_value = ""
+    host = types.SimpleNamespace(
+        dpi_scale=1.0,
+        zoom_factor=1.0,
+        current_page_index=PageIndex.EDUCATION,
+        main_frame=Mock(),
+        pages_frame=Mock(),
+        _active_page_widget=page,
+        _last_page_pack_padx=None,
+        _last_page_pack_pady=None,
+        layout_support=Mock(),
+    )
+    host.main_frame.winfo_width.return_value = 200
+    host.pages_frame.winfo_width.return_value = 200
+    host.pages_frame.winfo_height.return_value = 200
+    shell = _make_app_shell(host)
+
+    shell.apply_page_width_policy()
+
+    page.place.assert_called_once_with(x=0, y=0, relwidth=1, relheight=1)
     page.place_configure.assert_not_called()
 
 
@@ -9156,6 +9263,9 @@ def test_education_browser_recovers_if_chrome_closes_before_new_tab():
 
 def test_education_browser_uses_auto_port_for_fresh_page():
     gui = object.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.root.winfo_screenwidth.return_value = 2060
+    gui.root.winfo_screenheight.return_value = 1190
     live_page = Mock()
     created_options = []
 
@@ -9163,9 +9273,13 @@ def test_education_browser_uses_auto_port_for_fresh_page():
         def __init__(self, read_file=True):
             self.read_file = read_file
             self.auto_port_called = False
+            self.arguments = {}
 
         def auto_port(self):
             self.auto_port_called = True
+
+        def set_argument(self, name, value=None):
+            self.arguments[name] = value
 
     def fake_chromium_page(options=None):
         if options is None:
@@ -9181,7 +9295,8 @@ def test_education_browser_uses_auto_port_for_fresh_page():
         assert len(created_options) == 1
         assert created_options[0].read_file is False
         assert created_options[0].auto_port_called is True
-        live_page.set.window.max.assert_called_once_with()
+        assert created_options[0].arguments == {"--window-size": "1360,900"}
+        live_page.set.window.max.assert_not_called()
 
 
 def test_education_queue_saves_manual_edits_to_current_item():
@@ -9362,6 +9477,106 @@ def test_education_chsi_button_always_processes_complete_queue():
     assert "item_ids = list(self.education_items)" in block
     assert "_selected_education_item_ids()" not in block
     assert "!= EDUCATION_RESULT_READY_STATUS" in block
+    assert "def prepare_browser_and_tabs()" in block
+    assert "target=prepare_browser_and_tabs" in block
+    assert "schedule_verification_worker(" in block
+    assert "next_start_at = max(next_start_at, now) + 1.5" in block
+    assert "idx * 1500" not in block
+
+
+def test_education_chsi_starts_first_verification_before_preparing_second_tab():
+    events = []
+
+    class ImmediateThread:
+        def __init__(self, *, target, daemon, args=()):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            self.target(*self.args)
+
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "education_1": {
+            "name": "张三",
+            "certificate_number": "123456789012345678",
+            "status": "已识别",
+        },
+        "education_2": {
+            "name": "李四",
+            "certificate_number": "876543210987654321",
+            "status": "已识别",
+        },
+    }
+    gui.education_current_id = None
+    gui.education_tabs = {}
+    gui.education_recognition_running = False
+    gui.education_screenshot_running = False
+    gui.education_status_var = Mock()
+    gui.education_warning_var = Mock()
+    gui.root = Mock()
+    gui.root.after.side_effect = lambda _delay, callback: callback()
+    gui.run_on_ui = lambda callback: callback()
+    gui._save_current_education_fields = Mock()
+    gui._update_education_queue_row = Mock()
+    gui._refresh_education_queue_summary = Mock()
+    gui._update_education_workflow_progress = Mock()
+    gui._restore_education_fill_button_if_done = Mock()
+    gui._log_education_error = Mock()
+    gui._watch_education_result_page = Mock()
+
+    pages = {
+        "education_1": object(),
+        "education_2": object(),
+    }
+
+    def get_tab(item_id):
+        events.append(("tab", item_id))
+        return None if item_id is None else pages[item_id]
+
+    def verify(_page, _name, _number, *, item_id, **_kwargs):
+        events.append(("verify", item_id))
+        return True, "已提交查询"
+
+    gui._get_education_tab = get_tab
+    gui._fill_and_solve_captcha = verify
+
+    with patch("gui_main.threading.Thread", ImmediateThread):
+        gui._fill_chsi_page()
+
+    assert events == [
+        ("tab", None),
+        ("tab", "education_1"),
+        ("verify", "education_1"),
+        ("tab", "education_2"),
+        ("verify", "education_2"),
+    ]
+
+
+def test_standalone_education_navigation_buttons_share_visual_language():
+    education_source = Path("gui_education_page.py").read_text(encoding="utf-8")
+    settings_source = Path("gui_settings_page.py").read_text(encoding="utf-8")
+    widget_source = Path("gui_widget_support.py").read_text(encoding="utf-8")
+    main_source = Path("gui_main.py").read_text(encoding="utf-8")
+
+    assert 'text="模型配置"' in education_source
+    assert 'icon_name="ai_spark"' in education_source
+    assert 'text="返回学历核验"' in settings_source
+    assert 'icon_name="arrow_left"' in settings_source
+    assert "create_navigation_button(" in education_source
+    assert "create_navigation_button(" in settings_source
+    assert 'host.colors["banner_info_bg"]' in widget_source
+    assert "ui_theme.PRIMARY_PALE" in widget_source
+    assert 'canvas.bind("<FocusIn>"' in widget_source
+    assert "button_font = host.font_label" in widget_source
+    assert "FONT_FAMILY_SEMIBOLD" not in widget_source
+    assert "canvas.winfo_width()" in widget_source
+    assert "canvas.winfo_height()" in widget_source
+    assert "trailing_builder=_build_settings_navigation if standalone else None" in education_source
+    assert "trailing_builder=_build_education_navigation if standalone else None" in settings_source
+    assert 'page_style = "EducationTool.TFrame" if standalone else "Page.TFrame"' in education_source
+    assert "'EducationTool.TFrame' if standalone else 'Page.TFrame'" in main_source
+    assert 'content_style=page_style if standalone else "TFrame"' in main_source
 
 
 def test_education_captcha_retry_scans_all_eligible_failures():
@@ -9426,9 +9641,14 @@ def test_education_manual_fields_enable_verification_without_reimporting():
     gui.education_name_var.get.return_value = " 张三 "
     gui.education_number_var = Mock()
     gui.education_number_var.get.return_value = "123456789012345678"
+    gui.education_batch_status_var = Mock()
     gui.education_recognize_btn = Mock()
     gui.education_fill_btn = Mock()
     gui._update_education_queue_row = Mock()
+    gui.education_recognition_progress_frame = Mock()
+    gui.education_recognition_progress_var = Mock()
+    gui.education_recognition_progress_text_var = Mock()
+    gui._education_workflow_progress_stage = "recognition"
 
     gui._on_education_fields_edited()
 
@@ -9436,8 +9656,16 @@ def test_education_manual_fields_enable_verification_without_reimporting():
     assert item["name"] == "张三"
     assert item["certificate_number"] == "123456789012345678"
     assert item["status"] == "信息已修改"
+    assert item["manually_edited"] is True
     assert "重新执行第 2 步" in item["detail"]
     gui.education_fill_btn.configure.assert_called_with(state="normal")
+    gui.education_batch_status_var.set.assert_called_with(
+        "1 张证书  ·  信息就绪 1/1  ·  学信网 待验证 1"
+    )
+    progress_text = (
+        gui.education_recognition_progress_text_var.set.call_args.args[0]
+    )
+    assert "自动识别 0 · 人工补全 1 · 待核对 0" in progress_text
 
 
 def test_education_queue_selection_does_not_erase_recognized_number():
@@ -10269,7 +10497,7 @@ def test_education_queue_summary_text_varies_by_count():
     gui._refresh_education_queue_summary()
     gui.education_file_var.set.assert_called_with("已导入 1 张证书")
     gui.education_batch_status_var.set.assert_called_with(
-        "已导入 1 张 · 待识别 1"
+        "1 张证书  ·  待识别 1  ·  学信网 尚未开始"
     )
     gui.education_queue_card.pack.assert_called_once_with(
         fill="x",
@@ -10283,7 +10511,7 @@ def test_education_queue_summary_text_varies_by_count():
     gui._refresh_education_queue_summary()
     gui.education_file_var.set.assert_called_with("已导入 2 张证书")
     gui.education_batch_status_var.set.assert_called_with(
-        "已导入 2 张 · 待识别 2"
+        "2 张证书  ·  待识别 2  ·  学信网 尚未开始"
     )
     gui.education_queue_tree.configure.assert_called_with(height=2)
     gui.education_queue_scrollbar.pack.assert_not_called()
@@ -10322,7 +10550,61 @@ def test_education_batch_status_reports_recognition_progress_and_failures():
     gui._refresh_education_queue_summary()
 
     gui.education_batch_status_var.set.assert_called_with(
-        "已导入 5 张 · 已识别 1 · 识别中 1 · 待识别 1 · 失败 1 · 待核对 1"
+        "5 张证书  ·  信息就绪 1/5  ·  识别中 1  ·  待识别 1"
+        "  ·  识别失败 1  ·  待补全 1  ·  学信网 待验证 1"
+    )
+
+
+def test_education_batch_status_reports_waiting_for_chsi_scan():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        f"education_{index}": {"status": EDUCATION_WAITING_FOR_SCAN_STATUS}
+        for index in range(1, 6)
+    }
+    gui.education_file_var = Mock()
+    gui.education_batch_status_var = Mock()
+    gui.education_queue_card = Mock()
+    gui.education_queue_card.winfo_manager.return_value = "pack"
+    gui.education_workspace = Mock()
+    gui.education_queue_tree = Mock()
+    gui.education_queue_scrollbar = Mock()
+    gui.education_queue_scrollbar.winfo_manager.return_value = ""
+    gui.education_remove_btn = Mock()
+    gui.education_recognize_btn = Mock()
+    gui.education_fill_btn = Mock()
+    gui.education_current_id = None
+    gui.education_recognition_running = False
+
+    gui._refresh_education_queue_summary()
+
+    gui.education_batch_status_var.set.assert_called_with(
+        "5 张证书  ·  信息就绪 5/5  ·  学信网 等待扫码 5"
+    )
+
+
+def test_education_batch_status_counts_manual_completion_as_chsi_ready():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        "manual": {
+            "status": "信息已修改",
+            "name": "鲍殊",
+            "certificate_number": "102891202305002814",
+        },
+        **{
+            f"recognized_{index}": {
+                "status": "已识别",
+                "name": f"候选人{index}",
+                "certificate_number": str(index).zfill(18),
+            }
+            for index in range(4)
+        },
+    }
+    gui.education_batch_status_var = Mock()
+
+    gui._refresh_education_batch_status()
+
+    gui.education_batch_status_var.set.assert_called_once_with(
+        "5 张证书  ·  信息就绪 5/5  ·  学信网 待验证 5"
     )
 
 

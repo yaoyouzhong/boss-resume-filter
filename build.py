@@ -2396,35 +2396,86 @@ def _ensure_current_platform_github_assets_match_local(tag, artifact_paths, repo
             sys.exit(1)
 
 
-def _required_release_asset_names():
-    """Assets that must exist on a public release before the release is complete."""
+_BASE_RELEASE_ASSETS = (
+    ("windows", "BOSS_ResumeFilter.exe"),
+    ("macos", "BOSS_ResumeFilter_mac.zip"),
+    ("macos_dmg", "BOSS_ResumeFilter.dmg"),
+)
+_EDUCATION_TOOL_RELEASE_ASSET = (
+    "education_windows",
+    "EducationCertificateTool.exe",
+)
+_EDUCATION_TOOL_FIRST_RELEASE = (2, 32, 0)
+
+
+def _release_version_tuple(version_or_tag) -> tuple[int, int, int]:
+    """Normalize a public version/tag for version-aware artifact contracts."""
+    version = str(version_or_tag or "").strip().removeprefix("v")
+    if not _is_valid_release_version(version):
+        raise ValueError(f"invalid release version: {version_or_tag!r}")
+    parts = tuple(int(part) for part in version.split("."))
+    return (*parts, *(0 for _ in range(3 - len(parts))))
+
+
+def _release_includes_education_tool(version_or_tag) -> bool:
+    """Return whether this release must publish the standalone education tool."""
+    return _release_version_tuple(version_or_tag) >= _EDUCATION_TOOL_FIRST_RELEASE
+
+
+def _release_asset_items(version_or_tag) -> tuple[tuple[str, str], ...]:
+    """Return ordered latest.json keys and filenames for one public release."""
+    items = list(_BASE_RELEASE_ASSETS)
+    if _release_includes_education_tool(version_or_tag):
+        items.insert(1, _EDUCATION_TOOL_RELEASE_ASSET)
+    return tuple(items)
+
+
+def _release_asset_names_for_version(version_or_tag) -> tuple[str, ...]:
+    """Return ordered release filenames while preserving old-release compatibility."""
+    return tuple(name for _key, name in _release_asset_items(version_or_tag))
+
+
+def _release_downloads(version: str, *, source: str = "github") -> dict[str, str]:
+    """Return canonical GitHub or Gitee download URLs for one release."""
+    if source == "github":
+        base = (
+            "https://github.com/yaoyouzhong/boss-resume-filter/"
+            f"releases/download/v{version}"
+        )
+    elif source == "gitee":
+        base = (
+            "https://gitee.com/yaoyouzhong/boss-resume-filter/"
+            f"releases/download/v{version}"
+        )
+    else:
+        raise ValueError(f"unsupported release source: {source!r}")
     return {
-        "BOSS_ResumeFilter.exe",
-        "BOSS_ResumeFilter_mac.zip",
-        "BOSS_ResumeFilter.dmg",
+        key: f"{base}/{name}"
+        for key, name in _release_asset_items(version)
     }
 
 
-def _release_integrity_asset_names():
-    """Binary update packages whose size and SHA256 must be cross-checked."""
-    return {
-        "BOSS_ResumeFilter.exe",
-        "BOSS_ResumeFilter_mac.zip",
-        "BOSS_ResumeFilter.dmg",
-    }
+def _required_release_asset_names(version_or_tag):
+    """Assets that must exist on a public release before it is complete."""
+    return set(_release_asset_names_for_version(version_or_tag))
+
+
+def _release_integrity_asset_names(version_or_tag):
+    """Release binaries whose size and SHA256 must be cross-checked."""
+    return _required_release_asset_names(version_or_tag)
 
 
 def _verify_github_release_assets_complete(tag, report=None):
     """Verify GitHub Release has every required asset and binary digests."""
     report = report or (lambda msg: print(f"  {msg}"))
     assets = _get_github_release_assets(tag)
-    required = _required_release_asset_names()
+    required = _required_release_asset_names(tag)
     missing = sorted(required - set(assets))
     if missing:
         report(f"[错误] GitHub Release 缺少附件: {', '.join(missing)}")
         return None
 
-    for name in sorted(_release_integrity_asset_names()):
+    for name in sorted(_release_integrity_asset_names(tag)):
         asset = assets.get(name)
         try:
             size = int(asset.get("size") or 0)
@@ -2457,13 +2508,13 @@ def _verify_gitee_release_assets_complete(tag, github_assets, release_cache,
         report(f"[错误] Gitee Release 附件列表读取失败: {detail}")
         return False
 
-    required = _required_release_asset_names()
+    required = _required_release_asset_names(tag)
     missing = sorted(required - set(gitee_assets))
     if missing:
         report(f"[错误] Gitee Release 缺少附件: {', '.join(missing)}")
         return False
 
-    for name in sorted(_release_integrity_asset_names()):
+    for name in sorted(_release_integrity_asset_names(tag)):
         github_asset = github_assets[name]
         gitee_asset = gitee_assets[name]
         try:
@@ -2651,31 +2702,18 @@ def _verify_latest_manifest(version: str, github_assets: dict,
         report(f"[错误] latest.json 版本为 {data.get('version')!r}，预期 {version!r}")
         ok = False
 
-    expected_downloads = {
-        "windows": f"https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter.exe",
-        "macos": f"https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter_mac.zip",
-        "macos_dmg": f"https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter.dmg",
-    }
+    expected_downloads = _release_downloads(version, source="github")
     if data.get("downloads") != expected_downloads:
         report("[错误] latest.json GitHub 下载地址与版本不一致")
         ok = False
 
-    expected_cn = {
-        "windows": f"https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter.exe",
-        "macos": f"https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter_mac.zip",
-        "macos_dmg": f"https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter.dmg",
-    }
+    expected_cn = _release_downloads(version, source="gitee")
     if data.get("downloads_cn") != expected_cn:
         report("[错误] latest.json Gitee 下载地址与版本不一致")
         ok = False
 
     manifest_assets = data.get("assets") or {}
-    asset_names = {
-        "windows": "BOSS_ResumeFilter.exe",
-        "macos": "BOSS_ResumeFilter_mac.zip",
-        "macos_dmg": "BOSS_ResumeFilter.dmg",
-    }
-    for key, name in asset_names.items():
+    for key, name in _release_asset_items(version):
         remote = github_assets.get(name) or {}
         expected_sha = _asset_digest_sha256(remote)
         try:
@@ -2860,6 +2898,8 @@ def _release_asset_key(path_or_name):
     name = Path(path_or_name).name
     if name == "BOSS_ResumeFilter.exe":
         return "windows"
+    if name == "EducationCertificateTool.exe":
+        return "education_windows"
     if name == "BOSS_ResumeFilter_mac.zip":
         return "macos"
     if name == "BOSS_ResumeFilter.dmg":
@@ -2874,10 +2914,13 @@ def _current_platform_update_artifact_names():
     return {"BOSS_ResumeFilter.exe"}
 
 
-def _release_asset_metadata(extra_paths=None):
+def _release_asset_metadata(extra_paths=None, version=None):
     """Build update metadata for current-platform artifacts plus explicitly provided files."""
+    version = version or _read_version()
     if IS_WIN:
         assets = {"windows": DIST_DIR / "BOSS_ResumeFilter.exe"}
+        if _release_includes_education_tool(version):
+            assets["education_windows"] = DIST_DIR / "EducationCertificateTool.exe"
     elif IS_MAC:
         assets = {
             "macos": DIST_DIR / "BOSS_ResumeFilter_mac.zip",
@@ -2927,15 +2970,21 @@ def _required_update_asset_keys():
     return {"windows", "macos"}
 
 
-def _assert_update_asset_metadata_complete(asset_metadata):
+def _assert_update_asset_metadata_complete(asset_metadata, version=None):
+    """Require updater assets, or every release asset when version is known."""
+    required_keys = (
+        {key for key, _name in _release_asset_items(version)}
+        if version is not None
+        else _required_update_asset_keys()
+    )
     missing = [
-        key for key in sorted(_required_update_asset_keys())
+        key for key in sorted(required_keys)
         if not asset_metadata.get(key, {}).get("size")
         or not asset_metadata.get(key, {}).get("sha256")
     ]
     if missing:
-        print(f"[错误] latest.json 缺少更新包完整性元数据: {', '.join(missing)}")
-        print("请先确保 Windows EXE 和 macOS ZIP 均已构建并可从 GitHub Release 下载。")
+        print(f"[错误] latest.json 缺少发布产物完整性元数据: {', '.join(missing)}")
+        print("请先确保本版本全部 Release 附件均已构建并可从 GitHub 下载。")
         sys.exit(1)
 
 
@@ -3526,24 +3575,23 @@ def update_latest_json(version, release_notes, downloads_cn=None, quiet=False,
     if existing_data and existing_data.get("version") == version and existing_data.get("release_date"):
         release_date = existing_data["release_date"]
 
-    assets = asset_metadata or _release_asset_metadata()
+    assets = asset_metadata or _release_asset_metadata(version=version)
     if asset_metadata is None and existing_data and existing_data.get("version") == version:
         assets = {**(existing_data.get("assets") or {}), **assets}
 
     latest_data = {
         "version": version,
         "release_date": release_date,
-        "downloads": {
-            "windows": f"https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter.exe",
-            "macos": f"https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter_mac.zip",
-            "macos_dmg": f"https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v{version}/BOSS_ResumeFilter.dmg"
-        },
+        "downloads": _release_downloads(version, source="github"),
         "assets": assets,
         "release_notes": release_notes
     }
 
     if require_complete_assets:
-        _assert_update_asset_metadata_complete(latest_data["assets"])
+        _assert_update_asset_metadata_complete(
+            latest_data["assets"],
+            version=version,
+        )
 
     if downloads_cn is not None:
         latest_data["downloads_cn"] = downloads_cn
@@ -3842,7 +3890,11 @@ def _gh_release(version, release_title, release_notes, progress=None,
     # --- 等待 CI 上传 GitHub，然后在本机并行中转对端产物到 Gitee ---
     if enable_ci_sync and release_cache:
         opposite_assets = (
-            ["BOSS_ResumeFilter.exe"]
+            [
+                name
+                for key, name in _release_asset_items(version)
+                if key in {"windows", "education_windows"}
+            ]
             if IS_MAC
             else ["BOSS_ResumeFilter_mac.zip", "BOSS_ResumeFilter.dmg"]
         )
@@ -4149,6 +4201,8 @@ def _trigger_cross_platform_ci(tag, old_tag_commit=None):
     """
     if IS_MAC:
         opposite_assets = ["BOSS_ResumeFilter.exe"]
+        if _release_includes_education_tool(tag):
+            opposite_assets.append("EducationCertificateTool.exe")
     else:
         opposite_assets = ["BOSS_ResumeFilter_mac.zip", "BOSS_ResumeFilter.dmg"]
 
@@ -4779,6 +4833,8 @@ def _gitee_upload_local(version, release_title, release_notes, release_cache=Non
         workers = 2
     else:
         artifacts = [DIST_DIR / "BOSS_ResumeFilter.exe"]
+        if _release_includes_education_tool(version):
+            artifacts.append(DIST_DIR / "EducationCertificateTool.exe")
         workers = 1
     return _gitee_upload_artifacts(
         version,
@@ -4792,6 +4848,8 @@ def _gitee_upload_local(version, release_title, release_notes, release_cache=Non
 
 def _downloads_cn_key(filename):
     """文件名 → downloads_cn 字典 key。"""
+    if Path(filename).name == "EducationCertificateTool.exe":
+        return "education_windows"
     if filename.endswith(".exe"):
         return "windows"
     if filename.endswith("_mac.zip"):
@@ -4851,12 +4909,10 @@ def _wait_for_github_release_assets(tag, asset_names, max_wait=600, poll_interva
 def _collect_github_release_asset_metadata(version, existing_metadata=None):
     """Download missing update artifacts from GitHub Release and compute full metadata."""
     tag = f"v{version}"
-    metadata = dict(existing_metadata or _release_asset_metadata())
-    required_assets = {
-        "windows": "BOSS_ResumeFilter.exe",
-        "macos": "BOSS_ResumeFilter_mac.zip",
-        "macos_dmg": "BOSS_ResumeFilter.dmg",
-    }
+    metadata = dict(
+        existing_metadata or _release_asset_metadata(version=version)
+    )
+    required_assets = dict(_release_asset_items(version))
 
     missing = [name for key, name in required_assets.items() if key not in metadata]
     if not missing:
@@ -4898,7 +4954,7 @@ def _collect_github_release_asset_metadata(version, existing_metadata=None):
         for name in missing:
             path = _download_from_github_release(tag, name, download_dir)
             downloaded.append(path)
-        metadata.update(_release_asset_metadata(downloaded))
+        metadata.update(_release_asset_metadata(downloaded, version=version))
         return metadata
     finally:
         shutil.rmtree(download_dir, ignore_errors=True)
@@ -4935,6 +4991,8 @@ def _sync_gitee_from_github(version, release_title, release_notes, need_wait=Fal
     # 对端产物列表
     if IS_MAC:
         opposite_assets = ["BOSS_ResumeFilter.exe"]
+        if _release_includes_education_tool(version):
+            opposite_assets.append("EducationCertificateTool.exe")
     else:
         opposite_assets = ["BOSS_ResumeFilter_mac.zip", "BOSS_ResumeFilter.dmg"]
     downloads_cn = {}
@@ -5213,7 +5271,7 @@ def main():
 
         if downloads_cn:
             asset_metadata = _collect_github_release_asset_metadata(
-                version, existing_metadata=_release_asset_metadata())
+                version, existing_metadata=_release_asset_metadata(version=version))
             changed = update_latest_json(
                 version,
                 release_notes,
@@ -5662,7 +5720,7 @@ def main():
             report=progress.sub,
         )
         asset_metadata = _collect_github_release_asset_metadata(
-            version, existing_metadata=_release_asset_metadata())
+            version, existing_metadata=_release_asset_metadata(version=version))
         latest_changed = update_latest_json(
             version,
             release_notes,

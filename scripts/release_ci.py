@@ -9,7 +9,7 @@ The GitHub Actions workflow calls this module in two hosted phases:
 
 ``stage-github``
     Create or reuse the immutable GitHub tag, keep the GitHub Release as a
-    Draft, upload and verify all three cross-platform artifacts, then stop.
+    Draft, upload and verify the version-specific release artifacts, then stop.
 
 The local release driver calls ``finalize-local`` after hosted staging.  That
 phase publishes the verified GitHub Release, downloads the same artifacts for
@@ -66,6 +66,29 @@ DOWNLOAD_CONNECT_TIMEOUT = 15
 DOWNLOAD_STALL_TIMEOUT = 45
 DOWNLOAD_ATTEMPTS = 4
 DEFAULT_GITEE_UPLOAD_WORKERS = 1
+
+
+def _release_artifacts(version_or_tag: str) -> tuple[str, ...]:
+    """Return the release artifact contract for one public version."""
+    return build._release_asset_names_for_version(version_or_tag)
+
+
+def _windows_release_artifacts(version_or_tag: str) -> tuple[str, ...]:
+    """Return Windows artifacts, including the standalone tool from v2.32."""
+    return tuple(
+        name
+        for key, name in build._release_asset_items(version_or_tag)
+        if key in {"windows", "education_windows"}
+    )
+
+
+def _macos_release_artifacts(version_or_tag: str) -> tuple[str, ...]:
+    """Return macOS installer and update artifacts."""
+    return tuple(
+        name
+        for key, name in build._release_asset_items(version_or_tag)
+        if key in {"macos", "macos_dmg"}
+    )
 
 
 class ReleaseAutomationError(RuntimeError):
@@ -569,10 +592,13 @@ def prepare_release(
 
     tag = f"v{version}"
     remote_assets = build._get_github_release_assets(tag) if resume else {}
-    needs_windows = not _asset_has_integrity(remote_assets.get(RELEASE_ARTIFACTS[0]))
+    needs_windows = not all(
+        _asset_has_integrity(remote_assets.get(name))
+        for name in _windows_release_artifacts(version)
+    )
     needs_macos = not all(
         _asset_has_integrity(remote_assets.get(name))
-        for name in RELEASE_ARTIFACTS[1:]
+        for name in _macos_release_artifacts(version)
     )
 
     outputs = {
@@ -820,7 +846,7 @@ def _ensure_local_artifacts(
     artifact_dir.mkdir(parents=True, exist_ok=True)
     remote_assets = build._get_github_release_assets(tag)
     paths: list[Path] = []
-    for name in RELEASE_ARTIFACTS:
+    for name in _release_artifacts(tag):
         path = artifact_dir / name
         if not path.exists() and name in remote_assets:
             print(f"  [复用] 从现有 GitHub Release 下载: {name}")
@@ -1087,7 +1113,7 @@ def _download_verified_github_artifacts(
     paths: list[Path] = []
     session = _github_download_session()
     try:
-        for name in RELEASE_ARTIFACTS:
+        for name in _release_artifacts(tag):
             paths.append(
                 _download_verified_github_artifact(
                     tag,
@@ -1123,12 +1149,7 @@ def _upload_github_artifacts(tag: str, artifacts: list[Path]) -> dict:
 
 
 def _canonical_downloads_cn(version: str) -> dict[str, str]:
-    base = f"https://gitee.com/{GITEE_OWNER}/{GITEE_REPO}/releases/download/v{version}"
-    return {
-        "windows": f"{base}/BOSS_ResumeFilter.exe",
-        "macos": f"{base}/BOSS_ResumeFilter_mac.zip",
-        "macos_dmg": f"{base}/BOSS_ResumeFilter.dmg",
-    }
+    return build._release_downloads(version, source="gitee")
 
 
 def _prune_gitee_old_assets(version: str, token: str) -> None:
@@ -1256,7 +1277,7 @@ def _transfer_github_artifacts_to_gitee(
     )
     try:
         with ThreadPoolExecutor(max_workers=upload_workers) as executor:
-            for name in RELEASE_ARTIFACTS:
+            for name in _release_artifacts(version):
                 path = _download_verified_github_artifact(
                     tag,
                     name,
@@ -1362,7 +1383,7 @@ def _publish_gitee_artifacts(
         if not uploaded:
             _fail("Gitee Release 附件上传失败")
     else:
-        print("  [跳过] Gitee 三个平台产物均已完整")
+        print("  [跳过] Gitee 本版本全部产物均已完整")
     if not build._verify_gitee_release_assets_complete(
         f"v{version}", github_assets, cache
     ):
@@ -1417,7 +1438,7 @@ def _commit_and_sync_manifest(
 ) -> str:
     _switch_to_current_master(release_sha)
     metadata = build._release_asset_metadata_from_remote_assets(github_assets.values())
-    build._assert_update_asset_metadata_complete(metadata)
+    build._assert_update_asset_metadata_complete(metadata, version=version)
     changed = build.update_latest_json(
         version,
         body,
@@ -1525,11 +1546,7 @@ def verify_public_endpoints(version: str, attempts: int = 6, delay: int = 10) ->
     """Verify public downloads plus both remotely served manifests."""
     version = _normalize_version(version)
     latest = json.loads((BASE_DIR / "latest.json").read_text(encoding="utf-8"))
-    asset_names = {
-        "windows": "BOSS_ResumeFilter.exe",
-        "macos": "BOSS_ResumeFilter_mac.zip",
-        "macos_dmg": "BOSS_ResumeFilter.dmg",
-    }
+    asset_names = dict(build._release_asset_items(version))
     probes: list[tuple[str, str, int]] = []
     for source in ("downloads", "downloads_cn"):
         downloads = latest.get(source) or {}
@@ -1541,8 +1558,12 @@ def verify_public_endpoints(version: str, attempts: int = 6, delay: int = 10) ->
             url = str(downloads.get(key) or "")
             if url and size > 0:
                 probes.append((url, name, size))
-    if len(probes) != 6:
-        _fail("latest.json 未包含六个双源公开下载地址")
+    expected_probe_count = len(asset_names) * 2
+    if len(probes) != expected_probe_count:
+        _fail(
+            "latest.json 双源公开下载地址不完整："
+            f"预期 {expected_probe_count} 个，实际 {len(probes)} 个"
+        )
 
     manifest_urls = (
         f"https://raw.githubusercontent.com/{GITEE_OWNER}/{GITEE_REPO}/master/latest.json",
@@ -1565,7 +1586,10 @@ def verify_public_endpoints(version: str, attempts: int = 6, delay: int = 10) ->
             except (build.requests.exceptions.RequestException, ValueError) as exc:
                 last_errors.append(f"{url} -> {type(exc).__name__}")
         if not last_errors:
-            print("  [OK] 六个公开下载地址和双远端在线清单均可用")
+            print(
+                f"  [OK] {expected_probe_count} 个公开下载地址和"
+                "双远端在线清单均可用"
+            )
             return {
                 "downloads_checked": len(probes),
                 "manifests_checked": len(manifest_urls),
@@ -1616,7 +1640,7 @@ def stage_github_release(
     artifacts = _ensure_local_artifacts(tag)
     _upload_github_artifacts(tag, artifacts)
     print(
-        f"\n[OK] {tag} GitHub Draft 和三个附件已暂存，"
+        f"\n[OK] {tag} GitHub Draft 和 {len(artifacts)} 个附件已暂存，"
         "等待本机校验并公开主源后镜像 Gitee"
     )
 
@@ -1666,7 +1690,7 @@ def finalize_release_local(
             _fail("GitHub 暂存未完成：Draft Release 不存在")
         github_assets = build._verify_github_release_assets_complete(tag)
         if github_assets is None:
-            _fail("GitHub 暂存未完成：三个附件不完整")
+            _fail("GitHub 暂存未完成：本版本附件不完整")
         _write_release_state(version, release_sha, phase, "complete")
 
         # The hosted stage already verifies local build bytes against GitHub's

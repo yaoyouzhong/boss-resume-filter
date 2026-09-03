@@ -15,6 +15,7 @@ class ScrollSupport(Protocol):
         bg_color: str,
         *,
         auto_hide_scrollbar: bool = False,
+        content_style: str = "TFrame",
     ) -> tuple[tk.Canvas, ttk.Frame]: ...
 
     def bind_mousewheel(self, canvas: tk.Canvas, frame: tk.Misc) -> None: ...
@@ -46,6 +47,7 @@ class WidgetSupport(Protocol):
         title: str,
         subtitle: str | None = None,
         top_padding: int = 0,
+        trailing_builder: Any = None,
     ) -> tk.Misc: ...
 
     def create_card(
@@ -77,6 +79,8 @@ class EducationPageHost(Protocol):
     feedback_support: FeedbackSupport
     widget_support: WidgetSupport
     layout_support: LayoutSupport
+
+    def show_page_api(self) -> None: ...
 
     def _remove_current_education_image(self) -> None: ...
 
@@ -155,19 +159,35 @@ def build_education_page(
 ) -> EducationPageWidgets:
     """Build the education page without reading certificates or accessing AI/browser services."""
     scale = host.dpi_scale * host.zoom_factor
-    page = ttk.Frame(host.pages_frame, style="Page.TFrame")
+    standalone = bool(getattr(host, "standalone_education", False))
+    page_style = "EducationTool.TFrame" if standalone else "Page.TFrame"
+    page_background = host.colors["home_bg"] if standalone else host.colors["bg_main"]
+    page = ttk.Frame(host.pages_frame, style=page_style)
+
+    def _build_settings_navigation(parent: tk.Misc) -> None:
+        settings_button = host.widget_support.create_navigation_button(
+            parent,
+            text="模型配置",
+            icon_name="ai_spark",
+            command=host.show_page_api,
+            surface_color=host.colors["bg_card"],
+        )
+        settings_button.pack()
+
     host.widget_support.create_page_header(
         page,
         "学历核验",
         "导入毕业证书图片/PDF，自动识别并提交验证码；手机确认后可批量保存结果页截图。",
+        trailing_builder=_build_settings_navigation if standalone else None,
     )
 
-    scroll_frame = ttk.Frame(page, style="Page.TFrame")
+    scroll_frame = ttk.Frame(page, style=page_style)
     scroll_frame.pack(fill="both", expand=True)
     canvas, scrollable_frame = host.scroll_support.create_scroll_container(
         scroll_frame,
-        host.colors["bg_main"],
+        page_background,
         auto_hide_scrollbar=True,
+        content_style=page_style,
     )
     content = scrollable_frame
 
@@ -339,8 +359,10 @@ def build_education_page(
     ttk.Label(
         batch_header,
         textvariable=batch_status_var,
-        font=(font_family, int(10 * host.font_scale), "bold"),
-        foreground=host.colors["primary"],
+        font=(font_family, int(9 * host.font_scale)),
+        foreground=host.colors["text_secondary"],
+        justify=tk.RIGHT,
+        anchor="e",
     ).pack(side="right", padx=(16, 0))
     queue_batch_actions = ttk.Frame(queue_batch_area, style="TFrame")
     queue_batch_actions.pack(fill="x")
@@ -494,7 +516,7 @@ def build_education_page(
 
     workspace = ttk.Frame(
         content,
-        style="Page.TFrame",
+        style=page_style,
         height=max(420, int(440 * scale)),
     )
     workspace.pack(fill="both", expand=True)
@@ -526,6 +548,9 @@ def build_education_page(
         expand=True,
         side="left",
         title_trailing_builder=_build_rotate_button,
+        content_style=(
+            "EducationTool.Workbench.TFrame" if standalone else "TFrame"
+        ),
     )
     if rotate_button is None:
         raise RuntimeError("证书预览旋转按钮未创建")
@@ -533,7 +558,7 @@ def build_education_page(
     preview_label = tk.Label(
         preview,
         text="请选择 JPG、JPEG、PNG、BMP、WEBP 图片或 PDF 文件",
-        bg=host.colors["bg_card"],
+        bg=(host.colors["home_surface_quiet"] if standalone else host.colors["bg_card"]),
         fg=host.colors["text_secondary"],
         font=host.font_label,
         justify="center",
@@ -555,17 +580,33 @@ def build_education_page(
         expand=True,
         side="left",
         padx=(int(16 * scale), 0),
+        content_style=(
+            "EducationTool.Workbench.TFrame" if standalone else "TFrame"
+        ),
     )
     name_var = tk.StringVar()
     number_var = tk.StringVar()
     status_var = tk.StringVar(value="请从上方队列选择一张证书查看结果")
     warning_var = tk.StringVar(value="")
 
-    ttk.Label(form, text="姓名", font=host.font_label).pack(anchor="w")
+    workbench_label_style = (
+        "EducationTool.Workbench.TLabel" if standalone else "TLabel"
+    )
+    ttk.Label(
+        form,
+        text="姓名",
+        font=host.font_label,
+        style=workbench_label_style,
+    ).pack(anchor="w")
     name_entry = ttk.Entry(form, textvariable=name_var, font=host.font_label)
     name_entry.pack(fill="x", pady=(6, 16))
     host.input_support.bind_entry_context_menu(name_entry)
-    ttk.Label(form, text="证书编号", font=host.font_label).pack(anchor="w")
+    ttk.Label(
+        form,
+        text="证书编号",
+        font=host.font_label,
+        style=workbench_label_style,
+    ).pack(anchor="w")
     number_entry = ttk.Entry(form, textvariable=number_var, font=host.font_label)
     number_entry.pack(fill="x", pady=(6, 16))
     host.input_support.bind_entry_context_menu(number_entry)
@@ -575,12 +616,14 @@ def build_education_page(
         textvariable=status_var,
         font=host.font_label,
         foreground=host.colors["primary"],
+        style=workbench_label_style,
     ).pack(anchor="w", pady=(0, 8))
     ttk.Label(
         form,
         textvariable=warning_var,
         font=(font_family, int(10 * host.font_scale)),
         foreground=host.colors["warning"],
+        style=workbench_label_style,
         wraplength=600,
         justify="left",
     ).pack(anchor="w", fill="x")
@@ -590,6 +633,7 @@ def build_education_page(
         text="识别时图片/PDF 会发送当前配置的 AI 模型，请确认已取得候选人授权。",
         font=(font_family, int(10 * host.font_scale)),
         foreground=host.colors["text_secondary"],
+        style=workbench_label_style,
         justify="left",
     ).pack(anchor="w", fill="x", pady=(20, 0))
     queue_card.pack_forget()

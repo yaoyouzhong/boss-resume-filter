@@ -69,6 +69,33 @@ class EducationActionStates:
 
 
 @dataclass(frozen=True)
+class EducationQueueStatusSummary:
+    """Recognition and CHSI verification counts for the queue header."""
+
+    total: int
+    recognition_pending: int
+    recognizing: int
+    recognition_failed: int
+    manual_review: int
+    recognized: int
+    manually_completed: int
+    verification_not_started: int
+    verification_processing: int
+    waiting_scan: int
+    waiting_result: int
+    qr_expired: int
+    result_ready: int
+    result_not_found: int
+    verification_attention: int
+    verification_failed: int
+
+    @property
+    def information_ready(self) -> int:
+        """Return records ready for CHSI, regardless of automatic/manual origin."""
+        return self.recognized + self.manually_completed
+
+
+@dataclass(frozen=True)
 class ScreenshotItemResult:
     """One candidate's batch screenshot outcome or transient progress state."""
 
@@ -106,6 +133,91 @@ class ScreenshotBatchResult:
 
 class EducationController:
     """Coordinate certificate recognition and captcha state as plain data."""
+
+    @staticmethod
+    def summarize_queue_statuses(
+        items: Mapping[str, Mapping[str, Any]],
+    ) -> EducationQueueStatusSummary:
+        """Classify recognition and CHSI stages without conflating them."""
+        item_states = []
+        for item in items.values():
+            status = str(item.get("status") or "待识别")
+            fields_ready = bool(
+                str(item.get("name") or "").strip()
+                and str(item.get("certificate_number") or "").strip()
+            )
+            manually_edited = bool(item.get("manually_edited")) or (
+                status == "信息已修改"
+            )
+            item_states.append((status, fields_ready, manually_edited))
+        statuses = [state[0] for state in item_states]
+        total = len(statuses)
+        recognition_pending = statuses.count("待识别")
+        recognizing = statuses.count("识别中")
+        recognition_failed = sum(
+            status in {"识别失败", "校验失败"}
+            for status in statuses
+        )
+        manual_review = statuses.count("待人工确认") + sum(
+            status == "信息已修改" and not fields_ready
+            for status, fields_ready, _manually_edited in item_states
+        )
+        manually_completed = sum(
+            manually_edited
+            and fields_ready
+            and status not in {
+                "待识别",
+                "识别中",
+                "识别失败",
+                "校验失败",
+                "待人工确认",
+            }
+            for status, fields_ready, manually_edited in item_states
+        )
+        recognized = max(
+            0,
+            total
+            - recognition_pending
+            - recognizing
+            - recognition_failed
+            - manual_review
+            - manually_completed,
+        )
+        return EducationQueueStatusSummary(
+            total=total,
+            recognition_pending=recognition_pending,
+            recognizing=recognizing,
+            recognition_failed=recognition_failed,
+            manual_review=manual_review,
+            recognized=recognized,
+            manually_completed=manually_completed,
+            verification_not_started=sum(
+                status in {"已识别", "识别成功"}
+                or (status == "信息已修改" and fields_ready)
+                for status, fields_ready, _manually_edited in item_states
+            ),
+            verification_processing=sum(
+                status in {"打开中", "识别验证码中..."}
+                or status.startswith("正在")
+                for status in statuses
+            ),
+            waiting_scan=sum(
+                status in {"已提交查询", EDUCATION_WAITING_FOR_SCAN_STATUS}
+                for status in statuses
+            ),
+            waiting_result=statuses.count("结果未确认"),
+            qr_expired=statuses.count(EDUCATION_QR_EXPIRED_STATUS),
+            result_ready=statuses.count(EDUCATION_RESULT_READY_STATUS),
+            result_not_found=statuses.count(EDUCATION_RESULT_NOT_FOUND_STATUS),
+            verification_attention=sum(
+                status in EDUCATION_CAPTCHA_RETRY_STATUSES
+                for status in statuses
+            ),
+            verification_failed=sum(
+                status in {"打开失败", EDUCATION_FORM_EMPTY_STATUS}
+                for status in statuses
+            ),
+        )
 
     @staticmethod
     def resolve_api_config(api_config: Mapping[str, Any]) -> dict[str, Any]:
@@ -443,6 +555,7 @@ class EducationController:
                         )
                     ),
                     "warnings": "；".join(result.warnings),
+                    "manually_edited": False,
                 })
                 continue
             item["status"] = "识别失败"

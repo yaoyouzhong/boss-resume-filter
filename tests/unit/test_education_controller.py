@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import tempfile
 
 from education_controller import (
+    EDUCATION_FORM_EMPTY_STATUS,
     EDUCATION_RESULT_NOT_FOUND_STATUS,
     EDUCATION_RESULT_READY_STATUS,
     EDUCATION_WAITING_FOR_SCAN_STATUS,
@@ -39,6 +40,56 @@ def test_import_batch_validates_deduplicates_and_numbers_items():
     assert batch.items["education_2"]["is_pdf"] is False
     assert batch.items["education_2"]["screenshot_status"] == "待识别"
     assert batch.invalid_files == ("invalid.exe",)
+
+
+def test_queue_status_summary_separates_recognition_from_chsi_stages():
+    items = {
+        "recognized": {"status": "已识别"},
+        "waiting_scan": {"status": EDUCATION_WAITING_FOR_SCAN_STATUS},
+        "waiting_result": {"status": "结果未确认"},
+        "ready": {"status": EDUCATION_RESULT_READY_STATUS},
+        "not_found": {"status": EDUCATION_RESULT_NOT_FOUND_STATUS},
+        "captcha": {"status": "验证码识别失败"},
+        "failed": {"status": EDUCATION_FORM_EMPTY_STATUS},
+    }
+
+    summary = EducationController.summarize_queue_statuses(items)
+
+    assert summary.total == 7
+    assert summary.recognized == 7
+    assert summary.verification_not_started == 1
+    assert summary.waiting_scan == 1
+    assert summary.waiting_result == 1
+    assert summary.result_ready == 1
+    assert summary.result_not_found == 1
+    assert summary.verification_attention == 1
+    assert summary.verification_failed == 1
+
+
+def test_queue_status_summary_counts_completed_manual_edit_as_chsi_ready():
+    items = {
+        "manual": {
+            "status": "信息已修改",
+            "name": "鲍殊",
+            "certificate_number": "102891202305002814",
+        },
+        **{
+            f"recognized_{index}": {
+                "status": "已识别",
+                "name": f"候选人{index}",
+                "certificate_number": str(index).zfill(18),
+            }
+            for index in range(4)
+        },
+    }
+
+    summary = EducationController.summarize_queue_statuses(items)
+
+    assert summary.recognized == 4
+    assert summary.manually_completed == 1
+    assert summary.information_ready == 5
+    assert summary.manual_review == 0
+    assert summary.verification_not_started == 5
 
 
 def test_screenshot_readiness_does_not_claim_failed_items_are_ready():

@@ -5,6 +5,7 @@ from collections.abc import Mapping, MutableMapping, Sequence
 import tkinter as tk
 from tkinter import font as tkfont
 from typing import Any, Protocol
+import unicodedata
 
 from ui_layout import result_display_columns
 
@@ -16,6 +17,8 @@ class LayoutSupportHost(Protocol):
     dpi_scale: float
     zoom_factor: float
     font_scale: float
+    standalone_education: bool
+    font_label: object
 
 
 class LayoutSupport:
@@ -33,6 +36,7 @@ class LayoutSupport:
         self.font_family = font_family
         self._layout_states: dict[str, object] = {}
         self._header_measure_font: tuple[tuple[str, int], tkfont.Font] | None = None
+        self._model_measure_font: tuple[object, tkfont.Font] | None = None
 
     def _state_is_current(self, key: str, state: object) -> bool:
         """Return whether a layout target has already been applied."""
@@ -674,6 +678,7 @@ class LayoutSupport:
         if tuple(tree.cget("displaycolumns")) != display:
             tree.configure(displaycolumns=display)
 
+        standalone = bool(getattr(self.host, "standalone_education", False))
         if self.is_window_maximized():
             widths = {
                 "name": 400,
@@ -694,6 +699,9 @@ class LayoutSupport:
             "compat": 120,
             "base_url": 170,
         }
+        if standalone:
+            min_widths["name"] = 220
+            widths["name"] = self._standalone_model_name_width(tree)
         try:
             available_width = max(0, int(tree.winfo_width()) - 24)
         except (tk.TclError, ValueError):
@@ -728,6 +736,70 @@ class LayoutSupport:
                 stretch=column == "base_url",
             )
         self._remember_state("model_columns", state)
+
+    @staticmethod
+    def _text_display_units(text: object) -> int:
+        """Approximate ttk character units while counting wide CJK glyphs correctly."""
+        return sum(
+            2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
+            for character in str(text or "")
+        )
+
+    def _standalone_model_name_width(self, tree: Any) -> int:
+        """Size the standalone model-name column from its rendered content."""
+        names: list[str] = []
+        try:
+            for item_id in tree.get_children():
+                values = tree.item(item_id).get("values", ())
+                if values:
+                    names.append(str(values[0] or ""))
+        except (tk.TclError, TypeError, AttributeError):
+            names = []
+
+        fallback_width = max(
+            (self._text_display_units(name) * 9 for name in names),
+            default=0,
+        )
+        measured_width = fallback_width
+        try:
+            font_spec = getattr(
+                self.host,
+                "font_label",
+                (self.font_family, int(12 * self.host.font_scale)),
+            )
+            if self._model_measure_font is None or self._model_measure_font[0] != font_spec:
+                self._model_measure_font = (font_spec, tkfont.Font(font=font_spec))
+            measure_font = self._model_measure_font[1]
+            measured_width = max(
+                (measure_font.measure(name) for name in names),
+                default=0,
+            )
+        except (tk.TclError, RuntimeError, TypeError, AttributeError):
+            pass
+
+        horizontal_padding = int(40 * self.host.dpi_scale * self.host.zoom_factor)
+        return max(220, min(520, measured_width + horizontal_padding))
+
+    def update_standalone_model_selector_width(self, labels: Sequence[str]) -> None:
+        """Fit the standalone active-model selector to its longest visible label."""
+        if not getattr(self.host, "standalone_education", False):
+            return
+        combo = getattr(self.host, "default_model_combo", None)
+        if combo is None:
+            return
+        longest = max(
+            (self._text_display_units(label) for label in labels if label),
+            default=0,
+        )
+        target_width = max(46, min(72, longest + 4))
+        state = (id(combo), target_width)
+        if self._state_is_current("standalone_model_selector", state):
+            return
+        try:
+            combo.configure(width=target_width)
+        except (tk.TclError, AttributeError):
+            return
+        self._remember_state("standalone_model_selector", state)
 
     def update_education_queue_columns(self) -> None:
         """Keep education workflow and screenshot statuses visible on narrow screens."""

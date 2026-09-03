@@ -43,9 +43,37 @@ def build_settings_content_steps(
     """Build settings controls without reading keys or performing external actions."""
     self = host
     api_container = self.api_scrollable_frame
+    standalone = bool(getattr(self, "standalone_education", False))
+
+    def _build_education_navigation(parent: tk.Misc) -> None:
+        back_button = self.widget_support.create_navigation_button(
+            parent,
+            text="返回学历核验",
+            icon_name="arrow_left",
+            command=self.show_page_education,
+            surface_color=self.colors["bg_card"],
+        )
+        back_button.pack()
 
     # 系统设置页面标题
-    self.widget_support.create_page_header(api_container, "系统设置")
+    self.widget_support.create_page_header(
+        api_container,
+        "模型配置" if standalone else "系统设置",
+        (
+            "配置学历证书识别所使用的模型；API Key 仅保存在当前用户的系统凭据中。"
+            if standalone
+            else None
+        ),
+        trailing_builder=_build_education_navigation if standalone else None,
+    )
+
+    page_card_pad_x = 0 if standalone else int(25 * self.dpi_scale * self.zoom_factor)
+    page_card_gap = int(16 * self.dpi_scale * self.zoom_factor)
+    page_card_pack = {
+        "fill": "x" if standalone else "both",
+        "expand": not standalone,
+        "padx": page_card_pad_x,
+    }
 
     # 新电脑提示：检测到已保存配置但 API Key 丢失
     self.reconfig_card = None
@@ -69,8 +97,12 @@ def build_settings_content_steps(
     yield
 
     # 模型用途分配
-    assignment_card = self.widget_support.create_card(api_container, "使用中的模型",
-        fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(20 * self.dpi_scale * self.zoom_factor))
+    assignment_card = self.widget_support.create_card(
+        api_container,
+        "使用中的模型",
+        **page_card_pack,
+        pady=(0, page_card_gap) if standalone else int(20 * self.dpi_scale * self.zoom_factor),
+    )
     assignment_frame = ttk.Frame(assignment_card, style='TFrame')
     assignment_frame.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor),
                           pady=int(15 * self.dpi_scale * self.zoom_factor))
@@ -94,14 +126,18 @@ def build_settings_content_steps(
     self._assigned_model_test_results = {}
 
     label_width_assignment = 14
-    model_choice_width = 34
+    model_choice_width = 46 if standalone else 34
     icon_test_default_model = self._assigned_model_test_icons["pending"]
     icon_test_education_model = self._assigned_model_test_icons["pending"]
 
     default_row = ttk.Frame(assignment_frame, style='TFrame')
     default_row.pack(fill="x")
-    ttk.Label(default_row, text="默认 AI 模型:", font=self.font_label,
-              width=label_width_assignment).grid(row=0, column=0, sticky="w")
+    if standalone:
+        ttk.Label(default_row, text="当前识别模型:", font=self.font_label,
+                  width=label_width_assignment).grid(row=0, column=0, sticky="w")
+    else:
+        ttk.Label(default_row, text="默认 AI 模型:", font=self.font_label,
+                  width=label_width_assignment).grid(row=0, column=0, sticky="w")
     self.default_model_combo = ttk.Combobox(
         default_row, textvariable=self.default_model_choice_var,
         state="readonly", width=model_choice_width, font=self.font_label,
@@ -138,49 +174,54 @@ def build_settings_content_steps(
 
     yield
 
-    education_row = ttk.Frame(assignment_frame, style='TFrame')
-    education_row.pack(fill="x", pady=(int(10 * self.dpi_scale * self.zoom_factor), 0))
-    ttk.Label(education_row, text="学历核验模型:", font=self.font_label,
-              width=label_width_assignment).grid(row=0, column=0, sticky="w")
-    self.education_model_combo = ttk.Combobox(
-        education_row, textvariable=self.education_model_choice_var,
-        state="readonly", width=model_choice_width, font=self.font_label,
-    )
-    self.education_model_combo.grid(
-        row=0, column=1, sticky="w",
-        padx=(int(5 * self.dpi_scale * self.zoom_factor), int(8 * self.dpi_scale * self.zoom_factor)),
-    )
-    self.education_model_combo.bind("<<ComboboxSelected>>", self._on_education_model_selected)
-    btn_test_education_model = tk.Label(
-        education_row, image=icon_test_education_model,
-        bg=self.colors['bg_card'], cursor="hand2", takefocus=1,
-    )
-    btn_test_education_model._icon_ref = icon_test_education_model
-    self._assigned_model_test_buttons["education"] = btn_test_education_model
-    btn_test_education_model.grid(row=0, column=2, sticky="e")
-    education_test_status = ttk.Label(
-        education_row, text="未检测", font=self.font_label,
-        foreground=self.colors['text_secondary'], background=self.colors['bg_card'], width=6,
-    )
-    self._assigned_model_test_status_labels["education"] = education_test_status
-    education_test_status.grid(
-        row=0, column=3, sticky="w",
-        padx=(int(8 * self.dpi_scale * self.zoom_factor), 0),
-    )
-    btn_test_education_model.bind("<Button-1>", lambda _e: self._test_assigned_model("education"))
-    btn_test_education_model.bind("<Return>", lambda _e: self._test_assigned_model("education"))
-    btn_test_education_model.bind("<space>", lambda _e: self._test_assigned_model("education"))
-    btn_test_education_model.bind(
-        "<Enter>",
-        lambda e: self._show_assigned_model_test_tooltip("education", e),
-    )
-    btn_test_education_model.bind("<Leave>", self.feedback_support.hide_tooltip)
+    if not standalone:
+        education_row = ttk.Frame(assignment_frame, style='TFrame')
+        education_row.pack(fill="x", pady=(int(10 * self.dpi_scale * self.zoom_factor), 0))
+        ttk.Label(education_row, text="学历核验模型:", font=self.font_label,
+                  width=label_width_assignment).grid(row=0, column=0, sticky="w")
+        self.education_model_combo = ttk.Combobox(
+            education_row, textvariable=self.education_model_choice_var,
+            state="readonly", width=model_choice_width, font=self.font_label,
+        )
+        self.education_model_combo.grid(
+            row=0, column=1, sticky="w",
+            padx=(int(5 * self.dpi_scale * self.zoom_factor), int(8 * self.dpi_scale * self.zoom_factor)),
+        )
+        self.education_model_combo.bind("<<ComboboxSelected>>", self._on_education_model_selected)
+        btn_test_education_model = tk.Label(
+            education_row, image=icon_test_education_model,
+            bg=self.colors['bg_card'], cursor="hand2", takefocus=1,
+        )
+        btn_test_education_model._icon_ref = icon_test_education_model
+        self._assigned_model_test_buttons["education"] = btn_test_education_model
+        btn_test_education_model.grid(row=0, column=2, sticky="e")
+        education_test_status = ttk.Label(
+            education_row, text="未检测", font=self.font_label,
+            foreground=self.colors['text_secondary'], background=self.colors['bg_card'], width=6,
+        )
+        self._assigned_model_test_status_labels["education"] = education_test_status
+        education_test_status.grid(
+            row=0, column=3, sticky="w",
+            padx=(int(8 * self.dpi_scale * self.zoom_factor), 0),
+        )
+        btn_test_education_model.bind("<Button-1>", lambda _e: self._test_assigned_model("education"))
+        btn_test_education_model.bind("<Return>", lambda _e: self._test_assigned_model("education"))
+        btn_test_education_model.bind("<space>", lambda _e: self._test_assigned_model("education"))
+        btn_test_education_model.bind(
+            "<Enter>",
+            lambda e: self._show_assigned_model_test_tooltip("education", e),
+        )
+        btn_test_education_model.bind("<Leave>", self.feedback_support.hide_tooltip)
 
     yield
 
     # 模型接入配置
-    config_card = self.widget_support.create_card(api_container, "模型接入",
-        fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
+    config_card = self.widget_support.create_card(
+        api_container,
+        "模型接入",
+        **page_card_pack,
+        pady=(0, page_card_gap) if standalone else int(15 * self.dpi_scale * self.zoom_factor),
+    )
 
     # API 配置输入区（服务商、Key、URL、模型名称）
     input_frame = ttk.Frame(config_card, style='TFrame')
@@ -302,8 +343,12 @@ def build_settings_content_steps(
     yield
 
     # 已保存模型列表
-    model_list_card = self.widget_support.create_card(api_container, "已保存模型",
-        fill="both", expand=True, padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
+    model_list_card = self.widget_support.create_card(
+        api_container,
+        "已保存模型",
+        **page_card_pack,
+        pady=(0, page_card_gap) if standalone else int(15 * self.dpi_scale * self.zoom_factor),
+    )
 
     # 模型列表 Treeview
     model_columns = ("name", "provider", "compat", "base_url")
@@ -430,6 +475,9 @@ def build_settings_content_steps(
     self.saved_models = []
 
     yield
+
+    if standalone:
+        return
 
     data_card = self.widget_support.create_card(
         api_container,
