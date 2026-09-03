@@ -1,87 +1,143 @@
-"""独立学历证书核验助手测试。"""
-import base64
-import hashlib
-import hmac
+"""Standalone education-certificate tool tests."""
+from __future__ import annotations
+
 import json
-import secrets
+import sys
 import tempfile
 import types
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from education_tool_config import EDUCATION_TOOL_API_CONFIG
+from education_tool_config import (
+    EDUCATION_TOOL_API_CONFIG,
+    EDUCATION_TOOL_SERVICE_NAME,
+    get_education_tool_config_path,
+)
 from education_tool_security import (
-    _keystream,
-    _wrap_key,
-    decrypt_embedded_secret,
-    get_embedded_api_key,
+    get_education_api_key,
+    save_education_api_key,
 )
 from gui_main import BossFilterGUI
+from security import get_storage_key
 
 
-def test_fixed_api_config_uses_supported_vision_model():
-    assert EDUCATION_TOOL_API_CONFIG == {
-        "api_provider": "qwen",
-        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-        "model": "kimi-k2.6",
-    }
-
-
-def _encrypted_payload(plaintext: str) -> dict[str, str]:
-    raw = plaintext.encode("utf-8")
-    nonce = secrets.token_bytes(16)
-    data_key = secrets.token_bytes(32)
-    ciphertext = bytes(
-        a ^ b for a, b in zip(raw, _keystream(data_key, nonce, len(raw)))
+def test_default_config_has_no_credential_and_keeps_supported_vision_model():
+    assert EDUCATION_TOOL_API_CONFIG["api_key"] == ""
+    assert EDUCATION_TOOL_API_CONFIG["api_provider"] == "qwen"
+    assert EDUCATION_TOOL_API_CONFIG["base_url"] == (
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
     )
-    wrapped_key = bytes(
-        a ^ b for a, b in zip(data_key, _keystream(_wrap_key(), nonce, len(data_key)))
+    assert EDUCATION_TOOL_API_CONFIG["model"] == "kimi-k2.6"
+
+
+def test_frozen_config_uses_local_app_data():
+    with (
+        patch.object(sys, "frozen", True, create=True),
+        patch.dict("os.environ", {"LOCALAPPDATA": r"C:\Users\tester\AppData\Local"}),
+    ):
+        path = get_education_tool_config_path()
+    assert path == Path(
+        r"C:\Users\tester\AppData\Local\EducationCertificateTool\config.json"
     )
-    return {
-        "nonce": base64.b64encode(nonce).decode("ascii"),
-        "wrapped_key": base64.b64encode(wrapped_key).decode("ascii"),
-        "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
-        "tag": base64.b64encode(
-            hmac.new(data_key, nonce + ciphertext, hashlib.sha256).digest()
-        ).decode("ascii"),
-    }
 
 
-def test_embedded_api_key_can_be_decrypted_without_plaintext_file():
-    plaintext = "test-api-key"
+def test_standalone_credential_uses_separate_service_and_endpoint_identity():
+    base_url = "https://example.test/v1"
+    with patch(
+        "education_tool_security._credential_get_password",
+        return_value="secret-key",
+    ) as credential_get:
+        assert get_education_api_key("custom", base_url) == "secret-key"
+    credential_get.assert_called_once_with(
+        EDUCATION_TOOL_SERVICE_NAME,
+        get_storage_key("custom", base_url),
+    )
+
+
+def test_standalone_credential_save_never_writes_a_plaintext_config_file():
+    with patch("education_tool_security._credential_set_password") as credential_set:
+        assert save_education_api_key("openai", "secret-key", "https://api.openai.com/v1")
+    credential_set.assert_called_once_with(
+        EDUCATION_TOOL_SERVICE_NAME,
+        get_storage_key("openai", "https://api.openai.com/v1"),
+        "secret-key",
+    )
+
+
+def test_standalone_config_loader_drops_plaintext_keys_defensively():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.standalone_education = True
+    gui._standalone_api_config_defaults = EDUCATION_TOOL_API_CONFIG
+    gui._api_key_cache = {}
+    gui._api_key_cache_lock = None
     with tempfile.TemporaryDirectory() as temp_dir:
-        secret_path = Path(temp_dir) / "education_tool_secret.json"
-        secret_path.write_text(
-            json.dumps(_encrypted_payload(plaintext)),
+        path = Path(temp_dir) / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "api_provider": "custom",
+                    "base_url": "https://example.test/v1",
+                    "model": "vision-model",
+                    "api_key": "must-not-survive",
+                    "saved_models": [
+                        {
+                            "api_provider": "custom",
+                            "base_url": "https://example.test/v1",
+                            "model": "vision-model",
+                            "api_key": "must-not-survive",
+                        }
+                    ],
+                }
+            ),
             encoding="utf-8",
         )
-        assert plaintext not in secret_path.read_text(encoding="utf-8")
-        with (
-            patch.dict("os.environ", {}, clear=True),
-            patch("education_tool_security._resource_path", return_value=secret_path),
-        ):
-            assert get_embedded_api_key() == plaintext
+        gui._api_config_path = path
+        gui.load_api_config(resolve_keys=False)
+
+    assert gui.api_config["api_key"] == ""
+    assert "api_key" not in gui.api_config["saved_models"][0]
 
 
-def test_embedded_api_key_rejects_tampering():
-    payload = _encrypted_payload("test-api-key")
-    payload["ciphertext"] = base64.b64encode(b"broken").decode("ascii")
-    try:
-        decrypt_embedded_secret(payload)
-    except RuntimeError as error:
-        assert "完整性" in str(error)
-    else:
-        raise AssertionError("tampered secret should fail")
-
-
-def test_boss_mode_and_standalone_mode_use_separate_key_sources():
+def test_boss_and_standalone_modes_use_separate_key_getters():
     gui = BossFilterGUI.__new__(BossFilterGUI)
-    gui._education_api_key_provider = lambda: "embedded-key"
-    assert gui._get_education_api_key(EDUCATION_TOOL_API_CONFIG) == "embedded-key"
+    gui._api_key_cache = {}
+    gui._api_key_cache_lock = None
+    gui._api_key_getter = lambda provider, base_url: f"standalone:{provider}:{base_url}"
+    assert gui._get_education_api_key(EDUCATION_TOOL_API_CONFIG).startswith(
+        "standalone:qwen:"
+    )
 
-    gui._education_api_key_provider = None
-    with patch("gui_main.get_api_key", return_value="keyring-key"):
-        assert gui._get_education_api_key(EDUCATION_TOOL_API_CONFIG) == "keyring-key"
+    gui._api_key_cache = {}
+    gui._api_key_getter = None
+    with patch("gui_main.get_api_key", return_value="boss-key"):
+        assert gui._get_education_api_key(EDUCATION_TOOL_API_CONFIG) == "boss-key"
+
+
+def test_standalone_recognition_without_key_opens_model_settings():
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.standalone_education = True
+    gui.root = object()
+    gui.education_items = {
+        "education_1": {
+            "path": "certificate.pdf",
+            "is_pdf": True,
+            "status": "待识别",
+        }
+    }
+    gui.education_current_id = None
+    gui.education_recognition_running = False
+    gui.education_screenshot_running = False
+    gui._save_current_education_fields = Mock()
+    gui._get_education_api_config = Mock(return_value=EDUCATION_TOOL_API_CONFIG)
+    gui._get_education_api_key = Mock(return_value="")
+    gui.show_page_api = Mock()
+
+    with patch("gui_main.messagebox.show_notice") as notice:
+        gui._recognize_education_image()
+
+    notice.assert_called_once()
+    gui.show_page_api.assert_called_once_with()
+    assert gui.education_recognition_running is False
 
 
 def test_standalone_browser_uses_auto_port_instead_of_fixed_profile():
@@ -115,6 +171,32 @@ def test_standalone_browser_uses_auto_port_instead_of_fixed_profile():
     assert calls[1] == ("auto_port",)
 
 
-def test_standalone_build_keeps_drissionpage_openpyxl_dependency():
+def test_standalone_build_contains_no_embedded_secret_pipeline():
     source = Path("build_education_tool.py").read_text(encoding="utf-8")
+    assert "EDUCATION_TOOL_API_KEY" not in source
+    assert "education_tool_secret.json" not in source
+    assert "--add-data" not in source
+    assert '"win32ctypes.pywin32.win32cred"' in source
+    assert 'PACK_ENV_DIR = BASE_DIR / "pack_venv"' in source
+    assert "run_in_venv(__file__)" in source
+    assert "_check_pack_environment()" in source
+    assert '"EDUCATION_TOOL_TK_FALLBACK"' in source
+    assert '";_tcl_data"' in source
+    assert '";_tk_data"' in source
+    assert '"win32ctypes.core.ctypes"' in source
+    assert '"win32ctypes.core.cffi"' in source
+    assert '"--debug-console"' in source
+    assert Path(
+        "pyinstaller-hooks/pre_find_module_path/hook-tkinter.py"
+    ).is_file()
     assert '"openpyxl"' not in source
+
+
+def test_standalone_entry_injects_config_and_credential_backends():
+    source = Path("education_tool.py").read_text(encoding="utf-8")
+    assert "education_api_config_path=config_path" in source
+    assert "education_api_key_getter=get_education_api_key" in source
+    assert "education_api_key_saver=save_education_api_key" in source
+    assert "start_with_settings=not config_path.is_file()" in source
+    assert 'smoke_test="--smoke-test" in sys.argv[1:]' in source
+    assert '"https://smoke-test.invalid/v1"' in source

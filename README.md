@@ -109,6 +109,8 @@ python bossmaster.py --greet --ai-eval
 python education_tool.py
 ```
 
+首次运行会进入“模型配置”，填写服务商、Base URL、模型名称和 API Key 后即可使用。独立工具与 BOSS 主程序共用现行学历核验能力，但使用独立配置；API Key 保存在当前用户的系统凭据中，不写入配置文件或可执行文件。详细步骤见 [独立学历证书核验助手操作说明](docs/education-tool-manual.md)。
+
 运行中按 `Ctrl+C` 会保存当前进度；下次运行会跳过已经联系的候选人。
 
 </details>

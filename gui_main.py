@@ -5,6 +5,7 @@ BOSS 简历筛选器 - 图形界面版本
 
 __version__ = "2.31"
 
+import copy
 import json
 import logging
 import math
@@ -556,11 +557,11 @@ RUN_API_PAGE_WARNING_THRESHOLD = max(
 RUN_CONTACT_WARNING_THRESHOLD = GREET_CONTEXT_CAPTURE_LIMIT
 
 
-def _load_run_preferences() -> dict:
+def _load_run_preferences(path: Path = RUN_PREFERENCES_PATH) -> dict:
     """加载本机运行偏好，例如最近一次运行岗位。"""
     try:
-        if RUN_PREFERENCES_PATH.exists():
-            with open(RUN_PREFERENCES_PATH, 'r', encoding='utf-8') as f:
+        if path.exists():
+            with open(path, 'r', encoding='utf-8') as f:
                 loaded = json.load(f)
             if isinstance(loaded, dict):
                 return loaded
@@ -569,10 +570,14 @@ def _load_run_preferences() -> dict:
     return {}
 
 
-def _save_run_preferences(preferences: dict) -> None:
+def _save_run_preferences(
+    preferences: dict,
+    path: Path = RUN_PREFERENCES_PATH,
+) -> None:
     """保存本机运行偏好；失败不影响主流程。"""
     try:
-        with open(RUN_PREFERENCES_PATH, 'w', encoding='utf-8') as f:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
             json.dump(preferences, f, ensure_ascii=False, indent=2)
     except OSError as e:
         logging.warning("保存运行偏好失败：%s", e)
@@ -835,11 +840,30 @@ class BossFilterGUI:
         *,
         standalone_education: bool = False,
         education_api_config: dict | None = None,
-        education_api_key_provider=None,
+        education_api_config_path: Path | None = None,
+        education_api_key_getter=None,
+        education_api_key_saver=None,
+        run_preferences_path: Path | None = None,
+        start_with_settings: bool = False,
     ):
         self.root = root
         self.standalone_education = standalone_education
-        self._education_api_key_provider = education_api_key_provider
+        self._standalone_api_config_defaults = copy.deepcopy(
+            education_api_config or {}
+        )
+        self._api_config_path = (
+            Path(education_api_config_path)
+            if education_api_config_path is not None
+            else None
+        )
+        self._api_key_getter = education_api_key_getter
+        self._api_key_saver = education_api_key_saver
+        self._run_preferences_path = (
+            Path(run_preferences_path)
+            if run_preferences_path is not None
+            else RUN_PREFERENCES_PATH
+        )
+        self._start_with_settings = bool(start_with_settings)
         if standalone_education:
             self.root.title("学历证书核验助手")
         else:
@@ -986,7 +1010,7 @@ class BossFilterGUI:
         self._data_migration_report = {}
         self._data_maintenance_running = False
         if standalone_education:
-            self.api_config = dict(education_api_config or {})
+            self.load_api_config(resolve_keys=False)
         else:
             if os.environ.get("BOSS_RESUME_FILTER_DISABLE_DATA_MIGRATION") != "1":
                 try:
@@ -1002,7 +1026,7 @@ class BossFilterGUI:
         # 缓存：job_config 读取（mtime 未变则跳过磁盘 IO）
         self._job_rules_cache = None
         self._job_rules_mtime = 0
-        self._run_preferences = _load_run_preferences()
+        self._run_preferences = _load_run_preferences(self._run_preferences_path)
         self._last_run_job_selection = str(
             self._run_preferences.get("last_run_job_name") or ""
         ).strip()
@@ -1516,8 +1540,12 @@ class BossFilterGUI:
         self.result_page = None
         self.stats_page = None
         self.education_page = None
-        self.create_education_page()
-        self.show_page_education()
+        if self._start_with_settings:
+            self.create_api_config_page()
+            self.show_page_api()
+        else:
+            self.create_education_page()
+            self.show_page_education()
 
     def _defer_ui_work(
         self,
@@ -1742,7 +1770,15 @@ class BossFilterGUI:
         preferences = dict(getattr(self, "_run_preferences", {}) or {})
         preferences["last_run_job_name"] = normalized
         self._run_preferences = preferences
-        _save_run_preferences(preferences)
+        self._persist_run_preferences(preferences)
+
+    def _persist_run_preferences(self, preferences: dict) -> None:
+        """Persist BOSS or standalone preferences without changing the default call shape."""
+        path = getattr(self, "_run_preferences_path", RUN_PREFERENCES_PATH)
+        if path == RUN_PREFERENCES_PATH:
+            _save_run_preferences(preferences)
+        else:
+            _save_run_preferences(preferences, path)
 
     def _resolve_default_run_job_selection(self, job_rules: dict) -> str:
         """Prefer the latest concrete run job, then the config-page job, then first saved job."""
@@ -1859,7 +1895,7 @@ class BossFilterGUI:
             when=when,
         )
         self._run_preferences = preferences
-        _save_run_preferences(preferences)
+        self._persist_run_preferences(preferences)
         return value
 
     def _data_backup_note_text(
@@ -2375,10 +2411,38 @@ class BossFilterGUI:
     def _api_config_file_mtime(self):
         """Return a stable file fingerprint for api_config.json."""
         try:
-            path = get_api_config_path()
+            path = self._runtime_api_config_path()
             return path.stat().st_mtime_ns if path.exists() else 0
         except OSError:
             return 0
+
+    def _runtime_api_config_path(self, *, for_write: bool = False) -> Path:
+        """Return the config path injected by the standalone host or the BOSS path."""
+        api_config_path = getattr(self, "_api_config_path", None)
+        if api_config_path is not None:
+            if for_write:
+                api_config_path.parent.mkdir(parents=True, exist_ok=True)
+            return api_config_path
+        return get_api_config_path(for_write=for_write)
+
+    def _read_runtime_api_key(self, provider: str, base_url: str = "") -> str:
+        """Read a credential through the standalone or BOSS credential backend."""
+        api_key_getter = getattr(self, "_api_key_getter", None)
+        if api_key_getter is not None:
+            return str(api_key_getter(provider, base_url) or "")
+        return str(get_api_key(provider, base_url) or "")
+
+    def _save_runtime_api_key(
+        self,
+        provider: str,
+        api_key: str,
+        base_url: str = "",
+    ) -> bool:
+        """Save a credential through the standalone or BOSS credential backend."""
+        api_key_saver = getattr(self, "_api_key_saver", None)
+        if api_key_saver is not None:
+            return bool(api_key_saver(provider, api_key, base_url))
+        return save_api_key(provider, api_key, base_url)
 
     def _load_api_config_to_ui_if_needed(self):
         """Load API config into widgets only when the config file changed."""
@@ -2439,7 +2503,7 @@ class BossFilterGUI:
             cached = cache.get(identity)
             if cached:
                 return cached
-            api_key = str(get_api_key(provider, base_url) or "")
+            api_key = self._read_runtime_api_key(provider, base_url)
             self._remember_api_key(provider, base_url, api_key)
             return api_key
 
@@ -2548,7 +2612,10 @@ class BossFilterGUI:
 
     def _assigned_model_test_target_label(self, role, model_ref=None):
         """返回用途模型测试提示中使用的可辨识名称。"""
-        role_label = "默认 AI 模型" if role == "default" else "学历核验模型"
+        if getattr(self, "standalone_education", False):
+            role_label = "当前识别模型"
+        else:
+            role_label = "默认 AI 模型" if role == "default" else "学历核验模型"
         model_ref = model_ref or self._get_assigned_model_ref(role)
         provider_key = model_ref.get("api_provider", "")
         provider_display = getattr(self, "PROVIDER_DISPLAY", PROVIDER_DISPLAY).get(
@@ -2559,6 +2626,8 @@ class BossFilterGUI:
 
     def _assigned_model_test_roles(self, role, model_ref=None):
         """返回一次测试应同步的用途；实际连接身份相同时双向同步。"""
+        if getattr(self, "standalone_education", False):
+            return ("default",)
         if role not in ("default", "education"):
             return (role,)
         model_ref = model_ref or self._get_assigned_model_ref(role)
@@ -2597,7 +2666,7 @@ class BossFilterGUI:
         """模型用途变更后撤销旧测试结果，避免把结果带给新模型。"""
         if not hasattr(self, "_assigned_model_test_tokens"):
             return
-        for role in ("default", "education"):
+        for role in tuple(self._assigned_model_test_tokens):
             current_ref = self._get_assigned_model_ref(role)
             previous_ref = self._assigned_model_test_refs.get(role)
             if self._model_ref_matches(previous_ref, current_ref):
@@ -2674,9 +2743,10 @@ class BossFilterGUI:
         try:
             self._model_choice_refs = refs
             self.default_model_combo.configure(values=choices)
-            self.education_model_combo.configure(values=edu_choices)
             self.default_model_choice_var.set(default_label or "未配置")
-            self.education_model_choice_var.set(education_label)
+            if hasattr(self, "education_model_combo"):
+                self.education_model_combo.configure(values=edu_choices)
+                self.education_model_choice_var.set(education_label)
         finally:
             self._updating_model_assignment_controls = False
         self._reset_assigned_model_test_states()
@@ -3370,7 +3440,7 @@ class BossFilterGUI:
             self.education_screenshot_folder
         )
         self._run_preferences = preferences
-        _save_run_preferences(preferences)
+        self._persist_run_preferences(preferences)
         self._refresh_education_screenshot_existing_states()
         return True
 
@@ -4186,6 +4256,21 @@ class BossFilterGUI:
             return
         # 学历核验专用配置（优先 education_model_ref，回退默认 AI 模型）
         edu_config = self._get_education_api_config()
+        from education_certificate import resolve_vision_api_config
+        vision_config = resolve_vision_api_config(edu_config)
+        education_api_key = ""
+        if getattr(self, "standalone_education", False):
+            education_api_key = self._get_education_api_key(vision_config)
+            if not education_api_key:
+                messagebox.show_notice(
+                    "需要配置模型",
+                    headline="尚未找到当前模型的 API Key",
+                    message="请先在模型配置页填写 API Key、保存模型并测试连接。",
+                    notice="API Key 只保存在当前用户的系统凭据中，不会写入配置文件或 EXE。",
+                    parent=self.root,
+                )
+                self.show_page_api()
+                return
         # 检查是否有图片文件需要视觉模型
         has_image = any(
             not self.education_items.get(item_id, {}).get("is_pdf")
@@ -4200,7 +4285,11 @@ class BossFilterGUI:
                     headline="当前学历核验模型可能不支持图片输入",
                     message="继续后仍会尝试识别，但可能直接失败或无法返回有效字段。",
                     metrics=(("当前模型", model_name),),
-                    notice="建议先到系统设置的「使用中的模型」切换学历核验模型。",
+                    notice=(
+                        "建议先到模型配置页切换当前识别模型。"
+                        if getattr(self, "standalone_education", False)
+                        else "建议先到系统设置的「使用中的模型」切换学历核验模型。"
+                    ),
                     detail=(
                         "可选视觉模型示例：\n"
                         "国外：GPT-4o / GPT-4.1、Claude Sonnet 4、Gemini 2.5 Pro\n"
@@ -4213,8 +4302,6 @@ class BossFilterGUI:
                 ):
                     return
         self.education_recognition_running = True
-        from education_certificate import resolve_vision_api_config
-        vision_config = resolve_vision_api_config(edu_config)
         vision_model = str(vision_config.get("model") or "当前模型")
         rotation_locked = getattr(self, "education_rotation_locked", set())
         manual_rotation = getattr(self, "education_manual_rotation", {})
@@ -4316,7 +4403,8 @@ class BossFilterGUI:
                     self.education_items,
                     item_ids,
                     vision_config,
-                    self._get_education_api_key(vision_config) or "",
+                    education_api_key
+                    or self._get_education_api_key(vision_config),
                     recognize_image=recognize_certificate_image,
                     recognize_pdf=recognize_certificate_pdf,
                     on_result=on_result,
@@ -5169,8 +5257,6 @@ class BossFilterGUI:
         return state.connected
     def _get_education_api_key(self, config: dict) -> str:
         """按运行模式取得学历核验专用 API Key。"""
-        if self._education_api_key_provider is not None:
-            return str(self._education_api_key_provider() or "")
         provider = str(config.get("api_provider") or "")
         if not provider:
             return ""
@@ -6478,7 +6564,7 @@ class BossFilterGUI:
 
     def load_api_config(self, resolve_keys=True):
         """加载 API 配置 - 从系统钥匙串读取加密的 API Key（按服务商管理）"""
-        api_config_path = get_api_config_path()
+        api_config_path = self._runtime_api_config_path()
         if api_config_path.exists():
             try:
                 with open(api_config_path, 'r', encoding='utf-8') as f:
@@ -6527,6 +6613,9 @@ class BossFilterGUI:
 
     def _default_api_config(self):
         """返回默认 API 配置"""
+        standalone_defaults = getattr(self, "_standalone_api_config_defaults", None)
+        if getattr(self, "standalone_education", False) and standalone_defaults:
+            return copy.deepcopy(standalone_defaults)
         return _SETTINGS_CONTROLLER.default_api_config()
 
     def _sanitize_config_for_save(self, config):
@@ -6642,7 +6731,7 @@ class BossFilterGUI:
         if not hasattr(self, 'api_config') or not self.api_config:
             return
         try:
-            with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as f:
+            with open(self._runtime_api_config_path(for_write=True), 'w', encoding='utf-8') as f:
                 json.dump(self._sanitize_config_for_save(self.api_config), f, ensure_ascii=False, indent=4)
         except Exception as e:
             print(f"保存配置失败：{e}")
@@ -6697,7 +6786,15 @@ class BossFilterGUI:
         edu_ref = (self.api_config or {}).get("education_model_ref") or {}
         for model_ref in deleted:
             if self._model_ref_matches(model_ref, current_ref):
-                messagebox.showwarning("无法删除", "该模型正在作为默认 AI 模型使用，请先在“使用中的模型”中更换默认模型。")
+                current_role = (
+                    "当前识别模型"
+                    if getattr(self, "standalone_education", False)
+                    else "默认 AI 模型"
+                )
+                messagebox.showwarning(
+                    "无法删除",
+                    f"该模型正在作为{current_role}使用，请先在“使用中的模型”中更换。",
+                )
                 return
             if edu_ref and self._model_ref_matches(model_ref, edu_ref):
                 messagebox.showwarning("无法删除", "该模型正在作为学历核验模型使用，请先在“使用中的模型”中更换，或改为跟随默认 AI 模型。")
@@ -6732,7 +6829,7 @@ class BossFilterGUI:
             self.api_config["saved_models"] = self.saved_models
             try:
                 save_config = self._sanitize_config_for_save(self.api_config)
-                with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as f:
+                with open(self._runtime_api_config_path(for_write=True), 'w', encoding='utf-8') as f:
                     json.dump(save_config, f, ensure_ascii=False, indent=4)
                 self._mark_api_config_ui_current()
             except Exception as e:
@@ -7084,7 +7181,7 @@ class BossFilterGUI:
         # 同步到 api_config 并原子写盘
         self.api_config["saved_models"] = self.saved_models
         try:
-            write_path = get_api_config_path(for_write=True)
+            write_path = self._runtime_api_config_path(for_write=True)
             tmp_path = write_path.with_suffix('.json.tmp')
             with open(tmp_path, 'w', encoding='utf-8') as f:
                 json.dump(self._sanitize_config_for_save(self.api_config), f, ensure_ascii=False, indent=4)
@@ -7138,7 +7235,7 @@ class BossFilterGUI:
                 base_url = normalized_base_url
                 self.api_base_url_var.set(base_url)
             # 按服务商 + Base URL 组合存储 API Key（区分同一服务商的不同接入方式）
-            if not save_api_key(provider, api_key, base_url):
+            if not self._save_runtime_api_key(provider, api_key, base_url):
                 raise RuntimeError("API Key 未能写入系统凭据存储，请检查系统凭据服务后重试")
             self._remember_api_key(provider, base_url, api_key)
 
@@ -7159,7 +7256,7 @@ class BossFilterGUI:
             self.api_config = outcome.api_config
             self._pending_models_to_add = []
 
-            with open(get_api_config_path(for_write=True), 'w', encoding='utf-8') as f:
+            with open(self._runtime_api_config_path(for_write=True), 'w', encoding='utf-8') as f:
                 json.dump(self._sanitize_config_for_save(self.api_config), f, ensure_ascii=False, indent=4)
             self._mark_api_config_ui_current()
 
@@ -7174,9 +7271,17 @@ class BossFilterGUI:
 
             summary = outcome.summary
             default_summary = (
-                "本次保存的模型已设为默认 AI 模型"
+                (
+                    "本次保存的模型已设为当前识别模型"
+                    if getattr(self, "standalone_education", False)
+                    else "本次保存的模型已设为默认 AI 模型"
+                )
                 if outcome.default_changed
-                else "默认 AI 模型保持不变"
+                else (
+                    "当前识别模型保持不变"
+                    if getattr(self, "standalone_education", False)
+                    else "默认 AI 模型保持不变"
+                )
             )
             self._update_api_status(
                 text=f"✓ {summary}；{default_summary}",
@@ -10427,7 +10532,7 @@ class BossFilterGUI:
             api_config["llm_read_timeout"] = read_timeout
             try:
                 with open(
-                    get_api_config_path(for_write=True),
+                    self._runtime_api_config_path(for_write=True),
                     "w",
                     encoding="utf-8",
                 ) as config_file:
@@ -10751,7 +10856,7 @@ class BossFilterGUI:
             "status": home_presenter.classify_run_status(terminal.final_desc),
         }
         self._run_preferences = preferences
-        _save_run_preferences(preferences)
+        self._persist_run_preferences(preferences)
         self._apply_home_scan_display()
 
     def _apply_run_terminal_event(self, terminal, outcome, request):

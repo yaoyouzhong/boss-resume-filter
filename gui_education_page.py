@@ -78,6 +78,8 @@ class EducationPageHost(Protocol):
     widget_support: WidgetSupport
     layout_support: LayoutSupport
 
+    def show_page_api(self) -> None: ...
+
     def _remove_current_education_image(self) -> None: ...
 
     def _select_education_images(self) -> None: ...
@@ -156,6 +158,19 @@ def build_education_page(
     """Build the education page without reading certificates or accessing AI/browser services."""
     scale = host.dpi_scale * host.zoom_factor
     page = ttk.Frame(host.pages_frame, style="Page.TFrame")
+    if bool(getattr(host, "standalone_education", False)):
+        navigation = ttk.Frame(page, style="Page.TFrame")
+        navigation.pack(fill="x", pady=(0, int(10 * scale)))
+        settings_icon = host.icons.button("gear", host.colors["text_primary"])
+        settings_button = ttk.Button(
+            navigation,
+            text=" 模型配置",
+            image=settings_icon,
+            compound=tk.LEFT,
+            command=host.show_page_api,
+        )
+        settings_button._icon_ref = settings_icon
+        settings_button.pack(side="right")
     host.widget_support.create_page_header(
         page,
         "学历核验",
