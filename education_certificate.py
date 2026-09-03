@@ -690,6 +690,24 @@ def normalize_recognition(payload: dict[str, Any], model: str = "") -> Certifica
 
 _RECOGNITION_FIELDS = ("name", "certificate_number", "school", "major")
 _CRITICAL_RECOGNITION_FIELDS = ("name", "certificate_number")
+_MANUAL_NAME_CONFIRMATION_MODELS = frozenset({"minimax-m3"})
+_FIELD_WARNING_LABELS = {
+    "name": ("姓名", "name"),
+    "certificate_number": ("证书编号", "certificate number"),
+    "school": ("学校", "院校", "school"),
+    "major": ("专业", "major"),
+}
+_UNCERTAINTY_WARNING_MARKERS = (
+    "存疑",
+    "不确定",
+    "不能确认",
+    "无法确认",
+    "不清晰",
+    "模糊",
+    "难以辨认",
+    "无法辨认",
+    "建议人工",
+)
 
 
 def _normalize_orientation(payload: dict[str, Any]) -> tuple[int, int]:
@@ -713,8 +731,8 @@ def _questionable_recognition_fields(
     payload: dict[str, Any],
     result: CertificateRecognition,
 ) -> tuple[str, ...]:
-    """Return fields for focused review; CHSI query fields are always reviewed."""
-    questionable: set[str] = set(_CRITICAL_RECOGNITION_FIELDS)
+    """Return only fields with a concrete reason for one focused review."""
+    questionable: set[str] = set()
     if not result.name or not 2 <= len(result.name) <= 20:
         questionable.add("name")
     if not result.certificate_number or len(result.certificate_number) != 18:
@@ -727,6 +745,8 @@ def _questionable_recognition_fields(
     raw_confidences = payload.get("field_confidence")
     if isinstance(raw_confidences, dict):
         for field in _RECOGNITION_FIELDS:
+            if field not in raw_confidences:
+                continue
             try:
                 confidence = int(raw_confidences.get(field, 0))
             except (TypeError, ValueError):
@@ -735,6 +755,17 @@ def _questionable_recognition_fields(
                 questionable.add(field)
     elif result.confidence < 80:
         questionable.update(_RECOGNITION_FIELDS)
+
+    raw_warnings = payload.get("warnings") or []
+    if isinstance(raw_warnings, str):
+        raw_warnings = [raw_warnings]
+    for warning in raw_warnings:
+        normalized = str(warning).strip().lower()
+        if not any(marker in normalized for marker in _UNCERTAINTY_WARNING_MARKERS):
+            continue
+        for field, labels in _FIELD_WARNING_LABELS.items():
+            if any(label in normalized for label in labels):
+                questionable.add(field)
     return tuple(field for field in _RECOGNITION_FIELDS if field in questionable)
 
 
@@ -934,7 +965,7 @@ def recognize_certificate_image(
     on_progress: Callable[[str, int], None] | None = None,
     rotation_override: int | None = None,
 ) -> CertificateRecognition:
-    """Orient and read a certificate in two normal requests, with safe fallback."""
+    """Read once, then perform at most one focused review for concrete risks."""
     emit = on_progress or (lambda _stage, _percent: None)
     vision_config = resolve_vision_api_config(api_config)
     emit("正在准备证书方向和高清图", 5)
@@ -955,6 +986,9 @@ def recognize_certificate_image(
     )
     base_url = str(vision_config.get("base_url") or "").lower()
     model = str(vision_config.get("model") or "")
+    manual_name_confirmation = (
+        model.strip().lower() in _MANUAL_NAME_CONFIRMATION_MODELS
+    )
     max_tokens = 4096 if "api.kimi.com/coding" in base_url else 2048
     orientation_tokens = max_tokens if max_tokens == 4096 else 512
     rotation = 0
@@ -1055,9 +1089,12 @@ def recognize_certificate_image(
         )
     primary = normalize_recognition(parsed, model)
     questionable_fields = _questionable_recognition_fields(parsed, primary)
+    if manual_name_confirmation:
+        questionable_fields = tuple(
+            field for field in questionable_fields if field != "name"
+        )
     primary_payload = dict(parsed)
     review_payload: dict[str, Any] | None = None
-    tie_payload: dict[str, Any] | None = None
     if questionable_fields:
         detail_data_url = ""
         try:
@@ -1087,194 +1124,58 @@ def recognize_certificate_image(
                 model=model,
             )
         except Exception:
+            raw_conflicts = parsed.get("_critical_conflicts") or []
+            if isinstance(raw_conflicts, str):
+                raw_conflicts = [raw_conflicts]
+            parsed["_critical_conflicts"] = list(dict.fromkeys([
+                *raw_conflicts,
+                *(
+                    field
+                    for field in questionable_fields
+                    if field in _CRITICAL_RECOGNITION_FIELDS
+                ),
+            ]))
             pipeline_warnings.append("可疑字段高清复核失败，请人工核对")
-        critical_conflicts = tuple(parsed.get("_critical_conflicts") or [])
-        if review_payload is not None and critical_conflicts:
-            try:
-                emit("两次结果不一致，正在做最终高清确认", 86)
-                tie_payload = _invoke_model(
-                    vision_config,
-                    api_key,
-                    build_field_review_messages(
-                        vision_config,
-                        data_url,
-                        detail_data_url,
-                        critical_conflicts,
-                    ),
-                    timeout=timeout,
-                    max_tokens=max_tokens,
-                )
-                parsed = _resolve_critical_conflicts(
-                    parsed,
-                    primary_payload,
-                    review_payload,
-                    tie_payload,
-                    model=model,
-                )
-            except Exception:
-                pipeline_warnings.append("关键字段最终复核失败，请人工填写")
 
-    current = normalize_recognition(parsed, model)
-    current_conflicts = tuple(parsed.get("_critical_conflicts") or [])
-    reviewed_names = [normalize_recognition(primary_payload, model).name]
-    if review_payload is not None:
-        reviewed_names.append(normalize_recognition(review_payload, model).name)
-    if tie_payload is not None:
-        reviewed_names.append(normalize_recognition(tie_payload, model).name)
-    current_name_support = sum(
-        name == current.name
-        for name in reviewed_names
-        if name
+    ambiguous_critical = tuple(
+        field
+        for field in _questionable_recognition_fields(
+            parsed,
+            normalize_recognition(parsed, model),
+        )
+        if field in _CRITICAL_RECOGNITION_FIELDS
     )
-    has_prior_name_consensus = bool(
-        current.name
-        and current_name_support >= 2
-        and "name" not in current_conflicts
-    )
-    needs_name_audit = (
-        "minimax-m3" in model.lower()
-        or not current.name
-        or "name" in current_conflicts
-    )
-    if needs_name_audit:
-        explicit_name_conflict = False
+    if ambiguous_critical:
+        raw_conflicts = parsed.get("_critical_conflicts") or []
+        if isinstance(raw_conflicts, str):
+            raw_conflicts = [raw_conflicts]
+        parsed["_critical_conflicts"] = list(dict.fromkeys([
+            *raw_conflicts,
+            *ambiguous_critical,
+        ]))
         raw_warnings = parsed.get("warnings") or []
         if isinstance(raw_warnings, str):
             raw_warnings = [raw_warnings]
-        parsed["warnings"] = [
-            warning
-            for warning in raw_warnings
-            if str(warning) != "未能确认姓名"
-            and not str(warning).startswith("name 复核仍无法确认")
-            and not str(warning).startswith("姓名两种原始分区视图")
-        ]
-        try:
-            emit("正在用增强灰度图逐字复核姓名", 89)
-            component_name_payload = _invoke_model(
-                vision_config,
-                api_key,
-                build_name_review_messages(
-                    vision_config,
-                    prepare_name_detail_data_urls(
-                        path,
-                        rotation=rotation,
-                        enhanced=True,
-                    ),
-                    component_review=True,
-                ),
-                timeout=timeout,
-                max_tokens=max_tokens,
-            )
-            component_name, component_confidence = _reliable_name_candidate(
-                component_name_payload,
-                model=model,
-            )
-            if current.name and component_name == current.name:
-                parsed["warnings"] = [
-                    warning
-                    for warning in parsed["warnings"]
-                    if not str(warning).startswith("姓名两次识别结果不一致")
-                    and not str(warning).startswith("姓名已由第三次高清复核确认")
-                ]
-                parsed["_critical_conflicts"] = [
-                    field
-                    for field in parsed.get("_critical_conflicts") or []
-                    if field != "name"
-                ]
-            elif not component_name and has_prior_name_consensus:
-                parsed["warnings"].append(
-                    "姓名字形复核未形成有效结果，已保留前两次一致识别，请提交前核对"
-                )
-            else:
-                explicit_name_conflict = bool(current.name and component_name)
-                emit("姓名结果存在分歧，正在用彩色原图裁决", 92)
-                color_name_payload = _invoke_model(
-                    vision_config,
-                    api_key,
-                    (
-                        build_name_disambiguation_messages(
-                            vision_config,
-                            prepare_name_detail_data_urls(path, rotation=rotation),
-                            (current.name, component_name),
-                        )
-                        if explicit_name_conflict
-                        else build_name_review_messages(
-                            vision_config,
-                            prepare_name_detail_data_urls(path, rotation=rotation),
-                        )
-                    ),
-                    timeout=timeout,
-                    max_tokens=max_tokens,
-                )
-                color_name, color_confidence = _reliable_name_candidate(
-                    color_name_payload,
-                    model=model,
-                )
-                if current.name and color_name == current.name:
-                    parsed["warnings"] = [
-                        warning
-                        for warning in parsed["warnings"]
-                        if not str(warning).startswith("姓名两次识别结果不一致")
-                        and not str(warning).startswith("姓名已由第三次高清复核确认")
-                    ]
-                    parsed["_critical_conflicts"] = [
-                        field
-                        for field in parsed.get("_critical_conflicts") or []
-                        if field != "name"
-                    ]
-                    parsed["warnings"].append(
-                        "姓名专项复核已确认原识别结果，请提交前核对"
-                    )
-                elif component_name and color_name == component_name:
-                    original_name = current.name
-                    parsed["name"] = component_name
-                    parsed["warnings"] = [
-                        warning
-                        for warning in parsed["warnings"]
-                        if not str(warning).startswith("姓名两次识别结果不一致")
-                        and not str(warning).startswith("姓名已由第三次高清复核确认")
-                    ]
-                    field_confidence = parsed.get("field_confidence")
-                    if not isinstance(field_confidence, dict):
-                        field_confidence = {}
-                    else:
-                        field_confidence = dict(field_confidence)
-                    field_confidence["name"] = min(
-                        color_confidence,
-                        component_confidence,
-                    )
-                    parsed["field_confidence"] = field_confidence
-                    parsed["_critical_conflicts"] = [
-                        field
-                        for field in parsed.get("_critical_conflicts") or []
-                        if field != "name"
-                    ]
-                    parsed["warnings"].append(
-                        "姓名已由两种原始分区视图一致复核纠正，请提交前核对"
-                        if original_name and original_name != component_name
-                        else "姓名已由两种原始分区视图一致复核确认，请提交前核对"
-                    )
-                else:
-                    parsed["name"] = ""
-                    parsed["_critical_conflicts"] = list(dict.fromkeys([
-                        *(parsed.get("_critical_conflicts") or []),
-                        "name",
-                    ]))
-                    parsed["warnings"].append(
-                        "姓名专项复核存在明确分歧，已留空，请人工填写"
-                    )
-        except Exception:
-            if explicit_name_conflict or not has_prior_name_consensus:
-                parsed["name"] = ""
-                parsed["_critical_conflicts"] = list(dict.fromkeys([
-                    *(parsed.get("_critical_conflicts") or []),
-                    "name",
-                ]))
-            pipeline_warnings.append(
-                "姓名专项复核暂不可用，已保留前两次一致识别，请提交前核对"
-                if has_prior_name_consensus and not explicit_name_conflict
-                else "姓名专项复核失败，已转人工确认"
-            )
+        parsed["warnings"] = list(dict.fromkeys([
+            *raw_warnings,
+            "关键查询字段仍存在明确疑点，已停止重复识别，请人工核对",
+        ]))
+
+    if manual_name_confirmation:
+        raw_conflicts = parsed.get("_critical_conflicts") or []
+        if isinstance(raw_conflicts, str):
+            raw_conflicts = [raw_conflicts]
+        parsed["_critical_conflicts"] = list(dict.fromkeys([
+            *raw_conflicts,
+            "name",
+        ]))
+        raw_warnings = parsed.get("warnings") or []
+        if isinstance(raw_warnings, str):
+            raw_warnings = [raw_warnings]
+        parsed["warnings"] = list(dict.fromkeys([
+            *raw_warnings,
+            "当前模型姓名识别稳定性不足，已停止追加调用，请人工核对",
+        ]))
 
     current = normalize_recognition(parsed, model)
     missing_critical = []
@@ -1875,7 +1776,7 @@ def recognize_captcha(
     """Recognize one captcha, using a second view only for weak primary results."""
     vision_config = resolve_vision_api_config(api_config)
     base_url = str(vision_config.get("base_url") or "").lower()
-    max_tokens = 4096 if "api.kimi.com/coding" in base_url else 2048
+    max_tokens = 4096 if "api.kimi.com/coding" in base_url else 512
     if isinstance(data_url, CaptchaImageVariants):
         primary_urls = [data_url.original, data_url.grayscale]
         expected_length = data_url.expected_length
@@ -1984,13 +1885,11 @@ def recognize_captcha(
             "算术题两路识别结果不一致，已放弃本次结果",
             False,
         )
-    selected = reviewed if reviewed[2] > primary[2] else primary
-    selected_source = "补充识别" if selected is reviewed else "主识别"
     return (
-        selected[0],
-        selected[1],
-        selected[2],
-        f"两路结果不一致，采用置信度较高的{selected_source}结果",
+        "unknown",
+        "",
+        max(primary[2], reviewed[2]),
+        "字符型验证码两路识别结果不一致，已放弃本次结果",
         False,
     )
 

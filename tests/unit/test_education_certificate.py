@@ -189,9 +189,9 @@ def test_kimi_code_image_recognition_uses_larger_output_budget():
     assert result.name == "张三"
     assert result.certificate_number == "123456789012345678"
     assert result.critical_conflicts == ()
-    assert invoke.call_count == 2
+    assert invoke.call_count == 1
     assert stages[0] == ("正在准备证书方向和高清图", 5)
-    assert ("正在核对姓名和证书编号", 70) in stages
+    assert ("正在核对姓名和证书编号", 70) not in stages
     assert stages[-1] == ("正在整理识别结果", 95)
 
 
@@ -449,15 +449,22 @@ def test_captcha_high_confidence_primary_submits_without_extra_model_call():
         "base_url": "https://example.test/v1",
         "model": "MiniMax-M3",
     }
+    captured = {}
+
+    def fake_invoke(*_args, max_tokens=2048, **_kwargs):
+        captured["max_tokens"] = max_tokens
+        return {"type": "letter", "answer": "a8cD", "confidence": 85}
+
     with patch(
         "education_certificate._invoke_model",
-        return_value={"type": "letter", "answer": "a8cD", "confidence": 85},
+        side_effect=fake_invoke,
     ) as invoke:
         result = recognize_captcha(images, config, "key")
     assert result[:3] == ("letter", "a8cD", 85)
     assert "置信度 85" in result[3]
     assert result[4] is False
     assert invoke.call_count == 1
+    assert captured["max_tokens"] == 512
 
 
 def test_captcha_high_confidence_arithmetic_submits_without_binary_review():
@@ -542,7 +549,7 @@ def test_captcha_review_can_rescue_invalid_primary_result():
     assert invoke.call_count == 2
 
 
-def test_captcha_low_confidence_conflict_uses_higher_confidence_result():
+def test_captcha_low_confidence_conflict_is_rejected_instead_of_trusting_confidence():
     from unittest.mock import patch
     from education_certificate import CaptchaImageVariants, recognize_captcha
 
@@ -558,8 +565,8 @@ def test_captcha_low_confidence_conflict_uses_higher_confidence_result():
     ]
     with patch("education_certificate._invoke_model", side_effect=responses) as invoke:
         result = recognize_captcha(images, config, "key")
-    assert result[:3] == ("letter", "aBcD", 68)
-    assert "置信度较高的补充识别" in result[3]
+    assert result[:3] == ("unknown", "", 68)
+    assert "两路识别结果不一致" in result[3]
     assert result[4] is False
     assert invoke.call_count == 2
 
@@ -908,7 +915,7 @@ def test_certificate_image_pipeline_rotates_before_read_and_reviews_bad_number()
     assert "高清区域复核纠正" in "；".join(result.warnings)
 
 
-def test_certificate_image_blocks_conflicting_name_and_number_for_manual_entry():
+def test_certificate_image_reviews_warned_fields_once_then_blocks_conflicts():
     from unittest.mock import patch
 
     responses = iter((
@@ -926,7 +933,7 @@ def test_certificate_image_blocks_conflicting_name_and_number_for_manual_entry()
                 "major": 93,
             },
             "confidence": 96,
-            "warnings": [],
+            "warnings": ["姓名存疑，证书编号不清晰"],
         },
         {
             "name": "张山",
@@ -938,15 +945,6 @@ def test_certificate_image_blocks_conflicting_name_and_number_for_manual_entry()
                 "certificate_number": 96,
             },
             "confidence": 95,
-            "warnings": [],
-        },
-        {
-            "name": "张森",
-            "certificate_number": "123456789012345670",
-            "school": "",
-            "major": "",
-            "field_confidence": {"name": 94, "certificate_number": 95},
-            "confidence": 94,
             "warnings": [],
         },
     ))
@@ -963,13 +961,13 @@ def test_certificate_image_blocks_conflicting_name_and_number_for_manual_entry()
     ), patch(
         "education_certificate._invoke_model",
         side_effect=lambda *_args, **_kwargs: next(responses),
-    ):
+    ) as invoke:
         result = recognize_certificate_image(
             "fake.jpg",
             {
-                "api_provider": "minimax",
-                "base_url": "https://api.minimaxi.com/v1",
-                "model": "MiniMax-M3",
+                "api_provider": "deepseek",
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-v4-flash-vision-exp",
             },
             "key",
         )
@@ -980,10 +978,11 @@ def test_certificate_image_blocks_conflicting_name_and_number_for_manual_entry()
     warning_text = "；".join(result.warnings)
     assert "姓名两次识别结果不一致" in warning_text
     assert "证书编号两次识别结果不一致" in warning_text
+    assert invoke.call_count == 2
 
 
-def test_missing_name_uses_uncompressed_source_tiles_for_final_retry():
-    from unittest.mock import call, patch
+def test_missing_name_is_rescued_by_one_focused_review():
+    from unittest.mock import patch
 
     responses = iter((
         {
@@ -998,22 +997,10 @@ def test_missing_name_uses_uncompressed_source_tiles_for_final_retry():
             "warnings": [],
         },
         {
-            "name": "",
+            "name": "鲍殊",
             "certificate_number": "123456789012345678",
-            "field_confidence": {"name": 0, "certificate_number": 97},
-            "confidence": 91,
-            "warnings": [],
-        },
-        {
-            "name": "鲍殊",
-            "field_confidence": {"name": 94},
+            "field_confidence": {"name": 94, "certificate_number": 97},
             "confidence": 94,
-            "warnings": [],
-        },
-        {
-            "name": "鲍殊",
-            "field_confidence": {"name": 96},
-            "confidence": 96,
             "warnings": [],
         },
     ))
@@ -1029,10 +1016,7 @@ def test_missing_name_uses_uncompressed_source_tiles_for_final_retry():
         return_value="detail",
     ), patch(
         "education_certificate.prepare_name_detail_data_urls",
-        side_effect=(
-            ("gray-1", "gray-2", "gray-3", "gray-4"),
-            ("color-1", "color-2", "color-3", "color-4"),
-        ),
+        return_value=("unused",),
     ) as prepare_name_tiles, patch(
         "education_certificate._invoke_model",
         side_effect=lambda *_args, **_kwargs: next(responses),
@@ -1040,28 +1024,20 @@ def test_missing_name_uses_uncompressed_source_tiles_for_final_retry():
         result = recognize_certificate_image(
             "fake.jpg",
             {
-                "api_provider": "minimax",
-                "base_url": "https://api.minimaxi.com/v1",
-                "model": "MiniMax-M3",
+                "api_provider": "deepseek",
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-v4-flash-vision-exp",
             },
             "key",
         )
 
     assert result.name == "鲍殊"
     assert result.critical_conflicts == ()
-    assert "两种原始分区视图一致复核确认" in "；".join(result.warnings)
-    assert prepare_name_tiles.call_args_list == [
-        call(
-            "fake.jpg",
-            rotation=0,
-            enhanced=True,
-        ),
-        call("fake.jpg", rotation=0),
-    ]
-    assert invoke.call_count == 4
+    prepare_name_tiles.assert_not_called()
+    assert invoke.call_count == 2
 
 
-def test_missing_name_stays_manual_when_source_tile_retry_is_uncertain():
+def test_missing_name_stays_manual_after_one_uncertain_review():
     from unittest.mock import patch
 
     responses = iter((
@@ -1083,18 +1059,6 @@ def test_missing_name_stays_manual_when_source_tile_retry_is_uncertain():
             "confidence": 91,
             "warnings": [],
         },
-        {
-            "name": "鲍珠",
-            "field_confidence": {"name": 92},
-            "confidence": 92,
-            "warnings": [],
-        },
-        {
-            "name": "鲍殊",
-            "field_confidence": {"name": 94},
-            "confidence": 94,
-            "warnings": [],
-        },
     ))
 
     with patch(
@@ -1108,30 +1072,28 @@ def test_missing_name_stays_manual_when_source_tile_retry_is_uncertain():
         return_value="detail",
     ), patch(
         "education_certificate.prepare_name_detail_data_urls",
-        side_effect=(
-            ("gray-1", "gray-2", "gray-3", "gray-4"),
-            ("color-1", "color-2", "color-3", "color-4"),
-        ),
+        return_value=("unused",),
     ), patch(
         "education_certificate._invoke_model",
         side_effect=lambda *_args, **_kwargs: next(responses),
-    ):
+    ) as invoke:
         result = recognize_certificate_image(
             "fake.jpg",
             {
-                "api_provider": "minimax",
-                "base_url": "https://api.minimaxi.com/v1",
-                "model": "MiniMax-M3",
+                "api_provider": "deepseek",
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-v4-flash-vision-exp",
             },
             "key",
         )
 
     assert result.name == ""
     assert result.critical_conflicts == ("name",)
-    assert "姓名专项复核存在明确分歧" in "；".join(result.warnings)
+    assert "停止重复识别" in "；".join(result.warnings)
+    assert invoke.call_count == 2
 
 
-def test_nonblank_minimax_name_is_corrected_only_when_both_detail_views_agree():
+def test_unreliable_minimax_name_is_manual_without_extra_calls():
     from unittest.mock import patch
 
     responses = iter((
@@ -1144,7 +1106,7 @@ def test_nonblank_minimax_name_is_corrected_only_when_both_detail_views_agree():
             "major": "计算机",
             "field_confidence": {"name": 95, "certificate_number": 96},
             "confidence": 94,
-            "warnings": [],
+            "warnings": ["姓名第二个字不清晰，'殊'/'珠'存疑"],
         },
         {
             "name": "鲍珠",
@@ -1182,10 +1144,7 @@ def test_nonblank_minimax_name_is_corrected_only_when_both_detail_views_agree():
         return_value="detail",
     ), patch(
         "education_certificate.prepare_name_detail_data_urls",
-        side_effect=(
-            ("gray-1", "gray-2", "gray-3", "gray-4"),
-            ("color-1", "color-2", "color-3", "color-4"),
-        ),
+        return_value=("unused",),
     ), patch(
         "education_certificate._invoke_model",
         side_effect=lambda *_args, **_kwargs: next(responses),
@@ -1200,20 +1159,20 @@ def test_nonblank_minimax_name_is_corrected_only_when_both_detail_views_agree():
             "key",
         )
 
-    assert result.name == "鲍殊"
-    assert result.critical_conflicts == ()
-    assert "两种原始分区视图一致复核纠正" in "；".join(result.warnings)
-    assert invoke.call_count == 4
+    assert result.name == "鲍珠"
+    assert result.critical_conflicts == ("name",)
+    assert "停止重复识别" in "；".join(result.warnings)
+    assert invoke.call_count == 1
 
 
-def test_name_disambiguation_can_confirm_the_original_consensus_candidate():
+def test_clear_high_confidence_name_stops_after_primary_read():
     from unittest.mock import patch
 
     responses = iter((
         {
             "rotation": 0,
             "rotation_confidence": 98,
-            "name": "鲍珠",
+            "name": "李四",
             "certificate_number": "123456789012345678",
             "school": "某大学",
             "major": "计算机",
@@ -1253,30 +1212,28 @@ def test_name_disambiguation_can_confirm_the_original_consensus_candidate():
         return_value="detail",
     ), patch(
         "education_certificate.prepare_name_detail_data_urls",
-        side_effect=(
-            ("gray-1", "gray-2", "gray-3", "gray-4"),
-            ("color-1", "color-2", "color-3", "color-4"),
-        ),
-    ), patch(
+        return_value=("unused",),
+    ) as prepare_name_tiles, patch(
         "education_certificate._invoke_model",
         side_effect=lambda *_args, **_kwargs: next(responses),
-    ):
+    ) as invoke:
         result = recognize_certificate_image(
             "fake.jpg",
             {
-                "api_provider": "minimax",
-                "base_url": "https://api.minimaxi.com/v1",
-                "model": "MiniMax-M3",
+                "api_provider": "deepseek",
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-v4-flash-vision-exp",
             },
             "key",
         )
 
-    assert result.name == "鲍珠"
+    assert result.name == "李四"
     assert result.critical_conflicts == ()
-    assert "姓名专项复核已确认原识别结果" in "；".join(result.warnings)
+    prepare_name_tiles.assert_not_called()
+    assert invoke.call_count == 1
 
 
-def test_consensus_name_is_kept_when_component_review_is_inconclusive():
+def test_warned_name_stays_manual_even_when_two_reads_agree():
     from unittest.mock import patch
 
     responses = iter((
@@ -1289,7 +1246,7 @@ def test_consensus_name_is_kept_when_component_review_is_inconclusive():
             "major": "计算机",
             "field_confidence": {"name": 95, "certificate_number": 96},
             "confidence": 94,
-            "warnings": [],
+            "warnings": ["姓名字形存疑，建议人工确认"],
         },
         {
             "name": "李四",
@@ -1317,7 +1274,7 @@ def test_consensus_name_is_kept_when_component_review_is_inconclusive():
         return_value="detail",
     ), patch(
         "education_certificate.prepare_name_detail_data_urls",
-        return_value=("gray-1", "gray-2", "gray-3", "gray-4"),
+        return_value=("unused",),
     ) as prepare_name_tiles, patch(
         "education_certificate._invoke_model",
         side_effect=lambda *_args, **_kwargs: next(responses),
@@ -1325,25 +1282,21 @@ def test_consensus_name_is_kept_when_component_review_is_inconclusive():
         result = recognize_certificate_image(
             "fake.jpg",
             {
-                "api_provider": "minimax",
-                "base_url": "https://api.minimaxi.com/v1",
-                "model": "MiniMax-M3",
+                "api_provider": "deepseek",
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-v4-flash-vision-exp",
             },
             "key",
         )
 
     assert result.name == "李四"
-    assert result.critical_conflicts == ()
-    assert "已保留前两次一致识别" in "；".join(result.warnings)
-    prepare_name_tiles.assert_called_once_with(
-        "fake.jpg",
-        rotation=0,
-        enhanced=True,
-    )
-    assert invoke.call_count == 3
+    assert result.critical_conflicts == ("name",)
+    assert "停止重复识别" in "；".join(result.warnings)
+    prepare_name_tiles.assert_not_called()
+    assert invoke.call_count == 2
 
 
-def test_critical_field_third_read_resolves_a_two_pass_disagreement():
+def test_critical_field_disagreement_stops_after_two_reads():
     from unittest.mock import patch
 
     responses = iter((
@@ -1356,7 +1309,7 @@ def test_critical_field_third_read_resolves_a_two_pass_disagreement():
             "major": "计算机",
             "field_confidence": {"name": 95, "certificate_number": 95},
             "confidence": 95,
-            "warnings": [],
+            "warnings": ["姓名和证书编号存疑"],
         },
         {
             "name": "张山",
@@ -1385,24 +1338,24 @@ def test_critical_field_third_read_resolves_a_two_pass_disagreement():
     ), patch(
         "education_certificate._invoke_model",
         side_effect=lambda *_args, **_kwargs: next(responses),
-    ):
+    ) as invoke:
         result = recognize_certificate_image(
             "fake.jpg",
             {
-                "api_provider": "minimax",
-                "base_url": "https://api.minimaxi.com/v1",
-                "model": "MiniMax-M3",
+                "api_provider": "deepseek",
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-v4-flash-vision-exp",
             },
             "key",
         )
 
-    assert result.name == "张三"
-    assert result.certificate_number == "123456789012345678"
-    assert result.critical_conflicts == ()
-    assert "第三次高清复核确认" in "；".join(result.warnings)
+    assert result.name == ""
+    assert result.certificate_number == ""
+    assert result.critical_conflicts == ("name", "certificate_number")
+    assert invoke.call_count == 2
 
 
-def test_low_confidence_vertical_orientation_uses_focused_fallback_before_review():
+def test_low_confidence_vertical_orientation_uses_only_orientation_fallback():
     from unittest.mock import patch
 
     responses = iter((
@@ -1463,7 +1416,7 @@ def test_low_confidence_vertical_orientation_uses_focused_fallback_before_review
         )
 
     assert rotations == [0, 90]
-    assert invoke.call_count == 3
+    assert invoke.call_count == 2
     assert result.rotation == 90
     assert result.rotation_confidence == 96
     assert result.name == "张三"
@@ -1540,7 +1493,7 @@ def test_wrong_high_confidence_rotation_with_missing_name_is_rechecked_and_rerea
     assert "方向复核已纠正角度并重新识别" in "；".join(result.warnings)
 
 
-def test_manual_rotation_override_skips_direction_model_and_is_used_for_both_reads():
+def test_manual_rotation_override_skips_direction_model_for_clear_single_read():
     from unittest.mock import patch
 
     payload = {
@@ -1591,8 +1544,8 @@ def test_manual_rotation_override_skips_direction_model_and_is_used_for_both_rea
         )
 
     orientation_sheet.assert_not_called()
-    assert invoke.call_count == 2
-    assert rotations == [("full", 90), ("detail", 90)]
+    assert invoke.call_count == 1
+    assert rotations == [("full", 90)]
     assert result.rotation == 90
     assert result.rotation_confidence == 100
     assert "已按手动指定方向识别" in "；".join(result.warnings)
