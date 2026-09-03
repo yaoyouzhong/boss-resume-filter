@@ -22,6 +22,7 @@ import bossmaster
 import run_presenter
 from candidate_workflow import filter_candidates_by_result_view
 from data_maintenance_controller import DataMaintenanceController
+from education_controller import EDUCATION_WAITING_FOR_SCAN_STATUS
 from gui_main import (
     BossFilterGUI,
     PAGE_SPECS,
@@ -10269,7 +10270,7 @@ def test_education_queue_summary_text_varies_by_count():
     gui._refresh_education_queue_summary()
     gui.education_file_var.set.assert_called_with("已导入 1 张证书")
     gui.education_batch_status_var.set.assert_called_with(
-        "已导入 1 张 · 待识别 1"
+        "已导入 1 张 · 待识别 1\n学信网：尚未开始"
     )
     gui.education_queue_card.pack.assert_called_once_with(
         fill="x",
@@ -10283,7 +10284,7 @@ def test_education_queue_summary_text_varies_by_count():
     gui._refresh_education_queue_summary()
     gui.education_file_var.set.assert_called_with("已导入 2 张证书")
     gui.education_batch_status_var.set.assert_called_with(
-        "已导入 2 张 · 待识别 2"
+        "已导入 2 张 · 待识别 2\n学信网：尚未开始"
     )
     gui.education_queue_tree.configure.assert_called_with(height=2)
     gui.education_queue_scrollbar.pack.assert_not_called()
@@ -10323,6 +10324,34 @@ def test_education_batch_status_reports_recognition_progress_and_failures():
 
     gui.education_batch_status_var.set.assert_called_with(
         "已导入 5 张 · 已识别 1 · 识别中 1 · 待识别 1 · 失败 1 · 待核对 1"
+        "\n学信网：待验证 1"
+    )
+
+
+def test_education_batch_status_reports_waiting_for_chsi_scan():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {
+        f"education_{index}": {"status": EDUCATION_WAITING_FOR_SCAN_STATUS}
+        for index in range(1, 6)
+    }
+    gui.education_file_var = Mock()
+    gui.education_batch_status_var = Mock()
+    gui.education_queue_card = Mock()
+    gui.education_queue_card.winfo_manager.return_value = "pack"
+    gui.education_workspace = Mock()
+    gui.education_queue_tree = Mock()
+    gui.education_queue_scrollbar = Mock()
+    gui.education_queue_scrollbar.winfo_manager.return_value = ""
+    gui.education_remove_btn = Mock()
+    gui.education_recognize_btn = Mock()
+    gui.education_fill_btn = Mock()
+    gui.education_current_id = None
+    gui.education_recognition_running = False
+
+    gui._refresh_education_queue_summary()
+
+    gui.education_batch_status_var.set.assert_called_with(
+        "已导入 5 张 · 已识别 5\n学信网：等待扫码 5"
     )
 
 

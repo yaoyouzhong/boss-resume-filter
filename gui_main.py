@@ -3123,38 +3123,56 @@ class BossFilterGUI:
             self.education_file_var.set("尚未导入毕业证书")
         batch_status_var = getattr(self, "education_batch_status_var", None)
         if batch_status_var is not None:
-            pending = sum(
-                str(item.get("status") or "待识别") == "待识别"
-                for item in self.education_items.values()
-            )
-            recognizing = sum(
-                str(item.get("status") or "") == "识别中"
-                for item in self.education_items.values()
-            )
-            failed = sum(
-                str(item.get("status") or "") in {"识别失败", "校验失败"}
-                for item in self.education_items.values()
-            )
-            manual_review = sum(
-                str(item.get("status") or "") == "待人工确认"
-                for item in self.education_items.values()
-            )
-            recognized = max(
-                0,
-                total - pending - recognizing - failed - manual_review,
+            summary = _EDUCATION_CONTROLLER.summarize_queue_statuses(
+                self.education_items
             )
             summary_parts = [f"已导入 {total} 张"] if total else ["尚未导入证书"]
-            if recognized:
-                summary_parts.append(f"已识别 {recognized}")
-            if recognizing:
-                summary_parts.append(f"识别中 {recognizing}")
-            if pending:
-                summary_parts.append(f"待识别 {pending}")
-            if failed:
-                summary_parts.append(f"失败 {failed}")
-            if manual_review:
-                summary_parts.append(f"待核对 {manual_review}")
-            batch_status_var.set(" · ".join(summary_parts))
+            if summary.recognized:
+                summary_parts.append(f"已识别 {summary.recognized}")
+            if summary.recognizing:
+                summary_parts.append(f"识别中 {summary.recognizing}")
+            if summary.recognition_pending:
+                summary_parts.append(f"待识别 {summary.recognition_pending}")
+            if summary.recognition_failed:
+                summary_parts.append(f"失败 {summary.recognition_failed}")
+            if summary.manual_review:
+                summary_parts.append(f"待核对 {summary.manual_review}")
+            summary_text = " · ".join(summary_parts)
+            if total:
+                verification_parts = []
+                if summary.verification_not_started:
+                    verification_parts.append(
+                        f"待验证 {summary.verification_not_started}"
+                    )
+                if summary.verification_processing:
+                    verification_parts.append(
+                        f"验证中 {summary.verification_processing}"
+                    )
+                if summary.waiting_scan:
+                    verification_parts.append(f"等待扫码 {summary.waiting_scan}")
+                if summary.waiting_result:
+                    verification_parts.append(f"待结果 {summary.waiting_result}")
+                if summary.qr_expired:
+                    verification_parts.append(f"二维码过期 {summary.qr_expired}")
+                if summary.result_ready:
+                    verification_parts.append(f"已出结果 {summary.result_ready}")
+                if summary.result_not_found:
+                    verification_parts.append(f"未查到 {summary.result_not_found}")
+                if summary.verification_attention:
+                    verification_parts.append(
+                        f"待处理 {summary.verification_attention}"
+                    )
+                if summary.verification_failed:
+                    verification_parts.append(
+                        f"异常 {summary.verification_failed}"
+                    )
+                verification_text = (
+                    " · ".join(verification_parts)
+                    if verification_parts
+                    else "尚未开始"
+                )
+                summary_text += f"\n学信网：{verification_text}"
+            batch_status_var.set(summary_text)
         queue_card = getattr(self, "education_queue_card", None)
         workspace = getattr(self, "education_workspace", None)
         if total < 1:
@@ -3220,37 +3238,22 @@ class BossFilterGUI:
 
     def _update_education_verification_progress(self) -> None:
         """Summarize CHSI submission, phone confirmation, and final results."""
-        statuses = [
-            str(item.get("status") or "")
-            for item in self.education_items.values()
-        ]
-        total = len(statuses)
+        summary = _EDUCATION_CONTROLLER.summarize_queue_statuses(
+            self.education_items
+        )
+        total = summary.total
         if not total:
             return
-        processing = sum(
-            status in {"打开中", "识别验证码中..."}
-            or status.startswith("正在")
-            for status in statuses
+        processing = summary.verification_processing
+        waiting_scan = (
+            summary.waiting_scan
+            + summary.waiting_result
+            + summary.qr_expired
         )
-        waiting_scan = sum(
-            status in {
-                "已提交查询",
-                EDUCATION_WAITING_FOR_SCAN_STATUS,
-                EDUCATION_QR_EXPIRED_STATUS,
-                "结果未确认",
-            }
-            for status in statuses
-        )
-        ready = statuses.count(EDUCATION_RESULT_READY_STATUS)
-        not_found = statuses.count(EDUCATION_RESULT_NOT_FOUND_STATUS)
-        retry = sum(
-            status in {"待人工验证", "验证码识别失败"}
-            for status in statuses
-        )
-        failed = sum(
-            status in {"打开失败", EDUCATION_FORM_EMPTY_STATUS}
-            for status in statuses
-        )
+        ready = summary.result_ready
+        not_found = summary.result_not_found
+        retry = summary.verification_attention
+        failed = summary.verification_failed
         submitted = waiting_scan + ready + not_found
         resolved = ready + not_found
         if processing:

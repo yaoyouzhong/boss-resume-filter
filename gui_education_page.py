@@ -356,6 +356,8 @@ def build_education_page(
         textvariable=batch_status_var,
         font=(font_family, int(10 * host.font_scale), "bold"),
         foreground=host.colors["primary"],
+        justify=tk.RIGHT,
+        anchor="e",
     ).pack(side="right", padx=(16, 0))
     queue_batch_actions = ttk.Frame(queue_batch_area, style="TFrame")
     queue_batch_actions.pack(fill="x")
