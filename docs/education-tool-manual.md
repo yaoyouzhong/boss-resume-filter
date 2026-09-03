@@ -21,6 +21,18 @@
 | 网络 | 能访问所配置的大模型接口和学信网 |
 | 本地权限 | 当前用户可使用 Windows 凭据管理器并写入 `%LOCALAPPDATA%` |
 
+### 2.1 安装与启动
+
+普通用户下载 [EducationCertificateTool.exe](https://github.com/yaoyouzhong/boss-resume-filter/releases/latest/download/EducationCertificateTool.exe) 后双击启动，无需安装 Python 或 Anaconda。GitHub 下载较慢时，可从 [Gitee Release](https://gitee.com/yaoyouzhong/boss-resume-filter/releases) 下载同名文件。
+
+源码开发或调试时，也可以在项目依赖安装完成后运行：
+
+```bash
+python education_tool.py
+```
+
+独立工具不会读取 BOSS 主程序的模型配置或 API Key。
+
 ## 3. 首次配置模型
 
 首次运行会直接进入“模型配置”页。以后可从学历核验页右上角点击“模型配置”进入。

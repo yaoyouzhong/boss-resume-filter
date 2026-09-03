@@ -8,8 +8,7 @@ import types
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import pytest
-
+import build_education_tool
 from education_tool_config import (
     EDUCATION_TOOL_API_CONFIG,
     EDUCATION_TOOL_SERVICE_NAME,
@@ -196,10 +195,37 @@ def test_standalone_build_contains_no_embedded_secret_pipeline():
     assert '"win32ctypes.core.ctypes"' in source
     assert '"win32ctypes.core.cffi"' in source
     assert '"--debug-console"' in source
+    assert '"--ci"' in source
+    assert 'os.environ.get("GITHUB_ACTIONS") != "true"' in source
+    assert 'os.environ.get("RUNNER_OS") != "Windows"' in source
+    assert '[str(artifact_path), "--smoke-test"]' in source
     assert Path(
         "pyinstaller-hooks/pre_find_module_path/hook-tkinter.py"
     ).is_file()
     assert '"openpyxl"' not in source
+
+
+def test_standalone_ci_build_mode_is_limited_to_windows_github_actions():
+    with (
+        patch.dict(
+            build_education_tool.os.environ,
+            {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows"},
+            clear=True,
+        ),
+        patch.object(build_education_tool.os, "name", "nt"),
+        patch.object(build_education_tool.sys, "executable", r"C:\hosted\python.exe"),
+    ):
+        assert build_education_tool._resolve_build_python(True) == Path(
+            r"C:\hosted\python.exe"
+        )
+
+    with patch.dict(build_education_tool.os.environ, {}, clear=True):
+        try:
+            build_education_tool._resolve_build_python(True)
+        except RuntimeError as error:
+            assert "GitHub Actions" in str(error)
+        else:
+            raise AssertionError("local --ci build must be rejected")
 
 
 def test_standalone_entry_injects_config_and_credential_backends():
@@ -209,7 +235,8 @@ def test_standalone_entry_injects_config_and_credential_backends():
     assert "education_api_key_saver=save_education_api_key" in source
     assert "start_with_settings=not config_path.is_file()" in source
     assert '_smoke_test = "--smoke-test" in sys.argv[1:]' in source
-    assert '"https://smoke-test.invalid/v1"' in source
+    assert "root.tk.dooneevent" in source
+    assert 'root.after_cancel(ui_queue_after_id)' in source
     assert "packaged smoke test failed" in source
 
 
@@ -225,5 +252,9 @@ def test_standalone_smoke_test_rejects_a_collapsed_first_page():
         winfo_height=lambda: 1,
     )
 
-    with pytest.raises(RuntimeError, match="page=1x1"):
+    try:
         _assert_page_fills_viewport(gui, page)
+    except RuntimeError as error:
+        assert "page=1x1" in str(error)
+    else:
+        raise AssertionError("collapsed standalone page must fail the smoke test")

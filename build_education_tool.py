@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 from build import (
@@ -44,7 +46,26 @@ def _check_pack_environment() -> None:
         raise RuntimeError("pack_venv 未隔离系统依赖，已停止学历工具构建")
 
 
-def _check_pack_dependencies(build_environment: dict[str, str]) -> None:
+def _resolve_build_python(ci: bool) -> Path:
+    """Use hosted Python only in the guarded Windows release workflow."""
+    if ci:
+        if (
+            os.environ.get("GITHUB_ACTIONS") != "true"
+            or os.environ.get("RUNNER_OS") != "Windows"
+            or os.name != "nt"
+        ):
+            raise RuntimeError("--ci 只能用于 GitHub Actions 的 Windows 发布任务")
+        return Path(sys.executable)
+
+    run_in_venv(__file__)
+    _check_pack_environment()
+    return PACK_PYTHON
+
+
+def _check_pack_dependencies(
+    build_environment: dict[str, str],
+    build_python: Path,
+) -> None:
     """Import required modules inside the actual packaging environment."""
     modules = (
         "DrissionPage",
@@ -63,7 +84,7 @@ def _check_pack_dependencies(build_environment: dict[str, str]) -> None:
         "print('pack environment imports passed')"
     )
     subprocess.run(
-        [str(PACK_PYTHON), "-c", script],
+        [str(build_python), "-c", script],
         cwd=BASE_DIR,
         env=build_environment,
         check=True,
@@ -71,7 +92,6 @@ def _check_pack_dependencies(build_environment: dict[str, str]) -> None:
 
 
 def main() -> None:
-    run_in_venv(__file__)
     parser = argparse.ArgumentParser(description="构建学历证书核验助手")
     parser.add_argument(
         "--check",
@@ -79,15 +99,20 @@ def main() -> None:
         help="只检查独立入口和构建依赖，不生成密钥或 EXE",
     )
     parser.add_argument(
+        "--ci",
+        action="store_true",
+        help="仅供 GitHub Actions Windows 正式发布任务使用",
+    )
+    parser.add_argument(
         "--debug-console",
         action="store_true",
         help="生成带控制台的诊断副本，用于捕获打包层启动异常",
     )
     args = parser.parse_args()
-    _check_pack_environment()
+    build_python = _resolve_build_python(args.ci)
     _check_tkinter_packaging_support()
     tkinter_args, build_environment = _education_tk_args()
-    _check_pack_dependencies(build_environment)
+    _check_pack_dependencies(build_environment, build_python)
     if args.check:
         print("学历证书核验助手构建检查通过")
         return
@@ -99,7 +124,7 @@ def main() -> None:
     )
     window_mode = "--console" if args.debug_console else "--noconsole"
     command = [
-        str(PACK_PYTHON),
+        str(build_python),
         "-m",
         "PyInstaller",
         "--noconfirm",
@@ -161,6 +186,15 @@ def main() -> None:
         env=build_environment,
         check=True,
     )
+    artifact_path = BASE_DIR / "dist" / f"{artifact_name}.exe"
+    subprocess.run(
+        [str(artifact_path), "--smoke-test"],
+        cwd=BASE_DIR,
+        env=build_environment,
+        check=True,
+        timeout=120,
+    )
+    print(f"学历证书核验助手构建和烟测通过：{artifact_path}")
 
 
 if __name__ == "__main__":

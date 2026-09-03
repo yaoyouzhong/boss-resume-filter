@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.31"
+__version__ = "2.32"
 
 import copy
 import json
@@ -1060,6 +1060,7 @@ class BossFilterGUI:
         self._api_key_resolve_after_id = None
         self._api_key_cache = {}
         self._api_key_cache_lock = threading.Lock()
+        self._ui_queue_after_id = None
         self._pending_idle_tasks = set()
         self._pending_page_builds = set()
         self._page_width_policy_after_id = None
@@ -9929,7 +9930,7 @@ class BossFilterGUI:
                     print(f"[UI 队列] 回调执行失败（{callback_name}）: {e}")
         except queue.Empty:
             pass
-        self.root.after(50, self._process_ui_queue)
+        self._ui_queue_after_id = self.root.after(50, self._process_ui_queue)
 
     def _get_lamp_icon(self, color):
         """按状态颜色取交通灯图标（带缓存），统一替代文本状态圆点。"""

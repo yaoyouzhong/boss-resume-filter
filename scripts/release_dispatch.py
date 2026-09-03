@@ -545,7 +545,7 @@ def dispatch_release(
             run = _discover_new_run(version, plan["release_sha"], previous_ids)
             print(f"  [OK] 已定位 Actions run：{run.get('url', '')}")
     else:
-        print("\n[续跑] GitHub Draft 与三个附件已完整，跳过 Actions")
+        print("\n[续跑] GitHub Draft 与全部发布附件已完整，跳过 Actions")
         run = _completed_run(plan["runs"], "success")
 
     completed = None

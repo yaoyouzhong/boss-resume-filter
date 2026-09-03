@@ -83,7 +83,7 @@ jobs:
           --github-output "$env:GITHUB_OUTPUT"
 
   build_windows:
-    name: Build Windows artifact
+    name: Build Windows artifacts
     needs: prepare
     if: ${{ inputs.dry_run == false && needs.prepare.outputs.needs_windows == 'true' }}
     runs-on: windows-latest
@@ -108,16 +108,20 @@ jobs:
       - name: Install build dependencies
         run: python -m pip install --disable-pip-version-check -r requirements-build.txt
 
-      - name: Build and verify Windows package
+      - name: Build and verify Windows packages
         env:
           RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
-        run: python build.py --ci --release --strict-changelog --prepared-sha "$env:RELEASE_SHA"
+        run: |
+          python build.py --ci --release --strict-changelog --prepared-sha "$env:RELEASE_SHA"
+          python build_education_tool.py --ci
 
       - name: Upload Windows workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-release
-          path: dist/BOSS_ResumeFilter.exe
+          path: |
+            dist/BOSS_ResumeFilter.exe
+            dist/EducationCertificateTool.exe
           if-no-files-found: error
           retention-days: 7
 

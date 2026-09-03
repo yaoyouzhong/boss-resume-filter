@@ -428,6 +428,95 @@ def test_prepare_reuses_complete_remote_artifacts_on_same_commit_resume():
         assert "needs_macos=false" in written
 
 
+def test_prepare_v232_rebuilds_windows_when_standalone_tool_is_missing():
+    remote_assets = {
+        "BOSS_ResumeFilter.exe": _asset(),
+        "BOSS_ResumeFilter_mac.zip": _asset(),
+        "BOSS_ResumeFilter.dmg": _asset(),
+    }
+    review = {
+        **_review(),
+        "release_title": "v2.32 — Test",
+    }
+    with (
+        patch.dict(
+            release_ci.os.environ,
+            {
+                "GITHUB_ACTIONS": "true",
+                "GITHUB_EVENT_NAME": "workflow_dispatch",
+                "GITHUB_REF_NAME": "master",
+            },
+        ),
+        patch.object(
+            release_ci,
+            "resolve_release_sha",
+            return_value=("a" * 40, True),
+        ),
+        patch.object(
+            release_ci.release_content_review,
+            "review_release_content",
+            return_value=review,
+        ),
+        patch.object(release_ci.build, "_preflight_checks"),
+        patch.object(
+            release_ci.build,
+            "_get_github_release_assets",
+            return_value=remote_assets,
+        ),
+    ):
+        result = release_ci.prepare_release(
+            "2.32",
+            "确认正式发布 v2.32",
+            dry_run=True,
+        )
+
+    assert result["needs_windows"] == "true"
+    assert result["needs_macos"] == "false"
+    assert release_ci._release_artifacts("2.32") == (
+        "BOSS_ResumeFilter.exe",
+        "EducationCertificateTool.exe",
+        "BOSS_ResumeFilter_mac.zip",
+        "BOSS_ResumeFilter.dmg",
+    )
+    assert set(release_ci._canonical_downloads_cn("2.32")) == {
+        "windows",
+        "education_windows",
+        "macos",
+        "macos_dmg",
+    }
+
+
+def test_v232_local_staging_requires_all_four_release_artifacts():
+    names = release_ci._release_artifacts("v2.32")
+    remote_assets = {name: _asset() for name in names}
+
+    def fake_download(_tag, name, artifact_dir):
+        path = artifact_dir / name
+        path.write_bytes(b"artifact")
+        return path
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        artifact_dir = Path(temp_dir)
+        with (
+            patch.object(
+                release_ci.build,
+                "_get_github_release_assets",
+                return_value=remote_assets,
+            ),
+            patch.object(
+                release_ci.build,
+                "_download_from_github_release",
+                side_effect=fake_download,
+            ),
+        ):
+            artifacts = release_ci._ensure_local_artifacts(
+                "v2.32",
+                artifact_dir=artifact_dir,
+            )
+
+    assert tuple(path.name for path in artifacts) == names
+
+
 def test_prepare_rejects_non_manual_github_actions_event():
     with patch.dict(
         release_ci.os.environ,

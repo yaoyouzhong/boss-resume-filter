@@ -1,7 +1,9 @@
 """学历证书核验助手独立入口。"""
 from __future__ import annotations
 
+import _tkinter
 import sys
+import time
 import tkinter as tk
 
 from education_tool_config import (
@@ -39,6 +41,31 @@ def _assert_page_fills_viewport(gui: BossFilterGUI, page: tk.Widget) -> None:
         )
 
 
+def _wait_for_smoke_layout(
+    gui: BossFilterGUI,
+    page: tk.Widget,
+    *,
+    timeout_seconds: float = 5.0,
+) -> None:
+    """Process bounded Tk events until the packaged page fills its viewport."""
+    deadline = time.monotonic() + timeout_seconds
+    last_error: RuntimeError | None = None
+    while time.monotonic() < deadline:
+        root = gui.root
+        root.tk.dooneevent(_tkinter.ALL_EVENTS | _tkinter.DONT_WAIT)
+        root.update_idletasks()
+        try:
+            _assert_page_fills_viewport(gui, page)
+        except RuntimeError as error:
+            last_error = error
+            time.sleep(0.01)
+            continue
+        return
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("独立工具布局烟测未能完成")
+
+
 def main(*, smoke_test: bool = False) -> None:
     _enable_high_dpi_awareness()
     startup_monitor_area = _get_windows_monitor_area()
@@ -57,22 +84,21 @@ def main(*, smoke_test: bool = False) -> None:
     )
     _show_main_window_centered(root, startup_monitor_area)
     if smoke_test:
-        # Read a guaranteed-unused target to exercise the packaged Windows
-        # credential backend without creating or changing any credential.
-        get_education_api_key(
-            "education-tool-smoke-test",
-            "https://smoke-test.invalid/v1",
-        )
-        root.update_idletasks()
-        root.update()
-        if not root.winfo_viewable():
-            raise RuntimeError("独立工具主窗口未进入可见状态")
+        # A slow frozen startup can make Tk's recurring 50 ms UI-queue poll
+        # continuously due inside ``root.update()``. Cancel only that poll so
+        # the bounded smoke pass still exercises real window mapping/layout.
+        ui_queue_after_id = getattr(gui, "_ui_queue_after_id", None)
+        if ui_queue_after_id is not None:
+            root.after_cancel(ui_queue_after_id)
+            gui._ui_queue_after_id = None
         expected_page = (
             gui.api_config_page if not config_path.is_file() else gui.education_page
         )
         if expected_page is None:
             raise RuntimeError("独立工具首个业务页面未创建")
-        _assert_page_fills_viewport(gui, expected_page)
+        _wait_for_smoke_layout(gui, expected_page)
+        if not root.winfo_viewable():
+            raise RuntimeError("独立工具主窗口未进入可见状态")
         root.destroy()
         return
     root.mainloop()

@@ -51,6 +51,16 @@ def test_release_workflow_rebuilds_macos_when_dmg_is_missing():
     assert "BOSS_ResumeFilter.dmg" in workflow
 
 
+def test_release_workflow_builds_and_uploads_standalone_education_tool():
+    """The v2.32 Windows release artifact must include the standalone tool."""
+    workflow = (BASE_DIR / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "python build_education_tool.py --ci" in workflow
+    assert "dist/EducationCertificateTool.exe" in workflow
+
+
 def test_release_workflow_stages_only_github_after_both_platform_builds():
     """Hosted Actions must stop after the complete GitHub Draft is staged."""
     workflow = (BASE_DIR / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
