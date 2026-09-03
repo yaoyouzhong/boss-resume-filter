@@ -2752,6 +2752,9 @@ class BossFilterGUI:
                 self.education_model_choice_var.set(education_label)
         finally:
             self._updating_model_assignment_controls = False
+        self.layout_support.update_standalone_model_selector_width(
+            [default_label or "未配置", *choices]
+        )
         self._reset_assigned_model_test_states()
 
     def load_saved_models_to_tree(self):

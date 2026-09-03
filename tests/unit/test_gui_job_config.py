@@ -1542,6 +1542,9 @@ class _FakeTree:
     def configure(self, **kwargs):
         self.displaycolumns = kwargs["displaycolumns"]
 
+    def get_children(self):
+        return tuple(self.items)
+
     def column(self, column, **kwargs):
         if not kwargs:
             return self.column_options.get(column, {})
@@ -1752,6 +1755,69 @@ def test_model_list_columns_keep_4k_widths_and_fit_narrow_screens():
     }
     assert sum(widths_2k.values()) <= 956
     assert widths_2k["provider"] < 240
+
+
+def test_standalone_model_name_column_tracks_content_without_changing_boss_layout():
+    class _MeasureFont:
+        def measure(self, text):
+            return len(text) * 10
+
+    gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui.root = _FakeRoot(state="zoomed", width=3840, height=2000)
+    gui.font_label = ("Test Font", 12)
+    gui.standalone_education = True
+    gui.model_list_tree = _FakeTree(1800)
+    gui.model_list_tree.items = {
+        "short": {"values": ("MiniMax-M3", "MiniMax", "✓ 可用", "https://example.com")},
+    }
+    layout = _make_layout_support(gui)
+
+    with patch("gui_layout_support.tkfont.Font", return_value=_MeasureFont()):
+        layout.update_model_list_columns()
+        short_width = gui.model_list_tree.column_options["name"]["width"]
+        gui.model_list_tree.items["long"] = {
+            "values": (
+                "deepseek-vision-production-model-with-a-considerably-long-name",
+                "DeepSeek",
+                "✓ 可用",
+                "https://example.com",
+            )
+        }
+        layout.update_model_list_columns()
+        long_width = gui.model_list_tree.column_options["name"]["width"]
+
+    assert short_width == 220
+    assert long_width == 520
+
+    boss_gui = BossFilterGUI.__new__(BossFilterGUI)
+    boss_gui.root = _FakeRoot(state="zoomed", width=3840, height=2000)
+    boss_gui.standalone_education = False
+    boss_gui.model_list_tree = _FakeTree(1800)
+    boss_gui.model_list_tree.items = gui.model_list_tree.items
+    boss_layout = _make_layout_support(boss_gui)
+    boss_layout.update_model_list_columns()
+    assert boss_gui.model_list_tree.column_options["name"]["width"] == 400
+
+
+def test_standalone_model_selector_width_tracks_longest_label_only_in_standalone():
+    standalone_gui = BossFilterGUI.__new__(BossFilterGUI)
+    standalone_gui.root = _FakeRoot()
+    standalone_gui.standalone_education = True
+    standalone_gui.default_model_combo = Mock()
+    standalone_layout = _make_layout_support(standalone_gui)
+
+    standalone_layout.update_standalone_model_selector_width(
+        ["MiniMax / MiniMax-M3", "DeepSeek / deepseek-vision-production-model"]
+    )
+    standalone_gui.default_model_combo.configure.assert_called_once_with(width=47)
+
+    boss_gui = BossFilterGUI.__new__(BossFilterGUI)
+    boss_gui.root = _FakeRoot()
+    boss_gui.standalone_education = False
+    boss_gui.default_model_combo = Mock()
+    boss_layout = _make_layout_support(boss_gui)
+    boss_layout.update_standalone_model_selector_width(["DeepSeek / very-long-model-name"])
+    boss_gui.default_model_combo.configure.assert_not_called()
 
 
 def test_layout_support_expands_page_widgets_only_for_tall_windows():
@@ -2311,7 +2377,7 @@ def test_model_settings_use_explicit_role_selectors_not_hidden_actions():
     assert 'text="默认 AI 模型:"' in settings_block
     assert 'text="学历核验模型:"' in settings_block
     assert "label_width_assignment = 14" in settings_block
-    assert "model_choice_width = 34" in settings_block
+    assert "model_choice_width = 46 if standalone else 34" in settings_block
     assert "traffic_light_base_size * self.dpi_scale * self.zoom_factor" in settings_block
     assert "traffic_light_pending" in settings_block
     assert "traffic_light_success" in settings_block

@@ -126,7 +126,7 @@ def build_settings_content_steps(
     self._assigned_model_test_results = {}
 
     label_width_assignment = 14
-    model_choice_width = 34
+    model_choice_width = 46 if standalone else 34
     icon_test_default_model = self._assigned_model_test_icons["pending"]
     icon_test_education_model = self._assigned_model_test_icons["pending"]
 
