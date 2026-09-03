@@ -18,6 +18,27 @@ from gui_main import (
 )
 
 
+def _assert_page_fills_viewport(gui: BossFilterGUI, page: tk.Widget) -> None:
+    """Fail the packaged smoke test when the first page collapses at startup."""
+    viewport_width = int(gui.pages_frame.winfo_width())
+    viewport_height = int(gui.pages_frame.winfo_height())
+    page_width = int(page.winfo_width())
+    page_height = int(page.winfo_height())
+    minimum_page_width = max(400, int(viewport_width * 0.8))
+    minimum_page_height = max(300, int(viewport_height * 0.8))
+    if (
+        viewport_width < 400
+        or viewport_height < 300
+        or page_width < minimum_page_width
+        or page_height < minimum_page_height
+    ):
+        raise RuntimeError(
+            "独立工具首个业务页面布局异常："
+            f"viewport={viewport_width}x{viewport_height}, "
+            f"page={page_width}x{page_height}"
+        )
+
+
 def main(*, smoke_test: bool = False) -> None:
     _enable_high_dpi_awareness()
     startup_monitor_area = _get_windows_monitor_area()
@@ -51,10 +72,19 @@ def main(*, smoke_test: bool = False) -> None:
         )
         if expected_page is None:
             raise RuntimeError("独立工具首个业务页面未创建")
+        _assert_page_fills_viewport(gui, expected_page)
         root.destroy()
         return
     root.mainloop()
 
 
 if __name__ == "__main__":
-    main(smoke_test="--smoke-test" in sys.argv[1:])
+    _smoke_test = "--smoke-test" in sys.argv[1:]
+    if _smoke_test:
+        try:
+            main(smoke_test=True)
+        except Exception as error:
+            print(f"packaged smoke test failed: {error}", file=sys.stderr)
+            raise SystemExit(1) from error
+    else:
+        main()

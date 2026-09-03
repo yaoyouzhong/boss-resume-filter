@@ -3284,6 +3284,31 @@ def test_page_width_policy_does_not_rewrite_unchanged_page_geometry():
     page.place_configure.assert_not_called()
 
 
+def test_page_width_policy_uses_relative_geometry_until_viewport_is_ready():
+    page = Mock()
+    page.winfo_manager.return_value = ""
+    host = types.SimpleNamespace(
+        dpi_scale=1.0,
+        zoom_factor=1.0,
+        current_page_index=PageIndex.EDUCATION,
+        main_frame=Mock(),
+        pages_frame=Mock(),
+        _active_page_widget=page,
+        _last_page_pack_padx=None,
+        _last_page_pack_pady=None,
+        layout_support=Mock(),
+    )
+    host.main_frame.winfo_width.return_value = 200
+    host.pages_frame.winfo_width.return_value = 200
+    host.pages_frame.winfo_height.return_value = 200
+    shell = _make_app_shell(host)
+
+    shell.apply_page_width_policy()
+
+    page.place.assert_called_once_with(x=0, y=0, relwidth=1, relheight=1)
+    page.place_configure.assert_not_called()
+
+
 def test_home_layout_uses_shell_controlled_page_viewport():
     page = Mock()
     page.winfo_width.return_value = 1200

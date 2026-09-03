@@ -8,11 +8,14 @@ import types
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import pytest
+
 from education_tool_config import (
     EDUCATION_TOOL_API_CONFIG,
     EDUCATION_TOOL_SERVICE_NAME,
     get_education_tool_config_path,
 )
+from education_tool import _assert_page_fills_viewport
 from education_tool_security import (
     get_education_api_key,
     save_education_api_key,
@@ -198,5 +201,22 @@ def test_standalone_entry_injects_config_and_credential_backends():
     assert "education_api_key_getter=get_education_api_key" in source
     assert "education_api_key_saver=save_education_api_key" in source
     assert "start_with_settings=not config_path.is_file()" in source
-    assert 'smoke_test="--smoke-test" in sys.argv[1:]' in source
+    assert '_smoke_test = "--smoke-test" in sys.argv[1:]' in source
     assert '"https://smoke-test.invalid/v1"' in source
+    assert "packaged smoke test failed" in source
+
+
+def test_standalone_smoke_test_rejects_a_collapsed_first_page():
+    gui = types.SimpleNamespace(
+        pages_frame=types.SimpleNamespace(
+            winfo_width=lambda: 1600,
+            winfo_height=lambda: 900,
+        )
+    )
+    page = types.SimpleNamespace(
+        winfo_width=lambda: 1,
+        winfo_height=lambda: 1,
+    )
+
+    with pytest.raises(RuntimeError, match="page=1x1"):
+        _assert_page_fills_viewport(gui, page)

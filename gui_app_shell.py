@@ -637,6 +637,21 @@ class AppShell:
             except (tk.TclError, TypeError, ValueError):
                 target_width = target_height = 1
             manager = page.winfo_manager()
+            if target_width < 400 or target_height < 300:
+                # The first page can be activated while a withdrawn root still
+                # reports only a provisional 1x1 or 200x200 viewport.  An
+                # absolute placement can then survive the initial map event
+                # and collapse the whole page.
+                # Relative sizing follows the parent automatically until the
+                # first real viewport measurement is available.
+                if manager == "place":
+                    page.place_forget()
+                elif manager == "pack":
+                    page.pack_forget()
+                elif manager == "grid":
+                    page.grid_forget()
+                page.place(x=0, y=0, relwidth=1, relheight=1)
+                return
             if manager != "place":
                 if manager == "pack":
                     page.pack_forget()
