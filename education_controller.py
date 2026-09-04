@@ -850,9 +850,9 @@ class EducationController:
                         f"正在重试验证码（{attempt_no}/{attempts}）...",
                         "正在获取新的验证码",
                     )
-                navigate(page)
-                emit("正在填写表单...", "正在填写姓名和证书编号")
                 with browser_lock:
+                    navigate(page)
+                    emit("正在填写表单...", "正在填写姓名和证书编号")
                     fill_query(
                         page,
                         name,
