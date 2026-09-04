@@ -843,6 +843,7 @@ class BossFilterGUI:
         education_api_config_path: Path | None = None,
         education_api_key_getter=None,
         education_api_key_saver=None,
+        education_pdf_recognizer: Callable[..., object] | None = None,
         run_preferences_path: Path | None = None,
         start_with_settings: bool = False,
     ):
@@ -858,6 +859,7 @@ class BossFilterGUI:
         )
         self._api_key_getter = education_api_key_getter
         self._api_key_saver = education_api_key_saver
+        self._education_pdf_recognizer = education_pdf_recognizer
         self._run_preferences_path = (
             Path(run_preferences_path)
             if run_preferences_path is not None
@@ -4429,7 +4431,10 @@ class BossFilterGUI:
                     education_api_key
                     or self._get_education_api_key(vision_config),
                     recognize_image=recognize_certificate_image,
-                    recognize_pdf=recognize_certificate_pdf,
+                    recognize_pdf=(
+                        self._education_pdf_recognizer
+                        or recognize_certificate_pdf
+                    ),
                     on_result=on_result,
                     on_stage=on_stage,
                 )

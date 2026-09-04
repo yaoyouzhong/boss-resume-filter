@@ -1215,13 +1215,15 @@ def recognize_certificate_pdf(
     api_key: str,
     *,
     timeout: int = 120,
+    text_extractor: Callable[[str | Path], str] | None = None,
 ) -> CertificateRecognition:
     """从 PDF 文本层提取字段，走当前文本模型识别。
 
     不调视觉模型、不栅格化 PDF；扫描件无文本层时抛 ValueError 提示用户转图片。
     """
+    extractor = text_extractor or extract_pdf_text
     try:
-        text = extract_pdf_text(path)
+        text = extractor(path)
     except RuntimeError as error:
         raise ValueError(str(error)) from error
     if len(text) < 20:

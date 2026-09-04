@@ -601,6 +601,7 @@ REQUIRED_IMPORTS = {
     "PIL": "Pillow",
     "tkcalendar": "tkcalendar",
     "pdfminer": "pdfminer.six",
+    "pypdf": "pypdf",
     "docx": "python-docx",
     "striprtf": "striprtf",
 }

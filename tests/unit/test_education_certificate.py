@@ -1649,6 +1649,37 @@ def test_recognize_certificate_pdf_raises_on_empty_text():
             raise AssertionError("empty text should fail")
 
 
+def test_recognize_certificate_pdf_accepts_injected_text_extractor():
+    from unittest.mock import patch
+
+    captured = {}
+
+    def fake_extract(path):
+        captured["path"] = path
+        return "姓名 鲍殊 证书编号 102891202305002814"
+
+    with patch(
+        "education_certificate._invoke_model",
+        return_value={
+            "name": "鲍殊",
+            "certificate_number": "102891202305002814",
+            "school": "江苏科技大学",
+            "major": "金融工程",
+            "confidence": 95,
+            "warnings": [],
+        },
+    ):
+        result = recognize_certificate_pdf(
+            "certificate.pdf",
+            {"base_url": "https://api.example.com/v1", "model": "text-model"},
+            "key",
+            text_extractor=fake_extract,
+        )
+
+    assert captured["path"] == "certificate.pdf"
+    assert result.name == "鲍殊"
+
+
 def test_recognize_certificate_pdf_raises_when_pdf_unreadable():
     from unittest.mock import patch
     def boom(_path):

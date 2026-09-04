@@ -14,6 +14,14 @@ from security import (
 logger = logging.getLogger(__name__)
 
 
+def probe_education_credential_backend() -> None:
+    """只读探测当前系统凭据后端，供打包成品烟测使用。"""
+    _credential_get_password(
+        f"{EDUCATION_TOOL_SERVICE_NAME}.PackagingSmokeTest",
+        "missing-credential",
+    )
+
+
 def get_education_api_key(provider: str, base_url: str | None = None) -> str | None:
     """Read one provider/endpoint key from the current user's secure store."""
     if not provider:

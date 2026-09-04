@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import _tkinter
+from functools import partial
 import sys
 import time
 import tkinter as tk
@@ -11,7 +12,13 @@ from education_tool_config import (
     get_education_tool_config_path,
     get_education_tool_preferences_path,
 )
-from education_tool_security import get_education_api_key, save_education_api_key
+from education_tool_security import (
+    get_education_api_key,
+    probe_education_credential_backend,
+    save_education_api_key,
+)
+from education_certificate import recognize_certificate_pdf
+from education_tool_pdf import extract_pdf_text_lightweight
 from gui_main import (
     BossFilterGUI,
     _enable_high_dpi_awareness,
@@ -79,6 +86,10 @@ def main(*, smoke_test: bool = False) -> None:
         education_api_config_path=config_path,
         education_api_key_getter=get_education_api_key,
         education_api_key_saver=save_education_api_key,
+        education_pdf_recognizer=partial(
+            recognize_certificate_pdf,
+            text_extractor=extract_pdf_text_lightweight,
+        ),
         run_preferences_path=get_education_tool_preferences_path(),
         start_with_settings=not config_path.is_file(),
     )
@@ -106,7 +117,14 @@ def main(*, smoke_test: bool = False) -> None:
 
 if __name__ == "__main__":
     _smoke_test = "--smoke-test" in sys.argv[1:]
-    if _smoke_test:
+    _credential_smoke_test = "--credential-smoke-test" in sys.argv[1:]
+    if _credential_smoke_test:
+        try:
+            probe_education_credential_backend()
+        except Exception as error:
+            print(f"packaged credential smoke test failed: {error}", file=sys.stderr)
+            raise SystemExit(1) from error
+    elif _smoke_test:
         try:
             main(smoke_test=True)
         except Exception as error:
