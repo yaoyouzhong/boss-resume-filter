@@ -22,5 +22,8 @@ tkcalendar>=1.6.0
 
 # 简历文件解析（PDF/DOCX/TXT/MD/RTF/HTML 二次评估）
 pdfminer.six>=20231228
+
+# 独立学历工具的轻量 PDF 文本提取
+pypdf>=6.0.0
 python-docx>=1.1.0
 striprtf>=0.0.26

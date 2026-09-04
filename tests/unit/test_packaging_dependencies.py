@@ -23,6 +23,18 @@ def test_runtime_import_dependencies_are_not_excluded_from_pyinstaller():
         assert option not in build_source
 
 
+def test_standalone_lxml_pruning_preserves_drissionpage_runtime_modules():
+    """The education build may trim lxml helpers, but not DrissionPage's imports."""
+    build_source = (BASE_DIR / "build_education_tool.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"lxml.isoschematron"' in build_source
+    assert '"lxml.sax"' in build_source
+    assert '"lxml.html"' not in build_source
+    assert '"lxml.etree"' not in build_source
+
+
 def test_pandas_is_not_a_packaging_dependency():
     """Excel export should stay on openpyxl to avoid bundling pandas and numpy."""
     requirements = (BASE_DIR / "requirements.txt").read_text(encoding="utf-8")

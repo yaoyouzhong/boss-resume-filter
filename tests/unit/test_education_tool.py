@@ -193,7 +193,7 @@ def test_standalone_build_contains_no_embedded_secret_pipeline():
     assert '";_tcl_data"' in source
     assert '";_tk_data"' in source
     assert '"win32ctypes.core.ctypes"' in source
-    assert '"win32ctypes.core.cffi"' in source
+    assert '"win32ctypes.core.cffi"' not in source
     assert '"--debug-console"' in source
     assert '"--ci"' in source
     assert 'os.environ.get("GITHUB_ACTIONS") != "true"' in source
@@ -202,7 +202,33 @@ def test_standalone_build_contains_no_embedded_secret_pipeline():
     assert Path(
         "pyinstaller-hooks/pre_find_module_path/hook-tkinter.py"
     ).is_file()
-    assert '"openpyxl"' not in source
+    assert '"pypdf"' in source
+    for excluded_module in (
+        "pdfminer",
+        "cryptography",
+        "Crypto",
+        "bossmaster",
+        "openpyxl",
+        "lxml.objectify",
+        "lxml.builder",
+        "lxml.html.diff",
+        "lxml.html._difflib",
+        "lxml.isoschematron",
+        "lxml.sax",
+        "cffi",
+        "_cffi_backend",
+        "pycparser",
+        "setuptools",
+    ):
+        assert f'"{excluded_module}"' in source
+    assert '[str(artifact_path), "--credential-smoke-test"]' in source
+
+
+def test_standalone_entry_injects_lightweight_pdf_extractor():
+    source = Path("education_tool.py").read_text(encoding="utf-8")
+
+    assert "education_pdf_recognizer=partial(" in source
+    assert "text_extractor=extract_pdf_text_lightweight" in source
 
 
 def test_standalone_ci_build_mode_is_limited_to_windows_github_actions():
@@ -238,6 +264,8 @@ def test_standalone_entry_injects_config_and_credential_backends():
     assert "root.tk.dooneevent" in source
     assert 'root.after_cancel(ui_queue_after_id)' in source
     assert "packaged smoke test failed" in source
+    assert '"--credential-smoke-test" in sys.argv[1:]' in source
+    assert "probe_education_credential_backend()" in source
 
 
 def test_standalone_smoke_test_rejects_a_collapsed_first_page():
