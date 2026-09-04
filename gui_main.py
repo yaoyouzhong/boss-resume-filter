@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.32"
+__version__ = "2.32.1"
 
 import copy
 import json
@@ -5406,6 +5406,11 @@ class BossFilterGUI:
 
     def _get_education_tab(self, item_id: str | None):
         """获取候选人专属 tab；item_id 为 None 时仅确保 base 浏览器连接就绪。"""
+        with self._education_browser_lock:
+            return self._get_education_tab_locked(item_id)
+
+    def _get_education_tab_locked(self, item_id: str | None):
+        """在学历浏览器锁内获取 tab，并限制每轮核验只启动一次 Chrome。"""
         # item_id 为 None：仅确保 base 浏览器连接可用
         if item_id is None:
             base_page = self.browser_page
@@ -5448,14 +5453,9 @@ class BossFilterGUI:
                     self.browser_page = None
                     self.browser_connected = False
             if base_page is None:
-                page = self._create_fresh_browser_page()
-                self.browser_page = page
-                self.browser_connected = True
-                try:
-                    self.browser_address = page.address
-                except Exception:
-                    pass
-                base_page = page
+                raise RuntimeError(
+                    "Chrome 连接已中断；本轮不会启动额外窗口，请重新执行第 2 步"
+                )
 
         # 在 base 上创建新 tab
         try:
@@ -5472,17 +5472,13 @@ class BossFilterGUI:
             tab = base_page.new_tab()
             if not self._is_browser_page_alive(tab):
                 raise RuntimeError("新标签页连接失败")
-        except Exception:
-            self.browser_page = None
-            self.browser_connected = False
-            page = self._create_fresh_browser_page()
-            self.browser_page = page
-            self.browser_connected = True
-            try:
-                self.browser_address = page.address
-            except Exception:
-                pass
-            tab = page
+        except Exception as error:
+            if not self._is_browser_page_alive(base_page):
+                self.browser_page = None
+                self.browser_connected = False
+            raise RuntimeError(
+                "学信网标签页创建失败；本轮不会启动额外窗口，请重新执行第 2 步"
+            ) from error
         self.education_tabs[item_id] = tab
         return tab
 

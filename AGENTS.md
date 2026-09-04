@@ -9,7 +9,7 @@ boss-resume-filter/
 ├── .github/              # GitHub 工作流、品牌资产、Issue/PR 模板和仓库社区配置
 ├── diagram/              # README 使用的可缩放数据流和架构图；每个主题单独子目录
 ├── docs/                 # GitHub Pages 产品首页、图文手册、演示截图和办公交付材料
-├── gui_main.py            # 图形界面主程序（v2.32）
+├── gui_main.py            # 图形界面主程序（v2.32.1）
 ├── bossmaster.py          # BOSS 扫描、筛选、联系和导出主程序
 ├── education_tool*.py     # 独立学历核验工具入口、配置与安全
 ├── *_controller.py        # 领域动作编排；不持有 Tk 控件
@@ -379,7 +379,7 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 - 系统设置的“使用中的模型”可显式选择学历核验模型；未指定时跟随默认 AI 模型
 - `api_config.local.json` / 打包后的 `api_config.json` 的 `education_model_ref` 字段存储指定模型（`{api_provider, base_url, model}`），未设置时回退默认 AI 模型
 - 独立学历证书核验助手提供独立“模型配置”页，只保留一个当前识别模型；模型元数据与截图偏好保存在 `%LOCALAPPDATA%\EducationCertificateTool`，不读取 BOSS 主程序配置。API Key 按 provider + base_url 使用独立 `education-certificate-tool` 服务名保存到系统凭据，构建脚本不得接收、生成或打包任何 API Key/秘密载荷。本机构建必须复用仓库隔离的 `pack_venv`，不得直接使用系统 Python 或 Anaconda；`build_education_tool.py --ci` 仅允许 GitHub Actions Windows 发布任务使用
-- 学信网验证支持多选证书并为每人创建独立标签页；系统填写姓名和证书编号、识别图片验证码并提交，识别失败时转人工输入或重试，手机扫码和最终结果确认始终由 HR 完成
+- 学信网验证支持多选证书，并在同一 Chrome 窗口内为每人创建独立标签页；单轮核验只允许浏览器预检阶段创建一次 Chrome，候选人标签页创建失败不得再启动新的 Chrome 实例。系统填写姓名和证书编号、识别图片验证码并提交，识别失败时转人工输入或重试，手机扫码和最终结果确认始终由 HR 完成
 - 正在作为默认 AI 模型或学历核验模型使用的已保存模型，需先在“使用中的模型”中切换后才能删除
 ## 自动更新
 

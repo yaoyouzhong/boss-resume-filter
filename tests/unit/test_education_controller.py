@@ -426,6 +426,38 @@ def test_captcha_unknown_result_stops_without_refreshing_the_page():
     assert attempts == ["navigate", "fill"]
 
 
+def test_captcha_navigation_and_form_fill_share_browser_lock():
+    lock_depth = {"value": 0}
+    events = []
+
+    class TrackingLock:
+        def __enter__(self):
+            lock_depth["value"] += 1
+
+        def __exit__(self, *_args):
+            lock_depth["value"] -= 1
+
+    def record_locked(event):
+        assert lock_depth["value"] == 1
+        events.append(event)
+
+    result = EducationController.fill_and_solve_captcha(
+        object(),
+        "张三",
+        "123456789012345678",
+        navigate=lambda _page: record_locked("navigate"),
+        fill_query=lambda *_args, **_kwargs: record_locked("fill"),
+        attempt=lambda *_args, **_kwargs: (True, "已提交查询"),
+        browser_lock=TrackingLock(),
+        max_attempts=1,
+        sleep=lambda _seconds: None,
+    )
+
+    assert result.successful is True
+    assert events == ["navigate", "fill"]
+    assert lock_depth["value"] == 0
+
+
 def test_explicit_captcha_errors_retry_immediately_without_fixed_sleep():
     attempts = iter((
         (False, "识别失败"),

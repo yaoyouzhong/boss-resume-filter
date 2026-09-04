@@ -9165,6 +9165,7 @@ def test_education_browser_reuses_live_page():
     live_tab.run_js.return_value = 1
     gui.education_tabs = {"edu_1": live_tab}
     gui.browser_page = None
+    gui._education_browser_lock = threading.RLock()
 
     assert gui._get_education_tab("edu_1") is live_tab
 
@@ -9184,6 +9185,7 @@ def test_education_browser_reuses_all_initial_new_tab_urls():
         gui.education_tabs = {}
         gui.browser_page = blank_page
         gui.browser_connected = True
+        gui._education_browser_lock = threading.RLock()
 
         assert gui._get_education_tab("edu_1") is blank_page
         assert gui.education_tabs == {"edu_1": blank_page}
@@ -9213,7 +9215,7 @@ def test_education_screenshot_requests_folder_when_saved_path_is_missing():
         ask_directory.assert_called_once()
 
 
-def test_education_browser_rebuilds_after_both_page_objects_disconnect():
+def test_education_browser_does_not_relaunch_for_disconnected_item_tab():
     gui = object.__new__(BossFilterGUI)
     stale_tab = Mock()
     stale_tab.run_js.side_effect = RuntimeError("与页面的连接已断开")
@@ -9229,18 +9231,23 @@ def test_education_browser_rebuilds_after_both_page_objects_disconnect():
     gui.education_tabs = {"edu_1": stale_tab}
     gui.browser_page = stale_base
     gui.browser_connected = True
+    gui._education_browser_lock = threading.RLock()
     gui._try_reconnect_browser = Mock(return_value=False)
     gui._create_fresh_browser_page = Mock(return_value=fresh_page)
 
-    result = gui._get_education_tab("edu_1")
+    try:
+        gui._get_education_tab("edu_1")
+    except RuntimeError as error:
+        assert "不会启动额外窗口" in str(error)
+    else:
+        raise AssertionError("断线后不应为单个候选人启动第二套 Chrome")
 
-    assert result is new_tab
-    assert gui.education_tabs["edu_1"] is new_tab
-    assert gui.browser_page is fresh_page
-    assert gui.browser_connected is True
+    gui._create_fresh_browser_page.assert_not_called()
+    assert gui.browser_page is None
+    assert gui.browser_connected is False
 
 
-def test_education_browser_recovers_if_chrome_closes_before_new_tab():
+def test_education_browser_does_not_relaunch_when_new_tab_creation_fails():
     gui = object.__new__(BossFilterGUI)
     stale_tab = Mock()
     stale_tab.run_js.side_effect = RuntimeError("与页面的连接已断开")
@@ -9254,11 +9261,49 @@ def test_education_browser_recovers_if_chrome_closes_before_new_tab():
     gui.education_tabs = {"edu_1": stale_tab}
     gui.browser_page = base_page
     gui.browser_connected = True
+    gui._education_browser_lock = threading.RLock()
     gui._try_reconnect_browser = Mock(return_value=False)
     gui._create_fresh_browser_page = Mock(return_value=fresh_page)
 
-    assert gui._get_education_tab("edu_1") is fresh_page
-    assert gui.browser_page is fresh_page
+    try:
+        gui._get_education_tab("edu_1")
+    except RuntimeError as error:
+        assert "不会启动额外窗口" in str(error)
+    else:
+        raise AssertionError("标签页失败后不应启动第二套 Chrome")
+
+    gui._create_fresh_browser_page.assert_not_called()
+    assert gui.browser_page is base_page
+    assert gui.browser_connected is True
+
+
+def test_education_browser_launches_only_once_for_one_prepared_batch():
+    gui = object.__new__(BossFilterGUI)
+    base_page = Mock()
+    base_page.run_js.return_value = 1
+    base_page.url = "about:blank"
+    base_page.address = "127.0.0.1:9527"
+    base_page.new_tab.side_effect = RuntimeError("标签页创建瞬时失败")
+    gui.education_tabs = {}
+    gui.browser_page = None
+    gui.browser_connected = False
+    gui._education_browser_lock = threading.RLock()
+    gui._try_reconnect_browser = Mock(return_value=False)
+    gui._create_fresh_browser_page = Mock(return_value=base_page)
+
+    gui._get_education_tab(None)
+    assert gui._get_education_tab("education_1") is base_page
+    for item_id in ("education_2", "education_3"):
+        try:
+            gui._get_education_tab(item_id)
+        except RuntimeError as error:
+            assert "不会启动额外窗口" in str(error)
+        else:
+            raise AssertionError("标签页失败时不应启动额外 Chrome")
+
+    gui._create_fresh_browser_page.assert_called_once_with()
+    assert gui.browser_page is base_page
+    assert gui.browser_address == "127.0.0.1:9527"
 
 
 def test_education_browser_uses_auto_port_for_fresh_page():
