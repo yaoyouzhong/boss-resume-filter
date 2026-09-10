@@ -58,7 +58,7 @@ PAGE_SPECS = {
         "filter", "筛选结果", "result_page", "create_result_page", "show_page_result"
     ),
     PageIndex.EDUCATION: PageSpec(
-        "document", "学历核验", "education_page", "create_education_page", "show_page_education"
+        "document", "证书核验", "education_page", "create_education_page", "show_page_education"
     ),
     PageIndex.STATS: PageSpec(
         "chart", "数据统计", "stats_page", "create_stats_page", "show_page_stats"

@@ -202,7 +202,7 @@ def test_standalone_build_contains_no_embedded_secret_pipeline():
     assert Path(
         "pyinstaller-hooks/pre_find_module_path/hook-tkinter.py"
     ).is_file()
-    assert '"pypdf"' in source
+    assert '"pypdfium2"' in source
     for excluded_module in (
         "pdfminer",
         "cryptography",

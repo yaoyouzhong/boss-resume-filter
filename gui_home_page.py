@@ -1142,7 +1142,7 @@ def build_home_page(
     tool_specs = (
         (
             "验",
-            "学历核验",
+            "证书核验",
             "证书识别与学信网核验",
             lambda: host.app_shell.request_sidebar_page(education_page_index),
         ),

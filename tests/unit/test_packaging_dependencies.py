@@ -6,6 +6,46 @@ import build
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 
+def test_education_data_pruning_preserves_tk_runtime_resources():
+    from tempfile import TemporaryDirectory
+    from types import SimpleNamespace
+    from build_education_tool import _prune_demo_data_in_spec
+
+    with TemporaryDirectory() as directory:
+        path = Path(directory) / "app.spec"
+        path.write_text("pyz = PYZ(a.pure)\n", encoding="utf-8")
+        _prune_demo_data_in_spec(path)
+        retained = [
+            ("_tk_data/tk.tcl", "runtime", "DATA"),
+            ("_tk_data/ttk/defaults.tcl", "theme", "DATA"),
+            ("_tcl_data/encoding/utf-8.enc", "encoding", "DATA"),
+            ("_tk_data/demos-other/required.tcl", "other", "DATA"),
+        ]
+        data = SimpleNamespace(pure=[], datas=retained + [
+            ("_tk_data/demos/widget", "demo", "DATA"),
+            ("_tk_data\\demos\\images\\sample.gif", "demo-image", "DATA"),
+        ])
+        exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"),
+             {"a": data, "PYZ": lambda _: None})
+        assert data.datas == retained
+
+
+def test_education_data_pruning_rejects_unknown_spec_structure():
+    from tempfile import TemporaryDirectory
+    from build_education_tool import _prune_demo_data_in_spec
+
+    with TemporaryDirectory() as directory:
+        path = Path(directory) / "app.spec"
+        original = "unknown spec structure\n"
+        path.write_text(original, encoding="utf-8")
+        try:
+            _prune_demo_data_in_spec(path)
+        except RuntimeError:
+            assert path.read_text(encoding="utf-8") == original
+        else:
+            raise AssertionError("Unknown spec must not be rewritten")
+
+
 def test_runtime_import_dependencies_are_not_excluded_from_pyinstaller():
     """Keep import-time dependencies in the frozen app.
 

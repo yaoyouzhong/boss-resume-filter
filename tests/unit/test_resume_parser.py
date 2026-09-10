@@ -99,14 +99,14 @@ def test_parse_resume_text_classifies_missing_optional_parser_dependency():
     with TemporaryDirectory() as directory:
         path = Path(directory) / "resume.pdf"
         path.write_bytes(b"not-read-when-parser-is-missing")
-        with patch.dict("sys.modules", {"pdfminer.high_level": None}):
+        with patch.dict("sys.modules", {"pypdfium2": None}):
             exc = _capture_exception(
                 ResumeParserDependencyError,
                 lambda: parse_resume_text(path),
             )
 
     assert exc.format_name == "PDF"
-    assert exc.package_name == "pdfminer.six"
+    assert exc.package_name == "pypdfium2"
 
 
 def test_parse_resume_text_classifies_empty_text_file():

@@ -260,6 +260,7 @@ class EducationController:
                 "is_pdf": is_pdf(path),
                 "name": "",
                 "certificate_number": "",
+                "certificate_type": "unknown",
                 "school": "",
                 "major": "",
                 "auto_rotation": 0,
@@ -293,13 +294,13 @@ class EducationController:
         if primary_status == "已提交查询":
             return "待结果", "查询已提交，正在等待学信网进入扫码页面"
         if primary_status == EDUCATION_WAITING_FOR_SCAN_STATUS:
-            return "待结果", "请使用手机扫码确认，随后等待最终学历查询结果"
+            return "待结果", "请使用手机扫码确认，随后等待最终学历或学位查询结果"
         if primary_status == EDUCATION_QR_EXPIRED_STATUS:
             return "待结果", "扫码二维码已过期，请刷新二维码后继续扫码"
         if primary_status == "结果未确认":
             return "待结果", "验证码已提交，正在监测二维码或最终查询结果"
         if primary_status == EDUCATION_RESULT_READY_STATUS:
-            return "待截图", "已检测到最终学历查询结果，可执行批量截图"
+            return "待截图", "已检测到最终学历或学位查询结果，可执行批量截图"
         if primary_status == EDUCATION_RESULT_NOT_FOUND_STATUS:
             return "无需截图", "学信网未查询到记录，不进入截图流程"
         if primary_status in {
@@ -525,6 +526,9 @@ class EducationController:
             if item is None:
                 continue
             updated.append(item_id)
+            item.pop("screenshot_filename", None)
+            item.pop("screenshot_directory", None)
+            item.update(screenshot_status="", screenshot_detail="", screenshot_path="")
             critical_conflicts = tuple(
                 getattr(result, "critical_conflicts", ()) or ()
                 if result is not None
@@ -533,10 +537,14 @@ class EducationController:
             if result is not None and result.confidence > 0 and (
                 result.name or result.certificate_number or critical_conflicts
             ):
-                requires_manual_confirmation = bool(critical_conflicts)
+                requires_manual_confirmation = (
+                    bool(critical_conflicts)
+                    or getattr(result, "certificate_type", "education") not in {"education", "degree"}
+                )
                 item.update({
                     "name": result.name,
                     "certificate_number": result.certificate_number,
+                    "certificate_type": getattr(result, "certificate_type", "education"),
                     "school": result.school,
                     "major": result.major,
                     "auto_rotation": result.rotation,
@@ -546,7 +554,7 @@ class EducationController:
                         else "已识别"
                     ),
                     "detail": (
-                        "姓名或证书编号尚未可靠确认，"
+                        "证书类型、姓名或证书编号尚未可靠确认，"
                         "请对照证书核对或填写后再验证"
                         if requires_manual_confirmation
                         else (
@@ -583,6 +591,8 @@ class EducationController:
             if item is None:
                 continue
             try:
+                if item.get("certificate_type", "education") not in {"education", "degree"}:
+                    raise ValueError("请先确认证书类型：学历证书或学位证书")
                 name, certificate_number = validator(
                     str(item.get("name") or ""),
                     str(item.get("certificate_number") or ""),
@@ -605,15 +615,16 @@ class EducationController:
         pages: Mapping[str, Any],
         output_dir: str | Path,
         *,
-        filename_builder: Callable[[str, str], str],
+        filename_builder: Callable[..., str],
         existing_validator: Callable[[Path], bool],
         page_alive: Callable[[Any], bool],
         capture: Callable[[Any, str], bytes],
         save: Callable[[bytes, Path], Path],
         is_not_ready_error: Callable[[Exception], bool],
         on_progress: Callable[[ScreenshotItemResult], None] | None = None,
+        replace: Callable[[bytes, Path], Path] | None = None,
     ) -> ScreenshotBatchResult:
-        """Capture missing final-result tabs sequentially and never overwrite files."""
+        """Capture results; refresh tracked files only via the injected atomic writer."""
         folder = Path(output_dir)
         if not folder.is_dir():
             raise ValueError("截图保存目录不存在")
@@ -632,8 +643,29 @@ class EducationController:
             certificate_number = str(
                 item.get("certificate_number") or ""
             ).strip()
-            target = folder / filename_builder(name, certificate_number)
-            if target.exists():
+            kind = item.get("certificate_type", "education")
+            if kind not in {"education", "degree"}:
+                finish(ScreenshotItemResult(item_id, "待结果页", "请先确认证书类型"))
+                continue
+            filename = str(item.get("screenshot_filename") or "")
+            if not filename:
+                filename = (
+                    filename_builder(name, certificate_number, certificate_type=kind)
+                    if kind == "degree" else filename_builder(name, certificate_number)
+                )
+            if Path(filename).name != filename:
+                finish(ScreenshotItemResult(item_id, "文件异常", "截图文件名无效"))
+                continue
+            target = folder / filename
+            replacing = replace is not None and target.exists()
+            if replacing and (
+                not item.get("screenshot_filename")
+                or item.get("screenshot_directory") != str(folder.resolve())
+                or not target.is_file()
+            ):
+                finish(ScreenshotItemResult(item_id, "文件异常", "未找到本次记录对应的原截图，未执行替换"))
+                continue
+            if target.exists() and not replacing:
                 if existing_validator(target):
                     finish(ScreenshotItemResult(
                         item_id,
@@ -666,6 +698,10 @@ class EducationController:
                 ))
                 continue
 
+            if not EducationController.result_page_matches_type(page, item):
+                finish(ScreenshotItemResult(item_id, "待结果页", "结果页与证书类型不一致，请重新查询"))
+                continue
+
             emit(ScreenshotItemResult(
                 item_id,
                 "截图中",
@@ -675,6 +711,8 @@ class EducationController:
                 raw_png = capture(page, name)
             except Exception as error:
                 error_text = str(error).splitlines()[0][:300] or type(error).__name__
+                if replacing:
+                    error_text += "；原截图已保留"
                 if is_not_ready_error(error):
                     finish(ScreenshotItemResult(
                         item_id,
@@ -689,9 +727,12 @@ class EducationController:
                     ))
                 continue
             try:
-                saved_path = save(raw_png, target)
+                writer = replace if replacing else save
+                saved_path = writer(raw_png, target)
             except Exception as error:
                 error_text = str(error).splitlines()[0][:300] or type(error).__name__
+                if replacing:
+                    error_text += "；原截图已保留"
                 finish(ScreenshotItemResult(
                     item_id,
                     "截图失败",
@@ -701,7 +742,7 @@ class EducationController:
             finish(ScreenshotItemResult(
                 item_id,
                 "已保存",
-                "结果页截图已按统一规格保存",
+                "已重新截图并替换原文件" if replacing else "结果页截图已按统一规格保存",
                 str(saved_path.resolve()),
             ))
         return ScreenshotBatchResult(tuple(outcomes))
@@ -733,7 +774,10 @@ class EducationController:
                 text = re.sub(r"\s+", "", read_text(page))
             except Exception:
                 continue
-            if text and is_result_text(text, name):
+            if (
+                text and EducationController.result_page_matches_type(page, item)
+                and is_result_text(text, name)
+            ):
                 assignments[item_id] = page
         used_page_ids = {
             EducationController.page_identity(page)
@@ -775,6 +819,7 @@ class EducationController:
             for page, text in page_texts:
                 if (
                     EducationController.page_identity(page) in used_page_ids
+                    or not EducationController.result_page_matches_type(page, item)
                     or not is_result_text(text, name)
                 ):
                     continue
@@ -796,6 +841,27 @@ class EducationController:
             assignments[item_id] = page
             used_page_ids.add(EducationController.page_identity(page))
         return assignments
+
+    @staticmethod
+    def result_page_matches_type(page: Any, item: Mapping[str, Any]) -> bool:
+        """Do not associate the same person's degree tab with a diploma."""
+        from urllib.parse import urlparse
+
+        kind = item.get("certificate_type", "education")
+        if kind not in {"education", "degree"}:
+            return False
+        try:
+            url = getattr(page, "url", "")
+        except Exception:
+            return False
+        if not isinstance(url, str) or not url:
+            return kind == "education"
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            return False
+        expected = "/xwcx/" if kind == "degree" else "/xlcx/"
+        return parsed.hostname == "www.chsi.com.cn" and parsed.path.startswith(expected)
 
     @staticmethod
     def page_identity(page: Any) -> tuple[str, Any]:

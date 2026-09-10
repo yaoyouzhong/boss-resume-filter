@@ -850,6 +850,7 @@ def test_certificate_image_pipeline_rotates_before_read_and_reviews_bad_number()
 
     responses = iter((
         {
+            "certificate_type": "education",
             "rotation": 90,
             "rotation_confidence": 96,
             "name": "张三",
@@ -1579,7 +1580,7 @@ def test_fill_chsi_query_page_opens_official_url_and_passes_confirmed_values():
     fill_chsi_query_page(page, " 张三 ", "1234-5678")
 
     assert page.url == CHSI_QUERY_URL
-    assert page.js_args == ("12345678", "张三")
+    assert page.js_args == ("12345678", "张三", "education")
 
 
 def test_fill_chsi_query_page_requires_agreement_checkbox_to_be_checked():
@@ -1638,15 +1639,15 @@ def test_build_pdf_text_messages_uses_text_content_not_image():
     assert "张三" in messages[1]["content"]
 
 
-def test_recognize_certificate_pdf_raises_on_empty_text():
+def test_recognize_certificate_pdf_routes_empty_text_to_images():
     from unittest.mock import patch
-    with patch("education_certificate.extract_pdf_text", return_value=""):
+    with patch("education_certificate.extract_pdf_text", return_value=""), \
+         patch("education_pdf_images.extract_certificate_pages", side_effect=ValueError("invalid PDF")) as convert:
         try:
-            recognize_certificate_pdf("fake.pdf", {"base_url": "x", "model": "y"}, "k")
+            recognize_certificate_pdf("fake.pdf", {}, "k")
         except ValueError as error:
-            assert "扫描件" in str(error)
-        else:
-            raise AssertionError("empty text should fail")
+            assert str(error) == "invalid PDF"
+        convert.assert_called_once()
 
 
 def test_recognize_certificate_pdf_accepts_injected_text_extractor():
@@ -1781,10 +1782,10 @@ def test_chsi_result_page_text_includes_accessible_frame_content():
 def test_chsi_screenshot_filename_is_stable_safe_and_hides_full_number():
     number = "123456789012345678"
 
-    filename = build_chsi_screenshot_filename("张/三", number)
+    filename = build_chsi_screenshot_filename("张/三", number, captured_at="20260910_153025")
 
-    assert filename == build_chsi_screenshot_filename("张/三", number)
-    assert filename.startswith("张_三_证书尾号345678_学历核验_")
+    assert filename == build_chsi_screenshot_filename("张/三", number, captured_at="20260910_153025")
+    assert filename == "张_三_学历核验_20260910_153025.png"
     assert filename.endswith(".png")
     assert number not in filename
     assert "/" not in filename
@@ -1821,6 +1822,8 @@ def test_chsi_result_capture_uses_complete_page_without_browser_chrome():
             self.activated = True
 
         def run_js(self, _script, *_args):
+            if "chsi-result-image-readiness" in _script:
+                return {"ready": True, "count": 1}
             self.calls += 1
             if self.calls == 1:
                 if any(
@@ -1867,7 +1870,7 @@ def test_chsi_result_capture_rejects_query_or_qr_page():
     try:
         capture_chsi_result_png(Page(), "张三")
     except ChsiResultNotReadyError as error:
-        assert "学历查询结果" in str(error)
+        assert "学历或学位查询结果" in str(error)
     else:
         raise AssertionError("query or QR page must not be captured as a final result")
 
