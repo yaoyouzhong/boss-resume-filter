@@ -48,7 +48,7 @@ def build_settings_content_steps(
     def _build_education_navigation(parent: tk.Misc) -> None:
         back_button = self.widget_support.create_navigation_button(
             parent,
-            text="返回学历核验",
+            text="返回证书核验",
             icon_name="arrow_left",
             command=self.show_page_education,
             surface_color=self.colors["bg_card"],

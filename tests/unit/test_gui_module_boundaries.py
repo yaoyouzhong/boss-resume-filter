@@ -1268,6 +1268,7 @@ def test_education_page_builder_exposes_an_explicit_widget_bundle():
         "preview_label",
         "name_var",
         "number_var",
+        "type_var",
         "status_var",
         "warning_var",
         "batch_status_var",

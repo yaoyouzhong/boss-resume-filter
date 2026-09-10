@@ -79,10 +79,11 @@ def _read_encoded_text(path: Path, format_name: str) -> str:
 
 def _parse_pdf(path: Path) -> str:
     try:
-        from pdfminer.high_level import extract_text
+        import pypdfium2  # noqa: F401 - preserve missing-dependency classification
+        from education_pdf_images import extract_pdf_text
     except ImportError as exc:
-        raise ResumeParserDependencyError("PDF", "pdfminer.six") from exc
-    return extract_text(str(path)) or ""
+        raise ResumeParserDependencyError("PDF", "pypdfium2") from exc
+    return extract_pdf_text(path)
 
 
 def _parse_docx(path: Path) -> str:

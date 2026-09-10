@@ -830,7 +830,16 @@ def _extract_school_from_resume(text: str) -> str:
         text,
     )
     if label_match:
-        return label_match.group(1)
+        school = label_match.group(1)
+        continuation = re.match(
+            r'[ \t]*\n[ \t]*([一-龥]{2,10}学院)(?=\s|$)',
+            text[label_match.end():],
+        )
+        # A second complete occurrence confirms that this is a wrapped compound
+        # school name, not a separate faculty/school listed on the next line.
+        if continuation and school + continuation.group(1) in text:
+            return school + continuation.group(1)
+        return school
     lines = text.split('\n')
     start = None
     for i, line in enumerate(lines):
@@ -883,10 +892,15 @@ def _extract_company_from_resume(text: str) -> str:
     """
     if not text:
         return ""
+    from resume_profile_fields import company_from_work_table
+
+    table_company = company_from_work_table(text)
     lines = text.split('\n')
     # 1) 显式公司标签
     for i, line in enumerate(lines):
         stripped = line.strip()
+        if table_company is not None and re.fullmatch(r'工作(?:经验|经历)', stripped):
+            break
         label_match = _RESUME_COMPANY_LABEL_RE.search(stripped)
         label_value = label_match.group(1).strip() if label_match else ""
         if label_value:
@@ -903,6 +917,8 @@ def _extract_company_from_resume(text: str) -> str:
                 if company:
                     return company
                 break
+    if table_company is not None:
+        return table_company
     # 2) 工作经验板块：时间段锚定经历，取结束时间最晚的一段（正序/倒序排版通用）
     start = None
     for i, line in enumerate(lines):

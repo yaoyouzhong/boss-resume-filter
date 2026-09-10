@@ -22,6 +22,19 @@ PACK_PYTHON = PACK_ENV_DIR / "Scripts" / "python.exe"
 PACK_CONFIG = PACK_ENV_DIR / "pyvenv.cfg"
 
 
+def _prune_demo_data_in_spec(spec_path: Path) -> None:
+    """Remove only Tk demonstration assets after all data hooks have run."""
+    source = spec_path.read_text(encoding="utf-8")
+    anchor = "pyz = PYZ(a.pure)"
+    if source.count(anchor) != 1:
+        raise RuntimeError("PyInstaller spec 结构发生变化，无法安全裁剪 Tk 示例")
+    pruning = (
+        "a.datas = [item for item in a.datas "
+        "if not item[0].replace('\\\\', '/').startswith('_tk_data/demos/')]\n"
+    )
+    spec_path.write_text(source.replace(anchor, pruning + anchor), encoding="utf-8")
+
+
 def _education_tk_args() -> tuple[list[str], dict[str, str]]:
     """Map the shared Conda Tcl/Tk files to PyInstaller runtime-hook paths."""
     arguments, environment = _pyinstaller_tk_args()
@@ -74,7 +87,7 @@ def _check_pack_dependencies(
         "education_certificate",
         "education_tool",
         "education_tool_security",
-        "pypdf",
+        "pypdfium2",
         "tkinter",
         "win32ctypes.pywin32.win32cred",
     )
@@ -161,6 +174,16 @@ def main() -> None:
         "--exclude-module",
         "cv2",
         "--exclude-module",
+        "pypdf",
+        "--exclude-module",
+        "pymupdf",
+        "--exclude-module",
+        "fitz",
+        "--exclude-module",
+        "rapidocr",
+        "--exclude-module",
+        "onnxruntime",
+        "--exclude-module",
         "numpy",
         "--exclude-module",
         "numpy.libs",
@@ -204,10 +227,38 @@ def main() -> None:
         "pycparser",
         "--exclude-module",
         "setuptools",
+        "--exclude-module",
+        "pdb",
+        "--exclude-module",
+        "pydoc",
+        "--exclude-module",
+        "pydoc_data",
+        "--exclude-module",
+        "pyreadline3",
+        "--exclude-module",
+        "readline",
+        "--exclude-module",
+        "unittest",
+        "--exclude-module",
+        "doctest",
+        "--exclude-module",
+        "lxml.doctestcompare",
         str(BASE_DIR / "education_tool.py"),
     ]
+    # Generate from the same reviewed arguments, then filter data after Analysis.
+    # Filtering only explicit data arguments misses assets from standard hooks.
+    spec_dir = BASE_DIR / "build" / "education-spec"
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    spec_command = [
+        str(build_python), "-m", "PyInstaller.utils.cliutils.makespec",
+        "--specpath", str(spec_dir),
+        *(argument for argument in command[3:] if argument not in {"--clean", "--noconfirm"}),
+    ]
+    subprocess.run(spec_command, cwd=BASE_DIR, env=build_environment, check=True)
+    spec_path = spec_dir / f"{artifact_name}.spec"
+    _prune_demo_data_in_spec(spec_path)
     subprocess.run(
-        command,
+        [str(build_python), "-m", "PyInstaller", "--noconfirm", "--clean", str(spec_path)],
         cwd=BASE_DIR,
         env=build_environment,
         check=True,

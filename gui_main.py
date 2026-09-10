@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.32.1"
+__version__ = "2.33"
 
 import copy
 import json
@@ -38,6 +38,7 @@ from browser_controller import BrowserController, BrowserRuntime
 from candidate_controller import CandidateController, CandidatePersistence
 from candidate_cleanup import clear_candidates_in_place
 from data_maintenance_controller import DataMaintenanceController
+from education_presenter import screenshot_session_summary
 from education_controller import (
     EDUCATION_CAPTCHA_MAX_ATTEMPTS,
     EDUCATION_FORM_EMPTY_STATUS,
@@ -867,7 +868,7 @@ class BossFilterGUI:
         )
         self._start_with_settings = bool(start_with_settings)
         if standalone_education:
-            self.root.title("学历证书核验助手")
+            self.root.title("学历与学位证书核验助手")
         else:
             self.root.title(f"BOSS 简历筛选器 v{__version__} - 智能候选人筛选工具")
 
@@ -1328,11 +1329,20 @@ class BossFilterGUI:
 
     def _shortcut_delete_selected(self):
         """Delete：焦点在结果表且有选中行时移除选中候选人。"""
+        tree = getattr(self, 'result_tree', None)
+        if tree is None or getattr(self, 'current_page_index', None) != PageIndex.RESULTS:
+            return
         try:
-            focus = self.root.focus_get()
-            if focus is None or not str(focus).startswith(str(self.result_tree)):
+            if not tree.winfo_exists():
                 return
-            if not self.result_tree.selection():
+            try:
+                focus = self.root.focus_get()
+            except KeyError:
+                # ttk 下拉列表的原生窗口可能没有对应的 Tkinter 控件对象。
+                return
+            if focus is not tree:
+                return
+            if not tree.selection():
                 return
             self._remove_selected_candidates()
         except Exception as exc:
@@ -2979,7 +2989,9 @@ class BossFilterGUI:
         self.education_preview_label = widgets.preview_label
         self.education_name_var = widgets.name_var
         self.education_number_var = widgets.number_var
+        self.education_type_var = widgets.type_var
         self._education_field_syncing = False
+        self.education_type_var.trace_add("write", self._on_education_fields_edited)
         self.education_name_var.trace_add(
             "write", self._on_education_fields_edited
         )
@@ -3007,10 +3019,10 @@ class BossFilterGUI:
         self.education_screenshot_btn = widgets.screenshot_button
 
     def _select_education_images(self):
-        """批量导入毕业证书图片并加入待核验队列。"""
+        """批量导入学历或学位证书图片并加入待核验队列。"""
         self._save_current_education_fields()
         paths = filedialog.askopenfilenames(
-            title="导入毕业证书",
+            title="导入学历或学位证书",
             filetypes=[
                 ("图片和 PDF", "*.jpg *.jpeg *.png *.bmp *.webp *.pdf"),
                 ("图片文件", "*.jpg *.jpeg *.png *.bmp *.webp"),
@@ -3031,6 +3043,11 @@ class BossFilterGUI:
         self.education_item_counter = batch.next_counter
         self.education_items.update(batch.items)
         added_ids = list(batch.items)
+        if added_ids:
+            self._education_saved_folder = ""
+            self.education_screenshot_folder_var.set("")
+            for queued_item in self.education_items.values():
+                queued_item.pop("screenshot_attempt_status", None)
         invalid_files = list(batch.invalid_files)
         for item_id, item in batch.items.items():
             path = Path(item["path"])
@@ -3091,7 +3108,7 @@ class BossFilterGUI:
                         headline="当前模型可能无法识别图片",
                         message="请先在「API 配置」中切换支持图片输入的模型。",
                         metrics=(("当前模型", model_name),),
-                        notice="PDF 使用文本提取，不受图片模型限制。",
+                        notice="文字版 PDF 可使用文本模型；扫描版 PDF 需要视觉模型。",
                         detail=(
                             "可选视觉模型示例：\n"
                             "国外：GPT-4o / GPT-4.1、Claude Sonnet 4、Gemini 2.5 Pro\n"
@@ -3172,13 +3189,16 @@ class BossFilterGUI:
 
     def _refresh_education_queue_summary(self):
         """更新队列数量和按钮状态。"""
+        screenshot_summary = getattr(self, "education_screenshot_summary_var", None)
+        if screenshot_summary is not None:
+            screenshot_summary.set(screenshot_session_summary(self.education_items))
         total = len(self.education_items)
         if total == 1:
             self.education_file_var.set("已导入 1 张证书")
         elif total > 1:
             self.education_file_var.set(f"已导入 {total} 张证书")
         else:
-            self.education_file_var.set("尚未导入毕业证书")
+            self.education_file_var.set("尚未导入学历或学位证书")
         self._refresh_education_batch_status()
         queue_card = getattr(self, "education_queue_card", None)
         workspace = getattr(self, "education_workspace", None)
@@ -3376,13 +3396,40 @@ class BossFilterGUI:
             return
         name = self.education_name_var.get().strip()
         certificate_number = self.education_number_var.get().strip()
+        type_var = getattr(self, "education_type_var", None)
+        certificate_type = (
+            {"学历证书": "education", "学位证书": "degree"}.get(type_var.get(), "unknown")
+            if type_var is not None else item.get("certificate_type", "education")
+        )
         if (
-            item.get("name") == name
+            item.get("certificate_type", "education") == certificate_type
+            and item.get("name") == name
             and item.get("certificate_number") == certificate_number
         ):
             return
+        if certificate_type != item.get("certificate_type", "education"):
+            status = str(item.get("status") or "")
+            if (
+                getattr(self, "education_recognition_running", False)
+                or getattr(self, "education_screenshot_running", False)
+                or status in EDUCATION_VERIFICATION_PENDING_STATUSES
+                or status == "打开中" or status.startswith("正在")
+            ):
+                self._set_education_form_fields(
+                    item.get("name", ""), item.get("certificate_number", ""),
+                    item.get("certificate_type", "education"),
+                )
+                self.education_warning_var.set("当前证书正在处理，请完成本轮核验后再修改类型。")
+                return
+            getattr(self, "education_tabs", {}).pop(self.education_current_id, None)
+            item.update(screenshot_status="", screenshot_detail="", screenshot_path="")
+            item.pop("_screenshot_primary_status", None)
+        item.pop("screenshot_filename", None)
+        item.pop("screenshot_directory", None)
+        item.update(screenshot_status="", screenshot_detail="", screenshot_path="")
         item["name"] = name
         item["certificate_number"] = certificate_number
+        item["certificate_type"] = certificate_type
         previous_status = str(item.get("status") or "待识别")
         editable_terminal_statuses = {
             "待识别",
@@ -3397,7 +3444,7 @@ class BossFilterGUI:
         if previous_status in editable_terminal_statuses:
             item["status"] = "信息已修改"
             item["manually_edited"] = True
-            item["detail"] = "姓名或证书编号已修改，请重新执行第 2 步。"
+            item["detail"] = "证书类型、姓名或证书编号已修改，请重新执行第 2 步。"
             item["warnings"] = "请确认修改内容与证书原件一致。"
             if previous_status == EDUCATION_RESULT_READY_STATUS:
                 item["screenshot_status"] = ""
@@ -3423,26 +3470,56 @@ class BossFilterGUI:
         self,
         name: str,
         certificate_number: str,
+        certificate_type: str = "education",
     ) -> None:
         """Load queue values into both editors without treating them as edits."""
         self._education_field_syncing = True
         try:
             self.education_name_var.set(name)
             self.education_number_var.set(certificate_number)
+            type_var = getattr(self, "education_type_var", None)
+            if type_var is not None:
+                type_var.set(
+                    {"education": "学历证书", "degree": "学位证书"}.get(certificate_type, "待确认")
+                )
         finally:
             self._education_field_syncing = False
 
+    def _open_education_screenshot_folder(self) -> None:
+        """Open the current screenshot destination without changing preferences."""
+        folder_text = str(getattr(self, "_education_saved_folder", "") or "").strip()
+        if not folder_text:
+            return
+        folder = Path(folder_text).expanduser()
+        if not folder.is_dir():
+            messagebox.showwarning(
+                "保存位置不可用", "截图保存目录不存在或无法访问，请在下次截图时重新选择。",
+                parent=self.root,
+            )
+            return
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(folder))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(folder)], show_window=True)
+            else:
+                subprocess.Popen(["xdg-open", str(folder)], show_window=True)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            messagebox.show_failure(
+                "打开文件夹", headline="无法打开截图保存目录",
+                message="请从页面显示的保存位置手动打开。", detail=str(error), parent=self.root,
+            )
+
     def _select_education_screenshot_folder(self):
-        """Reuse a valid saved directory; otherwise ask for a new one."""
+        """Ask for the destination on every batch; remember only the dialog start folder."""
         current_text = str(
             getattr(self, "education_screenshot_folder", "") or ""
         ).strip()
         current = Path(current_text) if current_text else None
+        options = {"title": "第 3 步：选择本次截图保存位置", "parent": self.root}
         if current is not None and current.is_dir():
-            return True
-
-        options = {"title": "第 3 步：选择学历查询结果截图保存位置"}
-        if current is not None and current.parent.is_dir():
+            options["initialdir"] = str(current)
+        elif current is not None and current.parent.is_dir():
             options["initialdir"] = str(current.parent)
         selected = filedialog.askdirectory(**options)
         if not selected:
@@ -3456,9 +3533,8 @@ class BossFilterGUI:
             )
             return False
         self.education_screenshot_folder = str(folder.resolve())
-        self.education_screenshot_folder_var.set(
-            f"保存到：{self.education_screenshot_folder}"
-        )
+        self._education_saved_folder = ""
+        self.education_screenshot_folder_var.set("")
         self._save_current_education_fields()
         preferences = dict(getattr(self, "_run_preferences", {}) or {})
         preferences["education_screenshot_folder"] = (
@@ -3477,37 +3553,35 @@ class BossFilterGUI:
         folder = Path(folder_text) if folder_text else None
         if folder is None or not folder.is_dir():
             return
-        from education_certificate import (
-            build_chsi_screenshot_filename,
-            is_valid_chsi_screenshot,
-        )
+        from education_certificate import is_valid_chsi_screenshot
 
-        existing = 0
-        invalid = 0
         for item_id, item in self.education_items.items():
-            target = folder / build_chsi_screenshot_filename(
-                str(item.get("name") or ""),
-                str(item.get("certificate_number") or ""),
-            )
+            if item.get("certificate_type", "education") not in {"education", "degree"}:
+                continue
+            filename = str(item.get("screenshot_filename") or "")
+            if (not filename or Path(filename).name != filename
+                    or item.get("screenshot_directory") != str(folder.resolve())):
+                item.update(screenshot_status="", screenshot_detail="", screenshot_path="")
+                item.pop("_screenshot_primary_status", None)
+                self._update_education_queue_row(item_id)
+                continue
+            target = folder / filename
             if target.exists() and is_valid_chsi_screenshot(target):
                 item["screenshot_status"] = "已存在"
                 item["screenshot_detail"] = "同一规格截图已存在"
                 item["screenshot_path"] = str(target.resolve())
-                existing += 1
             elif target.exists():
                 item["screenshot_status"] = "文件异常"
                 item["screenshot_detail"] = "同名文件不是有效截图，未覆盖"
                 item["screenshot_path"] = str(target.resolve())
-                invalid += 1
             else:
                 item["screenshot_status"] = ""
                 item["screenshot_detail"] = ""
                 item["screenshot_path"] = ""
                 item.pop("_screenshot_primary_status", None)
             self._update_education_queue_row(item_id)
-        pending = max(0, len(self.education_items) - existing - invalid)
         self.education_screenshot_summary_var.set(
-            f"当前目录：已有 {existing}｜待补 {pending}｜文件异常 {invalid}"
+            screenshot_session_summary(self.education_items)
         )
 
     def _apply_education_screenshot_result(self, result):
@@ -3518,10 +3592,16 @@ class BossFilterGUI:
         item["screenshot_status"] = result.status
         item["screenshot_detail"] = result.detail
         item["screenshot_path"] = result.path
+        item["screenshot_attempt_status"] = result.status
+        if result.status == "已保存" and result.path:
+            self._education_saved_folder = str(Path(result.path).parent)
+            self.education_screenshot_folder_var.set(
+                f"保存到：{Path(result.path).parent}"
+            )
         self._update_education_queue_row(result.item_id)
         name = str(item.get("name") or Path(item["path"]).stem)
         self.education_screenshot_summary_var.set(
-            f"正在批量截图：{name} · {result.status} · {result.detail}"
+            screenshot_session_summary(self.education_items)
         )
         total = max(
             1,
@@ -3627,10 +3707,14 @@ class BossFilterGUI:
         )
         if not action_states.screenshot:
             return
+        for queued_item in self.education_items.values():
+            queued_item.pop("screenshot_attempt_status", None)
+        self._education_saved_folder = ""
+        self.education_screenshot_folder_var.set("")
         base_page = getattr(self, "browser_page", None)
         self.education_screenshot_running = True
         self.education_screenshot_summary_var.set(
-            "正在检查当前 Chrome 中的最终核验结果…"
+            screenshot_session_summary(self.education_items)
         )
         self._update_education_workflow_progress(
             stage="screenshot",
@@ -3716,6 +3800,13 @@ class BossFilterGUI:
                 )
                 return
 
+            from education_certificate import prepare_chsi_screenshot_filenames
+
+            capture_items = {item_id: self.education_items[item_id] for item_id in item_ids}
+            filenames = prepare_chsi_screenshot_filenames(capture_items, folder_text)
+            for item_id, filename in filenames.items():
+                self.education_items[item_id]["screenshot_filename"] = filename
+                self.education_items[item_id]["screenshot_directory"] = str(Path(folder_text).resolve())
             item_snapshot = {
                 item_id: dict(self.education_items[item_id])
                 for item_id in item_ids
@@ -3735,7 +3826,7 @@ class BossFilterGUI:
             self._education_screenshot_total = len(item_ids)
             self._education_screenshot_completed_ids = set()
             self.education_screenshot_summary_var.set(
-                f"正在截图 0/{len(item_ids)} 个核验结果…"
+                screenshot_session_summary(self.education_items)
             )
             self._update_education_workflow_progress(
                 stage="screenshot",
@@ -3778,6 +3869,9 @@ class BossFilterGUI:
                         page_alive=page_alive,
                         capture=capture,
                         save=save_chsi_result_screenshot,
+                        replace=lambda raw, target: save_chsi_result_screenshot(
+                            raw, target, replace_existing=True,
+                        ),
                         is_not_ready_error=lambda error: isinstance(
                             error, ChsiResultNotReadyError
                         ),
@@ -3806,11 +3900,7 @@ class BossFilterGUI:
 
                 def finish():
                     self.education_screenshot_running = False
-                    summary = (
-                        f"共 {len(result.items)} 项｜新保存 {result.saved}｜"
-                        f"已跳过 {result.skipped}｜待补 {result.pending}｜"
-                        f"失败 {result.failed}"
-                    )
+                    summary = screenshot_session_summary(self.education_items)
                     self.education_screenshot_summary_var.set(summary)
                     self._update_education_workflow_progress(
                         stage="screenshot",
@@ -3893,10 +3983,13 @@ class BossFilterGUI:
             item["screenshot_detail"] = screenshot_detail
             item["screenshot_path"] = ""
         item["_screenshot_primary_status"] = primary_status
+        type_label = {"education": "学历", "degree": "学位"}.get(
+            item.get("certificate_type", "education"), "待确认",
+        )
         self.education_queue_tree.item(
             item_id,
             values=(
-                Path(item["path"]).name,
+                f"[{type_label}] {Path(item['path']).name}",
                 item.get("name", ""),
                 item.get("certificate_number", ""),
                 item.get("school", ""),
@@ -3924,6 +4017,7 @@ class BossFilterGUI:
         self._set_education_form_fields(
             str(item.get("name") or ""),
             str(item.get("certificate_number") or ""),
+            item.get("certificate_type", "education"),
         )
         self.education_status_var.set(item.get("detail") or item.get("status", "待识别"))
         self.education_warning_var.set(item.get("warnings", ""))
@@ -4076,10 +4170,16 @@ class BossFilterGUI:
         cache = getattr(self, '_education_source_cache', None)
         if cache is None:
             cache = self._education_source_cache = {}
-        key = (str(path), display_angle)
+        item = self.education_items.get(item_id, {})
+        page_index = item.get("preview_page", 0) if item.get("is_pdf") else 0
+        key = (str(path), display_angle, page_index)
         if key not in cache:
-            with Image.open(path) as source:
-                image = ImageOps.exif_transpose(source).convert("RGB")
+            if item.get("is_pdf"):
+                from education_pdf_images import render_preview_page
+                image, item["preview_page_count"] = render_preview_page(path, page_index)
+            else:
+                with Image.open(path) as source:
+                    image = ImageOps.exif_transpose(source).convert("RGB")
             if display_angle:
                 image = image.rotate(
                     -display_angle, expand=True, resample=Image.Resampling.BICUBIC
@@ -4098,13 +4198,6 @@ class BossFilterGUI:
             return
         item_id = self.education_current_id
         item = self.education_items.get(item_id) if item_id else None
-        if item and item.get("is_pdf"):
-            label.configure(
-                image="",
-                text="PDF 文档，无法预览图片。点击「识别证书」从文本提取字段。",
-            )
-            label._image_ref = None
-            return
         try:
             from PIL import Image, ImageTk
             rotation_locked = getattr(self, "education_rotation_locked", set())
@@ -4122,6 +4215,10 @@ class BossFilterGUI:
             label._image_ref = photo
         except Exception as error:
             label.configure(image="", text=f"图片预览失败：{error}")
+            label._image_ref = None
+        refresh_pager = getattr(self, "_education_refresh_preview_pager", None)
+        if refresh_pager:
+            refresh_pager(item or {})
 
 
     def _show_education_original(self):
@@ -4129,13 +4226,6 @@ class BossFilterGUI:
         item_id = self.education_current_id
         item = self.education_items.get(item_id) if item_id else None
         if not item:
-            return
-        if item.get("is_pdf"):
-            messagebox.showinfo(
-                "查看 PDF",
-                "当前记录是 PDF 文档，没有可双击放大的图片预览。",
-                parent=self.root,
-            )
             return
         path = Path(str(item.get("path") or ""))
         if not path.is_file():
@@ -4268,7 +4358,7 @@ class BossFilterGUI:
                 if item_id in self.education_items
             ]
         if not item_ids:
-            messagebox.showinfo("请导入证书", "请先导入毕业证书。", parent=self.root)
+            messagebox.showinfo("请导入证书", "请先导入学历或学位证书。", parent=self.root)
             return
         action_states = _EDUCATION_CONTROLLER.action_states(
             self.education_items,
@@ -4319,7 +4409,7 @@ class BossFilterGUI:
                         "可选视觉模型示例：\n"
                         "国外：GPT-4o / GPT-4.1、Claude Sonnet 4、Gemini 2.5 Pro\n"
                         "国内：qwen3.7-plus、mimo-v2.5、GLM-5V、Kimi K2.5、MiniMax-M3\n\n"
-                        "PDF 使用文本提取，不受图片模型限制。"
+                        "文字版 PDF 可使用文本模型；扫描版 PDF 需要视觉模型。"
                     ),
                     yes_label="仍然尝试",
                     no_label="返回切换模型",
@@ -4391,6 +4481,7 @@ class BossFilterGUI:
                         self._set_education_form_fields(
                             str(current.get("name") or ""),
                             str(current.get("certificate_number") or ""),
+                            current.get("certificate_type", "education"),
                         )
                         self.education_status_var.set(current.get("detail", ""))
                         self.education_warning_var.set(
@@ -4470,7 +4561,7 @@ class BossFilterGUI:
                 if item_id in self.education_items
             ]
         if not item_ids:
-            messagebox.showinfo("请导入证书", "请先导入毕业证书。", parent=self.root)
+            messagebox.showinfo("请导入证书", "请先导入学历或学位证书。", parent=self.root)
             return
         action_states = _EDUCATION_CONTROLLER.action_states(
             self.education_items,
@@ -4515,6 +4606,9 @@ class BossFilterGUI:
         for item_id, _, _ in prepared:
             item = self.education_items.get(item_id)
             if item:
+                item.pop("screenshot_filename", None)
+                item.pop("screenshot_directory", None)
+                item.update(screenshot_status="", screenshot_detail="", screenshot_path="")
                 item["status"] = "打开中"
                 item["detail"] = "正在连接浏览器并打开学信网..."
                 item["warnings"] = ""
@@ -4800,6 +4894,9 @@ class BossFilterGUI:
                         {
                             item_id: {
                                 "name": expected_name,
+                                "certificate_type": self.education_items.get(item_id, {}).get(
+                                    "certificate_type", "education",
+                                ),
                                 "certificate_number": str(
                                     self.education_items.get(item_id, {}).get(
                                         "certificate_number"
@@ -4898,6 +4995,10 @@ class BossFilterGUI:
 
                 self.run_on_ui(show_waiting_for_scan)
             kind = classify_chsi_terminal_result(text)
+            if kind and not _EDUCATION_CONTROLLER.result_page_matches_type(
+                current_page_ref["value"], self.education_items.get(item_id, {}),
+            ):
+                return False
             if kind:
                 detected_result["kind"] = kind
             return bool(kind)
@@ -5058,14 +5159,19 @@ class BossFilterGUI:
         max_attempts: int = EDUCATION_CAPTCHA_MAX_ATTEMPTS,
     ) -> tuple[bool, str]:
         """Fill the CHSI form and delegate bounded captcha retries."""
+        from functools import partial
         from education_certificate import fill_chsi_query_page, navigate_to_chsi
+
+        kind = getattr(self, "education_items", {}).get(item_id, {}).get(
+            "certificate_type", "education",
+        )
 
         result = _EDUCATION_CONTROLLER.fill_and_solve_captcha(
             page,
             name,
             certificate_number,
-            navigate=navigate_to_chsi,
-            fill_query=fill_chsi_query_page,
+            navigate=partial(navigate_to_chsi, certificate_type=kind),
+            fill_query=partial(fill_chsi_query_page, certificate_type=kind),
             attempt=lambda current_page, **kwargs: self._attempt_captcha_solve(
                 current_page,
                 item_id=item_id,

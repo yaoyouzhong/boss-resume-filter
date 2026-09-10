@@ -1,4 +1,4 @@
-"""毕业证书识别（图片走视觉模型 / PDF 走文本模型）与学信网字段校验。"""
+"""学历或学位证书识别（图片及扫描 PDF 走视觉模型 / 文字 PDF 走文本模型）与学信网字段校验。"""
 from __future__ import annotations
 
 import base64
@@ -26,6 +26,9 @@ MAX_IMAGE_SIDE = 2400
 JPEG_QUALITY = 95
 CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE = 80
 CHSI_QUERY_URL = "https://www.chsi.com.cn/xlcx/lscx/query.do"
+CHSI_DEGREE_QUERY_URL = "https://www.chsi.com.cn/xwcx/lscx/query.do"
+
+
 XIAOMI_VISION_MODEL = "mimo-v2.5"
 CHSI_SCREENSHOT_WIDTH = 3840
 CHSI_SCREENSHOT_PADDING = 48
@@ -46,8 +49,21 @@ _CHSI_RESULT_STRONG_LABELS = (
     "学习形式",
     "学制",
     "毕结业结论",
+    "学位授予单位",
+    "授予学位",
+    "学位名称",
+    "学位类别",
+    "获学位日期",
+    "授予日期",
+    "学位证书编号",
 )
 _CHSI_NOT_FOUND_MARKERS = (
+    "未找到学位证书信息",
+    "未查询到学位证书信息",
+    "没有查询到学位证书信息",
+    "未找到学位信息",
+    "未查询到学位信息",
+    "没有查询到学位信息",
     "未找到学历信息",
     "未查询到学历信息",
     "没有查询到学历信息",
@@ -85,7 +101,7 @@ class ChsiResultNotReadyError(RuntimeError):
 class ChsiScreenshotError(RuntimeError):
     """The CHSI result page was detected but could not be captured safely."""
 
-_ORIENTATION_SYSTEM_PROMPT = """你只判断毕业证书图片的正确阅读方向，不识别证书字段。
+_ORIENTATION_SYSTEM_PROMPT = """你只判断学历或学位证书图片的正确阅读方向，不识别证书字段。
 图片是同一证书顺时针旋转 0/90/180/270 度的四格对照图。
 返回严格 JSON 对象，不要使用 Markdown：
 {"rotation":0,"rotation_confidence":0}
@@ -95,48 +111,50 @@ rotation_confidence 是 0 到 100 的整数；无法可靠判断或低于 80 时
 """
 
 
-_INITIAL_RECOGNITION_SYSTEM_PROMPT = """你同时完成毕业证书方向判断和第一遍字段识别。
+_INITIAL_RECOGNITION_SYSTEM_PROMPT = """你同时完成学历或学位证书方向判断和第一遍字段识别。
 第一张图是同一证书顺时针旋转 0/90/180/270 度的四格方向对照图；第二张图是原始高清证书。
 先从第一张图选择文字正常朝上的角度，再按照该方向逐字读取第二张图。不要深入推理，不要解释。
 只返回严格 JSON 对象，不要使用 Markdown：
-{"rotation":0,"rotation_confidence":0,"name":"","certificate_number":"","school":"","major":"","field_confidence":{"name":0,"certificate_number":0,"school":0,"major":0},"confidence":0,"warnings":[]}
+{"rotation":0,"rotation_confidence":0,"certificate_type":"education|degree|unknown","name":"","certificate_number":"","school":"","major":"","field_confidence":{"name":0,"certificate_number":0,"school":0,"major":0},"confidence":0,"warnings":[]}
 
 规则：
+证书类型 certificate_type：毕业证书为 education，学士/硕士/博士学位证书为 degree；仅凭证书标题与正文判断，不按编号长度猜测，无法确定填 unknown。编号必须来自该类证书，不能混用学历和学位编号。
 1. rotation 只能填写 0、90、180、270，表示把原始图顺时针旋转多少度后文字正常朝上。
 2. name 只填写证书持有人的姓名；certificate_number 只逐字符抄录“证书编号”或“电子注册号”旁的完整编号。
 3. 重点核对证书编号中的 0/O、1/I/l、5/S、8/B，不得猜测或按常识纠错。
-4. school 填写毕业院校全称，major 填写证书上的专业名称。
+4. school 填写毕业院校或学位授予单位全称，major 填写证书上的专业名称。
 5. 无法确认的字段留空；所有置信度均填写 0 到 100 的整数。
 """
 
 
-_SYSTEM_PROMPT = """你是毕业证书字段识别器。图片已经纠正为正常阅读方向。
+_SYSTEM_PROMPT = """你是学历或学位证书字段识别器。图片已经纠正为正常阅读方向。
 只逐字读取图片中明确可见的内容，不猜测、不补全、不按常识纠错。
 返回严格 JSON 对象，不要使用 Markdown：
-{"name":"","certificate_number":"","school":"","major":"","field_confidence":{"name":0,"certificate_number":0,"school":0,"major":0},"confidence":0,"warnings":[]}
+{"certificate_type":"education|degree|unknown","name":"","certificate_number":"","school":"","major":"","field_confidence":{"name":0,"certificate_number":0,"school":0,"major":0},"confidence":0,"warnings":[]}
 
 规则：
-1. name 只填写毕业证书持有人的姓名，不要填写校长、院长或学校名称。
+证书类型 certificate_type：毕业证书为 education，学士/硕士/博士学位证书为 degree；仅凭证书标题与正文判断，不按编号长度猜测，无法确定填 unknown。编号必须来自该类证书，不能混用学历和学位编号。
+1. name 只填写学历或学位证书持有人的姓名，不要填写校长、院长或学校名称。
 2. certificate_number 只逐字符抄录“证书编号”或“电子注册号”标签旁的完整编号；特别核对 0/O、1/I/l、5/S、8/B，不得擅自替换。
-3. school 填写毕业院校全称，major 填写证书上的专业名称。
+3. school 填写毕业院校或学位授予单位全称，major 填写证书上的专业名称。
 4. 无法确认时字段留空，并在 warnings 中说明。
 5. field_confidence 分别填写四个字段的识别置信度（0-100），看不清的字段必须低于 80。
 6. confidence 是 0 到 100 的整数，表示文字字段整体识别置信度。
 """
 
 
-_FIELD_REVIEW_SYSTEM_PROMPT = """你是毕业证书字段复核器。只复核用户指定的可疑字段。
+_FIELD_REVIEW_SYSTEM_PROMPT = """你是学历或学位证书字段复核器。只复核用户指定的可疑字段。
 第一张图是转正后的完整证书，第二张图是同一证书的四区域高清放大图。
 逐字符抄录标签旁的原文，不猜测、不补全、不使用常识纠错。
 返回严格 JSON 对象，不要使用 Markdown：
-{"name":"","certificate_number":"","school":"","major":"","field_confidence":{"name":0,"certificate_number":0,"school":0,"major":0},"confidence":0,"warnings":[]}
+{"certificate_type":"education|degree|unknown","name":"","certificate_number":"","school":"","major":"","field_confidence":{"name":0,"certificate_number":0,"school":0,"major":0},"confidence":0,"warnings":[]}
 未要求复核的字段必须留空。证书编号特别核对 0/O、1/I/l、5/S、8/B。
 姓名和证书编号属于查询关键字段：必须独立重新读取，不得沿用或猜测第一次识别结果。
 """
 
 
-_NAME_REVIEW_SYSTEM_PROMPT = """你是毕业证书姓名专项识别器。
-图片是同一张已转正毕业证书的多个相互重叠原始分区，不是多张证书。
+_NAME_REVIEW_SYSTEM_PROMPT = """你是学历或学位证书姓名专项识别器。
+图片是同一张已转正学历或学位证书的多个相互重叠原始分区，不是多张证书。
 只查找证书持有人的姓名：优先读取“姓名”标签旁的内容，或“学生”之后、性别/出生日期之前的 2 至 4 个汉字。
 逐字观察偏旁和笔画；字符生僻不是留空理由，但确实看不清时必须留空，禁止按常见姓名猜测。
 返回严格 JSON 对象，不要使用 Markdown：
@@ -145,7 +163,7 @@ _NAME_REVIEW_SYSTEM_PROMPT = """你是毕业证书姓名专项识别器。
 """
 
 
-_NAME_COMPONENT_REVIEW_SYSTEM_PROMPT = """你是毕业证书姓名逐字结构复核器。
+_NAME_COMPONENT_REVIEW_SYSTEM_PROMPT = """你是学历或学位证书姓名逐字结构复核器。
 图片是同一张证书的灰度增强重叠分区。只识别证书持有人的姓名，不读取校长等其他人名。
 对姓名中的每个汉字先观察实际可见的左部、右部或上下结构，再填写 character；不得把生僻字改成更常见的同音或形近姓名用字。
 返回严格 JSON 对象，不要使用 Markdown：
@@ -154,7 +172,7 @@ _NAME_COMPONENT_REVIEW_SYSTEM_PROMPT = """你是毕业证书姓名逐字结构�
 """
 
 
-_NAME_DISAMBIGUATION_SYSTEM_PROMPT = """你是毕业证书姓名形近字裁决器。
+_NAME_DISAMBIGUATION_SYSTEM_PROMPT = """你是学历或学位证书姓名形近字裁决器。
 用户会提供两个人名候选以及同一张证书的多个原始彩色分区。候选只是待核对文本，不能作为答案依据。
 只比较两个候选中不同的汉字：观察该字真实可见的左部、右部或上下结构，再决定图中更符合哪个候选。
 禁止按常见姓名、读音或词频选择；看不清时 name 必须留空。
@@ -164,24 +182,25 @@ name 只能是两个候选之一或空字符串。
 """
 
 
-_PDF_SYSTEM_PROMPT = """你是毕业证书字段识别器。下面是从 PDF 提取的文本（可能无版式、字段顺序混乱）。
+_PDF_SYSTEM_PROMPT = """你是学历或学位证书字段识别器。下面是从 PDF 提取的文本（可能无版式、字段顺序混乱）。
 只填写文本中明确出现的内容，不猜测、不补全。
 返回严格 JSON 对象，不要使用 Markdown：
-{"name":"","certificate_number":"","school":"","major":"","confidence":0,"warnings":[]}
+{"certificate_type":"education|degree|unknown","name":"","certificate_number":"","school":"","major":"","confidence":0,"warnings":[]}
 
 规则：
-1. name 只填写毕业证书持有人的姓名，不要填写校长、院长或学校名称。
+证书类型 certificate_type：毕业证书为 education，学士/硕士/博士学位证书为 degree；仅凭证书标题与正文判断，不按编号长度猜测，无法确定填 unknown。编号必须来自该类证书，不能混用学历和学位编号。
+1. name 只填写学历或学位证书持有人的姓名，不要填写校长、院长或学校名称。
 2. certificate_number 只填写"证书编号"或"电子注册号"对应的完整编号。
-3. school 填写毕业院校全称，major 填写证书上的专业名称。
+3. school 填写毕业院校或学位授予单位全称，major 填写证书上的专业名称。
 4. 无法确认时字段留空，并在 warnings 中说明。
 5. confidence 是 0 到 100 的整数，表示全部字段整体识别置信度。
-6. 若文本明显不是毕业证书内容，所有字段留空，warnings 写"未识别到毕业证书内容"。
+6. 若文本明显不是学历或学位证书内容，所有字段留空，warnings 写"未识别到学历或学位证书内容"。
 """
 
 
 @dataclass(frozen=True)
 class CertificateRecognition:
-    """结构化毕业证书识别结果。"""
+    """结构化学历或学位证书识别结果。"""
 
     name: str
     certificate_number: str
@@ -193,6 +212,7 @@ class CertificateRecognition:
     warnings: tuple[str, ...]
     model: str
     critical_conflicts: tuple[str, ...] = ()
+    certificate_type: str = "education"
 
 
 def resolve_vision_api_config(api_config: dict[str, Any]) -> dict[str, Any]:
@@ -285,20 +305,10 @@ def validate_document_path(path: str | Path) -> Path:
 
 
 def extract_pdf_text(path: str | Path) -> str:
-    """提取 PDF 文本层内容。扫描件无文本层或加密 PDF 提不出文本时抛 RuntimeError。
+    """提取证书 PDF 文本层；扫描件返回空文本，交由整页图像识别。"""
+    from education_pdf_images import extract_pdf_text as extract
 
-    pdfminer 只解析文本，不栅格化；返回的是无版式纯文本，字段顺序可能混乱。
-    """
-    try:
-        from pdfminer.high_level import extract_text as _extract
-    except ImportError as error:
-        raise RuntimeError("PDF 解析依赖未安装") from error
-    try:
-        raw = _extract(str(path))
-    except Exception as error:
-        raise RuntimeError(f"PDF 无法读取：{error}") from error
-    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in (raw or "").splitlines()]
-    return "\n".join(ln for ln in lines if ln)
+    return extract(path)
 
 
 def _load_upright_certificate_image(
@@ -672,8 +682,10 @@ def normalize_recognition(payload: dict[str, Any], model: str = "") -> Certifica
         warnings.append("未能确认姓名")
     if not certificate_number:
         warnings.append("未能确认证书编号")
-    elif len(certificate_number) != 18:
+    elif (payload.get("certificate_type", "education") == "education"
+          and len(certificate_number) != 18):
         warnings.append(f"证书编号为 {len(certificate_number)} 位，请人工核对")
+    certificate_type = str(payload.get("certificate_type", "education") or "unknown").strip().lower()
     return CertificateRecognition(
         name=name,
         certificate_number=certificate_number,
@@ -685,6 +697,9 @@ def normalize_recognition(payload: dict[str, Any], model: str = "") -> Certifica
         warnings=tuple(dict.fromkeys(warnings)),
         model=model,
         critical_conflicts=critical_conflicts,
+        certificate_type=(
+            certificate_type if certificate_type in {"education", "degree"} else "unknown"
+        ),
     )
 
 
@@ -735,7 +750,9 @@ def _questionable_recognition_fields(
     questionable: set[str] = set()
     if not result.name or not 2 <= len(result.name) <= 20:
         questionable.add("name")
-    if not result.certificate_number or len(result.certificate_number) != 18:
+    if not result.certificate_number or (
+        result.certificate_type == "education" and len(result.certificate_number) != 18
+    ):
         questionable.add("certificate_number")
     if not result.school:
         questionable.add("school")
@@ -804,6 +821,7 @@ def _merge_field_review(
             continue
         if (
             field == "certificate_number"
+            and primary.certificate_type == "education"
             and len(primary_value) != 18
             and len(review_value) == 18
         ):
@@ -1087,6 +1105,7 @@ def recognize_certificate_image(
             timeout=timeout,
             max_tokens=max_tokens,
         )
+    parsed.setdefault("certificate_type", "unknown")
     primary = normalize_recognition(parsed, model)
     questionable_fields = _questionable_recognition_fields(parsed, primary)
     if manual_name_confirmation:
@@ -1217,21 +1236,43 @@ def recognize_certificate_pdf(
     timeout: int = 120,
     text_extractor: Callable[[str | Path], str] | None = None,
 ) -> CertificateRecognition:
-    """从 PDF 文本层提取字段，走当前文本模型识别。
-
-    不调视觉模型、不栅格化 PDF；扫描件无文本层时抛 ValueError 提示用户转图片。
-    """
+    """Read text PDFs directly; recognize scanned pages through the image pipeline."""
     extractor = text_extractor or extract_pdf_text
     try:
         text = extractor(path)
     except RuntimeError as error:
         raise ValueError(str(error)) from error
     if len(text) < 20:
-        raise ValueError("该 PDF 是扫描件无文本层，请导出为图片后导入")
+        from tempfile import TemporaryDirectory
+        from education_pdf_images import extract_certificate_pages
+
+        with TemporaryDirectory(prefix="certificate-pdf-") as directory:
+            pages = extract_certificate_pages(path, Path(directory))
+            results = [
+                recognize_certificate_image(page, api_config, api_key, timeout=timeout)
+                for page in pages
+            ]
+        identities = {
+            (result.name, result.certificate_number, result.certificate_type)
+            for result in results if result.name or result.certificate_number
+        }
+        if len(identities) > 1:
+            raise ValueError("PDF 各页识别信息不一致或包含多份证书，请将每份证书分别导入")
+        return max(results, key=lambda result: result.confidence)
     config = dict(api_config)
     messages = build_pdf_text_messages(text)
     parsed = _invoke_model(config, api_key, messages, timeout=timeout)
+    parsed.setdefault("certificate_type", "unknown")
     return normalize_recognition(parsed, str(config.get("model") or ""))
+
+
+def chsi_query_url(certificate_type: str = "education") -> str:
+    """Resolve an explicit certificate kind; never guess an unknown route."""
+    if certificate_type == "degree":
+        return CHSI_DEGREE_QUERY_URL
+    if certificate_type == "education":
+        return CHSI_QUERY_URL
+    raise ValueError("请先确认证书类型：学历证书或学位证书")
 
 
 def validate_chsi_fields(name: str, certificate_number: str) -> tuple[str, str]:
@@ -1251,21 +1292,23 @@ def validate_chsi_fields(name: str, certificate_number: str) -> tuple[str, str]:
     return clean_name, clean_number
 
 
-def navigate_to_chsi(page: Any) -> None:
+def navigate_to_chsi(page: Any, certificate_type: str = "education") -> None:
     """导航到学信网查询页（不填表单）。供 gui_main.py 在锁外并行调用。"""
-    page.get(CHSI_QUERY_URL)
+    page.get(chsi_query_url(certificate_type))
 
 
 def fill_chsi_query_page(
     page: Any, name: str, certificate_number: str, *, skip_navigation: bool = False,
+    certificate_type: str = "education",
 ) -> None:
     """打开学信网查询页并填写姓名、证书编号，验证码留给人工输入。
 
     skip_navigation: 为 True 时跳过 page.get()，假设页面已由 navigate_to_chsi 加载。
     """
+    chsi_query_url(certificate_type)
     clean_name, clean_number = validate_chsi_fields(name, certificate_number)
     if not skip_navigation:
-        page.get(CHSI_QUERY_URL)
+        page.get(chsi_query_url(certificate_type))
 
     # 注入代码覆盖弹窗，避免阻塞自动化操作
     disable_popups_script = """
@@ -1303,13 +1346,13 @@ if (!captcha) return "missing:yzm";
 const agreement = document.querySelector(
   'input[type="checkbox"][name="yhxy"], .agree-yhxy input[type="checkbox"]'
 );
-if (!agreement) return "missing:yhxy";
-if (!agreement.checked) agreement.click();
-if (!agreement.checked) return "unchecked:yhxy";
+if (!agreement && arguments[2] !== "degree") return "missing:yhxy";
+if (agreement && !agreement.checked) agreement.click();
+if (agreement && !agreement.checked) return "unchecked:yhxy";
 captcha.focus();
 return "ok";
 """
-    result = page.run_js(script, clean_number, clean_name)
+    result = page.run_js(script, clean_number, clean_name, certificate_type)
     if result != "ok":
         raise RuntimeError(f"学信网页面结构已变化（{result}）")
 
@@ -1927,7 +1970,7 @@ function triggerClick(el) {
 const allButtons = document.querySelectorAll('button');
 for (const btn of allButtons) {
     const text = (btn.textContent || '').trim();
-    if (text === '免费查询') {
+    if (text === '免费查询' || text === '查询') {
         triggerClick(btn);
         return true;
     }
@@ -2063,7 +2106,7 @@ const qrCodes = document.querySelectorAll('.ivu-qrcode, canvas, [class*="qrcode"
 if (qrCodes.length > 0 || currentUrl.includes('/qrcode.do') || allText.includes('扫码验证')) {
     return JSON.stringify({success: true, message: '已出现二维码'});
 }
-if (currentUrl.includes('/xlresult.do')) {
+if (currentUrl.includes('/xlresult.do') || currentUrl.includes('/xwresult.do')) {
     return JSON.stringify({success: true, message: '已出现查询结果'});
 }
 // 检查页面是否还在加载中
@@ -2211,6 +2254,49 @@ return {
 """
 
 
+_CHSI_IMAGE_READINESS_JS = r"""
+// chsi-result-image-readiness
+const images = Array.from(document.images).filter(image => {
+  const rect = image.getBoundingClientRect();
+  const style = getComputedStyle(image);
+  return rect.width >= 40 && rect.height >= 40 && style.display !== 'none'
+    && style.visibility !== 'hidden' && Number(style.opacity) !== 0
+    && !image.closest('header, footer, nav, [class*="header"], [class*="footer"], [class*="logo"], [class*="qrcode"]');
+});
+const portraits = images.filter(image => {
+  const rect = image.getBoundingClientRect();
+  const hint = `${image.alt} ${image.title} ${image.className} ${image.id} ${image.currentSrc || image.src}`;
+  if (/qrcode|qr-code|logo|验证码/i.test(hint)) return false;
+  return /photo|portrait|avatar|照片|相片/i.test(hint)
+    || (rect.width >= 50 && rect.height >= 70 && rect.height >= rect.width * 0.9
+        && rect.height <= rect.width * 2);
+});
+const pending = images.filter(image => !image.complete || image.naturalWidth < 32 || image.naturalHeight < 32);
+return {ready: portraits.length > 0 && pending.length === 0,
+        count: images.length, photo_count: portraits.length};
+"""
+
+
+def wait_for_chsi_result_images(context: Any, *, max_checks: int = 21) -> None:
+    """Wait up to five seconds for visible result photos/images to settle."""
+    import time
+
+    stable = 0
+    last_count = None
+    for attempt in range(max_checks):
+        state = context.run_js(_CHSI_IMAGE_READINESS_JS)
+        if not isinstance(state, dict) or not isinstance(state.get("ready"), bool):
+            raise ChsiResultNotReadyError("无法确认结果页照片加载状态，请稍后重新截图")
+        count = state.get("count")
+        stable = stable + 1 if state["ready"] and count == last_count else int(state["ready"])
+        last_count = count
+        if stable >= 3:
+            return
+        if attempt + 1 < max_checks:
+            time.sleep(0.25)
+    raise ChsiResultNotReadyError("尚未检测到已加载完成的结果照片，请等网页照片显示后再次点击一键批量截图")
+
+
 def capture_chsi_result_png(page: Any, expected_name: str) -> bytes:
     """Capture the complete final-result page as PNG bytes.
 
@@ -2254,6 +2340,7 @@ def capture_chsi_result_png(page: Any, expected_name: str) -> bytes:
             continue
 
         try:
+            wait_for_chsi_result_images(context)
             raw = page.get_screenshot(
                 as_bytes="png",
                 full_page=True,
@@ -2261,6 +2348,8 @@ def capture_chsi_result_png(page: Any, expected_name: str) -> bytes:
             if not isinstance(raw, (bytes, bytearray)) or not raw:
                 raise RuntimeError("浏览器未返回截图数据")
             return bytes(raw)
+        except ChsiResultNotReadyError:
+            raise
         except Exception as error:
             raise ChsiScreenshotError(f"完整结果页截图失败：{error}") from error
         finally:
@@ -2277,7 +2366,7 @@ def capture_chsi_result_png(page: Any, expected_name: str) -> bytes:
         raise ChsiScreenshotError(
             f"结果页检测失败：{last_probe_error}"
         ) from last_probe_error
-    raise ChsiResultNotReadyError("尚未检测到手机确认后的学历查询结果")
+    raise ChsiResultNotReadyError("尚未检测到手机确认后的学历或学位查询结果")
 
 
 def _trim_uniform_border(image: Image.Image, *, threshold: int = 12) -> Image.Image:
@@ -2352,21 +2441,50 @@ def _safe_screenshot_name_component(value: str, *, fallback: str) -> str:
     return text
 
 
-def build_chsi_screenshot_filename(name: str, certificate_number: str) -> str:
-    """Build a deterministic, screenshot-spec-aware privacy-safe filename."""
+def build_chsi_screenshot_filename(
+    name: str, certificate_number: str, certificate_type: str = "education",
+    *, captured_at: str | None = None,
+) -> str:
+    """Name a screenshot with the holder, verification type and local save time."""
+    from datetime import datetime
+
+    chsi_query_url(certificate_type)
+    label = "学位核验" if certificate_type == "degree" else "学历核验"
     clean_name = _safe_screenshot_name_component(name, fallback="未命名")
-    compact_number = re.sub(r"\s+", "", str(certificate_number or ""))
-    tail = _safe_screenshot_name_component(
-        compact_number[-6:],
-        fallback="未知",
-    )
-    digest = hashlib.sha256(
-        (
-            f"{str(name or '').strip()}\0{compact_number}"
-            f"\0{CHSI_SCREENSHOT_WIDTH}"
-        ).encode("utf-8")
-    ).hexdigest()[:8]
-    return f"{clean_name}_证书尾号{tail}_学历核验_{digest}.png"
+    timestamp = captured_at or datetime.now().strftime("%Y%m%d_%H%M%S")
+    datetime.strptime(timestamp, "%Y%m%d_%H%M%S")
+    return f"{clean_name}_{label}_{timestamp}.png"
+
+
+def prepare_chsi_screenshot_filenames(
+    items: dict[str, dict[str, Any]], folder: str | Path,
+    *, captured_at: str | None = None,
+) -> dict[str, str]:
+    """Reuse this round's names; reserve distinct names without modifying files."""
+    destination = Path(folder).resolve()
+    reserved: set[str] = set()
+    names: dict[str, str] = {}
+    for item_id, item in items.items():
+        previous = str(item.get("screenshot_filename") or "")
+        if (previous and Path(previous).name == previous
+                and item.get("screenshot_directory") == str(destination)):
+            names[item_id] = previous
+            reserved.add(previous.casefold())
+    for item_id, item in items.items():
+        if item_id in names:
+            continue
+        filename = build_chsi_screenshot_filename(
+            str(item.get("name") or ""), str(item.get("certificate_number") or ""),
+            str(item.get("certificate_type", "education")), captured_at=captured_at,
+        )
+        target = Path(filename)
+        suffix = 1
+        while filename.casefold() in reserved or (destination / filename).exists():
+            suffix += 1
+            filename = f"{target.stem}_{suffix}{target.suffix}"
+        names[item_id] = filename
+        reserved.add(filename.casefold())
+    return names
 
 
 def is_valid_chsi_screenshot(path: str | Path) -> bool:
@@ -2384,12 +2502,37 @@ def is_valid_chsi_screenshot(path: str | Path) -> bool:
         return False
 
 
-def save_chsi_result_screenshot(raw_png: bytes, path: str | Path) -> Path:
-    """Normalize and exclusively create one screenshot without overwriting."""
+def save_chsi_result_screenshot(
+    raw_png: bytes, path: str | Path, *, replace_existing: bool = False,
+) -> Path:
+    """Create exclusively, or atomically replace an explicitly selected screenshot."""
     target = Path(path)
     if not target.parent.is_dir():
         raise ChsiScreenshotError("截图保存目录不存在")
     normalized = normalize_chsi_screenshot_png(raw_png)
+    if replace_existing:
+        import tempfile
+
+        if not target.is_file():
+            raise ChsiScreenshotError("要替换的截图不存在，请使用普通截图保存")
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=target.parent, prefix=".chsi-recapture-", suffix=".png", delete=False,
+            ) as stream:
+                temporary = Path(stream.name)
+                stream.write(normalized)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if not is_valid_chsi_screenshot(temporary):
+                raise ChsiScreenshotError("新截图校验失败，原截图已保留")
+            os.replace(temporary, target)
+        except OSError as error:
+            raise ChsiScreenshotError(f"截图替换失败，原截图已保留：{error}") from error
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        return target
     try:
         with target.open("xb") as stream:
             try:

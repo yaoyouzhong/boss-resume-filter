@@ -103,6 +103,7 @@ skills-lock.json
 wechat/
 .venv/
 .venv-ci/
+.ocr_venv/
 
 # UI 验证临时产物（会话截图/日志，勿提交）
 _ui*.png

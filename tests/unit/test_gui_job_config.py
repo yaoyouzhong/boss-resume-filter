@@ -8818,7 +8818,7 @@ def test_home_tools_put_education_before_external_import():
     tools = source[source.index("tool_specs = ("):]
     tools = tools[:tools.index("\n    for column")]
 
-    assert tools.index('"学历核验"') < tools.index('"导入外部候选人"')
+    assert tools.index('"证书核验"') < tools.index('"导入外部候选人"')
     maintenance = source[source.index("maintenance_actions = ("):]
     maintenance = maintenance[:maintenance.index("\n    for index")]
     assert '"数据备份与恢复"' in maintenance
@@ -9192,26 +9192,26 @@ def test_education_browser_reuses_all_initial_new_tab_urls():
         blank_page.new_tab.assert_not_called()
 
 
-def test_education_screenshot_reuses_valid_saved_folder_without_dialog():
+def test_education_screenshot_always_requests_folder_and_cancel_preserves_previous():
     gui = object.__new__(BossFilterGUI)
+    gui.root = Mock()
     with tempfile.TemporaryDirectory() as temp_dir:
         gui.education_screenshot_folder = temp_dir
-        with patch("gui_main.filedialog.askdirectory") as ask_directory:
-            assert gui._select_education_screenshot_folder() is True
-
-        ask_directory.assert_not_called()
+        with patch("gui_main.filedialog.askdirectory", return_value="") as ask_directory:
+            assert gui._select_education_screenshot_folder() is False
+            assert gui._select_education_screenshot_folder() is False
+        assert ask_directory.call_count == 2
+        assert ask_directory.call_args.kwargs["initialdir"] == temp_dir
+        assert gui.education_screenshot_folder == temp_dir
 
 
 def test_education_screenshot_requests_folder_when_saved_path_is_missing():
     gui = object.__new__(BossFilterGUI)
+    gui.root = Mock()
     with tempfile.TemporaryDirectory() as temp_dir:
         gui.education_screenshot_folder = str(Path(temp_dir) / "missing")
-        with patch(
-            "gui_main.filedialog.askdirectory",
-            return_value="",
-        ) as ask_directory:
+        with patch("gui_main.filedialog.askdirectory", return_value="") as ask_directory:
             assert gui._select_education_screenshot_folder() is False
-
         ask_directory.assert_called_once()
 
 
@@ -9428,6 +9428,7 @@ def test_education_multi_import_behavior_leaves_queue_unselected():
     gui.education_warning_var = Mock()
     gui.education_batch_status_var = Mock()
     gui.education_preview_label = Mock()
+    gui.education_screenshot_folder_var = Mock()
     gui.education_screenshot_folder = ""
     gui._save_current_education_fields = Mock()
     gui._refresh_education_queue_summary = Mock()
@@ -9606,7 +9607,7 @@ def test_standalone_education_navigation_buttons_share_visual_language():
 
     assert 'text="模型配置"' in education_source
     assert 'icon_name="ai_spark"' in education_source
-    assert 'text="返回学历核验"' in settings_source
+    assert 'text="返回证书核验"' in settings_source
     assert 'icon_name="arrow_left"' in settings_source
     assert "create_navigation_button(" in education_source
     assert "create_navigation_button(" in settings_source
@@ -9936,6 +9937,7 @@ def test_education_screenshot_without_ready_result_does_not_touch_browser():
     }
     gui.education_screenshot_running = False
     gui.education_screenshot_summary_var = Mock()
+    gui.education_screenshot_folder_var = Mock()
     gui._save_current_education_fields = Mock()
     gui._select_education_screenshot_folder = Mock()
     gui._get_education_tab = Mock()
@@ -9981,6 +9983,7 @@ def test_education_screenshot_cancelled_folder_selection_does_not_touch_browser(
     }
     gui.education_screenshot_running = False
     gui.education_screenshot_summary_var = Mock()
+    gui.education_screenshot_folder_var = Mock()
     gui._save_current_education_fields = Mock()
     gui._select_education_screenshot_folder = Mock(return_value=False)
     gui._get_education_tab = Mock()
@@ -10016,6 +10019,7 @@ def test_education_result_watcher_marks_record_ready_on_ui_thread():
     gui.education_tabs = {}
     gui.education_current_id = None
     gui.education_screenshot_summary_var = Mock()
+    gui.education_screenshot_folder_var = Mock()
     gui._education_browser_lock = threading.Lock()
     gui._update_education_queue_row = Mock()
     gui._refresh_education_queue_summary = Mock()
@@ -10192,6 +10196,7 @@ def test_education_result_watcher_marks_not_found_and_requests_info_check():
     gui.education_tabs = {}
     gui.education_current_id = None
     gui.education_screenshot_summary_var = Mock()
+    gui.education_screenshot_folder_var = Mock()
     gui._education_browser_lock = threading.Lock()
     gui._update_education_queue_row = Mock()
     gui._refresh_education_queue_summary = Mock()
@@ -10241,12 +10246,15 @@ def test_education_screenshot_existing_file_restores_row_status():
     gui.education_queue_tree = Mock()
     gui.education_queue_tree.exists.return_value = True
     gui.education_screenshot_summary_var = Mock()
+    gui.education_screenshot_folder_var = Mock()
     with tempfile.TemporaryDirectory() as temp_dir:
         gui.education_screenshot_folder = temp_dir
         target = Path(temp_dir) / build_chsi_screenshot_filename(
             "张三", "123456789012345678"
         )
         save_chsi_result_screenshot(image_buffer.getvalue(), target)
+        gui.education_items["education_1"]["screenshot_filename"] = target.name
+        gui.education_items["education_1"]["screenshot_directory"] = str(Path(temp_dir).resolve())
 
         gui._refresh_education_screenshot_existing_states()
 
@@ -10255,7 +10263,7 @@ def test_education_screenshot_existing_file_restores_row_status():
             target.resolve()
         )
     gui.education_screenshot_summary_var.set.assert_called_with(
-        "当前目录：已有 1｜待补 0｜文件异常 0"
+        "已保存 0｜未保存 1｜保存失败 0"
     )
 
 
@@ -10564,7 +10572,7 @@ def test_education_queue_summary_text_varies_by_count():
     gui.education_queue_card.winfo_manager.return_value = "pack"
     gui.education_items = {}
     gui._refresh_education_queue_summary()
-    gui.education_file_var.set.assert_called_with("尚未导入毕业证书")
+    gui.education_file_var.set.assert_called_with("尚未导入学历或学位证书")
     gui.education_batch_status_var.set.assert_called_with("尚未导入证书")
     gui.education_queue_card.pack_forget.assert_called_once_with()
 
@@ -10728,6 +10736,7 @@ def test_education_screenshot_progress_uses_shared_workflow_bar():
         "education_2": {"path": "two.png", "name": "李四"},
     }
     gui.education_screenshot_summary_var = Mock()
+    gui.education_screenshot_folder_var = Mock()
     gui.education_recognition_progress_frame = Mock()
     gui.education_recognition_progress_var = Mock()
     gui.education_recognition_progress_text_var = Mock()
@@ -10836,7 +10845,8 @@ def test_education_queue_scrollbar_has_visible_local_style():
     assert "arrowsize=max(14" in create_block
     assert '("active", host.colors["text_secondary"])' in create_block
     assert '("pressed", host.colors["text_secondary"])' in create_block
-    assert '("active", host.colors["primary"])' not in create_block
+    scrollbar_block = create_block[create_block.index('"Education.Vertical.TScrollbar"'):create_block.index("queue_tree =")]
+    assert '("active", host.colors["primary"])' not in scrollbar_block
     assert 'style="Education.Vertical.TScrollbar"' in create_block
 
 
@@ -10877,7 +10887,7 @@ def test_education_worker_branches_pdf_and_image():
     assert "return recognize_pdf(path" in worker_block
 
 
-def test_education_render_shows_text_placeholder_for_pdf():
+def test_education_render_reports_unreadable_pdf():
     from unittest.mock import Mock
     from gui_main import BossFilterGUI as _GUI
     gui = object.__new__(_GUI)
@@ -10890,11 +10900,11 @@ def test_education_render_shows_text_placeholder_for_pdf():
 
     gui._render_education_preview()
 
-    # PDF 不走 Image.open，直接显示文字占位
+    # Missing/unreadable PDF reports a preview failure; real PDFs are rendered.
     label.configure.assert_called_once()
     kwargs = label.configure.call_args.kwargs
     assert kwargs.get("image") == ""
-    assert "PDF" in kwargs.get("text", "")
+    assert "图片预览失败" in kwargs.get("text", "")
     assert label._image_ref is None
 
 
@@ -12401,3 +12411,39 @@ def test_external_batch_without_api_key_never_leaves_evaluating_state():
     callbacks.on_import_done.assert_called_once_with(summary)
     final_text = callbacks.on_all_done.call_args.args[1]
     assert "未配置 API Key" in final_text and "跳过简历评估" in final_text
+
+
+def test_education_screenshot_open_folder_follows_each_confirmed_destination():
+    gui = object.__new__(BossFilterGUI)
+    gui.root = Mock()
+    gui.education_screenshot_folder_var = Mock()
+    gui._save_current_education_fields = Mock()
+    gui._persist_run_preferences = Mock()
+    gui._refresh_education_screenshot_existing_states = Mock()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        folders = [Path(temp_dir) / "first", Path(temp_dir) / "second"]
+        for folder in folders:
+            folder.mkdir()
+            with patch("gui_main.filedialog.askdirectory", return_value=str(folder)):
+                assert gui._select_education_screenshot_folder() is True
+            with patch("gui_main.os.startfile", create=True) as open_folder, patch("gui_main.sys.platform", "win32"):
+                gui._open_education_screenshot_folder()
+                open_folder.assert_not_called()
+                gui._education_saved_folder = str(folder.resolve())
+                gui._open_education_screenshot_folder()
+                open_folder.assert_called_once_with(str(folder.resolve()))
+            assert gui._run_preferences["education_screenshot_folder"] == str(folder.resolve())
+
+
+def test_education_saved_location_only_appears_after_success():
+    gui = object.__new__(BossFilterGUI)
+    gui.education_items = {"one": {"path": "certificate.png", "name": "test"}}
+    gui.education_screenshot_folder_var = Mock()
+    gui.education_screenshot_summary_var = Mock()
+    gui._update_education_queue_row = Mock()
+    gui._update_education_workflow_progress = Mock()
+    for status in ("截图中", "截图失败"):
+        gui._apply_education_screenshot_result(types.SimpleNamespace(item_id="one", status=status, detail="", path=""))
+    gui.education_screenshot_folder_var.set.assert_not_called()
+    gui._apply_education_screenshot_result(types.SimpleNamespace(item_id="one", status="已保存", detail="", path=str(Path("selected") / "result.png")))
+    gui.education_screenshot_folder_var.set.assert_called_once_with("保存到：selected")

@@ -108,6 +108,8 @@ class EducationPageHost(Protocol):
 
     def _capture_education_results(self) -> None: ...
 
+    def _open_education_screenshot_folder(self) -> None: ...
+
 
 @dataclass(frozen=True)
 class EducationPageWidgets:
@@ -135,6 +137,7 @@ class EducationPageWidgets:
     preview_label: tk.Label
     name_var: tk.StringVar
     number_var: tk.StringVar
+    type_var: tk.StringVar
     status_var: tk.StringVar
     warning_var: tk.StringVar
     batch_status_var: tk.StringVar
@@ -176,8 +179,8 @@ def build_education_page(
 
     host.widget_support.create_page_header(
         page,
-        "学历核验",
-        "导入毕业证书图片/PDF，自动识别并提交验证码；手机确认后可批量保存结果页截图。",
+        "证书核验",
+        "导入毕业证书或学位证书图片/PDF，自动识别并提交验证码；按网页提示完成验证后，可批量保存结果页截图。",
         trailing_builder=_build_settings_navigation if standalone else None,
     )
 
@@ -193,11 +196,11 @@ def build_education_page(
 
     toolbar = host.widget_support.create_card(
         content,
-        "毕业证书",
+        "学历 / 学位证书",
         fill="x",
         pady=(0, int(16 * scale)),
     )
-    file_var = tk.StringVar(value="尚未导入毕业证书")
+    file_var = tk.StringVar(value="尚未导入学历或学位证书")
     ttk.Label(
         toolbar,
         textvariable=file_var,
@@ -329,15 +332,9 @@ def build_education_page(
     )
     host._context_menus.append(queue_menu)
 
-    screenshot_folder_var = tk.StringVar(
-        value=(
-            f"保存到：{screenshot_folder}"
-            if screenshot_folder
-            else "截图保存位置：首次执行第 3 步时选择"
-        )
-    )
+    screenshot_folder_var = tk.StringVar(value="")
     screenshot_summary_var = tk.StringVar(
-        value="手机确认完成后执行第 3 步；重复运行会自动跳过已有截图。"
+        value="已保存 0｜未保存 0｜保存失败 0"
     )
     queue_batch_area = ttk.Frame(queue_content, style="TFrame")
     queue_batch_area.grid(
@@ -491,12 +488,47 @@ def build_education_page(
     )
     screenshot_support = ttk.Frame(queue_batch_support, style="TFrame")
     screenshot_support.pack(side="left", fill="x", expand=True, anchor="n")
+    screenshot_heading = ttk.Frame(screenshot_support, style="TFrame")
+    screenshot_heading.pack(fill="x")
     ttk.Label(
-        screenshot_support,
+        screenshot_heading,
         text="截图与保存",
         font=(font_family, int(9 * host.font_scale), "bold"),
         foreground=host.colors["text_secondary"],
-    ).pack(anchor="w")
+    ).pack(side="left")
+    folder_style = "Education.Folder.TButton"
+    folder_background = education_style.lookup("TFrame", "background") or host.colors["bg_card"]
+    education_style.configure(
+        folder_style,
+        font=(font_family, int(9 * host.font_scale)),
+        padding=(int(8 * scale), int(3 * scale)),
+        background=folder_background,
+        foreground=host.colors["text_secondary"],
+        borderwidth=0, relief="flat",
+        bordercolor=folder_background,
+        lightcolor=folder_background, darkcolor=folder_background,
+        focuscolor=host.colors["primary"],
+    )
+    education_style.map(
+        folder_style,
+        background=[("active", host.colors.get("primary_light", "#EAF2FF"))],
+        foreground=[("active", host.colors["primary"])],
+    )
+    folder_icon = host.icons.get("folder", max(12, int(14 * scale)), host.colors["primary"])
+    folder_button = ttk.Button(
+        screenshot_heading, text=" 打开文件夹", image=folder_icon,
+        compound=tk.LEFT, style=folder_style,
+        command=host._open_education_screenshot_folder,
+        state="disabled",
+    )
+    folder_button._icon_ref = folder_icon
+    folder_button.pack(side="left", padx=(int(12 * scale), 0))
+    screenshot_folder_var.trace_add(
+        "write",
+        lambda *_: folder_button.configure(
+            state="normal" if screenshot_folder_var.get() else "disabled"
+        ),
+    )
     ttk.Label(
         screenshot_support,
         textvariable=screenshot_summary_var,
@@ -555,6 +587,34 @@ def build_education_page(
     if rotate_button is None:
         raise RuntimeError("证书预览旋转按钮未创建")
 
+    pager = ttk.Frame(preview)
+    page_text = tk.StringVar(value="")
+
+    def change_preview_page(delta: int) -> None:
+        item = host.education_items.get(host.education_current_id, {})
+        count = item.get("preview_page_count", 1)
+        item["preview_page"] = max(0, min(count - 1, item.get("preview_page", 0) + delta))
+        host._schedule_education_preview_render()
+
+    previous = ttk.Button(pager, text="上一页", command=lambda: change_preview_page(-1))
+    previous.pack(side="left")
+    ttk.Label(pager, textvariable=page_text).pack(side="left", padx=12)
+    following = ttk.Button(pager, text="下一页", command=lambda: change_preview_page(1))
+    following.pack(side="left")
+
+    def refresh_preview_pager(item: dict) -> None:
+        count = item.get("preview_page_count", 1) if item.get("is_pdf") else 1
+        index = item.get("preview_page", 0)
+        if count > 1:
+            pager.pack(side="bottom", pady=6, before=preview_label)
+            page_text.set(f"{index + 1} / {count}")
+            previous.configure(state="normal" if index else "disabled")
+            following.configure(state="normal" if index + 1 < count else "disabled")
+        else:
+            pager.pack_forget()
+
+    host._education_refresh_preview_pager = refresh_preview_pager
+
     preview_label = tk.Label(
         preview,
         text="请选择 JPG、JPEG、PNG、BMP、WEBP 图片或 PDF 文件",
@@ -586,56 +646,101 @@ def build_education_page(
     )
     name_var = tk.StringVar()
     number_var = tk.StringVar()
+    type_var = tk.StringVar(value="待确认")
     status_var = tk.StringVar(value="请从上方队列选择一张证书查看结果")
     warning_var = tk.StringVar(value="")
 
     workbench_label_style = (
         "EducationTool.Workbench.TLabel" if standalone else "TLabel"
     )
+    field_style = "EducationTool.Workbench.TFrame" if standalone else "TFrame"
+    gap = int(16 * scale)
+    label_gap = int(4 * scale)
+    row_gap = int(12 * scale)
+    identity_fields = ttk.Frame(form, style=field_style)
+    identity_fields.pack(fill="x", pady=(0, row_gap))
+    type_field = ttk.Frame(identity_fields, style=field_style)
+    name_field = ttk.Frame(identity_fields, style=field_style)
     ttk.Label(
-        form,
-        text="姓名",
-        font=host.font_label,
+        type_field, text="证书类型", font=host.font_label,
         style=workbench_label_style,
-    ).pack(anchor="w")
-    name_entry = ttk.Entry(form, textvariable=name_var, font=host.font_label)
-    name_entry.pack(fill="x", pady=(6, 16))
+    ).pack(anchor="w", pady=(0, label_gap))
+    type_combo = ttk.Combobox(
+        type_field, textvariable=type_var, state="readonly", width=12,
+        values=("待确认", "学历证书", "学位证书"), font=host.font_label,
+    )
+    type_combo.pack(fill="x")
+    ttk.Label(
+        name_field, text="姓名", font=host.font_label,
+        style=workbench_label_style,
+    ).pack(anchor="w", pady=(0, label_gap))
+    name_entry = ttk.Entry(
+        name_field, textvariable=name_var, font=host.font_label, width=14,
+    )
+    name_entry.pack(fill="x")
     host.input_support.bind_entry_context_menu(name_entry)
     ttk.Label(
-        form,
-        text="证书编号",
-        font=host.font_label,
+        form, text="证书编号", font=host.font_label,
         style=workbench_label_style,
-    ).pack(anchor="w")
+    ).pack(anchor="w", pady=(0, label_gap))
     number_entry = ttk.Entry(form, textvariable=number_var, font=host.font_label)
-    number_entry.pack(fill="x", pady=(6, 16))
+    number_entry.pack(fill="x", pady=(0, row_gap))
     host.input_support.bind_entry_context_menu(number_entry)
 
-    ttk.Label(
-        form,
-        textvariable=status_var,
-        font=host.font_label,
-        foreground=host.colors["primary"],
-        style=workbench_label_style,
-    ).pack(anchor="w", pady=(0, 8))
-    ttk.Label(
-        form,
-        textvariable=warning_var,
+    status_label = ttk.Label(
+        form, textvariable=status_var,
         font=(font_family, int(10 * host.font_scale)),
-        foreground=host.colors["warning"],
-        style=workbench_label_style,
-        wraplength=600,
+        foreground=host.colors["primary"], style=workbench_label_style,
         justify="left",
-    ).pack(anchor="w", fill="x")
-
-    ttk.Label(
+    )
+    status_label.pack(anchor="w", fill="x", pady=(0, int(6 * scale)))
+    warning_label = ttk.Label(
+        form, textvariable=warning_var,
+        font=(font_family, int(10 * host.font_scale)),
+        foreground=host.colors["warning"], style=workbench_label_style,
+        justify="left",
+    )
+    warning_label.pack(anchor="w", fill="x")
+    privacy_label = ttk.Label(
         form,
         text="识别时图片/PDF 会发送当前配置的 AI 模型，请确认已取得候选人授权。",
         font=(font_family, int(10 * host.font_scale)),
-        foreground=host.colors["text_secondary"],
-        style=workbench_label_style,
+        foreground=host.colors["text_secondary"], style=workbench_label_style,
         justify="left",
-    ).pack(anchor="w", fill="x", pady=(20, 0))
+    )
+    privacy_label.pack(anchor="w", fill="x", pady=(row_gap, 0))
+
+    last_layout: tuple[bool, int] | None = None
+
+    def arrange_fields(event: tk.Event) -> None:
+        """Keep short fields together when their requested widths fit."""
+        nonlocal last_layout
+        width = max(1, event.width)
+        required = 2 * max(type_combo.winfo_reqwidth(), name_entry.winfo_reqwidth()) + gap
+        compact = width < max(int(320 * scale), required)
+        state = (compact, width)
+        if state == last_layout:
+            return
+        last_layout = state
+        uniform = "certificate_identity" if not compact else ""
+        identity_fields.columnconfigure(0, weight=1, uniform=uniform)
+        identity_fields.columnconfigure(1, weight=0 if compact else 1, uniform=uniform)
+        type_field.grid(
+            row=0, column=0, sticky="ew", padx=(0, 0 if compact else gap // 2),
+        )
+        name_field.grid(
+            row=1 if compact else 0, column=0 if compact else 1,
+            sticky="ew", pady=(row_gap if compact else 0, 0),
+            padx=(0 if compact else gap - gap // 2, 0),
+        )
+        for label in (status_label, warning_label, privacy_label):
+            label.configure(wraplength=width)
+
+    # Start stacked until the actual available width is known.
+    type_field.grid(row=0, column=0, sticky="ew")
+    name_field.grid(row=1, column=0, sticky="ew", pady=(row_gap, 0))
+    identity_fields.columnconfigure(0, weight=1)
+    form.bind("<Configure>", arrange_fields, add="+")
     queue_card.pack_forget()
     host.scroll_support.bind_mousewheel(canvas, scrollable_frame)
 
@@ -662,6 +767,7 @@ def build_education_page(
         preview_label=preview_label,
         name_var=name_var,
         number_var=number_var,
+        type_var=type_var,
         status_var=status_var,
         warning_var=warning_var,
         batch_status_var=batch_status_var,
