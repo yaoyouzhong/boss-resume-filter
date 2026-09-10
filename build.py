@@ -5516,8 +5516,9 @@ def main():
         '--hidden-import=PIL.ImageTk',
         '--hidden-import=PIL.ImageColor',
         '--hidden-import=PIL.ImageFont',
+        '--hidden-import=PIL.WebPImagePlugin',
+        '--hidden-import=PIL._webp',
         '--exclude-module=PIL._avif',
-        '--exclude-module=PIL._webp',
         '--exclude-module=PyQt5',
         '--exclude-module=PySide6',
         '--exclude-module=torch',
@@ -5674,6 +5675,16 @@ def main():
 
         # 清掉 spinner 行
         print(f"\r{' ' * 60}\r", end='')
+
+    image_smoke_executable = (
+        DIST_DIR / "BOSS_ResumeFilter.app" / "Contents" / "MacOS" / "BOSS_ResumeFilter"
+        if IS_MAC else DIST_DIR / "BOSS_ResumeFilter.exe"
+    )
+    print("  验证打包产物的证书图片格式...")
+    subprocess.run(
+        [str(image_smoke_executable), "--certificate-image-smoke-test"],
+        cwd=DIST_DIR, check=True, timeout=120,
+    )
 
     print("  更新辅助文件...")
     for file in ["README.md", "job_config.json", "ui_config.json"]:

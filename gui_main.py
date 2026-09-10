@@ -17159,6 +17159,11 @@ class BossFilterGUI:
 
 
 def main():
+    if sys.argv[1:] == ["--certificate-image-smoke-test"]:
+        from certificate_image_smoke import run_image_smoke_test
+
+        run_image_smoke_test()
+        return
     if (
         sys.platform == "win32"
         and len(sys.argv) == 3
