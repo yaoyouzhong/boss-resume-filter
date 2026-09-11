@@ -2,10 +2,28 @@
 from __future__ import annotations
 
 import tkinter as tk
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from tkinter import font, ttk
 from typing import Any, Protocol
+
+
+def _wrap_warning_text(text: str, width: int, measure) -> str:
+    """Wrap Chinese notices by rendered width, keeping numeric units together."""
+    lines = []
+    for paragraph in text.replace("；", "\n").splitlines():
+        line = ""
+        for token in re.findall(r"(?:\d+(?:\s*位)?|[^\d])[，。、？！]*", paragraph.strip()):
+            token = re.sub(r"(?<=\d)\s+(?=位)", "", token)
+            if line and measure(line + token) > width:
+                lines.append(line.rstrip())
+                line = token.lstrip()
+            else:
+                line += token
+        if line:
+            lines.append(line.rstrip())
+    return "\n".join(lines)
 
 
 class ScrollSupport(Protocol):
@@ -695,12 +713,20 @@ def build_education_page(
     )
     status_label.pack(anchor="w", fill="x", pady=(0, int(6 * scale)))
     warning_label = ttk.Label(
-        form, textvariable=warning_var,
+        form, text="",
         font=(font_family, int(10 * host.font_scale)),
         foreground=host.colors["warning"], style=workbench_label_style,
         justify="left",
     )
     warning_label.pack(anchor="w", fill="x")
+    warning_font = font.Font(root=form, font=warning_label.cget("font"))
+
+    def refresh_warning(*_args):
+        width = max(1, form.winfo_width() - int(8 * scale))
+        warning_label.configure(text=_wrap_warning_text(warning_var.get(), width, warning_font.measure))
+
+    warning_trace = warning_var.trace_add("write", refresh_warning)
+    warning_label.bind("<Destroy>", lambda _event: warning_var.trace_remove("write", warning_trace))
     privacy_label = ttk.Label(
         form,
         text="识别时图片/PDF 会发送当前配置的 AI 模型，请确认已取得候选人授权。",
@@ -733,8 +759,9 @@ def build_education_page(
             sticky="ew", pady=(row_gap if compact else 0, 0),
             padx=(0 if compact else gap - gap // 2, 0),
         )
-        for label in (status_label, warning_label, privacy_label):
+        for label in (status_label, privacy_label):
             label.configure(wraplength=width)
+        refresh_warning()
 
     # Start stacked until the actual available width is known.
     type_field.grid(row=0, column=0, sticky="ew")

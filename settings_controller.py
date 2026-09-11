@@ -328,6 +328,8 @@ class SettingsController:
             )
             if capability.get("status") in {"compatible", "limited"}:
                 mode = "工具" if capability.get("output_mode") == "tool" else "兼容"
+                if capability.get("output_mode") == "vision_probe":
+                    mode = str(capability.get("message") or "")
                 return ModelProbeOutcome(
                     status="success",
                     response_time=float(capability.get("response_time") or 0),

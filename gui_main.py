@@ -3102,8 +3102,8 @@ class BossFilterGUI:
                     model_name = str(edu_config.get("model") or "未配置")
                     messagebox.show_notice(
                         "图片识别模型提醒",
-                        headline="当前模型可能无法识别图片",
-                        message="请先在「API 配置」中切换支持图片输入的模型。",
+                        headline="当前模型的图片识别能力尚未确认",
+                        message="可以继续尝试识别，成功后将自动记录图片能力；也可在模型配置中切换模型。",
                         metrics=(("当前模型", model_name),),
                         notice="文字版 PDF 可使用文本模型；扫描版 PDF 需要视觉模型。",
                         detail=(
@@ -4394,7 +4394,7 @@ class BossFilterGUI:
                 model_name = str(edu_config.get("model") or "未配置")
                 if not messagebox.ask_confirmation(
                     "继续尝试图片识别？",
-                    headline="当前学历核验模型可能不支持图片输入",
+                    headline="当前学历核验模型的图片识别能力尚未确认",
                     message="继续后仍会尝试识别，但可能直接失败或无法返回有效字段。",
                     metrics=(("当前模型", model_name),),
                     notice=(
@@ -6863,6 +6863,7 @@ class BossFilterGUI:
             text=f"✓ 学历核验模型已设为 {provider_display} / {model_config.get('model', '')}",
             foreground=self.colors['success'],
         )
+        self._test_selected_model_vision(model_config)
 
     def _set_external_import_ai_enhance(self, enabled):
         """持久化外部导入「AI 增强识别」开关（用户级偏好，随模型配置保存）。"""
@@ -6879,38 +6880,9 @@ class BossFilterGUI:
         self._save_api_config_to_file()
 
     def _test_assigned_model(self, role):
-        """复用模型库连通性测试，测试指定用途当前实际使用的模型。"""
+        """所有用途按钮都实际发送图片，同时检查连接与图片能力。"""
         model_ref = self._get_assigned_model_ref(role)
-        synced_roles = self._assigned_model_test_roles(role, model_ref)
-        for target_role in synced_roles:
-            self._assigned_model_test_tokens[target_role] += 1
-            self._assigned_model_test_refs[target_role] = dict(model_ref)
-            self._set_assigned_model_test_state(target_role, "testing")
-        test_token = self._assigned_model_test_tokens[role]
-        self._update_api_status(
-            text=f"正在测试{self._assigned_model_test_target_label(role, model_ref)}...",
-            foreground=self.colors['warning'],
-        )
-        for item_id in self.model_list_tree.get_children():
-            values = self.model_list_tree.item(item_id, 'values')
-            if len(values) < 4:
-                continue
-            item_ref = {
-                "model": values[0],
-                "api_provider": self.DISPLAY_TO_KEY.get(values[1], values[1]),
-                "base_url": values[3],
-            }
-            if self._model_ref_matches(item_ref, model_ref):
-                self.model_list_tree.selection_set(item_id)
-                self.test_saved_model_connectivity(
-                    assigned_role=role,
-                    assigned_model_ref=model_ref,
-                    assigned_test_token=test_token,
-                )
-                return
-        for target_role in synced_roles:
-            self._set_assigned_model_test_state(target_role, "error")
-        messagebox.showwarning("模型未保存", "当前模型不在已保存模型列表中，请先保存模型配置。")
+        self._test_selected_model_vision(model_ref, force=True)
 
 
     def _unset_education_model(self):
@@ -6919,6 +6891,7 @@ class BossFilterGUI:
             return
         if not self.api_config.get("education_model_ref"):
             self._refresh_model_assignment_controls()
+            self._test_selected_model_vision(self.api_config)
             return
         self.api_config.pop("education_model_ref", None)
         self._save_api_config_to_file()
@@ -6928,6 +6901,7 @@ class BossFilterGUI:
             text="✓ 学历核验模型已改为跟随默认 AI 模型",
             foreground=self.colors['success'],
         )
+        self._test_selected_model_vision(self.api_config)
 
     def _save_api_config_to_file(self):
         """将当前 api_config 持久化到 api_config.json"""
@@ -7156,6 +7130,7 @@ class BossFilterGUI:
         self._update_ai_eval_status()
         if announce:
             self._status_flash(f"默认 AI 模型已切换为 {model_name}")
+        self._test_selected_model_vision(model_config)
         return True
 
     def test_saved_model_connectivity(self, assigned_role=None, assigned_model_ref=None,
@@ -7235,7 +7210,8 @@ class BossFilterGUI:
             else:
                 config = dict(entry["model_config"])
                 config["api_provider"] = entry["provider_key"]
-                connectivity = probe_model_capability(config, api_key)
+                from vision_capability import probe_image_connectivity
+                connectivity = probe_model_capability(config, api_key, probe=probe_image_connectivity)
                 if connectivity.successful:
                     result = {
                         "status": "success",
@@ -7246,6 +7222,7 @@ class BossFilterGUI:
                     result = {
                         "status": "error",
                         "msg": connectivity.message or "模型不兼容",
+                        "capability": dict(connectivity.capability),
                     }
 
             self.run_on_ui(
@@ -7277,6 +7254,17 @@ class BossFilterGUI:
         """Apply one connectivity result on the Tk UI thread."""
         progress["done"] += 1
         self._apply_assigned_model_test_result(entry, result)
+        capability = result.get("capability", {})
+        if capability.get("output_mode") == "vision_probe":
+            message = capability.get("message", "")
+            progress["success" if result["status"] == "success" else "fail"] += 1
+            progress.setdefault("image_messages", []).append(message)
+            self._set_model_list_item_status(entry["item_id"], message)
+            self._update_api_status(
+                text="；".join(progress["image_messages"]),
+                foreground=self.colors['success' if capability.get("vision_verified") and not progress["fail"] else 'warning'],
+            )
+            return
         if result["status"] == "success":
             progress["success"] += 1
             capability = result.get("capability", {})
@@ -7498,6 +7486,7 @@ class BossFilterGUI:
                 self.reconfig_card.destroy()
                 self.reconfig_card = None
             self._status_flash("模型配置已保存，API Key 已加密存储")
+            self._test_added_models_vision(provider, base_url, outcome.models, api_key)
         except Exception as e:
             self._update_api_status(text=f"✗ 保存失败：{e}", foreground=self.colors['danger'])
             messagebox.show_failure(
@@ -7507,6 +7496,93 @@ class BossFilterGUI:
                 detail=str(e),
                 parent=getattr(self, "api_config_page", None) or getattr(self, "root", None),
             )
+
+    def _test_selected_model_vision(self, model_config, *, force=False):
+        """Check the exact selected identity, including the default-following route."""
+        if force:
+            for role in getattr(self, '_assigned_model_test_tokens', {}):
+                if self._model_ref_matches(model_config, self._get_assigned_model_ref(role)):
+                    self._assigned_model_test_tokens[role] += 1
+                    self._assigned_model_test_refs[role] = dict(model_config)
+                    self._set_assigned_model_test_state(role, "testing")
+        self._test_added_models_vision(
+            model_config.get("api_provider", ""), model_config.get("base_url", ""),
+            (model_config.get("model", ""),), None, action="正在测试模型" if force else "模型已选择", force=force,
+        )
+
+    def _test_added_models_vision(self, provider, base_url, models, api_key, *, action="模型已保存", force=False):
+        """Both application modes test saved models off the Tk thread."""
+        from vision_capability import probe_vision_capability
+
+        token = object()
+        self._vision_probe_token = token
+        assigned_entries = []
+        for role, test_token in getattr(self, '_assigned_model_test_tokens', {}).items():
+            ref = self._get_assigned_model_ref(role)
+            if any(self._model_ref_matches(ref, {
+                "api_provider": provider, "base_url": base_url, "model": model,
+            }) for model in models):
+                assigned_entries.append({
+                    "assigned_role": role, "assigned_test_token": test_token,
+                    "assigned_model_ref": dict(ref),
+                })
+        self._update_api_status(
+            text=f"✓ {action}；正在用测试图片检测图片识别能力…",
+            foreground=self.colors['warning'],
+        )
+
+        def worker():
+            confirmed = []
+            unknown = []
+            live_connected = []
+            for model in models:
+                config = {"api_provider": provider, "base_url": base_url, "model": model}
+                try:
+                    key = api_key if api_key is not None else self._get_api_key_cached(provider, base_url)
+                    supported = probe_vision_capability(
+                        config, key,
+                        on_connected=lambda config=config: live_connected.append(config),
+                        force=force,
+                    )
+                except Exception:
+                    # Probe failure must not undo a successfully saved model.
+                    supported = False
+                (confirmed if supported else unknown).append(model)
+
+            def finish():
+                if not hasattr(self, '_assigned_model_test_results'):
+                    self._assigned_model_test_results = {}
+                for config in live_connected:
+                    if not any(self._model_ref_matches(entry["assigned_model_ref"], config)
+                               for entry in assigned_entries):
+                        self._assigned_model_test_results.setdefault(self._model_ref_key(config), "success")
+                for entry in assigned_entries:
+                    if any(self._model_ref_matches(entry["assigned_model_ref"], config)
+                           for config in live_connected):
+                        self._apply_assigned_model_test_result(entry, {"status": "success"})
+                    elif force:
+                        self._apply_assigned_model_test_result(entry, {"status": "error"})
+                if getattr(self, '_vision_probe_token', None) is not token:
+                    return
+                parts = []
+                for model in confirmed:
+                    if any(config.get("model") == model for config in live_connected):
+                        parts.append(f"{model} 连接成功；已验证支持图片识别。")
+                    else:
+                        parts.append(f"{model} 已验证支持图片识别")
+                for model in unknown:
+                    if any(config.get("model") == model for config in live_connected):
+                        parts.append(f"{model} 连接成功；图片测试未通过，多模态能力尚需验证。")
+                    else:
+                        parts.append(f"{model} 连接尚未确认；图片测试未完成，多模态能力尚需验证。")
+                self._update_api_status(
+                    text="；".join(parts),
+                    foreground=self.colors['warning' if unknown else 'success'],
+                )
+
+            self.run_on_ui(finish)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def on_api_provider_changed(self, event):
         """API 服务商改变时更新默认配置"""
@@ -7770,14 +7846,14 @@ class BossFilterGUI:
     @staticmethod
     def _probe_model_for_dialog(provider, base_url, model, api_key):
         """Delegate one explicit-key capability probe to SettingsController."""
-        from llm_eval import probe_model_compatibility
+        from vision_capability import probe_image_connectivity
 
         return _SETTINGS_CONTROLLER.probe_model(
             provider=provider,
             base_url=base_url,
             model=model,
             api_key=api_key,
-            probe=probe_model_compatibility,
+            probe=probe_image_connectivity,
         )
 
     def _show_api_key_while_pressed(self, event=None):
@@ -7794,6 +7870,13 @@ class BossFilterGUI:
 
     def _apply_api_connectivity_result(self, result, model):
         """Render one deterministic API connectivity result on the Tk thread."""
+        capability = getattr(result, "capability", {})
+        if capability.get("output_mode") == "vision_probe":
+            self._update_api_status(
+                text=result.message,
+                foreground=self.colors['success' if capability.get("vision_verified") else 'warning'],
+            )
+            return
         parent = (
             getattr(self, "api_config_page", None)
             or getattr(self, "root", None)
@@ -7905,7 +7988,8 @@ class BossFilterGUI:
         }
 
         def test_thread():
-            result = probe_api_connectivity(config, api_key)
+            from vision_capability import probe_image_connectivity
+            result = probe_api_connectivity(config, api_key, probe=probe_image_connectivity)
             self.run_on_ui(
                 lambda result=result: self._apply_api_connectivity_result(
                     result,
