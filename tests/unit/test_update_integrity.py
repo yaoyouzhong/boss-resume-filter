@@ -642,6 +642,39 @@ diff --git a/updater.py b/updater.py
     assert "未覆盖信号" not in output.getvalue()
 
 
+def test_changelog_coverage_import_names_do_not_hide_real_behavior_changes():
+    for added_line, should_block in (
+        ("from icons import IconCache", False),
+        ("import icons as IconCache", False),
+        ('from icons import IconCache; print("批量归档候选人后停止扫描")', True),
+        ('print("批量归档候选人后停止扫描")', True),
+    ):
+        diff_text = (
+            "diff --git a/gui_home_page.py b/gui_home_page.py\n"
+            "--- a/gui_home_page.py\n+++ b/gui_home_page.py\n"
+            f"+{added_line}\n"
+        )
+        output = io.StringIO()
+        blocked = False
+        with (
+            patch.object(build, "_read_version", return_value="2.33.1"),
+            patch.object(build, "_extract_changelog_release", return_value=(
+                "v2.33.1 — 测试", "### 体验优化\n\n- 升级提醒。",
+            )),
+            patch.object(build, "_get_last_tag", return_value="v2.33"),
+            patch.object(build.subprocess, "run", return_value=Mock(
+                returncode=0, stdout=diff_text,
+            )),
+            contextlib.redirect_stdout(output),
+        ):
+            try:
+                build._check_code_to_changelog_coverage(strict=True)
+            except SystemExit as exc:
+                assert exc.code == 1
+                blocked = True
+        assert blocked == should_block, output.getvalue()
+
+
 def test_changelog_coverage_groups_structured_dialog_copy_by_diff_hunk():
     diff_text = """\
 diff --git a/gui_main.py b/gui_main.py

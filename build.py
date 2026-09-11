@@ -1389,6 +1389,18 @@ def _check_code_to_changelog_coverage(strict=False):
         """Return True for implementation churn that should not force user-facing notes."""
         lowered = f"{fpath} {line}".lower()
         stripped = line.strip()
+        if fpath.endswith(".py") and stripped.startswith(("import ", "from ")):
+            try:
+                statements = ast.parse(stripped).body
+            except SyntaxError:
+                statements = []
+            if statements and all(
+                isinstance(statement, (ast.Import, ast.ImportFrom))
+                for statement in statements
+            ):
+                # Names such as IconCache do not establish a cache behavior change.
+                # Keep mixed import/action lines subject to the normal checks.
+                return True
         if _is_moved_visible_semantic(stripped):
             # GUI/controller extraction may replace local variable names or a
             # few connective words while preserving the same visible meaning.
