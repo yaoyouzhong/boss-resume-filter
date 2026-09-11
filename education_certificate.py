@@ -251,11 +251,11 @@ _VISION_MODEL_KEYWORDS: tuple[str, ...] = (
 
 
 def likely_supports_vision(api_config: dict[str, Any]) -> bool:
-    """根据模型名称启发式判断是否可能支持图片输入。
+    """优先采用图片实测证据，再按名称估计；False 仅表示尚未确认。"""
+    from vision_capability import has_verified_vision
 
-    返回 True 不保证一定支持（名称不含关键词的视觉模型会漏判）；
-    返回 False 基本确定不支持（纯文本模型名称不含这些关键词）。
-    """
+    if has_verified_vision(resolve_vision_api_config(api_config)):
+        return True
     provider = str(api_config.get("api_provider") or "").lower()
     model = str(api_config.get("model") or "").lower()
     base_url = str(api_config.get("base_url") or "").lower()
@@ -682,9 +682,8 @@ def normalize_recognition(payload: dict[str, Any], model: str = "") -> Certifica
         warnings.append("未能确认姓名")
     if not certificate_number:
         warnings.append("未能确认证书编号")
-    elif (payload.get("certificate_type", "education") == "education"
-          and len(certificate_number) != 18):
-        warnings.append(f"证书编号为 {len(certificate_number)} 位，请人工核对")
+    elif len(certificate_number) > 18:
+        warnings.append("证书编号超过查询输入长度限制，请对照原证书核对")
     certificate_type = str(payload.get("certificate_type", "education") or "unknown").strip().lower()
     return CertificateRecognition(
         name=name,
@@ -750,9 +749,7 @@ def _questionable_recognition_fields(
     questionable: set[str] = set()
     if not result.name or not 2 <= len(result.name) <= 20:
         questionable.add("name")
-    if not result.certificate_number or (
-        result.certificate_type == "education" and len(result.certificate_number) != 18
-    ):
+    if not result.certificate_number or len(result.certificate_number) > 18:
         questionable.add("certificate_number")
     if not result.school:
         questionable.add("school")
@@ -938,6 +935,8 @@ def _invoke_model(
     *,
     timeout: int = 60,
     max_tokens: int = 2048,
+    learn_vision: bool = True,
+    on_connected: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """发送消息给当前模型并返回解析后的 JSON 对象（视觉/文本协议通用）。
 
@@ -969,9 +968,16 @@ def _invoke_model(
         raw_final_content = bool(raw_message.get("content"))
     message, finish_reason = normalize_response(protocol, response_payload)
     content = str(message.get("content") or message.get("reasoning_content") or "")
+    if content and on_connected is not None:
+        on_connected()
     if finish_reason == "length" and not raw_final_content:
         raise RuntimeError("AI 输出长度达到上限，未返回最终识别结果")
-    return _extract_json_object(content)
+    parsed = _extract_json_object(content)
+    from vision_capability import observe_image_recognition
+
+    if learn_vision:
+        observe_image_recognition(config, messages, parsed)
+    return parsed
 
 
 def recognize_certificate_image(

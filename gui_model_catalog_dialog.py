@@ -293,7 +293,7 @@ def show_model_catalog_dialog(
                 return
 
         def _test_single_model(model_name):
-            """测试单个模型能否稳定生成程序所需评估格式。"""
+            """用图片请求同时测试单个模型的连接和图片能力。"""
             outcome = probe_model(
                 provider_key,
                 test_base_url,
@@ -336,16 +336,16 @@ def show_model_catalog_dialog(
                 result = results[model_name]
                 if result["status"] == "success":
                     summary = (
-                        f"测试完成：{model_name} 可用，"
+                        f"测试完成：{result['mode']}，"
                         f"响应时间 {result['time']:.1f} 秒"
                     )
                 else:
                     summary = (
-                        f"测试完成：{model_name} 不可用，"
+                        f"测试完成：{model_name} 连接尚未确认，"
                         "请查看列表中的失败原因"
                     )
             else:
-                summary = f"测试完成：{success_count} 个可用，{fail_count} 个不可用"
+                summary = f"测试完成：{success_count} 个连接成功，{fail_count} 个连接尚未确认；图片能力详见列表"
 
             def _apply_summary():
                 try:

@@ -4026,6 +4026,7 @@ def test_model_ref_matches_full_connection_identity():
 
 def test_save_api_config_preserves_existing_default_model():
     gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._test_added_models_vision = Mock()
     gui.PROVIDER_DISPLAY = gui_main.PROVIDER_DISPLAY
     gui.DISPLAY_TO_KEY = gui_main.DISPLAY_TO_KEY
     gui.api_provider_var = _FakeVar("qwen")
@@ -4078,6 +4079,9 @@ def test_save_api_config_preserves_existing_default_model():
     assert gui.api_config["base_url"] == "https://one.example/v1/"
     assert gui.api_config["api_key"] == "current-secret"
     assert any(m["model"] == "new-model" for m in gui.api_config["saved_models"])
+    gui._test_added_models_vision.assert_called_once_with(
+        "qwen", "https://two.example/v1", ("new-model",), "secret",
+    )
     assert any(
         "默认 AI 模型保持不变" in config.get("text", "")
         for config in gui.api_status_label.configs
@@ -4091,6 +4095,7 @@ def test_save_api_config_preserves_existing_default_model():
 
 def test_save_api_config_refreshes_active_key_for_same_endpoint():
     gui = BossFilterGUI.__new__(BossFilterGUI)
+    gui._test_added_models_vision = Mock()
     gui.PROVIDER_DISPLAY = gui_main.PROVIDER_DISPLAY
     gui.DISPLAY_TO_KEY = gui_main.DISPLAY_TO_KEY
     gui.api_provider_var = _FakeVar("qwen")

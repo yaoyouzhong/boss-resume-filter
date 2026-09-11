@@ -779,7 +779,7 @@ def test_invoke_model_reports_reasoning_only_length_exhaustion():
             raise AssertionError("reasoning-only length response should fail clearly")
 
 
-def test_normalize_recognition_cleans_fields_and_warns_non_18_digit_number():
+def test_normalize_recognition_cleans_fields_without_length_assumptions():
     result = normalize_recognition({
         "name": " 张 三 ",
         "certificate_number": "1234-5678 90",
@@ -798,7 +798,36 @@ def test_normalize_recognition_cleans_fields_and_warns_non_18_digit_number():
     assert result.rotation == 90
     assert result.rotation_confidence == 95
     assert result.confidence == 100
-    assert "10 位" in result.warnings[0]
+    assert not result.warnings
+
+
+def test_certificate_length_alone_does_not_trigger_review():
+    from education_certificate import _questionable_recognition_fields
+
+    for number in ("12345678901234567", "123456789012345678", "1234567890"):
+        payload = {"name": "张三", "certificate_number": number, "school": "某大学",
+                   "major": "计算机", "certificate_type": "education", "confidence": 95}
+        result = normalize_recognition(payload)
+        assert not result.warnings
+        assert not _questionable_recognition_fields(payload, result)
+        payload["field_confidence"] = {"certificate_number": 50}
+        assert "certificate_number" in _questionable_recognition_fields(payload, result)
+
+
+def test_seventeen_digit_certificate_finishes_without_unnecessary_review():
+    from unittest.mock import patch
+
+    payload = {"name": "张三", "certificate_number": "12345678901234567", "school": "某大学",
+               "major": "计算机", "certificate_type": "education", "confidence": 95,
+               "rotation": 0, "rotation_confidence": 95}
+    with patch("education_certificate.prepare_image_data_url", return_value="data:image/png;base64,YQ=="), \
+            patch("education_certificate.prepare_orientation_sheet_data_url", return_value="data:image/png;base64,YQ=="), \
+            patch("education_certificate._invoke_model", return_value=payload) as invoke:
+        result = recognize_certificate_image("synthetic.png", {"model": "image-model"}, "test-key")
+    assert invoke.call_count == 1
+    assert result.certificate_number == payload["certificate_number"]
+    assert not result.critical_conflicts
+    assert not result.warnings
 
 
 def test_normalize_recognition_rejects_uncertain_rotation_value():

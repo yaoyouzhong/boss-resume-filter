@@ -1471,12 +1471,12 @@ def test_api_connectivity_controllers_delegate_network_probes():
     saved = source[source.index("def test_saved_model_connectivity"):]
     saved = saved[:saved.index("\n    def _set_model_list_item_status")]
 
-    assert "probe_api_connectivity(config, api_key)" in direct
+    assert "probe_api_connectivity(config, api_key, probe=probe_image_connectivity)" in direct
     assert "self.run_on_ui(" in direct
     assert "requests.Session" not in direct
     assert "certifi" not in direct
     assert "time.sleep" not in direct
-    assert "probe_model_capability(config, api_key)" in saved
+    assert "probe_model_capability(config, api_key, probe=probe_image_connectivity)" in saved
     assert "from llm_eval import probe_model_compatibility" not in saved
 
 
