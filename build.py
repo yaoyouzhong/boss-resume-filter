@@ -4558,7 +4558,7 @@ def _gitee_clean_old_assets(keep_version, apply=False, *, token=None, skip_ping=
     return True
 
 
-def _gitee_upload_single(filepath, api_base, token, release_id, max_retries=3):
+def _gitee_upload_single(filepath, api_base, token, release_id, max_retries=3, *, on_event=None):
     """上传单个文件到 Gitee Release，带重试。返回 (文件名, 响应JSON)。
 
     只重试 5xx / 连接错误 / 超时。4xx 客户端错误直接抛出，不做无效重试。
@@ -4566,6 +4566,8 @@ def _gitee_upload_single(filepath, api_base, token, release_id, max_retries=3):
     session = _gitee_session(retries=0)
     total_attempts = max_retries + 1
     for attempt in range(total_attempts):
+        if on_event:
+            on_event("attempt")
         try:
             with open(filepath, "rb") as fh:
                 resp = session.post(
@@ -4585,6 +4587,8 @@ def _gitee_upload_single(filepath, api_base, token, release_id, max_retries=3):
             resp.raise_for_status()
             return filepath.name, resp.json()
         except requests.exceptions.RequestException as e:
+            if on_event:
+                on_event("connection_failure" if isinstance(e, requests.exceptions.ConnectionError) else "request_failure")
             try:
                 current = _gitee_fetch_assets(
                     api_base,
@@ -4613,6 +4617,8 @@ def _gitee_upload_single(filepath, api_base, token, release_id, max_retries=3):
             if status is not None and 400 <= status < 500 and status not in {408, 429}:
                 raise sanitized from None
             if attempt < total_attempts - 1:
+                if on_event:
+                    on_event("retry")
                 delay = 2 * (attempt + 1)
                 print(f"  [Gitee] {filepath.name} 上传失败 ({detail})，{delay}s 后重试 ({attempt+1}/{max_retries})")
                 time.sleep(delay)

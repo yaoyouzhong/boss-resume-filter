@@ -64,11 +64,13 @@ python scripts/release_flow.py --version 2.24 \
 3. Windows 和 macOS 独立并行构建，任一构建失败都不进入发布任务。
 4. 两端产物齐全后创建不可移动的 GitHub tag，建立 GitHub Draft Release，上传并校验两个 Windows EXE、macOS ZIP 和 DMG；Actions 到此结束。
 5. 本机核对 GitHub Draft 的四个附件均具备 Actions 已验证的 size 和 SHA256 元数据，随后立即将 GitHub Draft Release 转为正式版本；不再等待本机重复下载同一批附件后才公开主源。
-6. Gitee tag 就绪后自动删除其他历史版本的附件，仅保留 Release 页面和 tag；随后本机按 BOSS EXE→学历核验 EXE→ZIP→DMG 从 GitHub 下载并校验，每个附件校验完成后立即进入 Gitee 单路直连上传队列，使已下载附件的上传与下一个 GitHub 代理下载重叠。2026-08-13 使用 v2.28.1 三个真实产物交叉实测 1/2/3 路上传，两轮平均分别为 115.300s、113.985s、114.096s，总吞吐差异约 1%，并发没有实质收益，因此正式流程保持单路上传。GitHub Actions 禁止上传 Gitee 大文件。清理或上传中断不回退已经公开的 GitHub 主发布，同一命令按逐附件阶段凭证续跑。
+6. Gitee tag 就绪后自动删除其他历史版本的附件，仅保留 Release 页面和 tag；随后本机按 BOSS EXE→学历核验 EXE→ZIP→DMG 从 GitHub 下载并校验，每个附件校验完成后立即进入 Gitee 最多 2 路直连上传队列，使已下载附件的上传与下一个 GitHub 代理下载重叠。2026-09-11 使用 v2.33.1 四个真实附件按 1/2/2/1 路交叉实测，单路平均 356.984s、两路平均 139.055s，耗时减少约 61%，四轮连接失败和重试均为 0，因此默认上传并发更新为 2。保留单路回退；此结果来自当前网络环境，后续若失败率或耗时恶化应重新测量。GitHub Actions 禁止上传 Gitee 大文件。清理或上传中断不回退已经公开的 GitHub 主发布，同一命令按逐附件阶段凭证续跑。
 7. Gitee Release 附件齐全且 size 与 GitHub 一致后，本机生成 `latest.json` 的双源下载地址和 SHA256，提交并推送到 GitHub/Gitee `master`。
 8. 只读核验双远端分支/tag/Release/附件/清单，并实际请求八个公开下载地址和两份在线清单。
 
 发布状态写入 `.release_state.json`，记录 Actions run、每个阶段的开始/结束时间、耗时、尝试次数、每个附件的 GitHub 下载与 Gitee 上传状态和脱敏错误；同一份可读时间线追加到 `logs/release-vX.Y.log`。正式发布失败时保留候选分支，只有最终线上验收通过后才清理。相同产品代码指纹已经通过回归时，纯发布文案调整复用该测试证据；代码、依赖、测试或构建输入变化时自动恢复完整回归。
+
+**下载恢复：**GitHub 附件默认按 1 MiB 分段、最多 4 路下载，保持环境代理设置。每段最多尝试 4 次，连接/读取超时为 15 秒，片段总时限为 60 秒（读取返回时检查）；持续低速不会无限占用连接。已完成片段及校验记录保存在附件旁的 `.segments` 目录，续跑时校验后复用；版本文件身份变化或片段损坏时重新下载。整包大小与 SHA-256 校验通过后才进入上传队列；服务器不支持 Range 时回退普通续传。进度记录包含已完成字节数和本次下载平均速度，上传状态分别为 `queued`、`uploading`、`complete`、`failed`。
 
 **断点续跑：**`.release_flow_state.json` 记录候选分支、PR、候选提交、tree、内容摘要和当前阶段，`.release_state.json` 记录正式发布阶段以及逐附件下载、上传进度；两者都不保存 Token。候选内容变化后重新执行准备命令会更新同一 PR、重跑 CI 并产生新摘要。GitHub Draft 的本版本附件已经完整时，确认命令重跑会跳过 Actions，直接从本机 Gitee 镜像阶段继续；本机下载使用 `.part` 文件续传，已上传且尺寸一致的 Gitee 附件直接复用。已存在的同提交 tag 不重建，同名 tag 指向其他提交时立即中止。
 

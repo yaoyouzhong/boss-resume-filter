@@ -29,6 +29,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
+from functools import wraps
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -45,6 +47,7 @@ for import_path in (BASE_DIR, SCRIPTS_DIR):
 import build  # noqa: E402
 import release_content_review  # noqa: E402
 import release_retry  # noqa: E402
+import release_download  # noqa: E402
 from subprocess_utils import hidden_subprocess  # noqa: E402
 
 subprocess = hidden_subprocess(subprocess)
@@ -65,7 +68,17 @@ DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 DOWNLOAD_CONNECT_TIMEOUT = 15
 DOWNLOAD_STALL_TIMEOUT = 45
 DOWNLOAD_ATTEMPTS = 4
-DEFAULT_GITEE_UPLOAD_WORKERS = 1
+DEFAULT_GITEE_UPLOAD_WORKERS = 2
+_STATE_LOCK = threading.RLock()
+
+
+def _serialized_state_write(function):
+    """Serialize checkpoint read/modify/write across download and upload workers."""
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with _STATE_LOCK:
+            return function(*args, **kwargs)
+    return wrapped
 
 
 def _release_artifacts(version_or_tag: str) -> tuple[str, ...]:
@@ -107,6 +120,7 @@ def _read_release_state() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+@_serialized_state_write
 def _write_release_state(
     version: str,
     release_sha: str,
@@ -1086,17 +1100,48 @@ def _download_verified_github_artifact(
             )
             return path
         print(f"  [刷新] 本机镜像缓存不一致: {name} ({reason})")
-    _download_github_asset_resumable(
-        remote,
-        path,
-        version=tag.removeprefix("v"),
-        release_sha=release_sha,
-        session=session,
-        state_phase=state_phase,
-    )
+    started = time.monotonic()
+    initial_bytes: list[int] = []
+
+    def progress(done: int, total: int) -> None:
+        if not initial_bytes:
+            initial_bytes.append(done)
+        elapsed = max(0.01, time.monotonic() - started)
+        speed = max(0, done - initial_bytes[0]) / elapsed
+        _write_release_state(
+            tag.removeprefix("v"), release_sha, state_phase, "in_progress",
+            artifact=name, artifact_status="downloading",
+            downloaded_bytes=done, expected_bytes=total,
+            details={"download_progress": {"artifact": name, "bytes_per_second": round(speed)}},
+        )
+        print(f"  [分段下载] {name}: {done}/{total} bytes ({done * 100 // total}%) {speed / 1024:.0f} KiB/s elapsed={elapsed:.1f}s", flush=True)
+
+    try:
+        try:
+            release_download.download_segmented(
+                remote, path, token=_github_access_token(),
+                session_factory=_github_download_session, progress=progress,
+            )
+        except release_download.RangeUnsupported:
+            print(f"  [回退续传] {name}: 服务端不支持 Range", flush=True)
+            _download_github_asset_resumable(
+                remote, path, version=tag.removeprefix("v"), release_sha=release_sha,
+                session=session, state_phase=state_phase,
+            )
+    except Exception:
+        _write_release_state(
+            tag.removeprefix("v"), release_sha, state_phase, "in_progress",
+            artifact=name, artifact_status="failed",
+        )
+        raise
     same, reason = build._github_asset_matches_local(tag, path, remote)
     if not same:
         _fail(f"GitHub 附件下载后校验失败：{name}（{reason}）")
+    _write_release_state(
+        tag.removeprefix("v"), release_sha, state_phase, "in_progress",
+        artifact=name, artifact_status="complete",
+        downloaded_bytes=path.stat().st_size, expected_bytes=int(remote.get("size") or 0),
+    )
     print(f"  [OK] GitHub 附件已下载并校验: {name} ({reason})")
     return path
 
@@ -1112,6 +1157,7 @@ def _download_verified_github_artifacts(
     artifact_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     session = _github_download_session()
+
     try:
         for name in _release_artifacts(tag):
             paths.append(
@@ -1245,6 +1291,26 @@ def _transfer_github_artifacts_to_gitee(
     completed: set[Future] = set()
     session = _github_download_session()
 
+    def upload_task(path: Path) -> str:
+        _write_release_state(
+            version, release_sha, "artifact_transfer", "in_progress",
+            artifact=path.name, gitee_status="uploading",
+        )
+        print(f"  [上传中] {path.name}", flush=True)
+        try:
+            result = _upload_one_gitee_artifact(version, title, body, path, cache)
+        except BaseException:
+            _write_release_state(
+                version, release_sha, "artifact_transfer", "in_progress",
+                artifact=path.name, gitee_status="failed",
+            )
+            raise
+        _write_release_state(
+            version, release_sha, "artifact_transfer", "in_progress",
+            artifact=path.name, gitee_status="complete",
+        )
+        return result
+
     def record_upload(future: Future) -> None:
         path = futures[future]
         if future in completed:
@@ -1303,23 +1369,17 @@ def _transfer_github_artifacts_to_gitee(
                         gitee_status="complete",
                     )
                 else:
-                    future = executor.submit(
-                        _upload_one_gitee_artifact,
-                        version,
-                        title,
-                        body,
-                        path,
-                        cache,
-                    )
-                    futures[future] = path
                     _write_release_state(
                         version,
                         release_sha,
                         "artifact_transfer",
                         "in_progress",
                         artifact=name,
-                        gitee_status="uploading",
+                        gitee_status="queued",
                     )
+                    print(f"  [排队中] {name}", flush=True)
+                    future = executor.submit(upload_task, path)
+                    futures[future] = path
 
                 for ready in tuple(futures):
                     if ready.done() and ready not in completed:
