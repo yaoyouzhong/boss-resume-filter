@@ -17198,15 +17198,6 @@ class BossFilterGUI:
         if controller is None:
             return
         self._receive_update_result(controller.available)
-        status = getattr(self, "update_settings_status_var", None)
-        if status is not None:
-            text = controller.storage_error or (
-                "正在检查更新…" if controller.checking else
-                controller.tooltip() if controller.available else
-                "暂时无法检查更新，将自动重试。" if controller.failures else
-                "后台每 4 小时检查一次，安装前始终需要确认。"
-            )
-            status.set(text)
 
     def update_tooltip_text(self) -> str:
         controller = getattr(self, "_update_controller", None)
