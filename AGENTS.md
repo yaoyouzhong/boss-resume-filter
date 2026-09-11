@@ -9,7 +9,7 @@ boss-resume-filter/
 ├── .github/              # GitHub 工作流、品牌资产、Issue/PR 模板和仓库社区配置
 ├── diagram/              # README 使用的可缩放数据流和架构图；每个主题单独子目录
 ├── docs/                 # GitHub Pages 产品首页、图文手册、演示截图和办公交付材料
-├── gui_main.py            # 图形界面主程序（v2.33）
+├── gui_main.py            # 图形界面主程序（v2.33.1）
 ├── bossmaster.py          # BOSS 扫描、筛选、联系和导出主程序
 ├── education_tool*.py     # 独立学历核验工具入口、配置与安全
 ├── *_controller.py        # 领域动作编排；不持有 Tk 控件
@@ -45,6 +45,8 @@ boss-resume-filter/
 ├── changelog_*.py         # CHANGELOG 解析与渲染
 ├── gui_dialogs.py         # 更新日志和关于弹窗
 ├── updater.py             # 双源自动更新
+├── update_controller.py   # 定时检查、提醒状态与共享下载任务编排
+├── update_store.py        # 本地更新偏好与提醒快照原子保存
 ├── constants.py / paths.py / subprocess_utils.py # 共享基础设施
 ├── build*.py              # PyInstaller 打包与发布门禁
 ├── *.json                 # 发布模板、岗位规则、选择器和 UI 配置
@@ -152,6 +154,7 @@ boss-resume-filter/
 - `*_presenter.py` 只接收普通 Python 数据并返回文本或结构化展示结果；不得导入 `tkinter`、`gui_main`、候选人存储或网络模块，不得读写文件。
 - `candidate_cleanup.py` 只在调用方提供的候选人列表上执行按岗位/全部范围的清理与保留策略并返回统计；不得读写文件、导入 GUI、存储或网络模块。
 - `api_connectivity.py` 只执行 DNS 预检、模型能力探测和结果分类；不得导入 `tkinter`、`gui_main`、密钥存储或配置文件模块，API Key 必须由调用方显式传入。
+- `update_controller.py` 只编排定时检查、失败退避、持久提醒和共享下载状态，通过注入的检查、下载、存储、时钟和主线程投递回调执行；不得导入 Tk、`gui_main` 或自动触发安装。`update_store.py` 只原子保存本地 `.update_state.json`，包含更新偏好、版本提醒和重试时间，不包含候选人或凭据。`updater.py` 负责双源网络、安装包缓存/校验和用户确认后的安装；弹窗关闭不得终止控制器下载任务。
 - `browser_connection.py` 只执行浏览器 URL 分类、调试端口探测、限时页面读取和限时 DrissionPage 连接；不得导入 `tkinter`、`gui_main`、存储或业务扫描模块，不得启动/终止 Chrome、导航页面或更新 UI。
 - `gui_main.py` 可以向新模块单向委托；新模块禁止反向导入 `gui_main.py`。迁移期保留原 `BossFilterGUI` 方法作为薄兼容层，待调用方和测试迁移后再删除。
 - `gui_*_page.py` 只负责指定页面的 Tk 控件构建和页面局部引用；不得读写业务数据、访问网络或导入 `gui_main`。迁移期通过显式 Host 协议注入回调，并由 `gui_main.py` 保留原页面属性别名。
@@ -384,8 +387,10 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 - 正在作为默认 AI 模型或学历核验模型使用的已保存模型，需先在“使用中的模型”中切换后才能删除
 ## 自动更新
 
-- 启动时延迟 12 秒检查（updater 模块延迟加载避免阻塞冷启动），**自适应冷却**（发现新版本 24h / 无更新 4h / 失败 15min 指数退避）；Gitee 优先 → GitHub fallback（Gitee "无更新"时 GitHub 复核防漏报）
+- 主程序启动延迟 12 秒加载更新服务，成功检查后每 4 小时再检查；30 秒主线程轻量计时器处理到期、休眠恢复和空闲下载，不在计时器中执行网络请求。失败按 15min → 30min → 1h 退避，成功重置；手动检查绕过时间限制并复用正在进行的请求。Gitee 优先 → GitHub fallback，Gitee "无更新"时 GitHub 复核防漏报；GitHub 复核失败保留既有提醒，不能当作确认无更新。
 - **Gitee 源**（8s 超时，超时后立即重试一次）：`latest.json`；**GitHub 源**（10s 超时）：GitHub Releases API；启动静默检查中 Gitee 短暂失败但 fallback 成功时不打印报错式提示
+- 发现更新时只显示首页标题右侧绿色圆形升级入口，悬停文字在图标上方居中，点击打开升级弹窗；关闭弹窗保留入口。提醒随版本信息持久保存，重启后先恢复提醒、后台验证缓存，并继续遵守检查周期；已安装目标版本后不恢复旧版本提醒。旧版“稍后提醒”24h 冷却不再用于主程序。
+- 系统设置“空闲时自动下载安装包”默认关闭，仅安装版自动下载。扫描、联系、AI 评估、外部批量导入、证书核验或数据维护忙碌时延后开始；关闭开关不打断已开始的下载。Windows EXE/macOS ZIP 均使用共享后台任务、版本隔离缓存及大小/文件头/SHA256 校验；下载失败同一版本自动重试间隔至少 4h，手动重试可立即执行，应用退出停止下载。关闭弹窗不影响任务；下载完成不自动安装、退出或重启，必须显式点击“立即安装”，业务忙碌时阻止安装。
 - 下载链接：`latest.json` 的 `downloads_cn` 优先（国内快）；弹窗支持「立即更新」和「稍后提醒」
 - **Windows**：下载 EXE → 校验 SHA256 → `update.bat` 替换重启；脚本须清理 `_PYI_*` 环境变量 + `PYINSTALLER_RESET_ENVIRONMENT=1` 防 DLL 缺失
 - **macOS**：.app 运行→下载 ZIP 替换重启；源码→`git pull`

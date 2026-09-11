@@ -3,7 +3,7 @@ BOSS 简历筛选器 - 图形界面版本
 优化：浏览器状态检测 + 进度条 + 数据安全性 + UI 细节增强
 """
 
-__version__ = "2.33"
+__version__ = "2.33.1"
 
 import copy
 import json
@@ -1175,12 +1175,8 @@ class BossFilterGUI:
                 return
 
             def _start():
-                updater.auto_check_on_startup(
-                    self.root,
-                    delay_ms=0,
-                    gui=self,
-                    current_version=__version__,
-                )
+                self._ensure_update_controller()
+                self._poll_updates()
                 if getattr(sys, 'frozen', False):
                     updater.mark_update_success_and_cleanup()
                     updater.notify_previous_update_failure(self.root)
@@ -1613,6 +1609,7 @@ class BossFilterGUI:
             education_page_index=PageIndex.EDUCATION,
         )
         self._home_page_widgets = widgets
+        self._receive_update_result(getattr(self, "_available_update", None))
         self.home_page = widgets.page
         self.home_job_var = widgets.job_var
         self.home_job_combo = widgets.job_combo
@@ -11138,6 +11135,9 @@ class BossFilterGUI:
             if thread and thread.is_alive():
                 thread.join(timeout=5)
         self._persist_greet_queue()
+        controller = getattr(self, "_update_controller", None)
+        if controller is not None:
+            controller.close()
         self.root.destroy()
 
     def on_run_job_selected(self, event=None):
@@ -12865,7 +12865,8 @@ class BossFilterGUI:
                 callbacks.on_all_done(summary, final_line)
             self.run_on_ui(_all_done)
 
-        threading.Thread(target=_batch_worker, daemon=True).start()
+        self._external_import_batch_thread = threading.Thread(target=_batch_worker, daemon=True)
+        self._external_import_batch_thread.start()
         return stop_event.set
 
     def _remember_external_preview(self, file_path: str, text: str) -> None:
@@ -13112,7 +13113,8 @@ class BossFilterGUI:
                     )
                 )
 
-        threading.Thread(target=_worker, daemon=True).start()
+        self._external_import_thread = threading.Thread(target=_worker, daemon=True)
+        self._external_import_thread.start()
         return True
 
     def _finish_external_import(self, form, rule, outcome, import_widgets=None):
@@ -17127,18 +17129,148 @@ class BossFilterGUI:
         )
 
 
+    def _ensure_update_controller(self):
+        """Create one application-owned updater; never tie its lifetime to a dialog."""
+        controller = getattr(self, "_update_controller", None)
+        if controller is not None:
+            return controller
+        import updater
+        from update_controller import UpdateController
+        from update_store import UpdateStore
+
+        store = UpdateStore(BASE_DIR)
+        controller = UpdateController(
+            current_version=__version__, load=store.load, save=store.save,
+            check=lambda completed: updater.check_and_update_gui(
+                self.root, silent=True, gui=self, source="background",
+                current_version=__version__, on_complete=completed,
+                on_update_available=lambda _result: None,
+            ),
+            download=updater.download_update_package, dispatch=self.run_on_ui,
+            changed=self._update_status_changed, is_busy=self._update_business_busy,
+            automatic_download_supported=bool(getattr(sys, "frozen", False))
+            and sys.platform in ("win32", "darwin"),
+        )
+        self._update_controller = controller
+        self._update_status_changed()
+        controller.restore_cache(updater.get_cached_update)
+        return controller
+
+    def _poll_updates(self) -> None:
+        """A bounded UI timer handles due checks, resume, and deferred downloads."""
+        controller = self._ensure_update_controller()
+        if controller.closed:
+            return
+        previous = getattr(self, "_update_poll_id", None)
+        if previous is not None:
+            self.root.after_cancel(previous)
+        controller.tick()
+        self._update_poll_id = self.root.after(30000, self._poll_updates)
+
+    def _update_business_busy(self) -> bool:
+        """Avoid downloading/installation while recruitment work is active."""
+        flags = (
+            "is_running", "greet_queue_running", "greet_queue_preparing", "_data_maintenance_running",
+            "_ai_eval_in_progress", "_ai_evaluating_ids",
+            "education_recognition_running", "education_screenshot_running",
+        )
+        if any(bool(getattr(self, name, False)) for name in flags):
+            return True
+        if any(
+            thread is not None and thread.is_alive()
+            for thread in (
+                getattr(self, "_external_import_thread", None),
+                getattr(self, "_external_import_batch_thread", None),
+            )
+        ):
+            return True
+        return any(
+            str(item.get("status", "")).startswith("正在")
+            or item.get("status") in {
+                "打开中", "识别验证码中...", "已提交查询", "等待扫码", "结果未确认",
+                "待人工验证", "验证码识别失败", "二维码已过期",
+            }
+            for item in getattr(self, "education_items", {}).values()
+        )
+
+    def _update_status_changed(self) -> None:
+        controller = getattr(self, "_update_controller", None)
+        if controller is None:
+            return
+        self._receive_update_result(controller.available)
+        status = getattr(self, "update_settings_status_var", None)
+        if status is not None:
+            text = controller.storage_error or (
+                "正在检查更新…" if controller.checking else
+                controller.tooltip() if controller.available else
+                "暂时无法检查更新，将自动重试。" if controller.failures else
+                "后台每 4 小时检查一次，安装前始终需要确认。"
+            )
+            status.set(text)
+
+    def update_tooltip_text(self) -> str:
+        controller = getattr(self, "_update_controller", None)
+        return controller.tooltip() if controller else "有新版本，点击查看升级内容"
+
+    def update_auto_download_enabled(self) -> bool:
+        return self._ensure_update_controller().auto_download
+
+    def set_update_auto_download(self) -> None:
+        controller = self._ensure_update_controller()
+        try:
+            controller.set_auto_download(self.update_auto_download_var.get())
+        except OSError as error:
+            self.update_auto_download_var.set(controller.auto_download)
+            messagebox.showerror("软件更新", f"无法保存自动下载设置：{error}", parent=self.root)
+
+    def check_for_updates(self) -> None:
+        """Manual checks reuse the current request and retain immediate feedback."""
+        controller = self._ensure_update_controller()
+        if controller.installing:
+            return
+        if getattr(self, "_manual_update_check_pending", False):
+            return
+        self._manual_update_check_pending = True
+        def completed(result):
+            self._manual_update_check_pending = False
+            if result.get("error"):
+                messagebox.showerror("检查更新", f"暂时无法检查更新：{result['error']}", parent=self.root)
+            elif result.get("has_update"):
+                self.open_available_update()
+            else:
+                messagebox.showinfo("检查更新", f"当前已是最新版本 v{__version__}", parent=self.root)
+        controller.request_check(completed)
+
+    def _receive_update_result(self, result: dict | None) -> None:
+        """保留已确认的更新，失败检查不清除现有提示。"""
+        if result and result.get("error"):
+            return
+        self._available_update = result if result and result.get("has_update") else None
+        widgets = getattr(self, "_home_page_widgets", None)
+        if widgets is not None:
+            if self._available_update:
+                widgets.update_button.pack(side="left", padx=(12, 0))
+            else:
+                widgets.update_button.pack_forget()
+
+    def open_available_update(self) -> None:
+        """用户点击首页入口后，展示已检测版本的升级页面。"""
+        result = getattr(self, "_available_update", None)
+        if result:
+            import updater
+            existing = getattr(self, "_update_dialog", None)
+            if existing is not None and existing.winfo_exists():
+                existing.lift()
+                return
+            self._update_dialog = updater.show_update_dialog(
+                self.root, result, gui=self, source="home",
+                update_controller=getattr(self, "_update_controller", None),
+            )
+
     def show_about(self):
         """显示关于弹窗"""
         def _check_for_update():
-            import updater
-
-            updater.check_and_update_gui(
-                self.root,
-                silent=False,
-                gui=self,
-                source="manual",
-                current_version=__version__,
-            )
+            self.check_for_updates()
 
         gui_dialogs.show_about_dialog(
             self,

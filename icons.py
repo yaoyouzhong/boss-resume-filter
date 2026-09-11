@@ -516,6 +516,22 @@ def _chevron_down(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     return img
 
 
+def _upgrade(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
+    """Circular update badge with a rounded, high-contrast upward arrow."""
+    image = Image.new("RGBA", (size_px, size_px), bg)
+    draw = ImageDraw.Draw(image)
+    draw.ellipse([_s(1, size_px), _s(1, size_px), _s(23, size_px), _s(23, size_px)], fill=fill)
+    width = max(1, round(_s(2.4, size_px)))
+    radius = width / 2
+    # Explicit round caps keep the short arrow soft at every display scale.
+    for points in (((12, 17), (12, 7)), ((7.5, 11.5), (12, 7), (16.5, 11.5))):
+        scaled = [(_s(x, size_px), _s(y, size_px)) for x, y in points]
+        draw.line(scaled, fill="white", width=width, joint="curve")
+        for x, y in scaled:
+            draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill="white")
+    return image
+
+
 def _arrow_left(size_px: int, fill: str, bg: str, sw: int) -> Image.Image:
     """Leftward navigation arrow with the same stroke language as chevrons."""
     img = Image.new('RGBA', (size_px, size_px), bg)
@@ -960,6 +976,7 @@ ICON_REGISTRY: Dict[str, Callable] = {
     'chevron_up':   _chevron_up,
     'chevron_down': _chevron_down,
     'arrow_left':   _arrow_left,
+    'upgrade':      _upgrade,
     'mail':         _mail,
     'play':         _play,
     'stop':         _stop,

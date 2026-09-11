@@ -214,7 +214,7 @@ def check_github_release(
         if sys.platform == 'win32':
             # Windows: 查找 .exe
             for asset in release.get('assets', []):
-                if asset.get('name', '').endswith('.exe'):
+                if asset.get('name') == 'BOSS_ResumeFilter.exe':
                     selected_asset = asset
                     platform_key = "windows"
                     result['download_url'] = asset.get('browser_download_url')
@@ -583,6 +583,57 @@ def _get_cached_windows_update(result, base_dir=None):
         result.get("asset_info") or {},
     )
     return cached_path if verified else None
+
+
+def get_cached_update(result, base_dir=None):
+    """Locate a verified package without trusting a persisted absolute path."""
+    if sys.platform == "win32":
+        return _get_cached_windows_update(result, base_dir)
+    if sys.platform != "darwin" or not getattr(sys, "frozen", False):
+        return None
+    cached = _windows_update_cache_dir(result["latest"], base_dir) / "BOSS_ResumeFilter_mac.zip"
+    if cached.is_file():
+        verified, _error = verify_downloaded_file(cached, result.get("asset_info"))
+        if verified:
+            return cached
+    return None
+
+
+def download_update_package(result, progress_callback=None, *, base_dir=None):
+    """Download/cache a package only; installation is always a separate action."""
+    asset = result.get("asset_info") or {}
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", str(asset.get("sha256", ""))):
+        raise ValueError("更新源缺少有效的 SHA256 校验信息")
+    if int(asset.get("size", 0)) <= 0:
+        raise ValueError("更新源缺少有效的安装包大小")
+    cached = get_cached_update(result, base_dir)
+    if cached:
+        return str(cached)
+    if sys.platform not in ("win32", "darwin"):
+        raise ValueError("当前平台不支持下载安装包")
+    folder = _windows_update_cache_dir(result["latest"], base_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    filename = "BOSS_ResumeFilter_new.exe" if sys.platform == "win32" else "BOSS_ResumeFilter_mac.zip"
+    destination = folder / filename
+    # Own a unique partial file, so another process cannot publish our partial.
+    fd, partial_name = tempfile.mkstemp(prefix="download-", suffix=destination.suffix, dir=folder)
+    os.close(fd)
+    partial = Path(partial_name)
+    try:
+        error = "更新源没有提供下载地址"
+        urls = dict.fromkeys((result.get("download_url"), result.get("download_url_fallback")))
+        for url in urls:
+            if not url:
+                continue
+            if progress_callback:
+                progress_callback(0, 0)
+            success, error = download_and_verify_file(str(url), partial, asset, progress_callback)
+            if success:
+                os.replace(partial, destination)
+                return str(destination)
+        raise RuntimeError(error)
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 def _is_managed_windows_update_dir(path, app_dir=None):
@@ -1239,6 +1290,7 @@ def check_and_update_gui(
     source: str = "manual",
     on_defer=None,
     current_version=None,
+    on_update_available=None,
 ) -> None:
     """
     GUI 版本的更新检查和执行
@@ -1249,6 +1301,7 @@ def check_and_update_gui(
         gui: BossFilterGUI 实例（用于字体缩放和配色）
         source: 更新触发来源，用于日志区分 startup/manual
         on_defer: 用户选择稍后提醒时的回调
+        on_update_available: 在主线程接收新版本；提供时由调用方决定何时展示
     """
     def do_check():
         # 优先尝试 Gitee（国内快）
@@ -1265,16 +1318,18 @@ def check_and_update_gui(
             if not gh['error'] and gh['has_update']:
                 print(f"[更新] GitHub 发现新版本 v{gh['latest']}，使用 GitHub 结果")
                 result = gh
+            elif gh['error']:
+                # Do not erase a remembered release when the authoritative source is unreachable.
+                result = gh
 
         # 后台获取远端 CHANGELOG 段落（避免主线程阻塞）
         if result.get('has_update') and result.get('latest'):
             changelog_body = _fetch_changelog_section(result['latest'])
             if changelog_body:
                 result['changelog_body'] = changelog_body
-            if sys.platform == "win32":
-                cached_update = _get_cached_windows_update(result)
-                if cached_update:
-                    result["cached_update_path"] = str(cached_update)
+            cached_update = get_cached_update(result)
+            if cached_update:
+                result["cached_update_path"] = str(cached_update)
 
         # 回到主线程处理结果
         if gui is not None and callable(getattr(gui, "run_on_ui", None)):
@@ -1311,13 +1366,25 @@ def check_and_update_gui(
                 on_complete(result)
             return
 
-        # 有新版本，显示更新对话框
-        show_update_dialog(root, result, gui=gui, source=source, on_defer=on_defer)
+        if on_update_available is not None:
+            on_update_available(result)
+        else:
+            show_update_dialog(root, result, gui=gui, source=source, on_defer=on_defer)
         if on_complete:
             on_complete(result)
 
     # 启动后台检查
-    threading.Thread(target=do_check, daemon=True).start()
+    def safe_check():
+        try:
+            do_check()
+        except Exception as error:
+            failure = {"error": str(error), "has_update": False}
+            callback = lambda: handle_result(failure)
+            if gui is not None and callable(getattr(gui, "run_on_ui", None)):
+                gui.run_on_ui(callback)
+            else:
+                root.after(0, callback)
+    threading.Thread(target=safe_check, daemon=True).start()
 
 
 def _fetch_changelog_section(target_version):
@@ -1440,7 +1507,7 @@ def fetch_current_release_notes(version, *, use_cache=True, base_dir=None):
     return None
 
 
-def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
+def show_update_dialog(root, result, gui=None, source="manual", on_defer=None, update_controller=None):
     """显示更新对话框（使用 GUI 实例的字体缩放和配色方案）"""
     from tkinter import ttk
 
@@ -1452,12 +1519,23 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
     font_family_bold = getattr(gui, 'FONT_FAMILY_SEMIBOLD', _FONT_FAMILY)
     colors = getattr(gui, 'colors', None) or ui_theme.build_palette()
 
+    # Source-mode macOS retains its explicit git-update action; packaged apps
+    # and Windows share the application-owned package transfer.
+    managed_download = update_controller if (
+        sys.platform == "win32" or (sys.platform == "darwin" and getattr(sys, "frozen", False))
+    ) else None
     dialog = create_toplevel(root)
     dialog.title("发现新版本")
     dialog.transient(root)
     dialog.grab_set()
     dialog.resizable(True, True)
     dialog.configure(bg=colors['bg_card'])
+
+    def post_ui(callback):
+        if gui is not None and callable(getattr(gui, "run_on_ui", None)):
+            gui.run_on_ui(callback)
+        else:
+            root.after(0, callback)
 
     # 居中显示（按缩放调整尺寸）
     # Mac 上 font_scale 可能大于 layout_scale（font_boost 补偿），窗口高度需用 font_scale
@@ -1560,6 +1638,8 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
     }
 
     def on_cancel():
+        if update_controller is not None and update_controller.installing:
+            return
         if on_defer and not update_state["failed"]:
             on_defer()
         dialog.destroy()
@@ -1651,6 +1731,8 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
         details.grab_set()
 
     def show_update_failure(headline, message, detail=None):
+        if update_controller is not None:
+            update_controller.installing = False
         """Keep update failures actionable inside the existing update window."""
         try:
             if not dialog.winfo_exists():
@@ -1684,9 +1766,21 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
         )
         if not button_frame.winfo_manager():
             button_frame.pack(pady=(pad(8), pad(20)))
+        if update_state.get("downloaded_path"):
+            update_btn.configure(text="重试安装", command=install_downloaded_update)
 
     def install_downloaded_update():
         """再次校验缓存包后，启动独立的 Windows 安装进度窗口。"""
+        if managed_download is not None:
+            from update_controller import update_identity
+            if managed_download.installing:
+                return
+            if managed_download.checking or update_identity(managed_download.available) != update_identity(result):
+                messagebox.showinfo("稍后安装", "版本信息正在核对或已变化，请稍后重新打开升级页面。", parent=dialog)
+                return
+        if gui is not None and callable(getattr(gui, "_update_business_busy", None)) and gui._update_business_busy():
+            messagebox.showinfo("稍后安装", "招聘任务仍在进行，请等待扫描、联系、AI 评估或证书核验结束后再安装。", parent=dialog)
+            return
         downloaded_path = update_state.get("downloaded_path")
         if not downloaded_path:
             show_update_failure(
@@ -1696,6 +1790,8 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
             return
 
         update_state["failed"] = False
+        if update_controller is not None:
+            update_controller.installing = True
         button_frame.pack_forget()
         progress_label.configure(
             text="正在校验并打开安装进度窗口…",
@@ -1706,28 +1802,44 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
             # 校验、复制助手和就绪等待可能耗时数秒，全部放在工作线程
             cached_exe = Path(downloaded_path)
             asset_info = result.get("asset_info") or {}
-            verified, verify_error = verify_downloaded_file(cached_exe, asset_info)
+            try:
+                verified, verify_error = verify_downloaded_file(cached_exe, asset_info)
+            except OSError as error:
+                verified, verify_error = False, str(error)
             if not verified:
                 def fail_verify(error=verify_error):
                     update_state["downloaded_path"] = None
+                    if managed_download is not None:
+                        managed_download.downloaded_path = None
+                        managed_download.download_state = "failed"
+                        managed_download.download_error = error
+                        managed_download.changed()
                     show_update_failure(
                         "安装包不可用",
                         "已保存的更新包未通过完整性校验，请重新下载。",
                         error,
                     )
-                root.after(0, fail_verify)
+                post_ui(fail_verify)
                 return
 
-            success, error = update_windows(
-                str(cached_exe),
-                sys.executable,
-                source=source,
-                asset_info=asset_info,
-                old_version=result["current"],
-            )
+            if sys.platform == "win32":
+                success, error = update_windows(
+                    str(cached_exe), sys.executable, source=source,
+                    asset_info=asset_info, old_version=result["current"],
+                )
+            else:
+                current_app = Path(sys.executable).resolve()
+                while current_app.suffix != ".app" and current_app != current_app.parent:
+                    current_app = current_app.parent
+                if current_app.suffix != ".app":
+                    success, error = False, "无法识别当前应用的安装位置"
+                else:
+                    success, error = update_macos_app(str(cached_exe), str(current_app))
 
             def finish():
                 if success:
+                    if update_controller is not None:
+                        update_controller.close()
                     update_state["downloaded_path"] = None
                     dialog.destroy()
                     exit_for_update(root)
@@ -1737,9 +1849,20 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
                         "新版本已下载，但独立安装窗口未能启动，请稍后重试。",
                         error,
                     )
-            root.after(0, finish)
+            post_ui(finish)
 
-        threading.Thread(target=do_install, daemon=True).start()
+        def safe_install():
+            try:
+                do_install()
+            except Exception as error:
+                callback = lambda failure=str(error): show_update_failure(
+                    "安装未完成", "无法校验或启动安装，请重试。", failure,
+                )
+                if gui is not None and callable(getattr(gui, "run_on_ui", None)):
+                    gui.run_on_ui(callback)
+                else:
+                    root.after(0, callback)
+        threading.Thread(target=safe_install, daemon=True).start()
 
     def show_download_complete_actions(downloaded_path):
         """切换到可查看明细或立即安装的下载完成状态。"""
@@ -1788,6 +1911,12 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
 
     def on_update():
         """执行更新"""
+        if managed_download is not None:
+            from update_controller import update_identity
+            if update_identity(managed_download.available) != update_identity(result):
+                return
+            managed_download.request_download()
+            return
         update_state.update(failed=False)
         progress_bar.configure(value=0)
         progress_label.configure(
@@ -2013,11 +2142,49 @@ def show_update_dialog(root, result, gui=None, source="manual", on_defer=None):
 
     # 检查阶段已完成缓存校验；若命中则直接给出"立即安装"入口
     cached_update_path = result.get("cached_update_path")
-    if sys.platform == "win32" and cached_update_path:
+    if managed_download is not None:
+        from update_controller import update_identity
+        poll_id = None
+        last_state = None
+
+        def poll_download():
+            nonlocal poll_id, last_state
+            if not dialog.winfo_exists():
+                return
+            if update_identity(managed_download.available) != update_identity(result):
+                update_btn.configure(state="disabled")
+                progress_label.configure(text="版本信息已更新，请关闭此窗口后重新打开升级页面。")
+                progress_frame.pack(fill="x", padx=pad(20), pady=(0, pad(12)))
+            elif not managed_download.installing:
+                state = managed_download.download_state
+                signature = (state, managed_download.downloaded_path, managed_download.download_error)
+                if state == "downloading":
+                    downloaded, total = managed_download.progress
+                    percent = min(100, int(downloaded * 100 / total)) if total else 0
+                    progress_bar.configure(value=percent)
+                    progress_label.configure(text=f"正在下载更新… {percent}%" if total else "正在准备下载…")
+                    progress_detail_label.configure(text="关闭此窗口后仍会继续下载，完成后需手动确认安装。")
+                    progress_detail_label.pack(fill="x", padx=pad(5), pady=(pad(5), 0))
+                    progress_frame.pack(fill="x", padx=pad(20), pady=(0, pad(12)))
+                    update_btn.configure(state="disabled")
+                elif signature != last_state and state == "ready":
+                    show_download_complete_actions(managed_download.downloaded_path)
+                elif signature != last_state and state == "failed":
+                    show_update_failure("下载未完成", "请检查网络连接后重试。", managed_download.download_error)
+                last_state = signature
+            poll_id = dialog.after(250, poll_download)
+
+        def cancel_poll(event):
+            if event.widget is dialog and poll_id is not None:
+                dialog.after_cancel(poll_id)
+        dialog.bind("<Destroy>", cancel_poll, add="+")
+        poll_download()
+    elif sys.platform == "win32" and cached_update_path:
         root.after(
             0,
             lambda path=cached_update_path: show_download_complete_actions(path),
         )
+    return dialog
 
 
 def _read_cooldown(base_dir: Path) -> dict:
@@ -2074,7 +2241,7 @@ def _adaptive_cooldown(result: str, fail_count: int) -> float:
     if result == "no_update":
         return 4 * 3600
     # result == "failed": 指数退避
-    return 900 * (2 ** min(fail_count, 2))
+    return 900 * (2 ** min(max(fail_count - 1, 0), 2))
 
 
 def _write_update_defer_cooldown(base_dir: Path) -> None:
@@ -2082,7 +2249,9 @@ def _write_update_defer_cooldown(base_dir: Path) -> None:
     _write_cooldown(base_dir, "found", 0)
 
 
-def auto_check_on_startup(root, delay_ms=3000, gui=None, current_version=None):
+def auto_check_on_startup(
+    root, delay_ms=3000, gui=None, current_version=None, on_update_available=None,
+):
     """
     启动时自动检查更新（延迟执行），自适应冷却机制
 
@@ -2097,7 +2266,9 @@ def auto_check_on_startup(root, delay_ms=3000, gui=None, current_version=None):
     hours_since = (time.time() - state["timestamp"]) / 3600
     cooldown_hours = _adaptive_cooldown(state["result"], state["fail_count"]) / 3600
 
-    if hours_since < cooldown_hours:
+    # 首页提示不使用旧弹窗的稍后提醒冷却，重启后重新确认版本并恢复入口。
+    indicator_needs_refresh = on_update_available is not None and state["result"] == "found"
+    if hours_since < cooldown_hours and not indicator_needs_refresh:
         return
 
     def _do_check_and_record():
@@ -2116,6 +2287,7 @@ def auto_check_on_startup(root, delay_ms=3000, gui=None, current_version=None):
             source="startup",
             on_defer=lambda: _write_update_defer_cooldown(base_dir),
             current_version=current_version,
+            on_update_available=on_update_available,
         )
 
     root.after(delay_ms, _do_check_and_record)

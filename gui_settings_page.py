@@ -30,6 +30,32 @@ class SettingsPageHost(Protocol):
     def __setattr__(self, name: str, value: Any) -> None: ...
 
 
+def build_update_settings_card(self: SettingsPageHost, parent: tk.Misc) -> None:
+    """Build update preferences from host callbacks, without starting any IO."""
+    update_card = self.widget_support.create_card(
+        parent, "软件更新", fill="x",
+        padx=int(25 * self.dpi_scale * self.zoom_factor),
+        pady=int(15 * self.dpi_scale * self.zoom_factor),
+    )
+    self.update_auto_download_var = tk.BooleanVar(value=self.update_auto_download_enabled())
+    ttk.Checkbutton(
+        update_card, text="空闲时自动下载安装包", variable=self.update_auto_download_var,
+        command=self.set_update_auto_download,
+    ).pack(anchor="w")
+    ttk.Label(
+        update_card,
+        text="默认关闭。开启后，安装版会在招聘任务空闲时下载；不会自动安装或重启。关闭此开关不打断已经开始的下载。",
+        font=self.font_label, wraplength=int(900 * self.dpi_scale * self.zoom_factor),
+        foreground=self.colors["text_secondary"], background=self.colors["bg_card"],
+    ).pack(anchor="w", pady=(8, 8))
+    ttk.Button(update_card, text="检查更新", command=self.check_for_updates).pack(anchor="w")
+    self.update_settings_status_var = tk.StringVar(value="后台每 4 小时检查一次，安装前始终需要确认。")
+    ttk.Label(
+        update_card, textvariable=self.update_settings_status_var, font=self.font_label,
+        foreground=self.colors["text_secondary"], background=self.colors["bg_card"],
+    ).pack(anchor="w", pady=(8, 0))
+
+
 def build_settings_content_steps(
     host: SettingsPageHost,
     ui_config: Mapping[str, Any],
@@ -478,6 +504,9 @@ def build_settings_content_steps(
 
     if standalone:
         return
+
+    build_update_settings_card(self, api_container)
+    yield
 
     data_card = self.widget_support.create_card(
         api_container,

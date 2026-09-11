@@ -128,6 +128,8 @@ class FeedbackSupport:
         *,
         parent: tk.Misc | None = None,
         wraplength: int | None = None,
+        above: bool = False,
+        centered: bool = False,
     ) -> None:
         """Replace the general tooltip slot with a positioned window."""
         host = self.host
@@ -138,6 +140,8 @@ class FeedbackSupport:
             y,
             wraplength=wraplength,
             parent=parent,
+            above=above,
+            centered=centered,
         )
         host._tooltip_item = tooltip_key
 
@@ -245,6 +249,8 @@ class FeedbackSupport:
         *,
         wraplength: int | None = None,
         parent: tk.Misc | None = None,
+        above: bool = False,
+        centered: bool = False,
     ) -> tk.Toplevel:
         """Create and clamp one borderless tooltip to its monitor work area."""
         host = self.host
@@ -271,6 +277,10 @@ class FeedbackSupport:
             **label_options,
         ).pack()
         tooltip.update_idletasks()
+        if above:
+            y -= tooltip.winfo_reqheight()
+        if centered:
+            x -= tooltip.winfo_reqwidth() // 2
         monitor_area = get_windows_monitor_area(tooltip, tooltip_parent)
         if monitor_area is None:
             monitor_area = (
