@@ -56,6 +56,8 @@ test_output.txt
 *.html
 !docs/index.html
 .last_update_check
+.update_state.json
+.update-state-*
 .boss_access_guard.json*
 .run_preferences.json
 release_notes_cache.json

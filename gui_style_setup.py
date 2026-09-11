@@ -359,6 +359,7 @@ def setup_styles(host):
         foreground=c['text_primary'],
         padding=(2, 2),
     )
+    style.configure('Update.TCheckbutton', font=host.font_label)
     style.configure('TRadiobutton', background=c['bg_card'], foreground=c['text_primary'])
     style.configure('Horizontal.TProgressbar',
                     troughcolor=c['bg_main'], background=c['primary'],

@@ -1326,6 +1326,7 @@ def test_education_page_keeps_ai_browser_and_certificate_actions_in_controller()
 def test_home_page_builder_exposes_an_explicit_widget_bundle():
     assert gui_home_page.HomePageWidgets.__dataclass_fields__.keys() == {
         "page",
+        "update_button",
         "job_var",
         "job_combo",
         "stats_vars",

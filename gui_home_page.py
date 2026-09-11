@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from tkinter import ttk
 from typing import Any, Callable, Protocol
 
+from gui_feedback_support import FeedbackSupport
+from icons import IconCache
+
 
 class NavigationShell(Protocol):
     def request_sidebar_page(
@@ -26,6 +29,8 @@ class HomePageHost(Protocol):
     zoom_factor: float
     home_fonts: Mapping[str, Any]
     app_shell: NavigationShell
+    feedback_support: FeedbackSupport
+    icons: IconCache
 
     def refresh_home_stats(self) -> None: ...
     def show_stat_detail(self, stat_type: str) -> None: ...
@@ -34,6 +39,8 @@ class HomePageHost(Protocol):
     def import_external_candidate(self) -> None: ...
     def open_home_data_maintenance(self) -> None: ...
     def open_home_system_settings(self) -> None: ...
+    def open_available_update(self) -> None: ...
+    def update_tooltip_text(self) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -96,6 +103,7 @@ class HomePageWidgets:
     """Widget references consumed by home refresh and navigation logic."""
 
     page: ttk.Frame
+    update_button: tk.Button
     job_var: tk.StringVar
     job_combo: ttk.Combobox
     stats_vars: dict[str, tk.StringVar]
@@ -587,13 +595,43 @@ def build_home_page(
     header.grid_columnconfigure(0, weight=1)
     title_box = tk.Frame(header, background=colors["home_bg"])
     title_box.grid(row=0, column=0, sticky="sw")
+    title_row = tk.Frame(title_box, background=colors["home_bg"])
+    title_row.pack(anchor="w")
     tk.Label(
-        title_box,
+        title_row,
         text="招聘工作台",
         font=fonts["title"],
         foreground=colors["home_ink"],
         background=colors["home_bg"],
-    ).pack(anchor="w")
+    ).pack(side="left")
+    update_button = tk.Button(
+        title_row,
+        image=host.icons.get("upgrade", px(28), colors["home_success"]),
+        command=host.open_available_update,
+        font=(fonts["title"][0], max(14, int(18 * scale)), "bold"),
+        foreground=colors["home_success"],
+        background=colors["home_bg"],
+        activeforeground=colors["home_success"],
+        activebackground=colors["home_bg"],
+        relief="flat",
+        borderwidth=0,
+        highlightthickness=1,
+        highlightbackground=colors["home_bg"],
+        highlightcolor=colors["home_success"],
+        padx=px(8), pady=px(4), cursor="hand2", takefocus=True,
+    )
+    update_button.bind("<Return>", lambda _event: host.open_available_update())
+    update_button.bind(
+        "<Enter>",
+        lambda _event: host.feedback_support.show_tooltip(
+            host.update_tooltip_text(),
+            update_button.winfo_rootx() + update_button.winfo_width() // 2,
+            update_button.winfo_rooty() - px(8),
+            "home-update", above=True, centered=True,
+        ),
+    )
+    for event_name in ("<Leave>", "<ButtonPress-1>", "<Unmap>"):
+        update_button.bind(event_name, host.feedback_support.hide_tooltip)
     scan_row = tk.Frame(title_box, background=colors["home_bg"])
     scan_row.pack(anchor="w", pady=(px(6), 0))
     tk.Label(
@@ -1263,6 +1301,7 @@ def build_home_page(
 
     return HomePageWidgets(
         page=page,
+        update_button=update_button,
         job_var=job_var,
         job_combo=job_combo,
         stats_vars=stats_vars,

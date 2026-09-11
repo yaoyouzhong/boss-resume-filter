@@ -442,7 +442,7 @@ def test_update_failures_stay_in_update_dialog_and_restore_actions():
     assert "command=on_cancel," in block
     assert "button_frame.pack(pady=(pad(8), pad(20)))" in block
     assert "messagebox.showerror(" not in block
-    assert block.count("show_update_failure(") == 13
+    assert block.count("show_update_failure(") == 15
 
 
 def test_windows_download_completion_offers_details_and_immediate_install():
