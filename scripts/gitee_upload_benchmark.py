@@ -68,7 +68,7 @@ class GiteeUploadBenchmark:
             "Temporary prerelease for a controlled upload benchmark. "
             "It is deleted automatically after the test."
         )
-        self.artifacts = [artifact_dir / name for name in release_ci.RELEASE_ARTIFACTS]
+        self.artifacts = [artifact_dir / name for name in release_ci._release_artifacts(version)]
         self.expected = {path.name: path.stat().st_size for path in self.artifacts}
         self.order = order
         self.cooldown = cooldown
@@ -141,13 +141,18 @@ class GiteeUploadBenchmark:
             raise BenchmarkError("临时 Release 尚未创建")
         self._delete_expected_assets(self.release_id)
         per_file: dict[str, float] = {}
+        events: dict[str, dict[str, int]] = {}
         timing_lock = threading.Lock()
         original_upload = build._gitee_upload_single
 
         def timed_upload(path: Path, *args, **kwargs):
+            def record(event: str) -> None:
+                with timing_lock:
+                    counts = events.setdefault(path.name, {})
+                    counts[event] = counts.get(event, 0) + 1
             started = time.perf_counter()
             try:
-                return original_upload(path, *args, **kwargs)
+                return original_upload(path, *args, on_event=record, **kwargs)
             finally:
                 with timing_lock:
                     per_file[path.name] = round(time.perf_counter() - started, 3)
@@ -198,6 +203,9 @@ class GiteeUploadBenchmark:
             "total_seconds": round(elapsed, 3),
             "cpu_seconds": round(cpu_elapsed, 3),
             "per_file_seconds": dict(sorted(per_file.items())),
+            "per_file_events": events,
+            "connection_failures": sum(item.get("connection_failure", 0) for item in events.values()),
+            "retries": sum(item.get("retry", 0) for item in events.values()),
             "total_bytes": sum(self.expected.values()),
             "throughput_mib_s": round(
                 sum(self.expected.values()) / elapsed / 1024 / 1024,
@@ -264,6 +272,8 @@ class GiteeUploadBenchmark:
                 "mean_seconds": round(sum(totals) / len(totals), 3),
                 "min_seconds": min(totals),
                 "max_seconds": max(totals),
+                "connection_failures": sum(item["connection_failures"] for item in rounds),
+                "retries": sum(item["retries"] for item in rounds),
                 "mean_throughput_mib_s": round(
                     sum(throughputs) / len(throughputs),
                     3,
@@ -290,7 +300,7 @@ def main() -> int:
         _require_safe_args(args)
         missing = [
             name
-            for name in release_ci.RELEASE_ARTIFACTS
+            for name in release_ci._release_artifacts(args.version)
             if not (args.artifact_dir / name).is_file()
         ]
         if missing:
@@ -317,7 +327,8 @@ def main() -> int:
             benchmark.cleanup()
         return 0
     except (BenchmarkError, build.requests.exceptions.RequestException) as exc:
-        print(f"BENCHMARK_FAILED {type(exc).__name__}: {exc}", file=sys.stderr)
+        detail = release_ci.release_retry.redact_sensitive_text(exc, (os.environ.get("GITEE_TOKEN", ""),))
+        print(f"BENCHMARK_FAILED {type(exc).__name__}: {detail}", file=sys.stderr)
         return 1
 
 

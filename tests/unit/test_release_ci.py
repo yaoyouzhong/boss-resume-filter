@@ -861,6 +861,42 @@ def test_artifact_transfer_starts_first_upload_before_second_download_finishes()
     )
 
 
+def test_upload_queue_reports_queued_until_a_worker_actually_starts():
+    with tempfile.TemporaryDirectory() as folder:
+        directory = Path(folder)
+        names = release_ci.RELEASE_ARTIFACTS
+        for name in names:
+            (directory / name).write_bytes(b"artifact")
+        all_queued = threading.Event()
+        snapshots = []
+        original_write = release_ci._write_release_state
+
+        def record(*args, **kwargs):
+            original_write(*args, **kwargs)
+            if kwargs.get("artifact") == names[-1] and kwargs.get("gitee_status") == "queued":
+                all_queued.set()
+
+        def upload(_version, _title, _body, paths, **_kwargs):
+            if paths[0].name == names[0]:
+                assert all_queued.wait(3)
+                state = release_ci._read_release_state()
+                snapshots.append({name: state["artifacts"][name]["gitee_status"] for name in names})
+            return {"asset": "https://example.test"}
+
+        with (
+            patch.object(release_ci, "RELEASE_STATE_PATH", directory / "state.json"),
+            patch.object(release_ci, "_write_release_state", side_effect=record),
+            patch.object(release_ci, "_download_verified_github_artifact", side_effect=lambda tag, name, *a, **kw: directory/name),
+            patch.object(release_ci.build, "_gitee_upload_artifacts", side_effect=upload),
+            patch.object(release_ci.build, "_verify_gitee_release_assets_complete", return_value=True),
+        ):
+            release_ci._transfer_github_artifacts_to_gitee(
+                "2.21", "title", "body", {name: _asset(8) for name in names}, directory,
+                release_sha="a"*40, release_cache={"existing": {}}, upload_workers=1,
+            )
+        assert snapshots == [{names[0]: "uploading", names[1]: "queued", names[2]: "queued"}]
+
+
 def test_gitee_local_upload_accepts_windows_and_macos_artifacts_together():
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
