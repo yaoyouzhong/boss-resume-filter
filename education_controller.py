@@ -471,8 +471,6 @@ class EducationController:
 
         def recognize_one(item_id: str, item: Mapping[str, Any]) -> Any:
             path = item["path"]
-            if item.get("is_pdf"):
-                return recognize_pdf(path, dict(config), api_key)
             image_kwargs: dict[str, Any] = {}
             if on_stage is not None:
                 image_kwargs["on_progress"] = lambda stage, percent: on_stage(
@@ -482,6 +480,8 @@ class EducationController:
                 image_kwargs["rotation_override"] = item[
                     "recognition_rotation"
                 ]
+            if item.get("is_pdf"):
+                return recognize_pdf(path, dict(config), api_key, **image_kwargs)
             return recognize_image(
                 path,
                 dict(config),

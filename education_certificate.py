@@ -5,6 +5,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import unicodedata
@@ -24,6 +25,9 @@ SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 SUPPORTED_PDF_SUFFIXES = {".pdf"}
 MAX_IMAGE_SIDE = 2400
 JPEG_QUALITY = 95
+CERTIFICATE_OUTPUT_TOKENS = 4096
+CERTIFICATE_RETRY_OUTPUT_TOKENS = 8192
+logger = logging.getLogger(__name__)
 CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE = 80
 CHSI_QUERY_URL = "https://www.chsi.com.cn/xlcx/lscx/query.do"
 CHSI_DEGREE_QUERY_URL = "https://www.chsi.com.cn/xwcx/lscx/query.do"
@@ -928,6 +932,39 @@ def _reliable_name_candidate(
     return result.name, confidence
 
 
+class ModelOutputLimitError(RuntimeError):
+    """The service exhausted its output budget before completing the answer."""
+
+
+def _recognition_failure_reason(error: Exception) -> str:
+    """Expose fixed diagnostic categories, never service responses or credentials."""
+    if isinstance(error, ModelOutputLimitError):
+        return "模型输出达到上限"
+    if isinstance(error, requests.Timeout):
+        return "模型请求超时"
+    if isinstance(error, requests.ConnectionError):
+        return "模型连接失败"
+    if isinstance(error, ValueError) and str(error) == "AI 未返回可解析的 JSON":
+        return "模型未返回有效识别结果"
+    return "模型调用或响应处理异常"
+
+
+def _invoke_certificate_model(*args: Any, max_tokens: int, **kwargs: Any) -> dict[str, Any]:
+    """Retry only explicit truncation, once, with a bounded reasoning allowance."""
+    try:
+        return _invoke_model(*args, max_tokens=max_tokens, **kwargs)
+    except ModelOutputLimitError:
+        if max_tokens >= CERTIFICATE_RETRY_OUTPUT_TOKENS:
+            raise
+        logger.warning(
+            "Certificate model output truncated; retrying once (budget=%d -> %d)",
+            max_tokens, CERTIFICATE_RETRY_OUTPUT_TOKENS,
+        )
+        return _invoke_model(
+            *args, max_tokens=CERTIFICATE_RETRY_OUTPUT_TOKENS, **kwargs,
+        )
+
+
 def _invoke_model(
     config: dict[str, Any],
     api_key: str,
@@ -961,17 +998,13 @@ def _invoke_model(
         raise RuntimeError(friendly_http_error(response.status_code, response_payload))
     if not isinstance(response_payload, dict):
         raise RuntimeError("AI 服务返回了无效响应")
-    raw_final_content = True
-    if protocol != "anthropic":
-        raw_choice = (response_payload.get("choices") or [{}])[0]
-        raw_message = raw_choice.get("message") or {}
-        raw_final_content = bool(raw_message.get("content"))
     message, finish_reason = normalize_response(protocol, response_payload)
     content = str(message.get("content") or message.get("reasoning_content") or "")
     if content and on_connected is not None:
         on_connected()
-    if finish_reason == "length" and not raw_final_content:
-        raise RuntimeError("AI 输出长度达到上限，未返回最终识别结果")
+    if finish_reason in {"length", "max_tokens"}:
+        # Even parseable partial JSON is not a completed recognition result.
+        raise ModelOutputLimitError("AI 输出长度达到上限，未返回最终识别结果")
     parsed = _extract_json_object(content)
     from vision_capability import observe_image_recognition
 
@@ -1008,20 +1041,21 @@ def recognize_certificate_image(
         path,
         rotation=prepared_rotation,
     )
-    base_url = str(vision_config.get("base_url") or "").lower()
     model = str(vision_config.get("model") or "")
     manual_name_confirmation = (
         model.strip().lower() in _MANUAL_NAME_CONFIRMATION_MODELS
     )
-    max_tokens = 4096 if "api.kimi.com/coding" in base_url else 2048
-    orientation_tokens = max_tokens if max_tokens == 4096 else 512
+    # Reasoning and the final JSON share this budget, including orientation-only
+    # requests. A short final answer does not imply a 512-token reasoning budget.
+    max_tokens = CERTIFICATE_OUTPUT_TOKENS
+    orientation_tokens = CERTIFICATE_OUTPUT_TOKENS
     rotation = 0
     rotation_confidence = 0
     pipeline_warnings: list[str] = []
     parsed: dict[str, Any] | None = None
     if manual_rotation is not None:
         emit("正在按手动方向读取证书字段", 15)
-        parsed = _invoke_model(
+        parsed = _invoke_certificate_model(
             vision_config,
             api_key,
             build_vision_messages(vision_config, original_data_url),
@@ -1034,7 +1068,7 @@ def recognize_certificate_image(
     else:
         try:
             emit("正在判断方向并读取证书字段", 15)
-            parsed = _invoke_model(
+            parsed = _invoke_certificate_model(
                 vision_config,
                 api_key,
                 build_initial_recognition_messages(
@@ -1048,8 +1082,11 @@ def recognize_certificate_image(
             rotation, rotation_confidence = _normalize_orientation(
                 parsed
             )
-        except Exception:
-            pipeline_warnings.append("首轮方向与字段识别失败，已自动切换兼容流程")
+        except Exception as error:
+            pipeline_warnings.append(
+                "首轮方向与字段识别失败，已自动切换兼容流程"
+                f"（{_recognition_failure_reason(error)}）"
+            )
 
     direction_needs_field_rescue = False
     if manual_rotation is None and parsed is not None:
@@ -1069,7 +1106,7 @@ def recognize_certificate_image(
     ):
         try:
             emit("正在复核证书方向", 35)
-            orientation_payload = _invoke_model(
+            orientation_payload = _invoke_certificate_model(
                 vision_config,
                 api_key,
                 build_orientation_messages(vision_config, orientation_data_url),
@@ -1094,8 +1131,11 @@ def recognize_certificate_image(
                     )
             else:
                 pipeline_warnings.append("方向复核置信度不足，已按原方向识别")
-        except Exception:
-            pipeline_warnings.append("方向复核失败，已按原方向识别")
+        except Exception as error:
+            pipeline_warnings.append(
+                "方向复核失败，已保留当前方向识别"
+                f"（{_recognition_failure_reason(error)}）"
+            )
 
     data_url = (
         original_data_url
@@ -1104,7 +1144,7 @@ def recognize_certificate_image(
     )
     if parsed is None:
         emit("正在读取转正后的证书", 55)
-        parsed = _invoke_model(
+        parsed = _invoke_certificate_model(
             vision_config,
             api_key,
             build_vision_messages(vision_config, data_url),
@@ -1129,7 +1169,7 @@ def recognize_certificate_image(
                 rotation=rotation,
             )
             emit("正在核对姓名和证书编号", 70)
-            review_payload = _invoke_model(
+            review_payload = _invoke_certificate_model(
                 vision_config,
                 api_key,
                 build_field_review_messages(
@@ -1148,7 +1188,7 @@ def recognize_certificate_image(
                 questionable_fields,
                 model=model,
             )
-        except Exception:
+        except Exception as error:
             raw_conflicts = parsed.get("_critical_conflicts") or []
             if isinstance(raw_conflicts, str):
                 raw_conflicts = [raw_conflicts]
@@ -1160,7 +1200,10 @@ def recognize_certificate_image(
                     if field in _CRITICAL_RECOGNITION_FIELDS
                 ),
             ]))
-            pipeline_warnings.append("可疑字段高清复核失败，请人工核对")
+            pipeline_warnings.append(
+                "可疑字段高清复核失败，请人工核对"
+                f"（{_recognition_failure_reason(error)}）"
+            )
 
     ambiguous_critical = tuple(
         field
@@ -1241,6 +1284,8 @@ def recognize_certificate_pdf(
     *,
     timeout: int = 120,
     text_extractor: Callable[[str | Path], str] | None = None,
+    rotation_override: int | None = None,
+    on_progress: Callable[[str, int], None] | None = None,
 ) -> CertificateRecognition:
     """Read text PDFs directly; recognize scanned pages through the image pipeline."""
     extractor = text_extractor or extract_pdf_text
@@ -1254,10 +1299,19 @@ def recognize_certificate_pdf(
 
         with TemporaryDirectory(prefix="certificate-pdf-") as directory:
             pages = extract_certificate_pages(path, Path(directory))
-            results = [
-                recognize_certificate_image(page, api_config, api_key, timeout=timeout)
-                for page in pages
-            ]
+            results = []
+            for index, page in enumerate(pages):
+                def page_progress(stage: str, percent: int, index: int = index) -> None:
+                    if on_progress is not None:
+                        on_progress(
+                            f"第 {index + 1}/{len(pages)} 页 · {stage}",
+                            int((index * 100 + percent) / len(pages)),
+                        )
+                results.append(recognize_certificate_image(
+                    page, api_config, api_key, timeout=timeout,
+                    rotation_override=rotation_override,
+                    on_progress=page_progress,
+                ))
         identities = {
             (result.name, result.certificate_number, result.certificate_type)
             for result in results if result.name or result.certificate_number
