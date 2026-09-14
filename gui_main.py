@@ -366,10 +366,10 @@ def _export_daily_candidate_actions_report(items, parent):
 # 服务商显示名称映射（内部键 -> 显示名称）
 PROVIDER_DISPLAY = {
     "qwen": "通义千问 (Qwen)",
-    "deepseek": "DeepSeek",
+    "deepseek": "深度求索 (DeepSeek)",
     "kimi": "月之暗面 (Kimi)",
     "zhipu": "智谱 (Zhipu)",
-    "minimax": "MiniMax",
+    "minimax": "稀宇科技 (MiniMax)",
     "xiaomi": "小米 (Xiaomi)",
     "stepfun": "阶跃星辰 (StepFun)",
     "openai": "OpenAI",
