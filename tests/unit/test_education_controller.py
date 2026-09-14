@@ -317,7 +317,7 @@ def test_recognition_batch_and_apply_keep_failures_explicit():
         {"model": "vision"},
         "secret",
         recognize_image=recognize_image,
-        recognize_pdf=lambda *_args: (_ for _ in ()).throw(RuntimeError("bad pdf")),
+        recognize_pdf=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("bad pdf")),
         on_result=lambda item_id, result, error: emitted.append(
             (item_id, result, error)
         ),
