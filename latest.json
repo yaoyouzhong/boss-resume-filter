@@ -1,35 +1,35 @@
 {
-  "version": "2.33.3",
+  "version": "2.34",
   "release_date": "2026-09-15",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.33.3/BOSS_ResumeFilter.exe",
-    "education_windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.33.3/EducationCertificateTool.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.33.3/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.33.3/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.34/BOSS_ResumeFilter.exe",
+    "education_windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.34/EducationCertificateTool.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.34/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.34/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "macos_dmg": {
-      "size": 26707042,
-      "sha256": "4a5633ad9cc965677ecf3edbe8876267cbcab2d20258ce5e2d0bf5d2baa3e1a5"
+      "size": 26725354,
+      "sha256": "76364a67ff3e851025c5cd4a54f11fe16b43e8bb12dd501253ef097427085533"
     },
     "windows": {
-      "size": 29622316,
-      "sha256": "3b65b91eba19a0292fbe42193a7a064070695dca6fd11293755976aaebc535d2"
+      "size": 29652720,
+      "sha256": "25fb92e1b108309480cc5d3e20f453caf6aeabd6905f1dd35a0259864ab90310"
     },
     "macos": {
-      "size": 27836046,
-      "sha256": "5eb4af805b91079f94d38c64612a06ff4fba969ffdbd8333a822cd0e8d3677ae"
+      "size": 27866517,
+      "sha256": "90bde9f76646aff80ea37f5475bc02f8ca32dcd2413503fbef9019673cc7bc7a"
     },
     "education_windows": {
-      "size": 25753881,
-      "sha256": "f5a518fcbe6a890ed2c8fdb24b595abdbedba3848b58b06359708d5883bccec4"
+      "size": 25774914,
+      "sha256": "f67ff68d32d706c8271782cb6c0e84556510881f182e7d9014acdb7c45ca7d86"
     }
   },
-  "release_notes": "### 新增功能\n\n- **单份结果截图**：右键证书可单独保存或重新截图，沿用保存位置。\n\n### 体验优化\n\n- **多页核验加载**：多份证书核验时支持同时加载两个查询页，减少页面打开等待。\n- **队列快捷删除**：支持按 Del 移除选中的一份或多份证书，保留原始文件。\n- **识别进度与提示**：扫描 PDF 显示逐页识别进度，识别失败时提供更明确的原因。\n- **模型名称显示**：补充 DeepSeek 和 MiniMax 的中文服务商名称。\n\n### 问题修复\n\n- **证书识别中断**：修复部分模型因输出受限导致方向判断或字段识别中断的问题，并支持自动重试。\n- **PDF 手动旋转**：修复扫描 PDF 重新识别时未采用用户手动旋转方向的问题。",
+  "release_notes": "### 新增功能\n\n- **分批验证与补交**：优先提交已就绪证书，待核对记录不再阻塞其他记录；核对完成后可继续补交，自动跳过已提交及已完成记录。\n- **重复证书提醒**：按证书类型和编号提示疑似重复，保留记录供核对，修改或移除后自动更新提醒。\n- **识别停止**：识别时可直接在第 1 步按钮停止本轮识别，保留已完成结果。\n\n### 体验优化\n\n- **关键信息优先识别**：优先识别学历与学位证书的姓名、编号和类型，学校、专业不清晰时留空，减少附属信息反复识别带来的等待。\n- **人工复核与修改保护**：明确提示需要核对的关键信息，重新识别保留人工修正值，并提示差异。\n- **识别等待控制**：显示识别阶段和耗时，限制单份证书的累计等待时间，超时后可人工填写或重新识别。\n- **队列与流程操作**：支持 Ctrl+A 全选和所选记录批量识别、验证；简化三步按钮，识别提示统一中文并支持展开查看，优化操作区间距及截图提示。\n- **连续核验与页面恢复**：多批提交复用同一 Chrome，长时间等待扫码时持续检查结果，短暂连接故障自动尝试恢复；页面关闭后可重新提交未完成记录。\n\n### 问题修复\n\n- **结果与证书对应**：加强结果页和截图的姓名、编号及证书类型检查，修改关键信息后解除旧页面关联，避免沿用不对应的结果。",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.33.3/BOSS_ResumeFilter.exe",
-    "education_windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.33.3/EducationCertificateTool.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.33.3/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.33.3/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.34/BOSS_ResumeFilter.exe",
+    "education_windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.34/EducationCertificateTool.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.34/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.34/BOSS_ResumeFilter.dmg"
   }
 }
