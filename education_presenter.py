@@ -1,6 +1,23 @@
 """Plain display formatting for certificate verification."""
 from collections.abc import Mapping
 from typing import Any
+import re
+
+
+def format_recognition_notice(text: str) -> str:
+    """Translate model field identifiers without discarding review details."""
+    labels = {
+        "certificate_number": "证书编号", "certificate_type": "证书类型",
+        "field_confidence": "字段置信度", "school": "学校", "major": "专业",
+        "name": "姓名", "confidence": "置信度", "unknown": "待确认",
+    }
+    text = re.sub(
+        r"\b(" + "|".join(labels) + r")\b",
+        lambda match: labels[match.group().lower()], str(text), flags=re.IGNORECASE,
+    )
+    return "\n".join(dict.fromkeys(
+        part.strip() for part in re.split(r"[；\n]+", text) if part.strip()
+    ))
 
 
 def screenshot_item_feedback(name: str, status: str, detail: str) -> tuple[str, str]:

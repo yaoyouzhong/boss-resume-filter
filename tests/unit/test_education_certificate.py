@@ -21,7 +21,6 @@ from education_certificate import (
     capture_captcha_variants,
     capture_chsi_result_png,
     classify_chsi_terminal_result,
-    extract_pdf_text,
     fill_chsi_query_page,
     is_pdf_path,
     is_chsi_result_text,
@@ -1931,3 +1930,28 @@ def test_chsi_existing_screenshot_validation_rejects_truncated_png():
         target.write_bytes(encoded[:80])
 
         assert is_valid_chsi_screenshot(target) is False
+
+
+def test_optional_uncertainty_does_not_trigger_extra_model_call():
+    from unittest.mock import patch
+    payload = {
+        "certificate_type": "education", "rotation": 0, "rotation_confidence": 98,
+        "name": "张三", "certificate_number": "12345678901234567",
+        "school": "猜测大学", "major": "", "confidence": 95,
+        "field_confidence": {"name": 95, "certificate_number": 96, "school": 40, "major": 0},
+        "warnings": ["school 模糊，无法确认"],
+    }
+    with patch("education_certificate.prepare_orientation_sheet_data_url", return_value="data:image/jpeg;base64,YQ=="), patch(
+        "education_certificate.prepare_image_data_url", return_value="data:image/jpeg;base64,YQ=="
+    ), patch("education_certificate.prepare_detail_sheet_data_url") as detail, patch(
+        "education_certificate._invoke_model", return_value=payload
+    ) as invoke:
+        result = recognize_certificate_image("fake.jpg", {"api_provider": "zhipu", "model": "glm-5.3-flash"}, "test-key")
+    assert invoke.call_count == 1
+    detail.assert_not_called()
+    assert result.school == ""
+    assert result.major == ""
+    assert result.name == "张三"
+    assert result.certificate_number == "12345678901234567"
+    assert result.certificate_type == "education"
+    assert not result.critical_conflicts
