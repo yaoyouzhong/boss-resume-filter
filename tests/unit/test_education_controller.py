@@ -458,6 +458,74 @@ def test_captcha_navigation_and_form_fill_share_browser_lock():
     assert lock_depth["value"] == 0
 
 
+def test_two_tab_loads_overlap_without_holding_shared_browser_lock():
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    browser_lock = threading.RLock()
+    slots = threading.BoundedSemaphore(2)
+    entered = threading.Barrier(3)
+    release = threading.Event()
+    third_entered = threading.Event()
+    filled = []
+
+    def navigate(page):
+        if page < 2:
+            entered.wait(timeout=5)
+            assert release.wait(timeout=5)
+        else:
+            third_entered.set()
+
+    def run(page):
+        return EducationController.fill_and_solve_captcha(
+            page, str(page), str(page), navigate=navigate,
+            fill_query=lambda current, name, *_args, **_kw: filled.append((current, name)),
+            attempt=lambda *_args, **_kw: (True, "已提交查询"),
+            browser_lock=browser_lock, navigation_slots=slots,
+            max_attempts=1, sleep=lambda _: None,
+        )
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [pool.submit(run, i) for i in range(2)]
+        try:
+            entered.wait(timeout=5)
+            assert browser_lock.acquire(timeout=1)
+            browser_lock.release()
+            assert not slots.acquire(blocking=False)
+            futures.append(pool.submit(run, 2))
+            assert not third_entered.wait(timeout=0.1)
+        finally:
+            release.set()
+        assert all(f.result(timeout=5).successful for f in futures)
+    assert sorted(filled) == [(0, "0"), (1, "1"), (2, "2")]
+
+
+def test_navigation_failure_releases_slot_for_retry():
+    import threading
+
+    slots = threading.BoundedSemaphore(2)
+    calls = []
+
+    def navigate(_page):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("page load failed")
+
+    result = EducationController.fill_and_solve_captcha(
+        object(), "测试", "123", navigate=navigate,
+        fill_query=lambda *_args, **_kw: None,
+        attempt=lambda *_args, **_kw: (True, "已提交查询"),
+        browser_lock=threading.RLock(), navigation_slots=slots,
+        max_attempts=2, sleep=lambda _: None,
+    )
+    assert result.successful and len(calls) == 2
+    assert slots.acquire(blocking=False)
+    assert slots.acquire(blocking=False)
+    assert not slots.acquire(blocking=False)
+    slots.release()
+    slots.release()
+
+
 def test_explicit_captcha_errors_retry_immediately_without_fixed_sleep():
     attempts = iter((
         (False, "识别失败"),

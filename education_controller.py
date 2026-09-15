@@ -889,6 +889,7 @@ class EducationController:
         browser_lock: Any,
         on_progress: Callable[[str, str], None] | None = None,
         max_attempts: int = EDUCATION_CAPTCHA_MAX_ATTEMPTS,
+        navigation_slots: Any = None,
         page_alive: Callable[[Any], bool] | None = None,
         sleep: Callable[[float], None],
     ) -> CaptchaResult:
@@ -916,8 +917,11 @@ class EducationController:
                         f"正在重试验证码（{attempt_no}/{attempts}）...",
                         "正在获取新的验证码",
                     )
-                with browser_lock:
+                # Each task owns its tab. Network waits must not block other
+                # tabs' creation, form updates, or result monitoring.
+                with navigation_slots if navigation_slots is not None else browser_lock:
                     navigate(page)
+                with browser_lock:
                     emit("正在填写表单...", "正在填写姓名和证书编号")
                     fill_query(
                         page,
