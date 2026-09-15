@@ -10062,6 +10062,8 @@ def _check_single_education_capture(*, failure=False, first_save=False):
         gui.education_screenshot_folder = ""
         gui.education_screenshot_summary_var = Mock()
         gui.education_screenshot_folder_var = Mock()
+        gui.education_page = object()
+        gui.feedback_support = Mock()
         gui._education_browser_lock = threading.RLock()
         for name in ("_save_current_education_fields", "_refresh_education_queue_summary",
                      "_update_education_queue_row", "_update_education_workflow_progress",
@@ -10097,12 +10099,21 @@ def _check_single_education_capture(*, failure=False, first_save=False):
             assert target.read_bytes() == b"old-selected"
             assert gui.education_items["selected"]["screenshot_path"] == str(target)
             assert "原截图已保留" in gui.education_items["selected"]["screenshot_detail"]
+            banner = gui.feedback_support.show_inline_banner.call_args
+            assert banner.args[1] == "warning"
+            assert "原截图已保留" in banner.args[2]
+            gui.education_screenshot_summary_var.set.assert_called_with(banner.args[2])
         else:
             saved = Path(gui.education_items["selected"]["screenshot_path"])
             assert is_valid_chsi_screenshot(saved)
             if not first_save:
                 assert saved.resolve() == target.resolve()
             assert len(list(folder.glob("*.png"))) == 2
+            message = "张三：截图保存成功。" if first_save else "张三：重新截图成功，已更新原文件。"
+            gui.feedback_support.show_inline_banner.assert_called_once_with(
+                gui.education_page, "success", message, duration_ms=8000,
+            )
+            gui.education_screenshot_summary_var.set.assert_called_with(message)
 
 
 def test_single_education_screenshot_replaces_only_selected_file():
