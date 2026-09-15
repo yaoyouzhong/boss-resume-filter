@@ -998,7 +998,8 @@ class BossFilterGUI:
         # DrissionPage 4.1.1.2 的 Chromium 单例初始化不是完整原子的：
         # 并发构造 ChromiumPage 时，后一个线程可能拿到尚无 _dl_mgr 的半初始化对象。
         self._browser_connection_lock = threading.Lock()
-        self._education_browser_lock = threading.RLock()  # 序列化学信网 tab 的 DrissionPage 操作
+        self._education_browser_lock = threading.RLock()  # 序列化标签页分配、填表和结果绑定
+        self._education_navigation_slots = threading.BoundedSemaphore(2)
 
         # 右键菜单引用列表（统一销毁）
         self._context_menus = []
@@ -5221,6 +5222,7 @@ class BossFilterGUI:
             certificate_number,
             navigate=partial(navigate_to_chsi, certificate_type=kind),
             fill_query=partial(fill_chsi_query_page, certificate_type=kind),
+            navigation_slots=self._education_navigation_slots,
             attempt=lambda current_page, **kwargs: self._attempt_captcha_solve(
                 current_page,
                 item_id=item_id,

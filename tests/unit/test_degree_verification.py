@@ -61,6 +61,7 @@ def test_both_hosts_route_degree_and_diploma_queries_and_retries():
             gui.standalone_education = standalone
             gui.education_items = {"one": {"certificate_type": kind}}
             gui._education_browser_lock = RLock()
+            gui._education_navigation_slots = RLock()
             gui._is_browser_page_alive = lambda _: True
             gui._attempt_captcha_solve = Mock(side_effect=[(False, "待人工验证"), (True, "已提交查询")])
             page = SimpleNamespace(get=Mock(), run_js=Mock(return_value="ok"))

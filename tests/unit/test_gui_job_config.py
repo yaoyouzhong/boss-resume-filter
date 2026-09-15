@@ -4285,6 +4285,7 @@ def test_education_captcha_low_confidence_is_not_auto_submitted():
 def test_education_captcha_retries_five_times_before_manual_fallback():
     gui = BossFilterGUI.__new__(BossFilterGUI)
     gui._education_browser_lock = threading.Lock()
+    gui._education_navigation_slots = threading.BoundedSemaphore(2)
     gui._is_browser_page_alive = Mock(return_value=True)
     gui._attempt_captcha_solve = Mock(side_effect=[
         (False, "待人工验证"),
