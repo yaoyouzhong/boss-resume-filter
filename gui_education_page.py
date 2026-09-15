@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from tkinter import font, ttk
 from typing import Any, Protocol
+from education_presenter import format_recognition_notice
 
 
 def _wrap_warning_text(text: str, width: int, measure) -> str:
@@ -327,6 +328,13 @@ def build_education_page(
     queue_scrollbar.grid(row=0, column=1, sticky="ns")
     queue_scrollbar.grid_remove()
     queue_tree.bind("<<TreeviewSelect>>", host._on_education_queue_select)
+
+    def select_all_certificates(_event: tk.Event) -> str:
+        queue_tree.selection_set(queue_tree.get_children())
+        return "break"
+
+    queue_tree.bind("<Control-a>", select_all_certificates)
+    queue_tree.bind("<Control-A>", select_all_certificates)
 
     def remove_selected_on_delete(_event: tk.Event) -> str:
         if queue_tree.selection():
@@ -725,12 +733,30 @@ def build_education_page(
         foreground=host.colors["warning"], style=workbench_label_style,
         justify="left",
     )
-    warning_label.pack(anchor="w", fill="x")
+    warning_label.pack(anchor="w", fill="x", padx=int(8 * scale), pady=int(6 * scale))
     warning_font = font.Font(root=form, font=warning_label.cget("font"))
+    warning_expanded = False
+    warning_toggle = ttk.Button(form, text="展开完整提示")
+    warning_toggle.pack(anchor="w")
 
     def refresh_warning(*_args):
-        width = max(1, form.winfo_width() - int(8 * scale))
-        warning_label.configure(text=_wrap_warning_text(warning_var.get(), width, warning_font.measure))
+        width = max(1, form.winfo_width() - int(16 * scale))
+        text = format_recognition_notice(warning_var.get())
+        wrapped = _wrap_warning_text(text, width, warning_font.measure)
+        lines = wrapped.splitlines()
+        warning_label.configure(text=wrapped if warning_expanded else "\n".join(lines[:3]))
+        if len(lines) > 3:
+            warning_toggle.pack(anchor="w", before=privacy_label)
+            warning_toggle.configure(text="收起提示" if warning_expanded else "展开完整提示")
+        else:
+            warning_toggle.pack_forget()
+
+    def toggle_warning():
+        nonlocal warning_expanded
+        warning_expanded = not warning_expanded
+        refresh_warning()
+
+    warning_toggle.configure(command=toggle_warning)
 
     warning_trace = warning_var.trace_add("write", refresh_warning)
     warning_label.bind("<Destroy>", lambda _event: warning_var.trace_remove("write", warning_trace))

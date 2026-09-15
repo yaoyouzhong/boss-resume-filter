@@ -115,6 +115,14 @@ rotation_confidence 是 0 到 100 的整数；无法可靠判断或低于 80 时
 """
 
 
+_PRIORITY_INSTRUCTION = """
+优先尽快返回姓名、证书编号、证书类型，这三项是查询必需信息。
+学校和专业仅为附属信息：只有原文明晰可直接抄录时才填，否则留空。
+不要根据印章残字、编号、学校代码或常识推断学校，不要反复辨认附属信息。
+confidence 只评价三项查询必需信息，不因学校或专业缺失而降低。
+warnings 只用简短中文说明需要核对的事项，使用中文字段名称，不展开观察过程。
+"""
+
 _INITIAL_RECOGNITION_SYSTEM_PROMPT = """你同时完成学历或学位证书方向判断和第一遍字段识别。
 第一张图是同一证书顺时针旋转 0/90/180/270 度的四格方向对照图；第二张图是原始高清证书。
 先从第一张图选择文字正常朝上的角度，再按照该方向逐字读取第二张图。不要深入推理，不要解释。
@@ -143,7 +151,7 @@ _SYSTEM_PROMPT = """你是学历或学位证书字段识别器。图片已经纠
 3. school 填写毕业院校或学位授予单位全称，major 填写证书上的专业名称。
 4. 无法确认时字段留空，并在 warnings 中说明。
 5. field_confidence 分别填写四个字段的识别置信度（0-100），看不清的字段必须低于 80。
-6. confidence 是 0 到 100 的整数，表示文字字段整体识别置信度。
+6. confidence 是 0 到 100 的整数，表示姓名、证书编号与证书类型的识别置信度。
 """
 
 
@@ -197,10 +205,15 @@ _PDF_SYSTEM_PROMPT = """你是学历或学位证书字段识别器。下面是�
 2. certificate_number 只填写"证书编号"或"电子注册号"对应的完整编号。
 3. school 填写毕业院校或学位授予单位全称，major 填写证书上的专业名称。
 4. 无法确认时字段留空，并在 warnings 中说明。
-5. confidence 是 0 到 100 的整数，表示全部字段整体识别置信度。
+5. confidence 是 0 到 100 的整数，表示姓名、证书编号与证书类型的识别置信度。
 6. 若文本明显不是学历或学位证书内容，所有字段留空，warnings 写"未识别到学历或学位证书内容"。
 """
 
+
+_INITIAL_RECOGNITION_SYSTEM_PROMPT += _PRIORITY_INSTRUCTION
+_SYSTEM_PROMPT += _PRIORITY_INSTRUCTION
+_FIELD_REVIEW_SYSTEM_PROMPT += _PRIORITY_INSTRUCTION
+_PDF_SYSTEM_PROMPT += _PRIORITY_INSTRUCTION
 
 @dataclass(frozen=True)
 class CertificateRecognition:
@@ -674,6 +687,27 @@ def normalize_recognition(payload: dict[str, Any], model: str = "") -> Certifica
     if isinstance(raw_warnings, str):
         raw_warnings = [raw_warnings]
     warnings = [str(item).strip() for item in raw_warnings if str(item).strip()]
+    for field, value in (("school", school), ("major", major)):
+        raw_confidence = payload.get("field_confidence")
+        try:
+            low_confidence = (
+                isinstance(raw_confidence, dict)
+                and field in raw_confidence
+                and int(raw_confidence[field]) < 80
+            )
+        except (ValueError, TypeError):
+            low_confidence = True
+        uncertain = any(
+            any(label in warning.lower() for label in _FIELD_WARNING_LABELS[field])
+            and any(marker in warning for marker in _UNCERTAINTY_WARNING_MARKERS)
+            for warning in warnings
+        )
+        if value and (low_confidence or uncertain):
+            if field == "school":
+                school = ""
+            else:
+                major = ""
+            warnings.append(f"{_FIELD_WARNING_LABELS[field][0]}未能清晰识别，已留空，不影响查询")
     raw_conflicts = payload.get("_critical_conflicts") or []
     if isinstance(raw_conflicts, str):
         raw_conflicts = [raw_conflicts]
@@ -724,6 +758,9 @@ _UNCERTAINTY_WARNING_MARKERS = (
     "模糊",
     "难以辨认",
     "无法辨认",
+    "不完全准确",
+    "推测",
+    "猜测",
     "建议人工",
 )
 
@@ -755,14 +792,10 @@ def _questionable_recognition_fields(
         questionable.add("name")
     if not result.certificate_number or len(result.certificate_number) > 18:
         questionable.add("certificate_number")
-    if not result.school:
-        questionable.add("school")
-    if not result.major:
-        questionable.add("major")
 
     raw_confidences = payload.get("field_confidence")
     if isinstance(raw_confidences, dict):
-        for field in _RECOGNITION_FIELDS:
+        for field in _CRITICAL_RECOGNITION_FIELDS:
             if field not in raw_confidences:
                 continue
             try:
@@ -772,7 +805,7 @@ def _questionable_recognition_fields(
             if confidence < 80:
                 questionable.add(field)
     elif result.confidence < 80:
-        questionable.update(_RECOGNITION_FIELDS)
+        questionable.update(_CRITICAL_RECOGNITION_FIELDS)
 
     raw_warnings = payload.get("warnings") or []
     if isinstance(raw_warnings, str):
@@ -784,7 +817,7 @@ def _questionable_recognition_fields(
         for field, labels in _FIELD_WARNING_LABELS.items():
             if any(label in normalized for label in labels):
                 questionable.add(field)
-    return tuple(field for field in _RECOGNITION_FIELDS if field in questionable)
+    return tuple(field for field in _CRITICAL_RECOGNITION_FIELDS if field in questionable)
 
 
 def _merge_field_review(
@@ -815,7 +848,7 @@ def _merge_field_review(
         primary_value = str(getattr(primary, field) or "")
         review_value = str(getattr(review, field) or "")
         if not review_value:
-            warnings.append(f"{field} 复核仍无法确认")
+            warnings.append(f"{_FIELD_WARNING_LABELS[field][0]}复核仍无法确认")
             continue
         if not primary_value or primary_value == review_value:
             merged[field] = review_value
@@ -846,7 +879,7 @@ def _merge_field_review(
                 f"{field_label}两次识别结果不一致，已留空，请对照证书人工填写"
             )
             continue
-        warnings.append(f"{field} 两次识别结果不一致，请人工核对")
+        warnings.append(f"{_FIELD_WARNING_LABELS[field][0]}两次识别结果不一致，请人工核对")
 
     primary_field_confidence = primary_payload.get("field_confidence")
     review_field_confidence = review_payload.get("field_confidence")
