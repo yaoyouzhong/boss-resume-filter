@@ -3588,7 +3588,8 @@ class BossFilterGUI:
             return
         item["screenshot_status"] = result.status
         item["screenshot_detail"] = result.detail
-        item["screenshot_path"] = result.path
+        if result.path or not item.get("screenshot_path"):
+            item["screenshot_path"] = result.path
         item["screenshot_attempt_status"] = result.status
         if result.status == "已保存" and result.path:
             self._education_saved_folder = str(Path(result.path).parent)
@@ -3688,13 +3689,15 @@ class BossFilterGUI:
             return ()
         return self._apply_recovered_education_result_pages(assignments)
 
-    def _capture_education_results(self):
+    def _capture_education_results(self, selected_item_id: str | None = None):
         """保存已生成的核验结果；无结果时不连接或启动浏览器。"""
         if not self.education_items or getattr(
             self, "education_screenshot_running", False
         ):
             return
         self._save_current_education_fields()
+        if selected_item_id is not None and selected_item_id not in self.education_items:
+            return
         action_states = _EDUCATION_CONTROLLER.action_states(
             self.education_items,
             recognition_running=bool(
@@ -3704,10 +3707,17 @@ class BossFilterGUI:
         )
         if not action_states.screenshot:
             return
-        for queued_item in self.education_items.values():
+        capture_scope = (
+            {selected_item_id: self.education_items[selected_item_id]}
+            if selected_item_id is not None else self.education_items
+        )
+        if not _EDUCATION_CONTROLLER.action_states(capture_scope).screenshot:
+            return
+        for queued_item in capture_scope.values():
             queued_item.pop("screenshot_attempt_status", None)
-        self._education_saved_folder = ""
-        self.education_screenshot_folder_var.set("")
+        if selected_item_id is None:
+            self._education_saved_folder = ""
+            self.education_screenshot_folder_var.set("")
         base_page = getattr(self, "browser_page", None)
         self.education_screenshot_running = True
         self.education_screenshot_summary_var.set(
@@ -3736,10 +3746,19 @@ class BossFilterGUI:
 
         def start_capture(assignments):
             """Continue on the Tk thread after the browser scan finishes."""
+            if selected_item_id is not None:
+                assignments = {
+                    iid: page for iid, page in assignments.items()
+                    if iid == selected_item_id
+                }
             self._apply_recovered_education_result_pages(assignments)
             item_ids = list(
                 _EDUCATION_CONTROLLER.result_ready_item_ids(
-                    self.education_items
+                    {
+                        iid: self.education_items[iid] for iid in items_snapshot
+                        if iid in self.education_items
+                        and (selected_item_id is None or iid == selected_item_id)
+                    }
                 )
             )
             if not item_ids:
@@ -3760,7 +3779,16 @@ class BossFilterGUI:
                     parent=self.root,
                 )
                 return
-            if not self._select_education_screenshot_folder():
+            saved_folder = ""
+            if selected_item_id is not None:
+                selected = self.education_items[selected_item_id]
+                saved_folder = str(
+                    selected.get("screenshot_directory")
+                    or getattr(self, "education_screenshot_folder", "") or ""
+                )
+            if saved_folder and Path(saved_folder).is_dir():
+                self.education_screenshot_folder = saved_folder
+            elif not self._select_education_screenshot_folder():
                 self.education_screenshot_running = False
                 self._update_education_workflow_progress(
                     stage="screenshot",
@@ -4086,6 +4114,17 @@ class BossFilterGUI:
         self.education_queue_menu.add_command(
             label="学信网验证",
             command=lambda iid=item_id: self._fill_chsi_page([iid]),
+        )
+        item = self.education_items[item_id]
+        can_capture = _EDUCATION_CONTROLLER.action_states(
+            self.education_items,
+            recognition_running=bool(getattr(self, "education_recognition_running", False)),
+            screenshot_running=bool(getattr(self, "education_screenshot_running", False)),
+        ).screenshot and _EDUCATION_CONTROLLER.action_states({item_id: item}).screenshot
+        self.education_queue_menu.add_command(
+            label="重新截图" if item.get("screenshot_path") else "保存此项截图",
+            command=lambda iid=item_id: self._capture_education_results(iid),
+            state="normal" if can_capture else "disabled",
         )
         self.education_queue_menu.add_separator()
         self.education_queue_menu.add_command(
