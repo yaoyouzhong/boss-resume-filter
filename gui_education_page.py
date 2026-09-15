@@ -327,6 +327,13 @@ def build_education_page(
     queue_scrollbar.grid(row=0, column=1, sticky="ns")
     queue_scrollbar.grid_remove()
     queue_tree.bind("<<TreeviewSelect>>", host._on_education_queue_select)
+
+    def remove_selected_on_delete(_event: tk.Event) -> str:
+        if queue_tree.selection():
+            host._remove_selected_education_images()
+        return "break"
+
+    queue_tree.bind("<Delete>", remove_selected_on_delete)
     queue_tree.bind("<Motion>", host._on_education_queue_motion, add="+")
     queue_tree.bind("<Leave>", host.feedback_support.hide_tooltip, add="+")
     queue_tree.bind("<Button-3>", host._show_education_queue_context_menu)

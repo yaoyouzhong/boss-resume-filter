@@ -2354,7 +2354,7 @@ def wait_for_chsi_result_images(context: Any, *, max_checks: int = 21) -> None:
             return
         if attempt + 1 < max_checks:
             time.sleep(0.25)
-    raise ChsiResultNotReadyError("尚未检测到已加载完成的结果照片，请等网页照片显示后再次点击一键批量截图")
+    raise ChsiResultNotReadyError("尚未检测到已加载完成的结果照片，请等网页照片显示后重新截图")
 
 
 def capture_chsi_result_png(page: Any, expected_name: str) -> bytes:

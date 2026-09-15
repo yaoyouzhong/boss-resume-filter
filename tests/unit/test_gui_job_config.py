@@ -9850,6 +9850,7 @@ def test_education_queue_context_menu_actions_target_only_right_clicked_row():
     gui._recognize_education_image = Mock()
     gui._fill_chsi_page = Mock()
     gui._remove_education_items = Mock()
+    gui._capture_education_results = Mock()
 
     gui._show_education_queue_context_menu(
         types.SimpleNamespace(y=10, x_root=100, y_root=120)
@@ -9867,6 +9868,7 @@ def test_education_queue_context_menu_actions_target_only_right_clicked_row():
     gui._recognize_education_image.assert_called_once_with(["education_2"])
     gui._fill_chsi_page.assert_called_once_with(["education_2"])
     gui._remove_education_items.assert_called_once_with(["education_2"])
+    gui._capture_education_results.assert_called_once_with("education_2")
 
 
 def test_education_page_exposes_repeatable_batch_screenshot_controls_and_status():
@@ -10010,6 +10012,109 @@ def test_education_screenshot_cancelled_folder_selection_does_not_touch_browser(
     gui._select_education_screenshot_folder.assert_called_once_with()
     gui._get_education_tab.assert_not_called()
     assert gui.education_screenshot_running is False
+
+
+def _check_single_education_capture(*, failure=False, first_save=False):
+    """Exercise GUI dispatch through the real controller and PNG writer."""
+    from io import BytesIO
+    from PIL import Image
+    from education_certificate import ChsiResultNotReadyError, is_valid_chsi_screenshot
+
+    class ImmediateThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    with tempfile.TemporaryDirectory() as directory:
+        folder = Path(directory)
+        target = folder / "selected.png"
+        other = folder / "other.png"
+        if not first_save:
+            target.write_bytes(b"old-selected")
+        other.write_bytes(b"other-unchanged")
+        gui = object.__new__(BossFilterGUI)
+        gui.education_items = {
+            "selected": {
+                "path": "selected.jpg", "name": "张三",
+                "certificate_number": "123456789012345678",
+                "status": "核验结果已生成", "certificate_type": "education",
+            },
+            "other": {
+                "path": "other.jpg", "name": "李四",
+                "certificate_number": "223456789012345678",
+                "status": "核验结果已生成", "screenshot_path": str(other),
+                "screenshot_attempt_status": "已保存",
+            },
+        }
+        if not first_save:
+            gui.education_items["selected"].update(
+                screenshot_filename=target.name, screenshot_directory=str(folder.resolve()),
+                screenshot_path=str(target),
+            )
+        untouched = dict(gui.education_items["other"])
+        page = types.SimpleNamespace(url="https://www.chsi.com.cn/xlcx/result")
+        gui.education_tabs = {"selected": page, "other": object()}
+        gui.browser_page = object()
+        gui.education_screenshot_running = False
+        gui.education_recognition_running = False
+        gui.education_screenshot_folder = ""
+        gui.education_screenshot_summary_var = Mock()
+        gui.education_screenshot_folder_var = Mock()
+        gui._education_browser_lock = threading.RLock()
+        for name in ("_save_current_education_fields", "_refresh_education_queue_summary",
+                     "_update_education_queue_row", "_update_education_workflow_progress",
+                     "_apply_recovered_education_result_pages"):
+            setattr(gui, name, Mock())
+        gui._find_open_education_result_pages = Mock(return_value=dict(gui.education_tabs))
+        gui._is_browser_page_alive = Mock(return_value=True)
+        gui.run_on_ui = lambda callback: callback()
+        def choose_folder():
+            gui.education_screenshot_folder = str(folder)
+            return True
+        gui._select_education_screenshot_folder = Mock(side_effect=choose_folder)
+        buffer = BytesIO()
+        Image.new("RGB", (160, 200), "white").save(buffer, format="PNG")
+        with (
+            patch("gui_main.threading.Thread", ImmediateThread),
+            patch("education_certificate.capture_chsi_result_png",
+                  side_effect=ChsiResultNotReadyError("照片尚未加载") if failure else None,
+                  return_value=buffer.getvalue()) as capture,
+        ):
+            gui._capture_education_results("selected")
+        capture.assert_called_once_with(page, "张三")
+        assert gui.education_items["other"] == untouched
+        assert other.read_bytes() == b"other-unchanged"
+        assert gui._education_screenshot_total == 1
+        assert gui.education_screenshot_running is False
+        gui._apply_recovered_education_result_pages.assert_called_once_with({"selected": page})
+        if first_save:
+            gui._select_education_screenshot_folder.assert_called_once()
+        else:
+            gui._select_education_screenshot_folder.assert_not_called()
+        if failure:
+            assert target.read_bytes() == b"old-selected"
+            assert gui.education_items["selected"]["screenshot_path"] == str(target)
+            assert "原截图已保留" in gui.education_items["selected"]["screenshot_detail"]
+        else:
+            saved = Path(gui.education_items["selected"]["screenshot_path"])
+            assert is_valid_chsi_screenshot(saved)
+            if not first_save:
+                assert saved.resolve() == target.resolve()
+            assert len(list(folder.glob("*.png"))) == 2
+
+
+def test_single_education_screenshot_replaces_only_selected_file():
+    _check_single_education_capture()
+
+
+def test_single_education_screenshot_preserves_old_image_when_photo_pending():
+    _check_single_education_capture(failure=True)
+
+
+def test_single_education_screenshot_first_save_selects_folder():
+    _check_single_education_capture(first_save=True)
 
 
 def test_education_result_watcher_marks_record_ready_on_ui_thread():
