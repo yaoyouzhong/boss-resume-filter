@@ -2998,6 +2998,7 @@ class BossFilterGUI:
         )
         self.education_status_var = widgets.status_var
         self.education_warning_var = widgets.warning_var
+        self.education_duplicate_notice_var = widgets.duplicate_notice_var
         self.education_batch_status_var = widgets.batch_status_var
         self.education_recognition_progress_frame = (
             widgets.recognition_progress_frame
@@ -3009,6 +3010,8 @@ class BossFilterGUI:
         self.education_recognition_progress_bar = widgets.recognition_progress_bar
         self._education_workflow_progress_stage = ""
         self.education_recognize_btn = widgets.recognize_button
+        self.education_confirm_btn = widgets.confirm_button
+        self.education_confirmation_visible_var = widgets.confirmation_visible_var
         self.education_fill_btn = widgets.fill_button
         self.education_captcha_btn = widgets.captcha_button
         self.education_screenshot_folder = screenshot_folder
@@ -3138,6 +3141,23 @@ class BossFilterGUI:
 
     def _refresh_education_batch_status(self) -> None:
         """Render a quiet, queue-wide recognition and CHSI status ledger."""
+        duplicates = _EDUCATION_CONTROLLER.duplicate_certificate_ids(self.education_items)
+        notice_var = getattr(self, "education_duplicate_notice_var", None)
+        if notice_var is not None:
+            previous = getattr(self, "_education_duplicate_ids", set())
+            current = set(duplicates)
+            self._education_duplicate_ids = current
+            self._education_duplicate_groups = duplicates
+            for item_id in previous ^ current:
+                self._update_education_queue_row(item_id)
+            notice = ""
+            if duplicates:
+                notice = f"疑似重复证书 {len(duplicates)} 项：证书类型和编号相同。记录均已保留，请核对后自行移除多余项。"
+                peers = duplicates.get(self.education_current_id, ())
+                if peers:
+                    filenames = "、".join(Path(self.education_items[peer]["path"]).name for peer in peers)
+                    notice += f"\n当前记录与以下文件重复：{filenames}"
+            notice_var.set(notice)
         batch_status_var = getattr(self, "education_batch_status_var", None)
         if batch_status_var is None:
             return
@@ -3150,7 +3170,7 @@ class BossFilterGUI:
         summary_parts = [f"{summary.total} 张证书"]
         if summary.information_ready:
             summary_parts.append(
-                f"信息就绪 {summary.information_ready}/{summary.total}"
+                f"可验证 {len(_EDUCATION_CONTROLLER.verification_item_ids(self.education_items))} 项"
             )
         if summary.recognizing:
             summary_parts.append(f"识别中 {summary.recognizing}")
@@ -3159,7 +3179,7 @@ class BossFilterGUI:
         if summary.recognition_failed:
             summary_parts.append(f"识别失败 {summary.recognition_failed}")
         if summary.manual_review:
-            summary_parts.append(f"待补全 {summary.manual_review}")
+            summary_parts.append(f"待核对 {summary.manual_review} 项")
         verification_parts = []
         if summary.verification_not_started:
             verification_parts.append(f"待验证 {summary.verification_not_started}")
@@ -3315,9 +3335,12 @@ class BossFilterGUI:
         """Show batch recognition progress next to the action that started it."""
         total = max(1, int(total))
         completed = max(0, min(int(completed), total))
-        summary = _EDUCATION_CONTROLLER.summarize_queue_statuses(
-            self.education_items
+        target_ids = getattr(self, "_education_recognition_target_ids", None)
+        batch_items = (
+            {item_id: self.education_items[item_id] for item_id in target_ids if item_id in self.education_items}
+            if target_ids else self.education_items
         )
+        summary = _EDUCATION_CONTROLLER.summarize_queue_statuses(batch_items)
         success = summary.recognized
         manually_completed = summary.manually_completed
         manual = summary.manual_review
@@ -3364,11 +3387,36 @@ class BossFilterGUI:
                 getattr(self, "education_screenshot_running", False)
             ),
         )
-        self.education_recognize_btn.configure(
-            state="normal" if action_states.recognize else "disabled"
-        )
+        if self.education_recognition_running:
+            stop_event = getattr(self, "_education_recognition_stop", None)
+            stopping = stop_event is not None and stop_event.is_set()
+            self.education_recognize_btn.configure(
+                state="disabled" if stopping else "normal",
+                text=" 正在停止…" if stopping else " 停止识别",
+                image="",
+                command=self._stop_education_recognition,
+            )
+        else:
+            self.education_recognize_btn.configure(
+                state="normal" if action_states.recognize and _EDUCATION_CONTROLLER.recognition_item_ids(self.education_items) else "disabled",
+                text=" 1 识别证书",
+                image=getattr(self.education_recognize_btn, "_icon_ref", ""),
+                command=self._recognize_education_image,
+            )
+        confirm_button = getattr(self, "education_confirm_btn", None)
+        if confirm_button is not None:
+            current = self.education_items.get(self.education_current_id, {})
+            visibility = getattr(self, "education_confirmation_visible_var", None)
+            if visibility is not None:
+                visibility.set(current.get("status") == "待人工确认")
+            if current.get("status") == "待人工确认":
+                confirm_button.pack(anchor="w", pady=(0, 8))
+                confirm_button.configure(state="disabled" if self.education_recognition_running else "normal")
+            else:
+                confirm_button.pack_forget()
         self.education_fill_btn.configure(
-            state="normal" if action_states.verify else "disabled"
+            state="normal" if action_states.verify else "disabled",
+            text=" 2 验证证书",
         )
         screenshot_btn = getattr(self, "education_screenshot_btn", None)
         if screenshot_btn is not None:
@@ -3384,6 +3432,43 @@ class BossFilterGUI:
                 text=f" 重试异常验证码（{len(retry_ids)}）",
                 state="normal" if action_states.retry_captcha else "disabled",
             )
+
+    def _confirm_current_education_fields(self):
+        self._save_current_education_fields()
+        item = self.education_items.get(self.education_current_id)
+        if not item or item.get("status") != "待人工确认" or self.education_recognition_running or getattr(self, "education_screenshot_running", False):
+            return
+        from education_certificate import validate_chsi_fields
+        try:
+            _EDUCATION_CONTROLLER.confirm_fields(item, validate_chsi_fields)
+        except ValueError as error:
+            self.education_warning_var.set(str(error))
+            return
+        self.education_status_var.set(item["detail"])
+        self.education_warning_var.set("")
+        self._update_education_queue_row(self.education_current_id)
+        self._refresh_education_queue_summary()
+
+    def _stop_education_recognition(self):
+        event = getattr(self, "_education_recognition_stop", None)
+        if event is not None and self.education_recognition_running:
+            event.set()
+            self.education_recognition_progress_text_var.set("正在停止识别，取消等待当前请求；已完成结果保留")
+            self._refresh_education_action_states()
+
+    def _poll_education_recognition(self):
+        if not self.education_recognition_running:
+            return
+        now = time.monotonic()
+        for item_id, (stage, started) in self._education_recognition_stages.items():
+            item = self.education_items.get(item_id)
+            if item is None or item.get("status") != "识别中":
+                continue
+            item["detail"] = f"{stage} · 已用 {int(now - started)} 秒"
+            self._update_education_queue_row(item_id)
+            if self.education_current_id == item_id:
+                self.education_status_var.set(item["detail"])
+        self.root.after(1000, self._poll_education_recognition)
 
     def _on_education_fields_edited(self, *_trace_args):
         """Keep the current queue item and action gate in sync while editing."""
@@ -3405,23 +3490,27 @@ class BossFilterGUI:
             and item.get("certificate_number") == certificate_number
         ):
             return
-        if certificate_type != item.get("certificate_type", "education"):
-            status = str(item.get("status") or "")
-            if (
-                getattr(self, "education_recognition_running", False)
-                or getattr(self, "education_screenshot_running", False)
-                or status in EDUCATION_VERIFICATION_PENDING_STATUSES
-                or status == "打开中" or status.startswith("正在")
-            ):
-                self._set_education_form_fields(
-                    item.get("name", ""), item.get("certificate_number", ""),
-                    item.get("certificate_type", "education"),
-                )
-                self.education_warning_var.set("当前证书正在处理，请完成本轮核验后再修改类型。")
-                return
-            getattr(self, "education_tabs", {}).pop(self.education_current_id, None)
-            item.update(screenshot_status="", screenshot_detail="", screenshot_path="")
-            item.pop("_screenshot_primary_status", None)
+        status = str(item.get("status") or "")
+        if (
+            getattr(self, "education_recognition_running", False)
+            or getattr(self, "education_screenshot_running", False)
+            or status in EDUCATION_VERIFICATION_PENDING_STATUSES
+            or status == "打开中" or status.startswith("正在")
+        ):
+            self._set_education_form_fields(
+                item.get("name", ""), item.get("certificate_number", ""),
+                item.get("certificate_type", "education"),
+            )
+            self.education_warning_var.set("当前证书正在处理，请完成本轮核验后再修改关键信息。")
+            return
+        changed = {field: value for field, value in {
+            "name": name, "certificate_number": certificate_number, "certificate_type": certificate_type,
+        }.items() if item.get(field) != value}
+        item.setdefault("manual_fields", {}).update(changed)
+        item["critical_conflicts"] = tuple(field for field in item.get("critical_conflicts", ()) if field not in changed)
+        item["query_revision"] = item.get("query_revision", 0) + 1
+        getattr(self, "education_tabs", {}).pop(self.education_current_id, None)
+        item.pop("_screenshot_primary_status", None)
         item.pop("screenshot_filename", None)
         item.pop("screenshot_directory", None)
         item.update(screenshot_status="", screenshot_detail="", screenshot_path="")
@@ -3431,6 +3520,7 @@ class BossFilterGUI:
         previous_status = str(item.get("status") or "待识别")
         editable_terminal_statuses = {
             "待识别",
+            "信息已修改",
             "已识别",
             "识别失败",
             "待人工确认",
@@ -3440,7 +3530,7 @@ class BossFilterGUI:
             EDUCATION_RESULT_READY_STATUS,
         }
         if previous_status in editable_terminal_statuses:
-            item["status"] = "信息已修改"
+            item["status"] = "待人工确认" if item.get("critical_conflicts") else "信息已修改"
             item["manually_edited"] = True
             item["detail"] = "证书类型、姓名或证书编号已修改，请重新执行第 2 步。"
             item["warnings"] = "请确认修改内容与证书原件一致。"
@@ -3449,6 +3539,10 @@ class BossFilterGUI:
                 item["screenshot_detail"] = ""
                 item["screenshot_path"] = ""
                 item.pop("_screenshot_primary_status", None)
+        for attribute, value in (("education_status_var", item.get("detail", "")), ("education_warning_var", item.get("warnings", ""))):
+            variable = getattr(self, attribute, None)
+            if variable is not None:
+                variable.set(value)
         self._update_education_queue_row(self.education_current_id)
         self._refresh_education_batch_status()
         self._refresh_education_action_states()
@@ -3773,10 +3867,12 @@ class BossFilterGUI:
                     text="第 3 步：未检测到最终核验结果",
                 )
                 self._refresh_education_queue_summary()
-                messagebox.showinfo(
+                messagebox.show_notice(
                     "尚无可截图结果",
-                    "当前 Chrome 只有查询表单、验证码或扫码页面，"
-                    "尚未出现最终核验结果；未启动新的浏览器。",
+                    headline="核验结果尚未生成",
+                    message="浏览器仍停留在查询、验证码或扫码页面。",
+                    notice="请在浏览器中完成验证，看到核验结果后，再点击“一键截图”。",
+                    kind="info",
                     parent=self.root,
                 )
                 return
@@ -3877,6 +3973,12 @@ class BossFilterGUI:
                     with self._education_browser_lock:
                         return capture_chsi_result_png(page, name)
 
+                def validate_page(page, item):
+                    from education_certificate import read_chsi_result_page_text, is_chsi_result_text
+                    with self._education_browser_lock:
+                        text = read_chsi_result_page_text(page)
+                        return is_chsi_result_text(text, item.get("name", "")) and _EDUCATION_CONTROLLER.result_number_matches(text, item, bound=True)
+
                 def on_progress(result):
                     self.run_on_ui(
                         lambda current=result: (
@@ -3894,6 +3996,7 @@ class BossFilterGUI:
                         existing_validator=is_valid_chsi_screenshot,
                         page_alive=page_alive,
                         capture=capture,
+                        validate_page=validate_page,
                         save=save_chsi_result_screenshot,
                         replace=lambda raw, target: save_chsi_result_screenshot(
                             raw, target, replace_existing=True,
@@ -3989,9 +4092,7 @@ class BossFilterGUI:
         item = self.education_items.get(item_id)
         if not item:
             return
-        item["name"] = self.education_name_var.get().strip()
-        item["certificate_number"] = self.education_number_var.get().strip()
-        self._update_education_queue_row(item_id)
+        self._on_education_fields_edited()
 
     def _update_education_queue_row(self, item_id):
         """刷新一条队列记录。"""
@@ -4028,7 +4129,7 @@ class BossFilterGUI:
         self.education_queue_tree.item(
             item_id,
             values=(
-                f"[{type_label}] {Path(item['path']).name}",
+                ("[疑似重复] " if item_id in getattr(self, "_education_duplicate_groups", {}) else "") + f"[{type_label}] {Path(item['path']).name}",
                 item.get("name", ""),
                 item.get("certificate_number", ""),
                 item.get("school", ""),
@@ -4068,7 +4169,7 @@ class BossFilterGUI:
         tree = self.education_queue_tree
         item_id = tree.identify_row(event.y)
         column_id = tree.identify_column(event.x)
-        tooltip_columns = {"#1": 0, "#4": 3, "#5": 4, "#7": 6}
+        tooltip_columns = {"#1": 0, "#4": 3, "#5": 4, "#6": 5, "#7": 6}
         value_index = tooltip_columns.get(column_id)
         if not item_id or value_index is None:
             self.feedback_support.hide_tooltip()
@@ -4077,7 +4178,10 @@ class BossFilterGUI:
         if len(values) <= value_index:
             self.feedback_support.hide_tooltip()
             return
-        if column_id == "#7":
+        if column_id == "#6":
+            item = self.education_items.get(item_id) or {}
+            full_text = str(item.get("detail") or values[value_index] or "")
+        elif column_id == "#7":
             item = self.education_items.get(item_id) or {}
             full_text = str(
                 item.get("screenshot_detail") or values[value_index] or ""
@@ -4115,19 +4219,21 @@ class BossFilterGUI:
         if not item_id:
             return
         self._save_current_education_fields()
-        self.education_queue_tree.selection_set(item_id)
+        if item_id not in self.education_queue_tree.selection():
+            self.education_queue_tree.selection_set(item_id)
         self.education_queue_tree.focus(item_id)
         self._on_education_queue_select()
 
+        selected_ids = tuple(self.education_queue_tree.selection())
         # 重建右键菜单
         self.education_queue_menu.delete(0, "end")
         self.education_queue_menu.add_command(
-            label="识别证书",
-            command=lambda iid=item_id: self._recognize_education_image([iid]),
+            label=f"重新识别所选（{len(selected_ids)}）",
+            command=lambda ids=selected_ids: self._recognize_education_image(list(ids), force=True),
         )
         self.education_queue_menu.add_command(
-            label="学信网验证",
-            command=lambda iid=item_id: self._fill_chsi_page([iid]),
+            label=f"验证所选已就绪项（{len(selected_ids)}）",
+            command=lambda ids=selected_ids: self._fill_chsi_page(list(ids)),
         )
         item = self.education_items[item_id]
         can_capture = _EDUCATION_CONTROLLER.action_states(
@@ -4397,7 +4503,7 @@ class BossFilterGUI:
         """获取学历核验使用的 API 配置。优先 education_model_ref，回退默认 AI 模型。"""
         return _EDUCATION_CONTROLLER.resolve_api_config(self.api_config or {})
 
-    def _recognize_education_image(self, item_ids=None):
+    def _recognize_education_image(self, item_ids=None, *, force=False):
         """识别指定证书；工具栏调用时最多三路并发识别完整队列。"""
         self._save_current_education_fields()
         if item_ids is None:
@@ -4407,8 +4513,11 @@ class BossFilterGUI:
                 item_id for item_id in item_ids
                 if item_id in self.education_items
             ]
+        item_ids = list(_EDUCATION_CONTROLLER.recognition_item_ids(
+            {iid: self.education_items[iid] for iid in item_ids}, force=force,
+        ))
         if not item_ids:
-            messagebox.showinfo("请导入证书", "请先导入学历或学位证书。", parent=self.root)
+            messagebox.showinfo("没有待识别证书", "已完成或人工修改的记录已跳过；需要重识别时请使用右键菜单。", parent=self.root)
             return
         action_states = _EDUCATION_CONTROLLER.action_states(
             self.education_items,
@@ -4467,6 +4576,11 @@ class BossFilterGUI:
                 ):
                     return
         self.education_recognition_running = True
+        self._education_recognition_stop = threading.Event()
+        self._education_recognition_stages = {}
+        self._education_recognition_target_ids = tuple(item_ids)
+        previous_items = {iid: dict(self.education_items[iid]) for iid in item_ids}
+        self.root.after(1000, self._poll_education_recognition)
         vision_model = str(vision_config.get("model") or "当前模型")
         rotation_locked = getattr(self, "education_rotation_locked", set())
         manual_rotation = getattr(self, "education_manual_rotation", {})
@@ -4478,8 +4592,8 @@ class BossFilterGUI:
                 )
             else:
                 item.pop("recognition_rotation", None)
-            item["status"] = "识别中"
-            item["detail"] = f"正在使用 {vision_model} 识别证书..."
+            item["status"] = "排队中"
+            item["detail"] = f"排队中 · {vision_model}"
             item["warnings"] = ""
             self._update_education_queue_row(item_id)
         current_item = self.education_items.get(self.education_current_id)
@@ -4516,6 +4630,15 @@ class BossFilterGUI:
             def apply_one_result(item_id, result, error_text):
                 if item_id in completed_ids:
                     return
+                if error_text == "识别已停止":
+                    if item_id in self.education_items:
+                        self.education_items[item_id].update(previous_items[item_id])
+                        self._update_education_queue_row(item_id)
+                        if self.education_current_id == item_id:
+                            restored = self.education_items[item_id]
+                            self.education_status_var.set(restored.get("detail", ""))
+                            self.education_warning_var.set(restored.get("warnings", ""))
+                    return
                 updated_ids = _EDUCATION_CONTROLLER.apply_recognition_results(
                     self.education_items,
                     {item_id: (result, error_text)},
@@ -4544,6 +4667,11 @@ class BossFilterGUI:
             def apply_stage(item_id, stage, percent):
                 if item_id in completed_ids or item_id not in stage_percent:
                     return
+                item = self.education_items.get(item_id)
+                if item is not None:
+                    item["status"] = "识别中"
+                    old = self._education_recognition_stages.get(item_id)
+                    self._education_recognition_stages[item_id] = (stage, old[1] if old else time.monotonic())
                 stage_percent[item_id] = max(
                     stage_percent[item_id],
                     max(0, min(int(percent), 99)),
@@ -4578,6 +4706,7 @@ class BossFilterGUI:
                     ),
                     on_result=on_result,
                     on_stage=on_stage,
+                    stop_event=self._education_recognition_stop,
                 )
             except Exception as error:
                 error_text = str(error) or type(error).__name__
@@ -4596,6 +4725,8 @@ class BossFilterGUI:
                     completed=len(completed_ids),
                     running=False,
                 )
+                if self._education_recognition_stop.is_set():
+                    self.education_recognition_progress_text_var.set(f"本轮已停止 · 已完成 {len(completed_ids)}/{len(item_ids)}，其余保留原状态")
 
             self.run_on_ui(show_results)
         threading.Thread(target=worker, daemon=True).start()
@@ -4612,6 +4743,13 @@ class BossFilterGUI:
             ]
         if not item_ids:
             messagebox.showinfo("请导入证书", "请先导入学历或学位证书。", parent=self.root)
+            return
+        requested_count = len(item_ids)
+        item_ids = list(_EDUCATION_CONTROLLER.verification_item_ids(
+            {iid: self.education_items[iid] for iid in item_ids}
+        ))
+        if not item_ids:
+            messagebox.showinfo("暂无可验证记录", "请先补全或核对所选证书的关键信息。", parent=self.root)
             return
         action_states = _EDUCATION_CONTROLLER.action_states(
             self.education_items,
@@ -4651,11 +4789,12 @@ class BossFilterGUI:
         self._update_education_workflow_progress(
             stage="verification",
             percent=0,
-            text=f"第 2 步：正在准备 0/{len(prepared)} 个学信网页面…",
+            text=f"第 2 步：正在准备 0/{len(prepared)} 个学信网页面 · 其余 {requested_count - len(prepared)} 项暂不处理",
         )
         for item_id, _, _ in prepared:
             item = self.education_items.get(item_id)
             if item:
+                item["query_revision"] = item.get("query_revision", 0) + 1
                 item.pop("screenshot_filename", None)
                 item.pop("screenshot_directory", None)
                 item.update(screenshot_status="", screenshot_detail="", screenshot_path="")
@@ -4913,6 +5052,25 @@ class BossFilterGUI:
             refresh_chsi_qr_code,
         )
 
+        from education_controller import EducationBrowserSnapshotCache
+        with self._education_browser_lock:
+            if not hasattr(self, "_education_browser_snapshots"):
+                self._education_browser_snapshots = EducationBrowserSnapshotCache(time.monotonic)
+            snapshots = self._education_browser_snapshots
+
+        def read_snapshot(candidate):
+            return snapshots.read(("snapshot", id(candidate)), lambda: read_chsi_page_snapshot(candidate))
+
+        def probe_alive(candidate):
+            return snapshots.read(("alive", id(candidate)), lambda: self._is_browser_page_alive(candidate))
+
+        query_item = dict(self.education_items.get(item_id, {}))
+        query_revision = query_item.get("query_revision", 0)
+
+        def query_current():
+            current = self.education_items.get(item_id)
+            return not getattr(self, "_education_closing", False) and current is not None and current.get("query_revision", 0) == query_revision
+
         detected_result = {"kind": ""}
         qr_state_reported = {"value": False}
         current_page_ref = {
@@ -4922,20 +5080,37 @@ class BossFilterGUI:
         last_qr_refresh = {"at": 0.0}
 
         def page_alive(_current_page):
+            if not query_current():
+                return False
             with self._education_browser_lock:
-                return self._is_browser_page_alive(current_page_ref["value"])
+                return probe_alive(current_page_ref["value"])
+
+        def recover_page(_current_page):
+            # The public tab reconnect() resets the shared browser connection.
+            # Use a tab-only recovery so parallel navigation remains undisturbed.
+            if not query_current():
+                return False
+            with self._education_browser_lock:
+                candidate = current_page_ref["value"]
+                try:
+                    snapshots.values.clear()
+                    recovered = BrowserController.recover_tab_connection(candidate)
+                    return query_current() and recovered
+                except Exception as error:
+                    self._log_education_error("恢复标签页连接", error, item_id)
+                    return False
 
         def read_text(_current_page):
             with self._education_browser_lock:
                 current_page = current_page_ref["value"]
-                snapshot = read_chsi_page_snapshot(current_page)
+                snapshot = read_snapshot(current_page)
                 state = classify_chsi_page_state(snapshot)
                 if state not in {"record", "not_found"}:
                     base_page = getattr(self, "browser_page", None)
                     try:
                         open_pages = (
-                            list(base_page.get_tabs() or [])
-                            if self._is_browser_page_alive(base_page)
+                            snapshots.read(("tabs", id(base_page)), lambda: list(base_page.get_tabs() or []))
+                            if probe_alive(base_page)
                             else []
                         )
                     except Exception:
@@ -4958,16 +5133,16 @@ class BossFilterGUI:
                         (item_id,),
                         open_pages,
                         {},
-                        page_alive=self._is_browser_page_alive,
+                        page_alive=probe_alive,
                         read_text=lambda candidate: str(
-                            read_chsi_page_snapshot(candidate).get("text") or ""
+                            read_snapshot(candidate).get("text") or ""
                         ),
                         is_result_text=is_chsi_result_text,
                     )
                     matched_page = matches.get(item_id)
                     if matched_page is not None:
                         current_page_ref["value"] = matched_page
-                        snapshot = read_chsi_page_snapshot(matched_page)
+                        snapshot = read_snapshot(matched_page)
                 last_snapshot["value"] = snapshot
                 return str(snapshot.get("text") or "")
 
@@ -4996,7 +5171,7 @@ class BossFilterGUI:
 
                 def show_qr_expired():
                     item = self.education_items.get(item_id)
-                    if not item:
+                    if not item or not query_current():
                         return
                     item["status"] = (
                         EDUCATION_WAITING_FOR_SCAN_STATUS
@@ -5025,7 +5200,7 @@ class BossFilterGUI:
 
                 def show_waiting_for_scan():
                     item = self.education_items.get(item_id)
-                    if not item or item.get("status") not in {
+                    if not item or not query_current() or item.get("status") not in {
                         "待人工验证",
                         "验证码识别失败",
                         "结果未确认",
@@ -5049,6 +5224,12 @@ class BossFilterGUI:
                 current_page_ref["value"], self.education_items.get(item_id, {}),
             ):
                 return False
+            if kind == "record" and (
+                not is_chsi_result_text(text, expected_name)
+                or not _EDUCATION_CONTROLLER.result_number_matches(text, query_item, bound=True)
+            ):
+                detected_result["kind"] = "identity_mismatch"
+                return True
             if kind:
                 detected_result["kind"] = kind
             return bool(kind)
@@ -5060,21 +5241,17 @@ class BossFilterGUI:
             read_text=read_text,
             is_result_text=is_terminal_result,
             sleep=time.sleep,
-            max_checks=1800,
+            max_checks=None,
             interval_seconds=1.0,
             max_unavailable_checks=3,
+            should_stop=lambda: not query_current(),
+            recover_page=recover_page,
+            poll_interval=lambda check: 1.0 if check < 60 else (3.0 if check < 140 else 10.0),
         )
         if not ready:
-            try:
-                still_connected = page_alive(page)
-            except Exception:
-                still_connected = False
-            if still_connected:
-                return
-
             def show_disconnected():
                 item = self.education_items.get(item_id)
-                if not item or item.get("status") not in {
+                if not item or not query_current() or item.get("status") not in {
                     "已提交查询",
                     "待人工验证",
                     "验证码识别失败",
@@ -5101,7 +5278,7 @@ class BossFilterGUI:
 
         def show_ready():
             item = self.education_items.get(item_id)
-            if not item or item.get("status") not in {
+            if not item or not query_current() or item.get("status") not in {
                 "已提交查询",
                 "待人工验证",
                 "验证码识别失败",
@@ -5113,7 +5290,13 @@ class BossFilterGUI:
             }:
                 return
             self.education_tabs[item_id] = current_page_ref["value"]
-            if detected_result["kind"] == "captcha_error":
+            if detected_result["kind"] == "identity_mismatch":
+                item["status"] = "待人工确认"
+                item["critical_conflicts"] = ("name", "certificate_number")
+                item["detail"] = "结果页与姓名或证书编号不匹配，请核对后重新验证"
+                item["warnings"] = "已阻止关联该结果页，请核对当前证书的姓名和编号。"
+                self.education_tabs.pop(item_id, None)
+            elif detected_result["kind"] == "captcha_error":
                 item["status"] = "验证码识别失败"
                 item["detail"] = (
                     "学信网页面明确提示图片验证码输入有误，可立即重试。"
@@ -5194,10 +5377,17 @@ class BossFilterGUI:
             log_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             item_text = f" item={item_id}" if item_id else ""
+            causes = []
+            current_error = error
+            seen = set()
+            while current_error is not None and id(current_error) not in seen:
+                seen.add(id(current_error))
+                causes.append(f"{type(current_error).__name__}: {current_error}")
+                current_error = current_error.__cause__ or current_error.__context__
             with (log_dir / "education_tool.log").open("a", encoding="utf-8") as stream:
                 stream.write(
                     f"[{timestamp}] {stage}{item_text}: "
-                    f"{type(error).__name__}: {error}\n"
+                    + " <- ".join(causes) + "\n"
                 )
         except OSError:
             pass
@@ -5568,16 +5758,34 @@ class BossFilterGUI:
 
     def _get_education_tab_locked(self, item_id: str | None):
         """在学历浏览器锁内获取 tab，并限制每轮核验只启动一次 Chrome。"""
+        def page_alive(candidate):
+            if candidate is None:
+                return False
+            for attempt in range(3):
+                if self._is_browser_page_alive(candidate):
+                    return True
+                if attempt < 2:
+                    time.sleep(0.15 * (attempt + 1))
+            return False
+
+        # Closing the original tab must not launch another browser while one
+        # of this session's certificate tabs is still available.
+        if not page_alive(self.browser_page):
+            for candidate in getattr(self, "education_tabs", {}).values():
+                if page_alive(candidate):
+                    self.browser_page = candidate
+                    self.browser_connected = True
+                    break
         # item_id 为 None：仅确保 base 浏览器连接可用
         if item_id is None:
             base_page = self.browser_page
-            if self._is_browser_page_alive(base_page):
+            if page_alive(base_page):
                 return None
             self.browser_page = None
             self.browser_connected = False
             if self._try_reconnect_browser():
                 candidate = self.browser_page
-                if self._is_browser_page_alive(candidate):
+                if page_alive(candidate):
                     return None
                 self.browser_page = None
                 self.browser_connected = False
@@ -5592,19 +5800,26 @@ class BossFilterGUI:
 
         # 检查已有的 per-item tab
         tab = self.education_tabs.get(item_id)
-        if self._is_browser_page_alive(tab):
+        if page_alive(tab):
+            getattr(self, "_education_unready_tabs", set()).discard(item_id)
             return tab
+        if item_id in getattr(self, "_education_unready_tabs", set()) and tab is not None:
+            try:
+                tab.close()
+            except Exception as error:
+                raise RuntimeError("上次创建的标签页仍无法连接或关闭，请稍后重试") from error
+            self._education_unready_tabs.discard(item_id)
         self.education_tabs.pop(item_id, None)
 
         # 确保 base 浏览器连接可用（内部自带锁）
         base_page = self.browser_page
-        if not self._is_browser_page_alive(base_page):
+        if not page_alive(base_page):
             self.browser_page = None
             self.browser_connected = False
             base_page = None
             if self._try_reconnect_browser():
                 candidate = self.browser_page
-                if self._is_browser_page_alive(candidate):
+                if page_alive(candidate):
                     base_page = candidate
                 else:
                     self.browser_page = None
@@ -5625,12 +5840,15 @@ class BossFilterGUI:
         ):
             self.education_tabs[item_id] = base_page
             return base_page
+        if not hasattr(self, "_education_tab_ownership"):
+            self._education_tab_ownership = {}
         try:
-            tab = base_page.new_tab()
-            if not self._is_browser_page_alive(tab):
-                raise RuntimeError("新标签页连接失败")
+            tab = BrowserController.create_owned_tab(
+                base_page, ownership=self._education_tab_ownership,
+                item_id=item_id, sleep=time.sleep,
+            )
         except Exception as error:
-            if not self._is_browser_page_alive(base_page):
+            if not page_alive(base_page):
                 self.browser_page = None
                 self.browser_connected = False
             raise RuntimeError(
@@ -11263,6 +11481,7 @@ class BossFilterGUI:
         ):
             return
 
+        self._education_closing = True
         self.is_running = False
         self.stop_event.set()
         self._persist_greet_queue()

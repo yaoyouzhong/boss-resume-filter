@@ -9,6 +9,9 @@ import logging
 import os
 import re
 import unicodedata
+import time
+from contextvars import ContextVar
+from functools import wraps
 from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
@@ -16,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+import threading
 from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
 
 from ai_adapter import build_request, detect_protocol, friendly_http_error, normalize_response
@@ -28,6 +32,108 @@ JPEG_QUALITY = 95
 CERTIFICATE_OUTPUT_TOKENS = 4096
 CERTIFICATE_RETRY_OUTPUT_TOKENS = 8192
 logger = logging.getLogger(__name__)
+_recognition_budget: ContextVar[tuple[float, Any] | None] = ContextVar("certificate_budget", default=None)
+_recognition_network_slots = threading.BoundedSemaphore(3)
+
+
+class RecognitionStopped(RuntimeError):
+    """Cooperative stop between certificate processing steps."""
+
+
+class RecognitionDeadlineExceeded(TimeoutError):
+    """The complete document has used its recognition time allowance."""
+
+
+def _remaining_recognition_time(timeout: float) -> float:
+    budget = _recognition_budget.get()
+    if budget is None:
+        return timeout
+    deadline, stop_event = budget
+    if stop_event is not None and stop_event.is_set():
+        raise RecognitionStopped("识别已停止")
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise RecognitionDeadlineExceeded("本份证书识别超时，已停止追加请求，可人工填写或重新识别")
+    return min(timeout, remaining)
+
+
+def _bounded_recognition(function):
+    @wraps(function)
+    def bounded(*args, total_timeout=180.0, stop_event=None, **kwargs):
+        token = None
+        if _recognition_budget.get() is None:
+            token = _recognition_budget.set((time.monotonic() + total_timeout, stop_event))
+        try:
+            _remaining_recognition_time(total_timeout)
+            result = function(*args, **kwargs)
+            _remaining_recognition_time(total_timeout)
+            return result
+        finally:
+            if token is not None:
+                _recognition_budget.reset(token)
+    return bounded
+
+
+def _post_with_recognition_budget(url, *, headers, body, timeout):
+    """Bound local waiting even if a server keeps a socket alive with slow data.
+
+    An abandoned request cannot publish a result. A bounded set of daemon workers
+    owns outstanding HTTP calls until their socket timeout/response finishes.
+    """
+    if _recognition_budget.get() is None:
+        return requests.post(url, headers=headers, json=body, timeout=timeout)
+    while not _recognition_network_slots.acquire(timeout=0.05):
+        _remaining_recognition_time(timeout)
+    try:
+        request_timeout = _remaining_recognition_time(timeout)
+    except Exception:
+        _recognition_network_slots.release()
+        raise
+    done = threading.Event()
+    lock = threading.Lock()
+    result = {"abandoned": False}
+    post = requests.post
+
+    def run():
+        response = None
+        try:
+            response = post(url, headers=headers, json=body, timeout=request_timeout)
+            with lock:
+                if not result["abandoned"]:
+                    result["response"] = response
+                    response = None
+        except Exception as error:
+            with lock:
+                if not result["abandoned"]:
+                    result["error"] = error
+        finally:
+            try:
+                if response is not None:
+                    response.close()
+            finally:
+                _recognition_network_slots.release()
+                done.set()
+
+    worker = threading.Thread(target=run, daemon=True, name="certificate-http")
+    try:
+        worker.start()
+    except Exception:
+        _recognition_network_slots.release()
+        raise
+    try:
+        while not done.wait(0.05):
+            _remaining_recognition_time(timeout)
+        _remaining_recognition_time(timeout)
+        if "error" in result:
+            raise result["error"]
+        return result["response"]
+    except Exception:
+        with lock:
+            result["abandoned"] = True
+            response = result.pop("response", None)
+        if response is not None:
+            response.close()
+        raise
 CAPTCHA_AUTO_SUBMIT_MIN_CONFIDENCE = 80
 CHSI_QUERY_URL = "https://www.chsi.com.cn/xlcx/lscx/query.do"
 CHSI_DEGREE_QUERY_URL = "https://www.chsi.com.cn/xwcx/lscx/query.do"
@@ -1022,7 +1128,8 @@ def _invoke_model(
     url, headers, body, protocol = build_request(
         config, api_key, messages, max_tokens=max_tokens, temperature=0,
     )
-    response = requests.post(url, headers=headers, json=body, timeout=timeout)
+    response = _post_with_recognition_budget(url, headers=headers, body=body, timeout=_remaining_recognition_time(timeout))
+    _remaining_recognition_time(timeout)
     try:
         response_payload = response.json()
     except ValueError:
@@ -1046,6 +1153,7 @@ def _invoke_model(
     return parsed
 
 
+@_bounded_recognition
 def recognize_certificate_image(
     path: str | Path,
     api_config: dict[str, Any],
@@ -1115,6 +1223,8 @@ def recognize_certificate_image(
             rotation, rotation_confidence = _normalize_orientation(
                 parsed
             )
+        except (RecognitionStopped, RecognitionDeadlineExceeded):
+            raise
         except Exception as error:
             pipeline_warnings.append(
                 "首轮方向与字段识别失败，已自动切换兼容流程"
@@ -1164,6 +1274,8 @@ def recognize_certificate_image(
                     )
             else:
                 pipeline_warnings.append("方向复核置信度不足，已按原方向识别")
+        except (RecognitionStopped, RecognitionDeadlineExceeded):
+            raise
         except Exception as error:
             pipeline_warnings.append(
                 "方向复核失败，已保留当前方向识别"
@@ -1221,6 +1333,8 @@ def recognize_certificate_image(
                 questionable_fields,
                 model=model,
             )
+        except (RecognitionStopped, RecognitionDeadlineExceeded):
+            raise
         except Exception as error:
             raw_conflicts = parsed.get("_critical_conflicts") or []
             if isinstance(raw_conflicts, str):
@@ -1310,6 +1424,7 @@ def build_pdf_text_messages(text: str) -> list[dict[str, Any]]:
     ]
 
 
+@_bounded_recognition
 def recognize_certificate_pdf(
     path: str | Path,
     api_config: dict[str, Any],
@@ -1326,7 +1441,11 @@ def recognize_certificate_pdf(
         text = extractor(path)
     except RuntimeError as error:
         raise ValueError(str(error)) from error
-    if len(text) < 20:
+    text_has_identity = bool(
+        re.search(r"(?:证书编号|电子注册号)\s*[：:]?\s*[0-9A-Za-z][0-9A-Za-z\s-]{5,}", text)
+        and re.search(r"姓名|学生|授予|毕业证书|学位证书|毕业证明", text)
+    )
+    if not text_has_identity:
         from tempfile import TemporaryDirectory
         from education_pdf_images import extract_certificate_pages
 
@@ -1354,8 +1473,10 @@ def recognize_certificate_pdf(
         return max(results, key=lambda result: result.confidence)
     config = dict(api_config)
     messages = build_pdf_text_messages(text)
-    parsed = _invoke_model(config, api_key, messages, timeout=timeout)
+    parsed = _invoke_certificate_model(config, api_key, messages, timeout=timeout, max_tokens=CERTIFICATE_OUTPUT_TOKENS)
     parsed.setdefault("certificate_type", "unknown")
+    result = normalize_recognition(parsed, str(config.get("model") or ""))
+    parsed["_critical_conflicts"] = list(_questionable_recognition_fields(parsed, result))
     return normalize_recognition(parsed, str(config.get("model") or ""))
 
 

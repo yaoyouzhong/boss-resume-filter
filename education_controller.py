@@ -10,6 +10,30 @@ from typing import Any
 
 
 EducationItem = dict[str, Any]
+
+
+class EducationBrowserSnapshotCache:
+    """Share short-lived read-only browser observations under the caller's lock."""
+
+    def __init__(self, clock: Callable[[], float], ttl: float = 0.8):
+        self.clock = clock
+        self.ttl = ttl
+        self.values: dict[Any, tuple[float, Any, Exception | None]] = {}
+
+    def read(self, key: Any, reader: Callable[[], Any]) -> Any:
+        now = self.clock()
+        cached = self.values.get(key)
+        if cached is None or cached[0] <= now:
+            self.values = {k: value for k, value in self.values.items() if value[0] > now}
+            try:
+                cached = (now + self.ttl, reader(), None)
+            except Exception as error:
+                cached = (now + self.ttl, None, error)
+            self.values[key] = cached
+        if cached[2] is not None:
+            raise cached[2]
+        return cached[1]
+
 EDUCATION_CAPTCHA_MAX_ATTEMPTS = 5
 EDUCATION_RESULT_READY_STATUS = "核验结果已生成"
 EDUCATION_RESULT_NOT_FOUND_STATUS = "未查询到记录"
@@ -135,6 +159,87 @@ class EducationController:
     """Coordinate certificate recognition and captcha state as plain data."""
 
     @staticmethod
+    def duplicate_certificate_ids(items: Mapping[str, Mapping[str, Any]]) -> dict[str, tuple[str, ...]]:
+        """Find possible duplicates by explicit type and normalized number, without merging records."""
+        groups: dict[tuple[str, str], list[str]] = {}
+        for item_id, item in items.items():
+            kind = item.get("certificate_type")
+            number = re.sub(r"\s+", "", str(item.get("certificate_number") or "")).upper()
+            if kind not in {"education", "degree"} or not number:
+                continue
+            groups.setdefault((kind, number), []).append(item_id)
+        return {
+            item_id: tuple(peer for peer in group if peer != item_id)
+            for group in groups.values() if len(group) > 1
+            for item_id in group
+        }
+
+    @staticmethod
+    def fields_ready(item: Mapping[str, Any]) -> bool:
+        return bool(
+            str(item.get("name") or "").strip()
+            and str(item.get("certificate_number") or "").strip()
+            and item.get("certificate_type", "education") in {"education", "degree"}
+            and not item.get("critical_conflicts")
+            and item.get("status") != "待人工确认"
+        )
+
+    @staticmethod
+    def verification_item_ids(items: Mapping[str, Mapping[str, Any]]) -> tuple[str, ...]:
+        return tuple(
+            key for key, item in items.items()
+            if EducationController.fields_ready(item)
+            and item.get("status") not in {
+                *EDUCATION_VERIFICATION_PENDING_STATUSES, EDUCATION_RESULT_READY_STATUS,
+                "打开中", "识别中", "排队中", "识别验证码中...",
+            }
+            and not str(item.get("status", "")).startswith("正在")
+        )
+
+    @staticmethod
+    def recognition_item_ids(items: Mapping[str, Mapping[str, Any]], *, force: bool = False) -> tuple[str, ...]:
+        return tuple(
+            key for key, item in items.items()
+            if item.get("status") not in EDUCATION_VERIFICATION_STARTED_STATUSES
+            and (force or (
+                item.get("status", "待识别") in {"待识别", "识别失败", "校验失败", "待人工确认"}
+                and not item.get("manually_edited")
+            ))
+        )
+
+    @staticmethod
+    def confirm_fields(item: EducationItem, validator: Callable[[str, str], Any]) -> None:
+        if item.get("certificate_type") not in {"education", "degree"}:
+            raise ValueError("请先选择证书类型")
+        validator(str(item.get("name") or ""), str(item.get("certificate_number") or ""))
+        item.update(status="信息已修改", critical_conflicts=(), manually_edited=True,
+                    detail="关键信息已人工核对，可执行学信网验证", warnings="")
+        item["manual_fields"] = {field: item[field] for field in ("name", "certificate_number", "certificate_type")}
+
+    @staticmethod
+    def result_number_matches(text: str, item: Mapping[str, Any], *, bound: bool) -> bool:
+        """Reject explicit mismatches; masked or absent numbers need a bound query."""
+        number = re.sub(r"\s+", "", str(item.get("certificate_number") or ""))
+        if not number:
+            return False
+        compact = re.sub(r"\s+", "", text)
+        visible = re.findall(
+            r"(?:证书编号|证书号码|电子注册号)[：:]?([0-9A-Za-z*＊×•·]{6,30})", compact,
+        )
+        if visible:
+            for value in visible:
+                if any(mark in value for mark in "*＊×•·"):
+                    pattern = "".join("." if char in "*＊×•·" else re.escape(char) for char in value)
+                    if not bound or re.fullmatch(pattern, number, flags=re.IGNORECASE) is None:
+                        return False
+                elif value.lower() != number.lower():
+                    return False
+            return True
+        if re.search(r"(?<![0-9A-Za-z])" + re.escape(number) + r"(?![0-9A-Za-z])", compact, re.IGNORECASE):
+            return True
+        return bound
+
+    @staticmethod
     def summarize_queue_statuses(
         items: Mapping[str, Mapping[str, Any]],
     ) -> EducationQueueStatusSummary:
@@ -152,7 +257,7 @@ class EducationController:
             item_states.append((status, fields_ready, manually_edited))
         statuses = [state[0] for state in item_states]
         total = len(statuses)
-        recognition_pending = statuses.count("待识别")
+        recognition_pending = statuses.count("待识别") + statuses.count("排队中")
         recognizing = statuses.count("识别中")
         recognition_failed = sum(
             status in {"识别失败", "校验失败"}
@@ -360,12 +465,6 @@ class EducationController:
             or status.startswith("正在")
             for status in statuses
         )
-        external_result_pending = bool(
-            statuses & EDUCATION_VERIFICATION_PENDING_STATUSES
-        )
-        verification_started = verification_active or bool(
-            statuses & EDUCATION_VERIFICATION_STARTED_STATUSES
-        )
         busy = bool(
             recognition_running
             or screenshot_running
@@ -378,24 +477,14 @@ class EducationController:
             EDUCATION_WAITING_FOR_SCAN_STATUS,
             "结果未确认",
         })
-        verification_candidates = [
-            item
-            for item in items.values()
-            if item.get("status") != EDUCATION_RESULT_READY_STATUS
-        ]
-        verification_fields_ready = bool(verification_candidates) and all(
-            str(item.get("name") or "").strip()
-            and str(item.get("certificate_number") or "").strip()
-            for item in verification_candidates
-        )
+        verification_fields_ready = bool(EducationController.verification_item_ids(items))
         retry_ids = EducationController.captcha_retry_item_ids(items)
         return EducationActionStates(
-            recognize=(has_items and not busy and not verification_started),
+            recognize=(has_items and not busy and bool(EducationController.recognition_item_ids(items, force=True))),
             verify=(
                 has_items
                 and verification_fields_ready
                 and not busy
-                and not external_result_pending
             ),
             screenshot=(
                 (has_result or can_reconcile_browser_result)
@@ -420,32 +509,52 @@ class EducationController:
         read_text: Callable[[Any], str],
         is_result_text: Callable[[str, str], bool],
         sleep: Callable[[float], None],
-        max_checks: int = 900,
+        max_checks: int | None = 900,
         interval_seconds: float = 2.0,
         max_unavailable_checks: int = 15,
+        should_stop: Callable[[], bool] = lambda: False,
+        recover_page: Callable[[Any], bool] | None = None,
+        poll_interval: Callable[[int], float] | None = None,
     ) -> bool:
         """Poll a CHSI tab, tolerating transient unreadability during navigation."""
-        checks = max(1, int(max_checks))
+        checks = max(1, int(max_checks)) if max_checks is not None else None
         unavailable_limit = max(1, int(max_unavailable_checks))
         unavailable_checks = 0
-        for check_no in range(checks):
+        check_no = 0
+        while checks is None or check_no < checks:
+            if should_stop():
+                return False
             try:
                 alive = page_alive(page)
+                if alive:
+                    text = read_text(page)
+                    if should_stop():
+                        return False
+                    if is_result_text(text, expected_name):
+                        return True
             except Exception:
                 alive = False
             if not alive:
                 unavailable_checks += 1
+                if unavailable_checks == 2 and recover_page is not None and not should_stop():
+                    try:
+                        if recover_page(page):
+                            continue
+                    except Exception:
+                        pass
                 if unavailable_checks >= unavailable_limit:
                     return False
             else:
                 unavailable_checks = 0
-                try:
-                    if is_result_text(read_text(page), expected_name):
-                        return True
-                except Exception:
-                    pass
-            if check_no + 1 < checks:
-                sleep(max(0.0, float(interval_seconds)))
+            check_no += 1
+            if checks is None or check_no < checks:
+                delay = poll_interval(check_no) if poll_interval is not None and not unavailable_checks else interval_seconds
+                # Keep exit/removal responsive even during low-frequency monitoring.
+                remaining = max(0.0, float(delay))
+                while remaining > 0 and not should_stop():
+                    step = min(1.0, remaining)
+                    sleep(step)
+                    remaining -= step
         return False
 
     @staticmethod
@@ -460,6 +569,7 @@ class EducationController:
         max_workers: int = 3,
         on_result: Callable[[str, Any | None, str], None] | None = None,
         on_stage: Callable[[str, str, int], None] | None = None,
+        stop_event: Any = None,
     ) -> dict[str, tuple[Any | None, str]]:
         """Recognize concurrently and emit each plain result as it completes."""
         selected = {
@@ -470,8 +580,14 @@ class EducationController:
         results: dict[str, tuple[Any | None, str]] = {}
 
         def recognize_one(item_id: str, item: Mapping[str, Any]) -> Any:
+            if stop_event is not None and stop_event.is_set():
+                raise RuntimeError("识别已停止")
+            if on_stage is not None:
+                on_stage(item_id, "正在识别", 1)
             path = item["path"]
             image_kwargs: dict[str, Any] = {}
+            if stop_event is not None:
+                image_kwargs["stop_event"] = stop_event
             if on_stage is not None:
                 image_kwargs["on_progress"] = lambda stage, percent: on_stage(
                     item_id, stage, percent
@@ -498,6 +614,14 @@ class EducationController:
                 }
                 for future in as_completed(futures):
                     item_id = futures[future]
+                    if stop_event is not None and stop_event.is_set():
+                        for pending in futures:
+                            pending.cancel()
+                    if future.cancelled():
+                        results[item_id] = (None, "识别已停止")
+                        if on_result is not None:
+                            on_result(item_id, None, "识别已停止")
+                        continue
                     try:
                         results[item_id] = (future.result(), "")
                     except Exception as exc:
@@ -538,7 +662,8 @@ class EducationController:
                 result.name or result.certificate_number or critical_conflicts
             ):
                 requires_manual_confirmation = (
-                    bool(critical_conflicts)
+                    not result.name or not result.certificate_number
+                    or bool(critical_conflicts)
                     or getattr(result, "certificate_type", "education") not in {"education", "degree"}
                 )
                 item.update({
@@ -563,8 +688,32 @@ class EducationController:
                         )
                     ),
                     "warnings": "；".join(result.warnings),
-                    "manually_edited": False,
+                    "critical_conflicts": critical_conflicts,
+                    "manually_edited": bool(item.get("manual_fields")),
                 })
+                corrections = item.get("manual_fields") or {}
+                differences = []
+                for field, value in corrections.items():
+                    if field not in {"name", "certificate_number", "certificate_type"}:
+                        continue
+                    if item.get(field) != value:
+                        differences.append(field)
+                    item[field] = value
+                if differences:
+                    item["critical_conflicts"] = tuple(dict.fromkeys((*critical_conflicts, *differences)))
+                    item["status"] = "待人工确认"
+                    item["detail"] = "新识别结果与人工修正不一致，已保留人工值，请核对"
+                    field_labels = {"name": "姓名", "certificate_number": "证书编号", "certificate_type": "证书类型"}
+                    type_labels = {"education": "学历证书", "degree": "学位证书", "unknown": "待确认"}
+                    for field in differences:
+                        detected = getattr(result, field) or "空白"
+                        retained = corrections[field]
+                        if field == "certificate_type":
+                            detected = type_labels.get(detected, "待确认")
+                            retained = type_labels.get(retained, "待确认")
+                        item["warnings"] += f"；{field_labels[field]}：新识别为{detected}，保留人工值{retained}"
+                elif corrections and EducationController.fields_ready(item):
+                    item["status"] = "信息已修改"
                 continue
             item["status"] = "识别失败"
             item["detail"] = "识别失败"
@@ -591,6 +740,8 @@ class EducationController:
             if item is None:
                 continue
             try:
+                if item.get("critical_conflicts") or item.get("status") == "待人工确认":
+                    raise ValueError("请先核对姓名、证书编号及证书类型，再点击关键信息已核对")
                 if item.get("certificate_type", "education") not in {"education", "degree"}:
                     raise ValueError("请先确认证书类型：学历证书或学位证书")
                 name, certificate_number = validator(
@@ -599,7 +750,7 @@ class EducationController:
                 )
             except ValueError as exc:
                 item.update({
-                    "status": "校验失败",
+                    "status": "待人工确认" if item.get("critical_conflicts") or item.get("status") == "待人工确认" else "校验失败",
                     "detail": str(exc),
                     "warnings": "",
                 })
@@ -623,6 +774,7 @@ class EducationController:
         is_not_ready_error: Callable[[Exception], bool],
         on_progress: Callable[[ScreenshotItemResult], None] | None = None,
         replace: Callable[[bytes, Path], Path] | None = None,
+        validate_page: Callable[[Any, Mapping[str, Any]], bool] | None = None,
     ) -> ScreenshotBatchResult:
         """Capture results; refresh tracked files only via the injected atomic writer."""
         folder = Path(output_dir)
@@ -708,6 +860,9 @@ class EducationController:
                 "正在确认结果页并截取内容",
             ))
             try:
+                if validate_page is not None and not validate_page(page, item):
+                    finish(ScreenshotItemResult(item_id, "待结果页", "结果页姓名或编号不匹配，请重新查询"))
+                    continue
                 raw_png = capture(page, name)
             except Exception as error:
                 error_text = str(error).splitlines()[0][:300] or type(error).__name__
@@ -777,6 +932,7 @@ class EducationController:
             if (
                 text and EducationController.result_page_matches_type(page, item)
                 and is_result_text(text, name)
+                and EducationController.result_number_matches(text, item, bound=True)
             ):
                 assignments[item_id] = page
         used_page_ids = {
@@ -821,6 +977,7 @@ class EducationController:
                     EducationController.page_identity(page) in used_page_ids
                     or not EducationController.result_page_matches_type(page, item)
                     or not is_result_text(text, name)
+                    or not EducationController.result_number_matches(text, item, bound=False)
                 ):
                     continue
                 score = 1

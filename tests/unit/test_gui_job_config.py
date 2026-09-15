@@ -9259,7 +9259,7 @@ def test_education_browser_does_not_relaunch_when_new_tab_creation_fails():
     stale_tab.run_js.side_effect = RuntimeError("与页面的连接已断开")
     base_page = Mock()
     base_page.run_js.return_value = 1
-    base_page.new_tab.side_effect = RuntimeError("与页面的连接已断开")
+    base_page.browser._run_cdp.side_effect = RuntimeError("与页面的连接已断开")
     fresh_page = Mock()
     fresh_page.run_js.return_value = 1
     fresh_page.address = "127.0.0.1:9222"
@@ -9289,7 +9289,7 @@ def test_education_browser_launches_only_once_for_one_prepared_batch():
     base_page.run_js.return_value = 1
     base_page.url = "about:blank"
     base_page.address = "127.0.0.1:9527"
-    base_page.new_tab.side_effect = RuntimeError("标签页创建瞬时失败")
+    base_page.browser._run_cdp.side_effect = RuntimeError("标签页创建瞬时失败")
     gui.education_tabs = {}
     gui.browser_page = None
     gui.browser_connected = False
@@ -9352,6 +9352,8 @@ def test_education_browser_uses_auto_port_for_fresh_page():
 
 def test_education_queue_saves_manual_edits_to_current_item():
     gui = object.__new__(BossFilterGUI)
+    gui._refresh_education_batch_status = Mock()
+    gui._refresh_education_action_states = Mock()
     gui.education_current_id = "education_1"
     gui.education_items = {
         "education_1": {
@@ -9388,9 +9390,12 @@ def test_education_queue_disables_later_steps_during_recognition():
 
     gui._refresh_education_queue_summary()
 
-    gui.education_recognize_btn.configure.assert_called_with(state="disabled")
+    recognition = gui.education_recognize_btn.configure.call_args.kwargs
+    assert recognition["state"] == "normal"
+    assert recognition["text"].strip() == "停止识别"
+    assert recognition["command"] == gui._stop_education_recognition
     gui.education_remove_btn.configure.assert_called_with(state="normal")
-    gui.education_fill_btn.configure.assert_called_with(state="disabled")
+    assert gui.education_fill_btn.configure.call_args.kwargs["state"] == "disabled"
 
 
 def test_education_import_uses_multi_file_dialog():
@@ -9490,6 +9495,7 @@ def test_education_recognition_exception_restores_actions_for_retry():
             self.target()
 
     gui = object.__new__(BossFilterGUI)
+    gui.root = Mock()
     gui.education_items = {
         "education_1": {
             "path": "certificate.pdf",
@@ -9672,9 +9678,9 @@ def test_education_recognize_enabled_without_current_row():
 
     gui._refresh_education_queue_summary()
 
-    gui.education_recognize_btn.configure.assert_called_with(state="normal")
+    assert gui.education_recognize_btn.configure.call_args.kwargs["state"] == "normal"
     gui.education_remove_btn.configure.assert_called_with(state="disabled")
-    gui.education_fill_btn.configure.assert_called_with(state="disabled")
+    assert gui.education_fill_btn.configure.call_args.kwargs["state"] == "disabled"
 
 
 def test_education_manual_fields_enable_verification_without_reimporting():
@@ -9710,9 +9716,9 @@ def test_education_manual_fields_enable_verification_without_reimporting():
     assert item["status"] == "信息已修改"
     assert item["manually_edited"] is True
     assert "重新执行第 2 步" in item["detail"]
-    gui.education_fill_btn.configure.assert_called_with(state="normal")
+    assert gui.education_fill_btn.configure.call_args.kwargs["state"] == "normal"
     gui.education_batch_status_var.set.assert_called_with(
-        "1 张证书  ·  信息就绪 1/1  ·  学信网 待验证 1"
+        "1 张证书  ·  可验证 1 项  ·  学信网 待验证 1"
     )
     progress_text = (
         gui.education_recognition_progress_text_var.set.call_args.args[0]
@@ -9782,6 +9788,8 @@ def test_education_manual_correction_is_used_by_chsi_preparation():
     gui.education_number_var = Mock()
     gui.education_number_var.get.return_value = "123456789012345678"
     gui._update_education_queue_row = Mock()
+    gui._refresh_education_batch_status = Mock()
+    gui._refresh_education_action_states = Mock()
 
     gui._save_current_education_fields()
     preparation = gui_main._EDUCATION_CONTROLLER.prepare_chsi(
@@ -9833,7 +9841,7 @@ def test_education_queue_supports_multi_select_batch_recognition_and_context_men
     assert "workers = min(max(1, max_workers), max(1, len(selected)))" in recognize_block
 
 
-def test_education_queue_context_menu_actions_target_only_right_clicked_row():
+def test_education_queue_context_menu_preserves_selection_for_batch_actions():
     gui = object.__new__(BossFilterGUI)
     gui.education_items = {
         "education_1": {"path": "one.jpg"},
@@ -9857,7 +9865,7 @@ def test_education_queue_context_menu_actions_target_only_right_clicked_row():
         types.SimpleNamespace(y=10, x_root=100, y_root=120)
     )
 
-    gui.education_queue_tree.selection_set.assert_called_once_with("education_2")
+    gui.education_queue_tree.selection_set.assert_not_called()
     gui.education_queue_tree.focus.assert_called_once_with("education_2")
     commands = [
         menu_call.kwargs["command"]
@@ -9866,8 +9874,8 @@ def test_education_queue_context_menu_actions_target_only_right_clicked_row():
     for command in commands:
         command()
 
-    gui._recognize_education_image.assert_called_once_with(["education_2"])
-    gui._fill_chsi_page.assert_called_once_with(["education_2"])
+    gui._recognize_education_image.assert_called_once_with(["education_1", "education_2"], force=True)
+    gui._fill_chsi_page.assert_called_once_with(["education_1", "education_2"])
     gui._remove_education_items.assert_called_once_with(["education_2"])
     gui._capture_education_results.assert_called_once_with("education_2")
 
@@ -9882,8 +9890,8 @@ def test_education_page_exposes_repeatable_batch_screenshot_controls_and_status(
 
     assert '("screenshot", "截图", 100)' in builder
     assert 'text=" 1 识别证书"' in builder
-    assert 'text=" 2 打开学信网验证"' in builder
-    assert 'text=" 3 一键批量截图"' in builder
+    assert 'text=" 2 验证证书"' in builder
+    assert 'text=" 3 一键截图"' in builder
     assert 'text=" 选择保存位置"' not in builder
     assert 'text=" 重试异常验证码（0）"' in builder
     assert "验证码异常处理（按需）" not in builder
@@ -9909,10 +9917,10 @@ def test_education_page_exposes_repeatable_batch_screenshot_controls_and_status(
     assert builder.index('text=" 1 识别证书"') < builder.index(
         "workspace = ttk.Frame"
     )
-    assert builder.index('text=" 2 打开学信网验证"') < builder.index(
-        'text=" 3 一键批量截图"'
+    assert builder.index('text=" 2 验证证书"') < builder.index(
+        'text=" 3 一键截图"'
     )
-    assert builder.index('text=" 3 一键批量截图"') < builder.index(
+    assert builder.index('text=" 3 一键截图"') < builder.index(
         "workspace = ttk.Frame"
     )
     assert "_find_open_education_result_pages(" in capture_block
@@ -9959,14 +9967,14 @@ def test_education_screenshot_without_ready_result_does_not_touch_browser():
     gui.root = Mock()
 
     with (
-        patch("gui_main.messagebox.showinfo") as showinfo,
+        patch("gui_main.messagebox.show_notice") as show_notice,
         patch("gui_main.threading.Thread", ImmediateThread),
     ):
         gui._capture_education_results()
 
     gui._get_education_tab.assert_not_called()
     gui._select_education_screenshot_folder.assert_not_called()
-    showinfo.assert_called_once()
+    show_notice.assert_called_once()
     assert gui.education_screenshot_running is False
     gui.education_screenshot_summary_var.set.assert_called_with(
         "当前 Chrome 未检测到可截图的最终核验结果。"
@@ -10081,6 +10089,7 @@ def _check_single_education_capture(*, failure=False, first_save=False):
         Image.new("RGB", (160, 200), "white").save(buffer, format="PNG")
         with (
             patch("gui_main.threading.Thread", ImmediateThread),
+            patch("education_certificate.read_chsi_result_page_text", return_value="姓名张三性别男出生日期1990学校名称测试大学专业计算机学历层次本科证书编号123456789012345678"),
             patch("education_certificate.capture_chsi_result_png",
                   side_effect=ChsiResultNotReadyError("照片尚未加载") if failure else None,
                   return_value=buffer.getvalue()) as capture,
@@ -10180,6 +10189,7 @@ def test_education_result_watcher_marks_manual_captcha_as_submitted_on_qr_page()
 
     def detect_qr_then_keep_waiting(_page, expected_name, **kwargs):
         assert kwargs["is_result_text"]("扫码验证", expected_name) is False
+        gui._education_closing = True  # End the indefinite watcher without a connection failure.
         return False
 
     with patch.object(
@@ -10253,6 +10263,7 @@ def test_education_result_watcher_refreshes_expired_qr_without_retrying_captcha(
             "扫码验证 二维码已过期 点击刷新",
             expected_name,
         ) is False
+        gui._education_closing = True
         return False
 
     with (
@@ -10460,7 +10471,7 @@ def test_education_page_has_scroll_container_and_conditional_queue():
     assert '("number", "证书编号", 160)' in create_block
     assert '("major", "专业", 210)' in create_block
     assert "def _on_education_queue_motion" in source
-    assert 'tooltip_columns = {"#1": 0, "#4": 3, "#5": 4, "#7": 6}' in source
+    assert 'tooltip_columns = {"#1": 0, "#4": 3, "#5": 4, "#6": 5, "#7": 6}' in source
     assert 'item.get("screenshot_detail")' in source
     assert "self._education_tree_font.measure(full_text)" in source
     assert "if total >= 1" in summary_block
@@ -10702,7 +10713,7 @@ def test_education_queue_summary_text_varies_by_count():
 def test_education_batch_status_reports_recognition_progress_and_failures():
     gui = object.__new__(BossFilterGUI)
     gui.education_items = {
-        "ready": {"status": "识别成功"},
+        "ready": {"status": "识别成功", "name": "张三", "certificate_number": "123456789012345678", "certificate_type": "education"},
         "running": {"status": "识别中"},
         "pending": {"status": "待识别"},
         "failed": {"status": "识别失败"},
@@ -10725,8 +10736,8 @@ def test_education_batch_status_reports_recognition_progress_and_failures():
     gui._refresh_education_queue_summary()
 
     gui.education_batch_status_var.set.assert_called_with(
-        "5 张证书  ·  信息就绪 1/5  ·  识别中 1  ·  待识别 1"
-        "  ·  识别失败 1  ·  待补全 1  ·  学信网 待验证 1"
+        "5 张证书  ·  可验证 1 项  ·  识别中 1  ·  待识别 1"
+        "  ·  识别失败 1  ·  待核对 1 项  ·  学信网 待验证 1"
     )
 
 
@@ -10753,7 +10764,7 @@ def test_education_batch_status_reports_waiting_for_chsi_scan():
     gui._refresh_education_queue_summary()
 
     gui.education_batch_status_var.set.assert_called_with(
-        "5 张证书  ·  信息就绪 5/5  ·  学信网 等待扫码 5"
+        "5 张证书  ·  可验证 0 项  ·  学信网 等待扫码 5"
     )
 
 
@@ -10779,7 +10790,7 @@ def test_education_batch_status_counts_manual_completion_as_chsi_ready():
     gui._refresh_education_batch_status()
 
     gui.education_batch_status_var.set.assert_called_once_with(
-        "5 张证书  ·  信息就绪 5/5  ·  学信网 待验证 5"
+        "5 张证书  ·  可验证 5 项  ·  学信网 待验证 5"
     )
 
 

@@ -45,6 +45,7 @@ def test_unknown_type_requires_confirmation_before_query():
     assert preparation.invalid_ids == ("one",)
     assert "证书类型" in items["one"]["detail"]
     items["one"]["certificate_type"] = "degree"
+    EducationController.confirm_fields(items["one"], validate_chsi_fields)
     assert EducationController.prepare_chsi(items, ["one"], validator=validate_chsi_fields).prepared
     try:
         chsi_query_url("unknown")
@@ -174,7 +175,7 @@ def test_missing_model_type_is_not_assumed_to_be_a_diploma():
     payload.pop("certificate_type")
     with patch("education_certificate._invoke_model", return_value=payload):
         result = recognize_certificate_pdf("unused.pdf", {"model": "text"}, "test",
-                                           text_extractor=lambda _: "这是测试证书文本，仅测试字段处理，不含真实个人资料。")
+                                           text_extractor=lambda _: "姓名 测试甲 证书编号 1234567890123456，类型需要核对正文。")
     assert result.certificate_type == "unknown"
 
 

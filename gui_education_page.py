@@ -113,6 +113,10 @@ class EducationPageHost(Protocol):
 
     def _recognize_education_image(self) -> None: ...
 
+    def _stop_education_recognition(self) -> None: ...
+
+    def _confirm_current_education_fields(self) -> None: ...
+
     def _remove_selected_education_images(self) -> None: ...
 
     def _rotate_education_image_cw90(self) -> None: ...
@@ -158,6 +162,8 @@ class EducationPageWidgets:
     number_var: tk.StringVar
     type_var: tk.StringVar
     status_var: tk.StringVar
+    confirmation_visible_var: tk.BooleanVar
+    duplicate_notice_var: tk.StringVar
     warning_var: tk.StringVar
     batch_status_var: tk.StringVar
     recognition_progress_frame: tk.Frame
@@ -165,6 +171,7 @@ class EducationPageWidgets:
     recognition_progress_text_var: tk.StringVar
     recognition_progress_bar: ttk.Progressbar
     recognize_button: ttk.Button
+    confirm_button: ttk.Button
     fill_button: ttk.Button
     captcha_button: ttk.Button
     screenshot_folder_var: tk.StringVar
@@ -379,7 +386,7 @@ def build_education_page(
     )
     batch_status_var = tk.StringVar(value="尚未导入证书")
     batch_header = ttk.Frame(queue_batch_area, style="TFrame")
-    batch_header.pack(fill="x", pady=(0, 8))
+    batch_header.pack(fill="x", pady=(0, int(18 * scale)))
     ttk.Label(
         batch_header,
         text="批量核验流程",
@@ -394,8 +401,22 @@ def build_education_page(
         justify=tk.RIGHT,
         anchor="e",
     ).pack(side="right", padx=(16, 0))
+    duplicate_notice_var = tk.StringVar(value="")
+    duplicate_notice = ttk.Label(
+        queue_batch_area, textvariable=duplicate_notice_var,
+        foreground=host.colors["warning"], justify="left",
+        wraplength=max(400, int(900 * scale)),
+    )
     queue_batch_actions = ttk.Frame(queue_batch_area, style="TFrame")
     queue_batch_actions.pack(fill="x")
+
+    def refresh_duplicate_notice(*_args):
+        if duplicate_notice_var.get():
+            duplicate_notice.pack(fill="x", pady=(0, 6), before=queue_batch_actions)
+        else:
+            duplicate_notice.pack_forget()
+
+    duplicate_notice_var.trace_add("write", refresh_duplicate_notice)
     recognize_icon = host.icons.button("search", host.colors["text_primary"])
     recognize_button = ttk.Button(
         queue_batch_actions,
@@ -416,7 +437,7 @@ def build_education_page(
     fill_icon = host.icons.button("play", host.colors["text_primary"])
     fill_button = ttk.Button(
         queue_batch_actions,
-        text=" 2 打开学信网验证",
+        text=" 2 验证证书",
         image=fill_icon,
         compound=tk.LEFT,
         command=host._fill_chsi_page,
@@ -433,7 +454,7 @@ def build_education_page(
     screenshot_icon = host.icons.button("save", host.colors["text_primary"])
     screenshot_button = ttk.Button(
         queue_batch_actions,
-        text=" 3 一键批量截图",
+        text=" 3 一键截图",
         image=screenshot_icon,
         compound=tk.LEFT,
         command=host._capture_education_results,
@@ -441,6 +462,23 @@ def build_education_page(
     )
     screenshot_button._icon_ref = screenshot_icon
     screenshot_button.grid(row=0, column=4, sticky="w")
+
+    for button, help_text in (
+        (recognize_button, "识别待处理证书，已完成及人工修正的记录自动跳过。"),
+        (fill_button, "打开学信网，填写已就绪证书信息后扫码验证；已提交的记录自动跳过。"),
+        (screenshot_button, "保存已完成核验的结果页截图。"),
+    ):
+        def show_step_help(event: tk.Event, text: str = help_text) -> None:
+            if event.widget is recognize_button and recognize_button.cget("text").strip() != "1 识别证书":
+                text = "停止本轮识别，已完成结果保留，未完成记录可稍后继续。"
+            host.feedback_support.show_tooltip(
+                text, event.x_root + 12, event.y_root + 12,
+                tooltip_key=text, parent=host.root,
+                wraplength=max(280, int(360 * scale)),
+            )
+
+        button.bind("<Enter>", show_step_help, add="+")
+        button.bind("<Leave>", host.feedback_support.hide_tooltip, add="+")
 
     recognition_progress_var = tk.DoubleVar(value=0)
     recognition_progress_text_var = tk.StringVar(value="")
@@ -720,6 +758,10 @@ def build_education_page(
     number_entry.pack(fill="x", pady=(0, row_gap))
     host.input_support.bind_entry_context_menu(number_entry)
 
+    confirmation_area = ttk.Frame(form, style=field_style)
+    confirmation_visible_var = tk.BooleanVar(value=False)
+    confirm_button = ttk.Button(confirmation_area, text="关键信息已核对", command=host._confirm_current_education_fields)
+
     status_label = ttk.Label(
         form, textvariable=status_var,
         font=(font_family, int(10 * host.font_scale)),
@@ -727,6 +769,14 @@ def build_education_page(
         justify="left",
     )
     status_label.pack(anchor="w", fill="x", pady=(0, int(6 * scale)))
+
+    def refresh_confirmation_area(*_args):
+        if confirmation_visible_var.get():
+            confirmation_area.pack(fill="x", before=status_label)
+        else:
+            confirmation_area.pack_forget()
+
+    confirmation_visible_var.trace_add("write", refresh_confirmation_area)
     warning_label = ttk.Label(
         form, text="",
         font=(font_family, int(10 * host.font_scale)),
@@ -745,6 +795,10 @@ def build_education_page(
         wrapped = _wrap_warning_text(text, width, warning_font.measure)
         lines = wrapped.splitlines()
         warning_label.configure(text=wrapped if warning_expanded else "\n".join(lines[:3]))
+        if text:
+            warning_label.pack(anchor="w", fill="x", padx=int(8 * scale), pady=int(6 * scale), before=privacy_label)
+        else:
+            warning_label.pack_forget()
         if len(lines) > 3:
             warning_toggle.pack(anchor="w", before=privacy_label)
             warning_toggle.configure(text="收起提示" if warning_expanded else "展开完整提示")
@@ -830,12 +884,15 @@ def build_education_page(
         type_var=type_var,
         status_var=status_var,
         warning_var=warning_var,
+        duplicate_notice_var=duplicate_notice_var,
+        confirmation_visible_var=confirmation_visible_var,
         batch_status_var=batch_status_var,
         recognition_progress_frame=recognition_progress_frame,
         recognition_progress_var=recognition_progress_var,
         recognition_progress_text_var=recognition_progress_text_var,
         recognition_progress_bar=recognition_progress_bar,
         recognize_button=recognize_button,
+        confirm_button=confirm_button,
         fill_button=fill_button,
         captcha_button=captcha_button,
         screenshot_folder_var=screenshot_folder_var,
