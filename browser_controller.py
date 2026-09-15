@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,71 @@ class BrowserController:
             return True
         except Exception:
             return False
+
+    @staticmethod
+    def recover_tab_connection(page: Any) -> bool:
+        """Restore only a tab driver; never call DrissionPage's browser-wide reconnect.
+
+        DrissionPage's public tab reconnect also replaces the shared browser driver.
+        Keep its tab initialization steps isolated here for compatibility testing.
+        """
+        try:
+            page.run_cdp("Page.getFrameTree")
+            return True  # A navigating JS context does not require reconnecting.
+        except Exception:
+            pass
+        target_id = page.tab_id
+        page.disconnect()
+        page._driver_init(target_id)
+        page._get_document()
+        page.run_cdp("Page.getFrameTree")
+        return True
+
+    @staticmethod
+    def wait_for_tab_ready(page: Any, *, sleep: Callable[[float], None]) -> None:
+        """Allow a newly created page's execution context to settle, retaining its error."""
+        for attempt in range(3):
+            try:
+                page.run_js("return 1")
+                return
+            except Exception as error:
+                if attempt == 2:
+                    raise RuntimeError("标签页已创建，但连接检查连续失败") from error
+                sleep(0.3 * (attempt + 1))
+
+    @staticmethod
+    def create_owned_tab(base_page: Any, *, ownership: dict[str, str], item_id: str,
+                         sleep: Callable[[float], None]) -> Any:
+        """Track ownership before creation, including errors before a tab object exists."""
+        browser = base_page.browser
+
+        def cleanup(marker):
+            targets = browser._run_cdp("Target.getTargets")["targetInfos"]
+            for target in targets:
+                if target.get("url") == marker:
+                    closed = browser._run_cdp("Target.closeTarget", targetId=target["targetId"])
+                    if not closed.get("success"):
+                        raise RuntimeError("无法回收本次创建的空白标签页，请稍后重试")
+
+        previous = ownership.get(item_id)
+        if previous:
+            cleanup(previous)
+            ownership.pop(item_id, None)
+        marker = f"about:blank#certificate-owned-{uuid4().hex}"
+        ownership[item_id] = marker
+        try:
+            target = browser._run_cdp("Target.createTarget", url=marker)["targetId"]
+            tab = browser.get_tab(target)
+            BrowserController.wait_for_tab_ready(tab, sleep=sleep)
+        except Exception as error:
+            try:
+                cleanup(marker)
+                ownership.pop(item_id, None)
+            except Exception as cleanup_error:
+                raise RuntimeError("创建标签页失败，未完成回收；已保留关联以便重试") from cleanup_error
+            raise RuntimeError("创建标签页失败，已回收本次空白页") from error
+        ownership.pop(item_id, None)
+        return tab
 
     def should_defer_navigation(self, silent: bool) -> bool:
         self._non_target_checks += 1

@@ -230,7 +230,7 @@ def test_education_actions_lock_submitted_data_but_recover_after_browser_failure
             "certificate_number": "987654321098765432",
         },
     })
-    assert partial.recognize is False
+    assert partial.recognize is True
     assert partial.verify is True
     assert partial.screenshot is True
 
@@ -333,7 +333,8 @@ def test_recognition_batch_and_apply_keep_failures_explicit():
     assert items["pdf"]["warnings"] == "bad pdf"
     assert {item_id for item_id, _result, _error in emitted} == {"image", "pdf"}
     assert next(error for item_id, _result, error in emitted if item_id == "pdf") == "bad pdf"
-    assert stages == [("image", "正在核对姓名和证书编号", 70)]
+    assert ("image", "正在核对姓名和证书编号", 70) in stages
+    assert {(iid, stage, percent) for iid, stage, percent in stages if percent == 1} == {("image", "正在识别", 1), ("pdf", "正在识别", 1)}
 
 
 def test_recognition_conflict_requires_manual_name_and_number_entry():
@@ -791,12 +792,12 @@ def test_screenshot_batch_preserves_invalid_same_name_file():
     assert save_calls == []
 
 
-def test_assign_open_result_pages_recovers_existing_tabs_and_uses_certificate_tail():
+def test_assign_open_result_pages_recovers_existing_tabs_with_full_number():
     first_page = object()
     second_page = object()
     texts = {
-        first_page: "姓名张三性别男出生日期1990学校名称甲大学专业计算机学历层次本科证书编号111111",
-        second_page: "姓名张三性别男出生日期1991学校名称乙大学专业金融学历层次本科证书编号222222",
+        first_page: "姓名张三性别男出生日期1990学校名称甲大学专业计算机学历层次本科证书编号000000000000111111",
+        second_page: "姓名张三性别男出生日期1991学校名称乙大学专业金融学历层次本科证书编号000000000000222222",
     }
     items = {
         "one": {"name": "张三", "certificate_number": "000000000000111111"},
@@ -845,7 +846,7 @@ def test_assign_open_result_pages_replaces_alive_query_tab_with_actual_result():
         old_query_page: "证书编号 姓名 图片验证码 免费查询",
         result_page: (
             "姓名张三性别男出生日期1990学校名称甲大学"
-            "专业计算机学历层次本科证书编号123456"
+            "专业计算机学历层次本科证书编号000000000000123456"
         ),
     }
     items = {

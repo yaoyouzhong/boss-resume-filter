@@ -15,9 +15,11 @@ def format_recognition_notice(text: str) -> str:
         r"\b(" + "|".join(labels) + r")\b",
         lambda match: labels[match.group().lower()], str(text), flags=re.IGNORECASE,
     )
-    return "\n".join(dict.fromkeys(
+    notices = list(dict.fromkeys(
         part.strip() for part in re.split(r"[；\n]+", text) if part.strip()
     ))
+    notices.sort(key=lambda notice: 0 if any(label in notice for label in ("姓名", "证书编号", "证书类型", "关键")) else 1)
+    return "\n".join(notices)
 
 
 def screenshot_item_feedback(name: str, status: str, detail: str) -> tuple[str, str]:
