@@ -38,7 +38,7 @@ from browser_controller import BrowserController, BrowserRuntime
 from candidate_controller import CandidateController, CandidatePersistence
 from candidate_cleanup import clear_candidates_in_place
 from data_maintenance_controller import DataMaintenanceController
-from education_presenter import screenshot_session_summary
+from education_presenter import screenshot_item_feedback, screenshot_session_summary
 from education_controller import (
     EDUCATION_CAPTCHA_MAX_ATTEMPTS,
     EDUCATION_FORM_EMPTY_STATUS,
@@ -3926,6 +3926,19 @@ class BossFilterGUI:
                 def finish():
                     self.education_screenshot_running = False
                     summary = screenshot_session_summary(self.education_items)
+                    if selected_item_id is not None:
+                        outcome = next(
+                            (entry for entry in result.items if entry.item_id == selected_item_id),
+                            None,
+                        )
+                        if outcome is not None:
+                            name = str(item_snapshot[selected_item_id].get("name") or "该证书")
+                            kind, summary = screenshot_item_feedback(
+                                name, outcome.status, outcome.detail,
+                            )
+                            self.feedback_support.show_inline_banner(
+                                self.education_page, kind, summary, duration_ms=8000,
+                            )
                     self.education_screenshot_summary_var.set(summary)
                     self._update_education_workflow_progress(
                         stage="screenshot",
