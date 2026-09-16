@@ -138,6 +138,14 @@ python education_tool.py
 
 ![毕业证识别与学历核验](docs/assets/user-guide/09-education.png)
 
+### 数据统计
+
+![数据统计与岗位筛选成效](docs/assets/user-guide/06-stats.png)
+
+### 系统设置
+
+![系统设置与模型接入配置](docs/assets/user-guide/03-api-config-full.png)
+
 更多页面和完整操作步骤见 [图文使用手册](docs/BOSS招聘系统操作说明-图文版.md)。
 
 ## 筛选与联系原则
