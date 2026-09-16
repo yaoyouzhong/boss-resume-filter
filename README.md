@@ -118,6 +118,10 @@ python education_tool.py
 
 ## 界面预览
 
+### 首页
+
+![首页招聘工作台与待办概览](docs/assets/user-guide/01-home.png)
+
 ### 岗位配置
 
 ![岗位要求与筛选规则配置](docs/assets/user-guide/02-job-config-full.png)
