@@ -441,6 +441,28 @@ def main() -> None:
     capture_widget(root, "06-stats.png")
 
     app.show_page_education()
+    # Let lazy page creation finish before populating synthetic queue rows.
+    capture_widget(root, "09-education.png")
+    for index, (certificate_type, status) in enumerate(
+        (("education", "已识别"), ("degree", "待人工确认"), ("education", "待识别")),
+        start=1,
+    ):
+        item_id = f"guide-certificate-{index}"
+        app.education_items[item_id] = {
+            "path": str(OUT_DIR / f"演示证书{index}.png"),
+            "name": f"演示人员{index}" if index < 3 else "",
+            "certificate_number": f"DEMO2026091800{index}" if index < 3 else "",
+            "certificate_type": certificate_type,
+            "status": status,
+            "school": "",
+            "major": "",
+            "warnings": "姓名需人工核对" if index == 2 else "",
+            "critical_conflicts": ("姓名需人工核对",) if index == 2 else (),
+        }
+        app.education_queue_tree.insert("", "end", iid=item_id)
+        app._update_education_queue_row(item_id)
+    app._refresh_education_queue_summary()
+    app.education_canvas.yview_moveto(0.0)
     capture_widget(root, "09-education.png")
 
     app.show_changelog()
@@ -452,13 +474,13 @@ def main() -> None:
         root,
         {
             "current": gui_main.__version__,
-            "latest": "2.31",
+            "latest": f"{gui_main.__version__}.1",
             "update_type": "version",
             "changelog_body": (
                 "### 新增功能\n\n"
-                "- 新增候选人处理能力。\n\n"
+                "- 此处展示新版本功能说明（演示内容）。\n\n"
                 "### 体验优化\n\n"
-                "- 优化候选人处理流程和界面提示。"
+                "- 下载完成后，请阅读实际升级内容再确认安装。"
             ),
             "release_info": {"body": ""},
             "download_url": "https://example.invalid/BOSS_ResumeFilter.exe",
