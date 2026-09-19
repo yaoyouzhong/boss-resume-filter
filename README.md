@@ -1,4 +1,4 @@
-> 🌐 **[进入产品主页：38 秒演示、完整功能说明和最新版下载](https://yaoyouzhong.github.io/boss-resume-filter/)**
+> 🌐 **[进入产品主页：56 秒产品概览、完整功能说明和最新版下载](https://yaoyouzhong.github.io/boss-resume-filter/)**
 
 <h1 align="center">BOSS 简历筛选器</h1>
 
@@ -22,10 +22,16 @@
 
 > 当前发布版本：v2.34 证书批量核验流程升级（版本号 v2.34）
 
+<h2 align="center">56 秒了解 BOSS 简历筛选器</h2>
+
 <p align="center">
-  <img alt="38 秒产品演示：从岗位配置到联系跟进" src=".github/assets/product-demo-preview.gif">
+  <a href="https://yaoyouzhong.github.io/boss-resume-filter/#demo">
+    <img alt="点击观看 56 秒产品概览：招聘工作台、筛选评估、复核联系与证书核验" src="docs/assets/product-overview/poster.jpg" width="960">
+  </a>
   <br>
-  <sub>自动播放 38 秒完整流程 · <a href=".github/assets/product-demo.mp4?raw=1">下载高清 MP4</a> · 全程使用合成数据</sub>
+  <a href="https://yaoyouzhong.github.io/boss-resume-filter/#demo"><strong>▶ 播放完整视频</strong></a>
+  · <a href="docs/assets/product-overview/boss-product-overview.mp4?raw=1">下载高清 MP4</a>
+  · <sub>1080p · 演示数据 · 静音也可阅读</sub>
 </p>
 
 > **使用边界**：本项目不是 BOSS 直聘官方工具。浏览器自动化、候选人信息读取和联系功能可能触发平台风控、限流或账号限制；使用前请阅读完整的 [使用声明](DISCLAIMER.md)。
