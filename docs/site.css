@@ -482,8 +482,14 @@ h3 {
   box-shadow: var(--shadow);
 }
 
-.demo-frame img {
+.demo-section h2 {
+  text-wrap: balance;
+}
+
+.demo-frame img,
+.demo-frame video {
   width: 100%;
+  height: auto;
   aspect-ratio: 16 / 9;
   object-fit: cover;
 }
