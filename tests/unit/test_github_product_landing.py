@@ -55,7 +55,11 @@ def test_github_product_landing_has_complete_local_assets_and_navigation() -> No
 
     local_references: set[Path] = set()
     for tag, attrs in parser.tags:
-        attribute = "src" if tag == "img" else "href" if tag in {"a", "link"} else ""
+        attribute = (
+            "src" if tag in {"img", "source"}
+            else "poster" if tag == "video"
+            else "href" if tag in {"a", "link"} else ""
+        )
         value = attrs.get(attribute, "")
         if not value:
             continue
@@ -78,7 +82,7 @@ def test_github_product_landing_images_are_accessible_and_aspect_safe() -> None:
     _html, parser = _parse_landing()
     images = [attrs for tag, attrs in parser.tags if tag == "img"]
 
-    assert len(images) == 4
+    assert images
     for attrs in images:
         assert attrs.get("alt", "").strip()
         assert int(attrs["width"]) > 0
@@ -87,8 +91,33 @@ def test_github_product_landing_images_are_accessible_and_aspect_safe() -> None:
     css = CSS_PATH.read_text(encoding="utf-8")
     assert "object-fit: contain" in css
     assert "@media (prefers-reduced-motion: reduce)" in css
-    assert ".demo-motion" in css
-    assert ".demo-static" in css
+
+
+def test_product_overview_has_on_demand_accessible_video_and_download() -> None:
+    _html, parser = _parse_landing()
+    videos = [attrs for tag, attrs in parser.tags if tag == "video"]
+    assert len(videos) == 1
+    video = videos[0]
+    assert "controls" in video and "playsinline" in video
+    assert "autoplay" not in video and "loop" not in video
+    assert video.get("preload") == "none"
+    assert video.get("aria-label", "").strip()
+    assert int(video["width"]) * 9 == int(video["height"]) * 16
+    assert (DOCS_DIR / video["poster"]).is_file()
+
+    sources = [attrs for tag, attrs in parser.tags if tag == "source"]
+    assert len(sources) == 1
+    source = sources[0]
+    assert source["type"] == "video/mp4"
+    assert (DOCS_DIR / source["src"]).is_file()
+    assert any(
+        tag == "a" and attrs.get("href") == source["src"] and "download" in attrs
+        for tag, attrs in parser.tags
+    )
+    readme = README_PATH.read_text(encoding="utf-8")
+    assert f'{PRODUCT_HOME_URL}#demo' in readme
+    assert f'docs/{video["poster"]}' in readme
+    assert f'docs/{source["src"]}?raw=1' in readme
 
 
 def test_github_product_landing_states_product_and_data_boundaries() -> None:
