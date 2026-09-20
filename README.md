@@ -24,12 +24,10 @@
 
 <h2 align="center">56 秒了解 BOSS 简历筛选器</h2>
 
+https://github.com/user-attachments/assets/233d381c-5179-4639-9886-69cbadd43027
+
 <p align="center">
-  <a href="https://yaoyouzhong.github.io/boss-resume-filter/#demo">
-    <img alt="点击观看 56 秒产品概览：招聘工作台、筛选评估、复核联系与证书核验" src="docs/assets/product-overview/poster.jpg" width="960">
-  </a>
-  <br>
-  <a href="https://yaoyouzhong.github.io/boss-resume-filter/#demo"><strong>▶ 播放完整视频</strong></a>
+  <a href="https://yaoyouzhong.github.io/boss-resume-filter/#demo">备用播放入口</a>
   · <a href="docs/assets/product-overview/boss-product-overview.mp4?raw=1">下载高清 MP4</a>
   · <sub>1080p · 演示数据 · 静音也可阅读</sub>
 </p>

@@ -116,7 +116,10 @@ def test_product_overview_has_on_demand_accessible_video_and_download() -> None:
     )
     readme = README_PATH.read_text(encoding="utf-8")
     assert f'{PRODUCT_HOME_URL}#demo' in readme
-    assert f'docs/{video["poster"]}' in readme
+    assert re.search(
+        r"\n\nhttps://github\.com/user-attachments/assets/[0-9a-f-]{36}\n\n",
+        readme,
+    ), "GitHub 视频附件必须独占一段，才能渲染内嵌播放器"
     assert f'docs/{source["src"]}?raw=1' in readme
 
 
