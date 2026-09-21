@@ -936,9 +936,13 @@ def build_config_page_steps(
     )
 
     self.save_hint_label = None
+    ttk.Label(
+        btn_inner, textvariable=self.job_form_status_var, font=self.font_label,
+        foreground=self.colors['text_secondary'], background=self.colors['bg_main'],
+    ).pack(side="left", padx=(0, int(12 * self.dpi_scale * self.zoom_factor)))
 
-    icon_save_cfg = self.icons.button('save', self.colors['text_primary'])
-    self.btn_save = ttk.Button(btn_inner, image=icon_save_cfg, text=" 保存配置", compound=tk.LEFT, command=self.save_current_job)
+    icon_save_cfg = self.icons.button('save', '#FFFFFF')
+    self.btn_save = ttk.Button(btn_inner, image=icon_save_cfg, text=" 保存配置", compound=tk.LEFT, command=self.save_current_job, style="Workbench.Primary.TButton")
     self.btn_save._icon_ref = icon_save_cfg
     self.btn_save.pack(side="left", padx=int(5 * self.dpi_scale * self.zoom_factor))
     icon_refresh_cfg = self.icons.button('refresh', self.colors['text_primary'])

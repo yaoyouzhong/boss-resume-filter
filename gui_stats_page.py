@@ -119,53 +119,31 @@ def build_stats_page(
     ]
     card_gap = int(10 * scale)
     for index, (icon_name, label_text, var_name, color) in enumerate(summary_items):
+        summary_container.columnconfigure(index, weight=1, uniform="stats_metrics")
         card = ttk.Frame(summary_container, style="Card.TFrame")
-        card_padx = (0, card_gap) if index < len(summary_items) - 1 else 0
-        card.pack(
-            side="left",
-            fill="x",
-            expand=True,
-            padx=card_padx,
-            pady=int(10 * scale),
-        )
+        card.grid(row=0, column=index, sticky="nsew",
+                  padx=(card_gap // 2, card_gap - card_gap // 2))
+        body = ttk.Frame(card, style="TFrame")
+        body.pack(anchor="center", padx=int(12 * scale), pady=int(14 * scale))
         icon_size = int(ui_config["stat_icon_size"] * scale)
-        icon_canvas = tk.Canvas(
-            card,
-            width=icon_size,
-            height=icon_size,
-            bg=host.colors["bg_card"],
-            highlightthickness=0,
-        )
-        icon_canvas.pack(pady=(int(12 * scale), int(5 * scale)))
+        icon_canvas = tk.Canvas(body, width=icon_size, height=icon_size,
+                                bg=host.colors["bg_card"], highlightthickness=0)
+        icon_canvas.pack(side="left", padx=(0, int(12 * scale)))
         margin = int(ui_config["icon_margin"] * scale)
-        icon_canvas.create_oval(
-            margin,
-            margin,
-            icon_size - margin,
-            icon_size - margin,
-            fill=color,
-            outline="",
-        )
+        icon_canvas.create_oval(margin, margin, icon_size - margin, icon_size - margin,
+                                fill=color, outline="")
         stat_icon = host.icons.stat(icon_name, "white")
         icon_canvas.create_image(icon_size // 2, icon_size // 2, image=stat_icon)
         icon_canvas._icon_ref = stat_icon
-
+        text_column = ttk.Frame(body, style="TFrame")
+        text_column.pack(side="left")
+        ttk.Label(text_column, text=label_text, font=host.font_stat_label,
+                  foreground=host.colors["text_secondary"], background=host.colors["bg_card"]).pack(anchor="center")
         value_var = tk.StringVar(value="0")
         summary_vars[var_name] = value_var
-        ttk.Label(
-            card,
-            textvariable=value_var,
-            font=host.font_stat,
-            foreground=color,
-            background=host.colors["bg_card"],
-        ).pack(pady=(0, int(4 * scale)))
-        ttk.Label(
-            card,
-            text=label_text,
-            font=host.font_stat_label,
-            foreground=host.colors["text_secondary"],
-            background=host.colors["bg_card"],
-        ).pack(pady=(0, int(12 * scale)))
+        ttk.Label(text_column, textvariable=value_var, font=host.font_stat,
+                  foreground=color, background=host.colors["bg_card"]).pack(
+                      anchor="center", pady=(int(4 * scale), 0))
 
     ttk.Label(
         page,
@@ -178,6 +156,12 @@ def build_stats_page(
         padx=int(5 * scale),
         pady=(int(20 * scale), int(10 * scale)),
     )
+
+    ttk.Label(
+        page, text="合适率、误推率以有效人工反馈为样本；结合已反馈人数判断，双击岗位查看复盘。",
+        font=host.font_label, foreground=host.colors["text_secondary"],
+        background=host.colors["bg_main"], wraplength=int(800 * scale),
+    ).pack(anchor="w", padx=int(5 * scale), pady=(0, int(4 * scale)))
 
     table_container = ttk.Frame(page, style="Card.TFrame")
     table_container.pack(fill="both", expand=True, pady=int(10 * scale))

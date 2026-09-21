@@ -17,6 +17,7 @@ class WidgetSupportHost(Protocol):
     colors: Mapping[str, str]
     dpi_scale: float
     zoom_factor: float
+    home_fonts: Mapping[str, Any]
     font_section: Any
     font_label: Any
     icons: Any
@@ -62,14 +63,10 @@ class WidgetSupport:
         card = ttk.Frame(parent, style="PageHeader.TFrame")
         card.pack(
             fill="x",
-            pady=(int(top_padding * scale), int(25 * scale)),
-        )
-        tk.Frame(card, width=int(4 * scale), bg=host.colors["primary"]).pack(
-            side="left",
-            fill="y",
+            pady=(int(top_padding * scale), int(16 * scale)),
         )
         inner = ttk.Frame(card, style="PageHeaderInner.TFrame")
-        inner.pack(fill="x", padx=(padding, padding), pady=(padding, padding))
+        inner.pack(fill="x", padx=0, pady=(int(6 * scale), int(6 * scale)))
         label_parent: tk.Misc = inner
         if trailing_builder is not None:
             trailing = ttk.Frame(inner, style="PageHeaderInner.TFrame")
@@ -80,18 +77,22 @@ class WidgetSupport:
         ttk.Label(
             label_parent,
             text=title,
-            font=host.font_section,
+            font=host.home_fonts["title"],
             foreground=host.colors["text_primary"],
-            background=host.colors["bg_card"],
+            background=host.colors["bg_main"],
         ).pack(anchor="w")
         if subtitle:
-            ttk.Label(
+            subtitle_label = ttk.Label(
                 label_parent,
                 text=subtitle,
                 font=host.font_label,
                 foreground=host.colors["text_secondary"],
-                background=host.colors["bg_card"],
-            ).pack(anchor="w", pady=(int(8 * scale), 0))
+                background=host.colors["bg_main"],
+                justify="left",
+            )
+            subtitle_label.pack(anchor="w", fill="x", pady=(int(8 * scale), 0))
+            label_parent.bind("<Configure>", lambda event: subtitle_label.configure(
+                wraplength=max(160, event.width)))
         return inner
 
     def create_navigation_button(

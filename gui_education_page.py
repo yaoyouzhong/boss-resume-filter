@@ -463,6 +463,16 @@ def build_education_page(
     screenshot_button._icon_ref = screenshot_icon
     screenshot_button.grid(row=0, column=4, sticky="w")
 
+    def refresh_step_emphasis(_event=None):
+        steps = (recognize_button, fill_button, screenshot_button)
+        primary = next((button for button in steps if not button.instate(["disabled"])), None)
+        for button in steps:
+            button.configure(style="Step.Primary.TButton" if button is primary else "TButton")
+
+    host._refresh_education_step_emphasis = refresh_step_emphasis
+    queue_batch_actions.bind("<Enter>", refresh_step_emphasis)
+    queue_batch_actions.bind("<Map>", refresh_step_emphasis)
+
     for button, help_text in (
         (recognize_button, "识别待处理证书，已完成及人工修正的记录自动跳过。"),
         (fill_button, "打开学信网，填写已就绪证书信息后扫码验证；已提交的记录自动跳过。"),
@@ -637,12 +647,18 @@ def build_education_page(
             fg=host.colors["primary"],
             bg=title_bg,
             cursor="hand2",
+            takefocus=True,
         )
         rotate_button.pack(side="right", padx=padding)
         rotate_button.bind(
             "<Button-1>",
             lambda _event: host._rotate_education_image_cw90(),
         )
+
+        rotate_button.bind("<Return>", lambda _event: host._rotate_education_image_cw90())
+        rotate_button.bind("<space>", lambda _event: host._rotate_education_image_cw90())
+        rotate_button.bind("<FocusIn>", lambda _event: rotate_button.configure(bg=host.colors["bg_hover"]))
+        rotate_button.bind("<FocusOut>", lambda _event: rotate_button.configure(bg=title_bg))
 
     preview = host.widget_support.create_card(
         workspace,
@@ -689,15 +705,17 @@ def build_education_page(
     preview_label = tk.Label(
         preview,
         text="请选择 JPG、JPEG、PNG、BMP、WEBP 图片或 PDF 文件",
+        wraplength=int(300 * scale),
         bg=(host.colors["home_surface_quiet"] if standalone else host.colors["bg_card"]),
         fg=host.colors["text_secondary"],
         font=host.font_label,
         justify="center",
     )
-    preview_label.bind(
-        "<Configure>",
-        lambda _event: host._schedule_education_preview_render(),
-    )
+    def resize_preview(event):
+        preview_label.configure(wraplength=max(160, event.width - int(24 * scale)))
+        host._schedule_education_preview_render()
+
+    preview_label.bind("<Configure>", resize_preview)
     preview_label.bind(
         "<Double-Button-1>",
         lambda _event: host._show_education_original(),

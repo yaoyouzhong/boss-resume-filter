@@ -1,7 +1,9 @@
 """Reusable tooltip windows and non-modal inline page feedback."""
 from __future__ import annotations
 
+import time
 import tkinter as tk
+from tkinter import ttk
 from collections.abc import Mapping
 from typing import Any, Protocol
 
@@ -36,6 +38,8 @@ class FeedbackSupport:
     def __init__(self, host: FeedbackSupportHost, *, font_family: str) -> None:
         self.host = host
         self.font_family = font_family
+        self._banner_timers = {}
+        self._tooltip_last_visible_at = float("-inf")
         for attribute in (
             "_tooltip",
             "_tooltip_item",
@@ -58,10 +62,12 @@ class FeedbackSupport:
         page: tk.Misc,
         kind: str,
         text: str,
-        duration_ms: int = 6000,
+        duration_ms: int | None = None,
     ) -> None:
         """Show a dismissible non-modal banner at the top of a page."""
         host = self.host
+        if duration_ms is None:
+            duration_ms = 0 if kind in {"error", "warning"} else 6000
         try:
             if page is None or not page.winfo_exists():
                 return
@@ -77,7 +83,7 @@ class FeedbackSupport:
         background = host.colors.get(bg_key, bg_fallback)
         children = page.winfo_children()
         banner = tk.Frame(page, bg=background)
-        tk.Label(
+        message = tk.Label(
             banner,
             text=text,
             bg=background,
@@ -85,39 +91,48 @@ class FeedbackSupport:
             font=host.font_label,
             anchor="w",
             justify="left",
-        ).pack(
+        )
+        message.pack(
             side="left",
             fill="x",
             expand=True,
             padx=(int(12 * host.dpi_scale), int(8 * host.dpi_scale)),
             pady=int(8 * host.dpi_scale),
         )
-        close = tk.Label(
-            banner,
-            text="✕",
-            bg=background,
-            cursor="hand2",
-            fg=host.colors["text_secondary"],
-            font=host.font_label,
+        close = ttk.Button(
+            banner, text="关闭", command=lambda: self.hide_inline_banner(page),
         )
         close.pack(side="right", padx=(0, int(12 * host.dpi_scale)))
-        close.bind("<Button-1>", lambda _event: self.hide_inline_banner(page))
+        banner.bind("<Configure>", lambda event: message.configure(
+            wraplength=max(80, event.width - close.winfo_reqwidth() - int(40 * host.dpi_scale))))
         if children:
             banner.pack(side="top", fill="x", before=children[0])
         else:
             banner.pack(side="top", fill="x")
         host._inline_banners[page] = banner
         if duration_ms:
-            banner.after(duration_ms, lambda: self.hide_inline_banner(page))
+            self._banner_timers[page] = banner.after(duration_ms, lambda: self.hide_inline_banner(page))
 
     def hide_inline_banner(self, page: tk.Misc) -> None:
         """Destroy the active banner for one page, if present."""
         banner = getattr(self.host, "_inline_banners", {}).pop(page, None)
+        timer = self._banner_timers.pop(page, None)
+        if timer and banner is not None:
+            try:
+                banner.after_cancel(timer)
+            except tk.TclError:
+                pass
         if banner is not None:
             try:
                 banner.destroy()
             except tk.TclError:
                 pass
+
+    def tooltip_delay(self, initial_ms: int = 300) -> int:
+        """Keep adjacent tooltip inspection instant while a recent tooltip is warm."""
+        if getattr(self.host, "_tooltip", None) is not None:
+            return 0
+        return 0 if time.monotonic() - self._tooltip_last_visible_at < 0.6 else initial_ms
 
     def show_tooltip(
         self,
@@ -154,6 +169,7 @@ class FeedbackSupport:
             host._tooltip_after_id = None
         tooltip = getattr(host, "_tooltip", None)
         if tooltip:
+            self._tooltip_last_visible_at = time.monotonic()
             tooltip.destroy()
             host._tooltip = None
         host._tooltip_item = None

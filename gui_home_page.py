@@ -520,7 +520,9 @@ def update_health_widget(
         text={"success": "✓", "warning": "!", "danger": "×"}.get(tone, "·"),
         fill=accent,
     )
-    widgets.status_label.configure(foreground=accent)
+    widgets.status_label.configure(
+        foreground=colors["home_secondary"] if tone == "success" else accent
+    )
     if action:
         widgets.action_label.configure(
             text=action,
@@ -548,7 +550,7 @@ def update_readiness_banner(
         "danger": colors["home_danger"],
     }.get(tone, colors["home_secondary"])
     background = {
-        "success": colors["home_success_tint"],
+        "success": colors["home_surface_quiet"],
         "warning": colors["home_warning_tint"],
         "danger": colors["home_danger_tint"],
     }.get(tone, colors["home_surface_quiet"])

@@ -3433,6 +3433,10 @@ class BossFilterGUI:
                 state="normal" if action_states.retry_captcha else "disabled",
             )
 
+        refresh_emphasis = getattr(self, "_refresh_education_step_emphasis", None)
+        if refresh_emphasis is not None:
+            refresh_emphasis()
+
     def _confirm_current_education_fields(self):
         self._save_current_education_fields()
         item = self.education_items.get(self.education_current_id)
@@ -10442,6 +10446,9 @@ class BossFilterGUI:
                 self._apply_lamp_status(self.browser_status_indicator, indicator_text, indicator_color)
             if help_text is not None:
                 self.browser_status_help.config(text=help_text)
+                hint = getattr(self, "run_readiness_hint", None)
+                if hint is not None:
+                    hint.configure(text=help_text)
             # 运行中不覆盖按钮状态，防止轮询覆盖 start_run 的 disabled
             if start_state is not None and not self.is_running:
                 self.start_btn.config(state=start_state)
@@ -11029,6 +11036,10 @@ class BossFilterGUI:
                     self._set_run_summary(summary_desc)
         except queue.Empty:
             pass
+
+        refresh_layout = getattr(self, "_refresh_run_progress_layout", None)
+        if refresh_layout is not None:
+            refresh_layout()
 
         # 处理岗位切换确认队列
         try:
@@ -12204,7 +12215,8 @@ class BossFilterGUI:
         x = self.root.winfo_pointerx() + 15
         y = self.root.winfo_pointery() + 10
         self._tooltip_after_id = self.root.after(
-            300, lambda: self.feedback_support.show_tooltip(full, x, y, tooltip_key)
+            self.feedback_support.tooltip_delay(),
+            lambda: self.feedback_support.show_tooltip(full, x, y, tooltip_key)
         )
 
     def _toggle_result_empty_state(self, show):

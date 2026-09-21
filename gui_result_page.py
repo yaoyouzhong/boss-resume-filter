@@ -199,77 +199,55 @@ def build_result_page(
     card_gap = int(12 * scale)
     stat_icon_canvases: list[tuple[tk.Canvas, ttk.Label]] = []
     for index, (icon_name, label_text, var_name, color) in enumerate(stats_data):
-        card_frame = ttk.Frame(stats_container, style="Card.TFrame")
-        card_padx = (0, card_gap) if index < len(stats_data) - 1 else 0
-        card_frame.pack(side="left", fill="x", expand=True, padx=card_padx)
-
+        stats_container.columnconfigure(index, weight=1, uniform="result_metrics")
+        card_frame = ttk.Frame(stats_container, style="Metric.TFrame", takefocus=True, cursor="hand2")
+        card_frame.grid(row=0, column=index, sticky="nsew",
+                        padx=(card_gap // 2, card_gap - card_gap // 2))
+        body = ttk.Frame(card_frame, style="TFrame")
+        body.pack(anchor="center", pady=int(12 * scale), padx=int(12 * scale))
         icon_size = int(ui_config["stat_icon_size"] * scale)
-        icon_canvas = tk.Canvas(
-            card_frame,
-            width=icon_size,
-            height=icon_size,
-            bg=host.colors["bg_card"],
-            highlightthickness=0,
-        )
-        icon_canvas.pack(
-            anchor="center",
-            pady=(int(12 * scale), int(4 * scale)),
-        )
+        icon_canvas = tk.Canvas(body, width=icon_size, height=icon_size,
+                                bg=host.colors["bg_card"], highlightthickness=0)
+        icon_canvas.pack(side="left", padx=(0, int(12 * scale)))
         margin = int(ui_config["icon_margin"] * scale)
-        icon_canvas.create_oval(
-            margin,
-            margin,
-            icon_size - margin,
-            icon_size - margin,
-            fill=color,
-            outline="",
-        )
+        icon_canvas.create_oval(margin, margin, icon_size - margin, icon_size - margin,
+                                fill=color, outline="")
         stat_icon = host.icons.stat(icon_name, "white")
         icon_canvas.create_image(icon_size // 2, icon_size // 2, image=stat_icon)
         icon_canvas._icon_ref = stat_icon
-
+        text_column = ttk.Frame(body, style="TFrame")
+        text_column.pack(side="left")
+        label = ttk.Label(text_column, text=label_text, font=host.font_stat_label,
+                          foreground=host.colors["text_secondary"], background=host.colors["bg_card"])
+        label.pack(anchor="center")
+        stat_icon_canvases.append((icon_canvas, text_column))
         value_var = tk.StringVar(value="0")
         stats_vars[var_name] = value_var
-        value_label = ttk.Label(
-            card_frame,
-            textvariable=value_var,
-            font=host.font_stat,
-            foreground=color,
-            background=host.colors["bg_card"],
-            cursor="hand2",
-        )
-        value_label.pack(anchor="center", pady=(0, int(2 * scale)))
-        stat_icon_canvases.append((icon_canvas, value_label))
-
-        greeted_var = tk.StringVar(
-            value="通过筛选中" if var_name == "greeted" else "0 已打招呼"
-        )
+        ttk.Label(text_column, textvariable=value_var, font=host.font_stat,
+                  foreground=color, background=host.colors["bg_card"]).pack(
+                      anchor="center", pady=(int(4 * scale), int(2 * scale)))
+        greeted_var = tk.StringVar(value="通过筛选中" if var_name == "greeted" else "0 已打招呼")
         stats_greeted[var_name] = greeted_var
-        ttk.Label(
-            card_frame,
-            textvariable=greeted_var,
-            font=(font_family, int(10 * host.font_scale)),
-            foreground=host.colors["success"],
-            background=host.colors["bg_card"],
-        ).pack(anchor="center", pady=(0, int(2 * scale)))
-
-        label = ttk.Label(
-            card_frame,
-            text=label_text,
-            font=host.font_stat_label,
-            foreground=host.colors["text_secondary"],
-            background=host.colors["bg_card"],
-        )
-        label.pack(anchor="center", pady=(0, int(10 * scale)))
+        ttk.Label(text_column, textvariable=greeted_var, font=(font_family, int(10 * host.font_scale)),
+                  foreground=host.colors["text_secondary"], background=host.colors["bg_card"]).pack(anchor="center")
         stats_click[var_name] = label_text
-        value_label.bind(
-            "<Button-1>",
-            lambda _event, stat_type=var_name: host.show_result_stat_detail(stat_type),
-        )
-        label.bind(
-            "<Button-1>",
-            lambda _event, stat_type=var_name: host.show_result_stat_detail(stat_type),
-        )
+
+        def activate_metric(_event=None, stat_type=var_name, card=card_frame):
+            card.focus_set()
+            host.show_result_stat_detail(stat_type)
+            return "break"
+
+        surfaces = [card_frame]
+        while surfaces:
+            surface = surfaces.pop()
+            surfaces.extend(surface.winfo_children())
+            surface.bind("<Button-1>", activate_metric)
+            surface.bind("<Enter>", lambda _event, card=card_frame: card.state(["active"]))
+            surface.bind("<Leave>", lambda _event, card=card_frame: card.state(["!active"]))
+        card_frame.bind("<Return>", activate_metric)
+        card_frame.bind("<space>", activate_metric)
+        card_frame.bind("<FocusIn>", lambda _event, card=card_frame: card.state(["focus"]))
+        card_frame.bind("<FocusOut>", lambda _event, card=card_frame: card.state(["!focus"]))
 
     search_frame = ttk.Frame(page, style="Page.TFrame")
     search_frame.pack(fill="x", pady=(int(12 * scale), int(6 * scale)))
