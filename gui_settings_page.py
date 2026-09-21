@@ -75,16 +75,38 @@ def build_settings_content_steps(
         )
         back_button.pack()
 
-    # 系统设置页面标题
+    section_targets = {}
+
+    def jump_to_section(key):
+        target = section_targets.get(key)
+        if target is None:
+            return
+        api_container.update_idletasks()
+        offset = target.winfo_rooty() - api_container.winfo_rooty()
+        self.api_canvas.yview_moveto(max(0, offset) / max(1, api_container.winfo_height()))
+        target.focus_set()
+
+    def build_section_directory(parent):
+        directory = ttk.Menubutton(parent, text="快速定位  ▾", style="Settings.Directory.TMenubutton", takefocus=True)
+        menu = tk.Menu(directory, tearoff=False, font=self.font_label,
+                       background=self.colors["bg_card"], foreground=self.colors["text_primary"],
+                       activebackground=self.colors["home_primary_tint"], activeforeground=self.colors["primary"])
+        for key, title in (("assignment", "使用中的模型"), ("config", "模型接入"),
+                           ("models", "已保存模型"), ("data", "数据备份与恢复"), ("diagnostics", "故障诊断")):
+            if key == "data":
+                menu.add_separator()
+            menu.add_command(label=title, command=lambda key=key: jump_to_section(key))
+        directory.configure(menu=menu)
+        directory.pack(anchor="e")
+
     self.widget_support.create_page_header(
         api_container,
         "模型配置" if standalone else "系统设置",
         (
             "配置学历证书识别所使用的模型；API Key 仅保存在当前用户的系统凭据中。"
-            if standalone
-            else None
+            if standalone else None
         ),
-        trailing_builder=_build_education_navigation if standalone else None,
+        trailing_builder=_build_education_navigation if standalone else build_section_directory,
     )
 
     page_card_pad_x = 0 if standalone else int(25 * self.dpi_scale * self.zoom_factor)
@@ -123,6 +145,8 @@ def build_settings_content_steps(
         **page_card_pack,
         pady=(0, page_card_gap) if standalone else int(20 * self.dpi_scale * self.zoom_factor),
     )
+    section_targets["assignment"] = assignment_card.master
+
     assignment_frame = ttk.Frame(assignment_card, style='TFrame')
     assignment_frame.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor),
                           pady=int(15 * self.dpi_scale * self.zoom_factor))
@@ -242,6 +266,8 @@ def build_settings_content_steps(
         **page_card_pack,
         pady=(0, page_card_gap) if standalone else int(15 * self.dpi_scale * self.zoom_factor),
     )
+    section_targets["config"] = config_card.master
+
 
     # API 配置输入区（服务商、Key、URL、模型名称）
     input_frame = ttk.Frame(config_card, style='TFrame')
@@ -341,8 +367,8 @@ def build_settings_content_steps(
     button_row = ttk.Frame(config_card, style='TFrame')
     button_row.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
 
-    icon_save_api = self.icons.button('save', self.colors['text_primary'])
-    btn_save_api = ttk.Button(button_row, image=icon_save_api, text=" 保存模型", compound=tk.LEFT, command=self.save_api_config)
+    icon_save_api = self.icons.button('save', '#FFFFFF')
+    btn_save_api = ttk.Button(button_row, image=icon_save_api, text=" 保存模型", compound=tk.LEFT, command=self.save_api_config, style="Workbench.Primary.TButton")
     btn_save_api._icon_ref = icon_save_api
     btn_save_api.pack(side="left", padx=(int(10 * self.dpi_scale * self.zoom_factor), int(5 * self.dpi_scale * self.zoom_factor)))
     icon_search_test = self.icons.button('search', self.colors['text_primary'])
@@ -369,6 +395,8 @@ def build_settings_content_steps(
         **page_card_pack,
         pady=(0, page_card_gap) if standalone else int(15 * self.dpi_scale * self.zoom_factor),
     )
+    section_targets["models"] = model_list_card.master
+
 
     # 模型列表 Treeview
     model_columns = ("name", "provider", "compat", "base_url")
@@ -509,6 +537,8 @@ def build_settings_content_steps(
         padx=int(25 * self.dpi_scale * self.zoom_factor),
         pady=int(15 * self.dpi_scale * self.zoom_factor),
     )
+    section_targets["data"] = data_card.master
+
     self.data_maintenance_card = data_card
     ttk.Label(
         data_card,
@@ -596,6 +626,8 @@ def build_settings_content_steps(
         padx=int(25 * self.dpi_scale * self.zoom_factor),
         pady=int(15 * self.dpi_scale * self.zoom_factor),
     )
+    section_targets["diagnostics"] = diagnostic_card.master
+
     ttk.Label(
         diagnostic_card,
         text=(

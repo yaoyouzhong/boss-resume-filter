@@ -368,5 +368,5 @@ def test_readiness_banner_updates_rail_and_icon_with_semantic_tone():
     assert widgets.readiness_icon_label.configure.call_args.kwargs["text"] == "✓"
     assert (
         widgets.readiness_icon_label.configure.call_args.kwargs["background"]
-        == "lightgreen"
+        == "white"
     )

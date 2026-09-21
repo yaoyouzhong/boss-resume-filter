@@ -27,8 +27,8 @@ def setup_styles(host):
     host.font_title = (ui_theme.FONT_FAMILY, int(28 * page_fs))
     host.font_section = (ui_theme.FONT_FAMILY, int(16 * page_fs))
     host.font_label = (ui_theme.FONT_FAMILY, int(13 * page_fs))  # 通用 UI 字体（表单标签、按钮、下拉框、副标题）
-    host.font_stat = (ui_theme.FONT_FAMILY, int(36 * page_fs))
-    host.font_stat_label = (ui_theme.FONT_FAMILY, int(15 * page_fs))
+    host.font_stat = (ui_theme.FONT_FAMILY, int(24 * page_fs))
+    host.font_stat_label = (ui_theme.FONT_FAMILY, int(11 * page_fs))
     host.font_log = (ui_theme.FONT_FAMILY, int(12 * page_fs))
     host.font_table = (ui_theme.FONT_FAMILY, int(12 * page_fs))  # 表格字体
     home_bold = ui_theme.FONT_FAMILY
@@ -127,6 +127,21 @@ def setup_styles(host):
         anchor='center',
         justify='center',
     )
+    style.layout('Settings.Directory.TMenubutton', [
+        ('Menubutton.button', {'sticky': 'nswe', 'children': [
+            ('Menubutton.padding', {'sticky': 'nswe', 'children': [
+                ('Menubutton.label', {'sticky': ''}),
+            ]}),
+        ]}),
+    ])
+    style.configure('Settings.Directory.TMenubutton', font=host.font_label,
+                    padding=(12, 7), background=c['bg_main'], foreground=c['text_secondary'],
+                    borderwidth=0, relief='flat', bordercolor=c['bg_main'],
+                    lightcolor=c['bg_main'], darkcolor=c['bg_main'], arrowsize=int(10 * fs))
+    style.map('Settings.Directory.TMenubutton',
+              background=[('active', c['bg_hover'])],
+              foreground=[('active', c['primary']), ('focus', c['primary'])],
+              bordercolor=[('focus', c['primary'])])
     # 主级（Accent）：实心品牌蓝白字，hover 深蓝，pressed 更深
     style.configure('Accent.TButton', font=(ui_theme.FONT_FAMILY_SEMIBOLD, int(13 * page_fs)), padding=(20, 8),
                     background=c['primary'], foreground='#FFFFFF',
@@ -190,6 +205,12 @@ def setup_styles(host):
                           ('disabled', c['bg_input'])],
               foreground=[('disabled', c.get('text_muted', ui_theme.TEXT_MUTED))],
               bordercolor=[('disabled', c['border'])])
+    style.configure('Step.Primary.TButton', background=c['home_primary_tint'],
+                    foreground=c['primary'], bordercolor=c['primary'],
+                    lightcolor=c['home_primary_tint'], darkcolor=c['home_primary_tint'])
+    style.map('Step.Primary.TButton',
+              background=[('disabled', c['bg_input']), ('pressed', c['home_primary_border']), ('active', c['home_primary_tint'])],
+              bordercolor=[('disabled', c['border']), ('!disabled', c['primary'])])
     # 危险级（Danger）：实心红，用于删除/停止等需警示的动作
     style.configure('Danger.TButton', font=host.font_label, padding=(15, 8),
                     background=c['danger'], foreground='#FFFFFF',
@@ -206,13 +227,19 @@ def setup_styles(host):
         font=(ui_theme.FONT_FAMILY_SEMIBOLD, int(13 * page_fs)),
     )
 
-    style.configure('Card.TFrame', background=c['bg_card'], relief='solid', borderwidth=1)
+    style.configure('Card.TFrame', background=c['bg_card'], relief='solid', borderwidth=1,
+                    bordercolor=c['border'], lightcolor=c['border'], darkcolor=c['border'])
+    style.configure('Metric.TFrame', background=c['bg_card'], relief='solid', borderwidth=1,
+                    bordercolor=c['border'], lightcolor=c['border'], darkcolor=c['border'])
+    style.map('Metric.TFrame', bordercolor=[('focus', c['primary']), ('active', c['primary'])],
+              lightcolor=[('focus', c['primary']), ('active', c['primary'])],
+              darkcolor=[('focus', c['primary']), ('active', c['primary'])])
     style.configure('WelcomeCard.TFrame', background=host.colors['bg_card'],
                     relief='flat', borderwidth=0)
     style.configure('WelcomeInner.TFrame', background=host.colors['bg_card'])
-    style.configure('PageHeader.TFrame', background=host.colors['bg_card'],
+    style.configure('PageHeader.TFrame', background=host.colors['bg_main'],
                     relief='flat', borderwidth=0)
-    style.configure('PageHeaderInner.TFrame', background=host.colors['bg_card'])
+    style.configure('PageHeaderInner.TFrame', background=host.colors['bg_main'])
     style.configure('Sidebar.TFrame', background=host.colors['bg_sidebar'])
     sidebar_font_size = int(11 * host.font_scale)
     style.configure('Sidebar.TLabel', font=(ui_theme.FONT_FAMILY, sidebar_font_size),

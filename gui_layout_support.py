@@ -296,16 +296,13 @@ class LayoutSupport:
         if compact == getattr(host, "_result_stats_compact", False):
             return
         host._result_stats_compact = compact
-        icon_pady = (
-            int(12 * host.dpi_scale * host.zoom_factor),
-            int(4 * host.dpi_scale * host.zoom_factor),
-        )
-        for icon_canvas, value_label in cards:
+        for icon_canvas, text_column in cards:
             try:
                 if compact:
                     icon_canvas.pack_forget()
                 else:
-                    icon_canvas.pack(anchor="center", pady=icon_pady, before=value_label)
+                    icon_canvas.pack(side="left", padx=(0, int(12 * host.dpi_scale * host.zoom_factor)),
+                                     before=text_column)
             except tk.TclError:
                 pass
 

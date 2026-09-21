@@ -1890,8 +1890,8 @@ def test_layout_support_compacts_and_restores_result_stat_icons_by_height():
     layout.update_result_stats_compact()
     assert gui._result_stats_compact is False
     icon.pack.assert_called_once_with(
-        anchor="center",
-        pady=(12, 4),
+        side="left",
+        padx=(0, 12),
         before=value_label,
     )
 
@@ -8051,7 +8051,7 @@ def test_run_page_exposes_user_friendly_advanced_scan_settings():
     assert [advanced_block.index(label) for label in setting_labels] == sorted(
         advanced_block.index(label) for label in setting_labels
     )
-    assert "before_widget = getattr(host, 'run_progress_frame', None)" in advanced_block
+    assert "before_widget = getattr(host, 'run_summary_frame', None)" in advanced_block
     assert "before=before_widget, **pack_kwargs" in advanced_block
     assert "host.run_progress_frame = progress_frame" in run_page_block
     assert "advanced_inner.columnconfigure(0, minsize=_run_control_lead_width)" in advanced_block
@@ -9631,7 +9631,7 @@ def test_standalone_education_navigation_buttons_share_visual_language():
     assert "canvas.winfo_width()" in widget_source
     assert "canvas.winfo_height()" in widget_source
     assert "trailing_builder=_build_settings_navigation if standalone else None" in education_source
-    assert "trailing_builder=_build_education_navigation if standalone else None" in settings_source
+    assert "trailing_builder=_build_education_navigation if standalone else build_section_directory" in settings_source
     assert 'page_style = "EducationTool.TFrame" if standalone else "Page.TFrame"' in education_source
     assert "'EducationTool.TFrame' if standalone else 'Page.TFrame'" in main_source
     assert 'content_style=page_style if standalone else "TFrame"' in main_source

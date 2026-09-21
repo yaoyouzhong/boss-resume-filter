@@ -7,9 +7,9 @@
 # ---------------------------------------------------------------------------
 # 品牌与语义色
 # ---------------------------------------------------------------------------
-PRIMARY = "#1E88E5"          # 主蓝（品牌色）
-PRIMARY_DARK = "#1565C0"     # 主蓝 hover
-PRIMARY_DEEP = "#0D47A1"     # 主蓝 pressed
+PRIMARY = "#2563EB"          # 主蓝（品牌色）
+PRIMARY_DARK = "#1D55D5"     # 主蓝 hover
+PRIMARY_DEEP = "#1E40AF"     # 主蓝 pressed
 PRIMARY_LIGHT = "#64B5F6"    # 主蓝浅色（图表/强调）
 PRIMARY_PALE = "#BBDEFB"     # 主蓝极浅（图标镜片等内部层次色）
 
@@ -26,7 +26,7 @@ PENDING = "#546E7A"          # 待定蓝灰
 # ---------------------------------------------------------------------------
 # 中性色
 # ---------------------------------------------------------------------------
-BG_MAIN = "#F8F9FA"          # 页面主背景
+BG_MAIN = "#F3F6FA"          # 页面主背景
 BG_CARD = "#FFFFFF"          # 卡片背景
 BG_INPUT = "#FAFAFA"         # 输入框背景
 BG_SIDEBAR = "#2D3748"       # 侧边栏背景
@@ -36,8 +36,8 @@ BG_HOVER = "#EDF2F7"         # 悬停背景
 BG_ZEBRA = "#F8FAFC"         # 表格斑马纹
 BG_FOOTER = "#F7F8FA"        # 弹窗底栏
 
-TEXT_PRIMARY = "#1A202C"     # 主文字
-TEXT_SECONDARY = "#718096"   # 次要文字
+TEXT_PRIMARY = "#172033"     # 主文字
+TEXT_SECONDARY = "#65748B"   # 次要文字
 TEXT_MUTED = "#6B7280"       # 弱化文字（白底对比度 ≥4.5）
 TEXT_PLACEHOLDER = "#94A3B8" # 输入框占位提示（低于正文视觉权重）
 TEXT_SIDEBAR = "#A0AEC0"     # 侧边栏文字
@@ -45,7 +45,7 @@ TEXT_SIDEBAR_ACTIVE = "#FFFFFF"
 TEXT_SIDEBAR_SUBTITLE = "#94A3B8"
 TEXT_SIDEBAR_VERSION = "#94A3B8"
 
-BORDER = "#E2E8F0"           # 常规边框
+BORDER = "#DCE3EC"           # 常规边框
 BORDER_STRONG = "#CBD5E1"    # 按钮/输入框边框
 
 # ---------------------------------------------------------------------------

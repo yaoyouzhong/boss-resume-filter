@@ -7,6 +7,7 @@ from tkinter import font, ttk
 from typing import Any, Protocol
 
 import ui_theme
+from gui_app_shell import PageIndex
 from constants import (
     API_CANDIDATE_LIMIT_DEFAULT,
     GREET_CONTEXT_CAPTURE_LIMIT,
@@ -51,6 +52,14 @@ def build_run_page_steps(
     """Build the run-control page incrementally without starting a scan."""
     host.run_page = ttk.Frame(host.pages_frame, style='Page.TFrame')
 
+    # 标题和运行操作独立于滚动内容，进入页面或查看日志时都能操作。
+    host.widget_support.create_page_header(host.run_page, "运行控制")
+    action_bar = ttk.Frame(host.run_page, style='Card.TFrame')
+    action_bar.pack(fill="x", pady=(0, int(8 * host.dpi_scale * host.zoom_factor)))
+    action_content = ttk.Frame(action_bar, style='TFrame')
+    action_content.pack(fill="x", padx=int(20 * host.dpi_scale * host.zoom_factor),
+                        pady=int(8 * host.dpi_scale * host.zoom_factor))
+
     # 可滚动容器（macOS Tk 9.0+ 用 Text，其他用 Canvas）
     scroll_frame = ttk.Frame(host.run_page, style='Page.TFrame')
     scroll_frame.pack(fill="both", expand=True)
@@ -62,11 +71,8 @@ def build_run_page_steps(
 
     host.run_scrollable_frame = scrollable_frame  # 保存引用，供 mousewheel 绑定使用
 
-    # 所有内容放入 scrollable_frame
+    # 参数和日志放入滚动容器
     content = scrollable_frame
-
-    # 页面标题
-    host.widget_support.create_page_header(content, "运行控制")
 
     yield
 
@@ -705,7 +711,7 @@ def build_run_page_steps(
                 "fill": "x",
                 "pady": (0, int(8 * host.dpi_scale * host.zoom_factor)),
             }
-            before_widget = getattr(host, 'run_progress_frame', None)
+            before_widget = getattr(host, 'run_summary_frame', None)
             if before_widget is not None:
                 host.scan_advanced_details_frame.pack(
                     before=before_widget, **pack_kwargs
@@ -765,19 +771,20 @@ def build_run_page_steps(
     yield
 
     # === 进度条 ===
-    progress_frame = ttk.Frame(param_frame, style='TFrame')
+    progress_frame = ttk.Frame(action_content, style='TFrame')
     host.run_progress_frame = progress_frame
-    progress_frame.pack(fill="x", pady=int(15 * host.dpi_scale * host.zoom_factor))
+    progress_frame.pack(fill="x")
 
     # 第一行：标签 + 进度条
     progress_row = ttk.Frame(progress_frame, style='TFrame')
     progress_row.pack(fill="x")
 
-    ttk.Label(progress_row, text="筛选进度:", font=host.font_label,
-             background=host.colors['bg_card']).pack(side="left")
+    ttk.Label(progress_row, text="筛选进度",
+             font=(font_family, int(11 * host.font_scale)),
+             foreground=host.colors['text_secondary'], background=host.colors['bg_card']).pack(side="left")
 
     # 自定义 Progressbar 样式：高度与文字对齐
-    _progress_height = int(20 * host.dpi_scale * host.zoom_factor)
+    _progress_height = max(4, int(6 * host.dpi_scale * host.zoom_factor))
     _progress_style = ttk.Style()
     _progress_style.configure('Run.Horizontal.TProgressbar',
                               thickness=_progress_height,
@@ -792,8 +799,8 @@ def build_run_page_steps(
 
     # 第二行：进度描述文字（全宽，不截断）
     host.progress_label = ttk.Label(progress_frame, text="",
-                                   font=host.font_label,
-                                   foreground=host.colors['primary'],
+                                   font=(font_family, int(11 * host.font_scale)),
+                                   foreground=host.colors['text_secondary'],
                                    anchor="w", justify="left",
                                    background=host.colors['bg_card'])
     host.progress_label.pack(fill="x", pady=(int(4 * host.dpi_scale * host.zoom_factor), 0))
@@ -830,6 +837,9 @@ def build_run_page_steps(
         background=host.colors['bg_input'],
     )
     host.run_summary_status_label.pack(side="right")
+    ttk.Button(
+        summary_header, text="查看筛选结果", command=lambda: host.app_shell.request_sidebar_page(PageIndex.RESULTS),
+    ).pack(side="right", padx=(0, summary_pad))
     summary_body = tk.Frame(summary_outer, bg=host.colors['bg_input'])
     summary_body.pack(
         fill="x",
@@ -870,8 +880,8 @@ def build_run_page_steps(
     yield
 
     # 控制按钮区
-    btn_container = ttk.Frame(control_container, style='TFrame')
-    btn_container.pack(fill="x", padx=int(25 * host.dpi_scale * host.zoom_factor), pady=int(20 * host.dpi_scale * host.zoom_factor))
+    btn_container = ttk.Frame(action_content, style='TFrame')
+    btn_container.pack(fill="x", before=progress_frame, pady=(0, int(10 * host.dpi_scale * host.zoom_factor)))
 
     # 开始/停止按钮
     icon_play_run = host.icons.button('play', '#FFFFFF')
@@ -886,7 +896,7 @@ def build_run_page_steps(
         state="disabled",
     )
     host.start_btn._icon_refs = (icon_play_run, icon_play_run_disabled)
-    host.start_btn.pack(side="left", padx=int(15 * host.dpi_scale * host.zoom_factor))
+    host.start_btn.pack(side="left", padx=(0, int(12 * host.dpi_scale * host.zoom_factor)))
 
     icon_stop = host.icons.button('stop', '#FFFFFF')
     icon_stop_disabled = host.icons.button('stop', host.colors['text_muted'])
@@ -900,27 +910,35 @@ def build_run_page_steps(
         state="disabled",
     )
     host.stop_btn._icon_refs = (icon_stop, icon_stop_disabled)
-    host.stop_btn.pack(side="left", padx=int(15 * host.dpi_scale * host.zoom_factor))
+    host.stop_btn.pack(side="left")
 
     # 状态指示器（交通灯图标 + 文本，由 _apply_lamp_status 统一渲染）
     host.status_label = ttk.Label(btn_container,
                                   font=(font_family, int(13 * host.font_scale)), foreground=host.colors['success'])
     host._apply_lamp_status(host.status_label, "● 就绪", host.colors['success'])
-    host.status_label.pack(side="left", padx=int(50 * host.dpi_scale * host.zoom_factor))
+    host.status_label.pack(side="left", padx=int(24 * host.dpi_scale * host.zoom_factor))
 
     yield
 
-    # 日志区域 — 与浏览器状态卡片一致的卡片式设计
+    host.run_readiness_hint = ttk.Label(
+        action_content, text=getattr(host, "_browser_status_help_text", "") or "请先检测并连接 BOSS 直聘推荐牛人页面",
+        font=host.font_label, foreground=host.colors['text_secondary'], justify="left",
+    )
+    host.run_readiness_hint.pack(fill="x", before=progress_frame,
+                                 pady=(0, int(8 * host.dpi_scale * host.zoom_factor)))
+    action_content.bind("<Configure>", lambda event: host.run_readiness_hint.configure(
+        wraplength=max(200, event.width)))
+
+    # 日志卡片只承载日志，不包含运行按钮。
     log_card = host.widget_support.create_card(content, "运行日志",
         fill="both", expand=True, padx=int(25 * host.dpi_scale * host.zoom_factor), pady=int(15 * host.dpi_scale * host.zoom_factor))
-
     log_container = ttk.Frame(log_card, style='TFrame')
     log_container.pack(fill="both", expand=True)
 
     # 日志文本框 - 等宽字体
     host.log_text = tk.Text(log_container, wrap="word", state="disabled",
                            font=host.font_log, bg=host.colors['bg_input'], borderwidth=0,
-                           highlightthickness=0, height=20)
+                           highlightthickness=0, height=12)
     host.log_text.pack(side="left", fill="both", expand=True)
     host.input_support.bind_text_context_menu(host.log_text, editable=False)
 
@@ -939,6 +957,31 @@ def build_run_page_steps(
     btn_clear_log = ttk.Button(log_toolbar, image=icon_trash_log, text=" 清空日志", compound=tk.LEFT, command=host.clear_log)
     btn_clear_log._icon_ref = icon_trash_log
     btn_clear_log.pack()
+
+    def refresh_progress_layout():
+        running = bool(host.is_running)
+        has_description = bool(str(host.progress_label.cget("text")).strip())
+        if running or has_description:
+            if not progress_frame.winfo_manager():
+                progress_frame.pack(fill="x", pady=(int(6 * host.dpi_scale * host.zoom_factor), 0))
+        else:
+            progress_frame.pack_forget()
+        if running:
+            if not progress_row.winfo_manager():
+                progress_row.pack(fill="x", before=host.progress_label if host.progress_label.winfo_manager() else None)
+        else:
+            progress_row.pack_forget()
+        if has_description:
+            if not host.progress_label.winfo_manager():
+                host.progress_label.pack(fill="x", pady=(int(4 * host.dpi_scale * host.zoom_factor) if running else 0, 0))
+            else:
+                host.progress_label.pack_configure(pady=(int(4 * host.dpi_scale * host.zoom_factor) if running else 0, 0))
+        else:
+            host.progress_label.pack_forget()
+
+    progress_frame.bind("<Configure>", lambda event: host.progress_label.configure(wraplength=max(200, event.width)))
+    host._refresh_run_progress_layout = refresh_progress_layout
+    refresh_progress_layout()
 
     # 启动进度条更新循环
     host.update_progress()
