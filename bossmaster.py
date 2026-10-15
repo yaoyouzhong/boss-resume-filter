@@ -4,6 +4,8 @@ BOSS 直聘候选人智能提取工具
 """
 from __future__ import annotations
 
+from codex_adapter import has_model_credentials
+
 import json
 import logging
 import math
@@ -5645,7 +5647,7 @@ def smart_scan_candidates(page, job_info, auto_greet=False, max_rounds=MAX_ROUND
     llm_failed_count = 0
     rule_pool_count = len(passed_candidates)
     # === 阶段 1.5: AI 辅助评估（可选）===
-    if ai_eval and api_config and api_key and passed_candidates:
+    if ai_eval and api_config and has_model_credentials(api_config, api_key) and passed_candidates:
         from llm_eval import evaluate_batch
         rule = job_info['rule']
         job_requirement = rule.get('original_requirement', '')
@@ -6625,7 +6627,7 @@ def run_smart_scan(args=None, progress_callback=None, confirm_callback=None, sto
                 ai_api_config = json.load(f)
             from security import get_api_key
             ai_api_key = get_api_key(ai_api_config.get('api_provider', ''), ai_api_config.get('base_url', ''))
-            if not ai_api_key:
+            if not has_model_credentials(ai_api_config, ai_api_key):
                 print("⚠️  AI 评估需要 API Key，但未配置，将跳过 AI 评估")
                 args.ai_eval = False
             else:

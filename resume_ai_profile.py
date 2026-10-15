@@ -14,6 +14,8 @@ plain profile payloads.
 """
 from __future__ import annotations
 
+from codex_adapter import call_codex, is_codex
+
 import json
 import re
 import time
@@ -205,7 +207,7 @@ def extract_profile_with_ai(
     }
     try:
         messages = build_profile_messages(resume_text)
-        content = _call_profile_chat(api_config, api_key, messages)
+        content = _call_profile_chat({**api_config, "_stop_event": stop_event} if is_codex(api_config) else api_config, api_key, messages)
         payload = parse_profile_payload(content)
         ai_info = normalize_ai_profile(payload)
         merged = merge_profile(regex_info, ai_info)
@@ -221,7 +223,9 @@ def _call_profile_chat(
     api_key: str,
     messages: list[dict[str, str]],
 ) -> str:
-    """Thin chat-completions transport mirroring ``job_ai_parser``."""
+    """Thin transport for explicitly selected API or local subscription."""
+    if is_codex(api_config):
+        return call_codex(api_config, messages, purpose="resume_profile", stop_event=api_config.get("_stop_event"))
     try:
         import certifi
 

@@ -77,6 +77,8 @@ def probe_api_connectivity(
     clock: Callable[[], float] = time.monotonic,
 ) -> ModelConnectivityResult:
     """Validate DNS first, then verify the configured model capability."""
+    if config.get("api_provider") == "codex":
+        return probe_model_capability(config, api_key, force=True, probe=probe, clock=clock)
     started_at = clock()
     hostname = urlparse(str(config.get("base_url") or "")).hostname or ""
     try:

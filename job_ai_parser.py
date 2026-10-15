@@ -7,6 +7,8 @@ fields back into the one-job config.
 """
 from __future__ import annotations
 
+from codex_adapter import call_codex, has_model_credentials, is_codex
+
 import copy
 import json
 import re
@@ -106,7 +108,7 @@ def enhance_config_with_ai(
 
     base_url = str(api_config.get("base_url", "")).rstrip("/")
     model = str(api_config.get("model", ""))
-    if not base_url or not model or not api_key:
+    if not base_url or not model or not has_model_credentials(api_config, api_key):
         return AIParseEnhancementResult(False, base_config, "AI 配置不完整")
 
     try:
@@ -198,6 +200,8 @@ def _extract_json_from_reasoning(reasoning: str) -> str:
 
 
 def _call_chat_completion(api_config: dict[str, Any], api_key: str, messages: list[dict[str, str]]) -> str:
+    if is_codex(api_config):
+        return call_codex(api_config, messages, purpose="requirement_extraction")
     try:
         import certifi
 

@@ -2141,9 +2141,9 @@ def test_system_settings_model_name_matches_provider_control_width():
 
     assert "self.api_provider_combo = ttk.Combobox" in settings_block
     assert "width=18, font=self.font_label" in settings_block
-    assert "model_entry = ttk.Entry(" in settings_block
+    assert "model_entry = ttk.Combobox(" in settings_block
     assert "width=18," in settings_block
-    assert "style='SettingsModel.TEntry'" in settings_block
+    assert "style='SettingsModel.TEntry'" not in settings_block
     assert "style.configure('SettingsModel.TEntry', padding=(8, 0))" in styles_block
 
 
@@ -3834,6 +3834,8 @@ def test_api_connection_delegates_probe_and_returns_result_on_ui_thread():
     gui._apply_api_connectivity_result.assert_called_once_with(
         result,
         "model-a",
+        config,
+        gui._model_connectivity_tokens[gui._model_ref_key(config)],
     )
 
 

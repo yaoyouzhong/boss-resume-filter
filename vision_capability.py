@@ -1,6 +1,8 @@
 """Learn image-input capability from synthetic probes and real recognition."""
 from __future__ import annotations
 
+from codex_adapter import has_model_credentials, is_codex
+
 import hashlib
 import json
 import os
@@ -100,18 +102,18 @@ def observe_image_recognition(config: dict, messages: list, payload: dict) -> No
         record_vision_success(config)
 
 
-def probe_vision_capability(config: dict, api_key: str, *, on_verified=None, on_connected=None, force=False) -> bool:
+def probe_vision_capability(config: dict, api_key: str, *, on_verified=None, on_connected=None, on_error=None, force=False) -> bool:
     """Read a fresh code found only in image pixels; failure stays unconfirmed."""
     with _lock:
         probe_lock = _probe_locks.setdefault(_identity(config), threading.Lock())
     with probe_lock:
-        return _probe_vision_capability(config, api_key, on_verified=on_verified, on_connected=on_connected, force=force)
+        return _probe_vision_capability(config, api_key, on_verified=on_verified, on_connected=on_connected, on_error=on_error, force=force)
 
 
-def _probe_vision_capability(config: dict, api_key: str, *, on_verified=None, on_connected=None, force=False) -> bool:
+def _probe_vision_capability(config: dict, api_key: str, *, on_verified=None, on_connected=None, on_error=None, force=False) -> bool:
     if not force and has_verified_vision(config):
         return True
-    if not api_key:
+    if not has_model_credentials(config, api_key):
         return False
     from PIL import Image, ImageDraw, ImageFont
     from education_certificate import _build_image_messages, _invoke_model, _png_data_url
@@ -128,10 +130,12 @@ def _probe_vision_capability(config: dict, api_key: str, *, on_verified=None, on
     )
     try:
         result = _invoke_model(
-            config, api_key, messages, timeout=30, max_tokens=2048,
+            config, api_key, messages, timeout=120 if is_codex(config) else 30, max_tokens=2048,
             learn_vision=False, on_connected=on_connected,
         )
-    except Exception:
+    except Exception as exc:
+        if on_error is not None:
+            on_error(str(exc))
         return False
     if str(result.get("code") or "").strip() != challenge:
         return False
@@ -145,8 +149,9 @@ def probe_image_connectivity(config: dict, api_key: str, *, force=True) -> dict:
     """Expose separate connection and image results to all manual test entries."""
     started = time.monotonic()
     connected = []
+    errors = []
     supported = probe_vision_capability(
-        config, api_key, force=force, on_connected=lambda: connected.append(True),
+        config, api_key, force=force, on_connected=lambda: connected.append(True), on_error=errors.append,
     )
     model = str(config.get("model") or "")
     if supported:
@@ -155,6 +160,8 @@ def probe_image_connectivity(config: dict, api_key: str, *, force=True) -> dict:
         message = f"{model} 连接成功；图片测试未通过，多模态能力尚需验证。"
     else:
         message = f"{model} 连接尚未确认；图片测试未完成，多模态能力尚需验证。"
+    if errors:
+        message += " " + errors[-1]
     return {
         "status": "limited" if connected else "incompatible",
         "output_mode": "vision_probe", "vision_verified": supported,

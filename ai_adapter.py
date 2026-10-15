@@ -161,6 +161,10 @@ def classify_api_endpoint(api_config: dict) -> dict[str, Any]:
     host is treated as relay/custom; a missing host remains unknown.
     """
     provider = str(api_config.get("api_provider") or "").strip().lower()
+    if provider == "codex":
+        return {"provider": provider, "hostname": "", "channel_type": "subscription",
+                "is_official": True, "is_relay": False, "service_name": "Codex 本机订阅",
+                "docs_url": "https://developers.openai.com/codex/noninteractive"}
     parsed = urlsplit(str(api_config.get("base_url") or ""))
     hostname = (parsed.hostname or "").lower()
     path = (parsed.path or "").lower()
@@ -477,6 +481,8 @@ def discover_api_endpoint(
 def detect_protocol(api_config: dict) -> str:
     """Return the wire protocol required by the configured endpoint."""
     provider = str(api_config.get("api_provider") or "").lower()
+    if provider == "codex":
+        return "codex_subscription"
     base_url = str(api_config.get("base_url") or "").lower()
     if provider == "anthropic" or "api.anthropic.com" in base_url:
         return "anthropic"
@@ -574,6 +580,8 @@ def build_request(
     需要推理能力的调用保持默认 False。
     """
     protocol = detect_protocol(api_config)
+    if protocol == "codex_subscription":
+        raise ValueError("Codex 订阅必须通过本机 CLI 调用")
     base_url = normalize_api_base_url(api_config)
     model = str(api_config.get("model") or "")
     if protocol == "anthropic":

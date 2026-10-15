@@ -1,6 +1,8 @@
 """Run-session orchestration and terminal semantics without Tk dependencies."""
 from __future__ import annotations
 
+from codex_adapter import has_model_credentials
+
 import argparse
 from dataclasses import dataclass
 from datetime import datetime
@@ -254,9 +256,9 @@ class RunController:
                 100,
             ),
             ai_requested=bool(ai_eval_enabled),
-            ai_eval_enabled=bool(ai_eval_enabled and ai_api_key),
+            ai_eval_enabled=bool(ai_eval_enabled and has_model_credentials(ai_api_config, ai_api_key)),
             ai_api_config=ai_api_config if ai_eval_enabled else None,
-            ai_api_key=ai_api_key if ai_eval_enabled and ai_api_key else None,
+            ai_api_key=(ai_api_key or "") if ai_eval_enabled and has_model_credentials(ai_api_config, ai_api_key) else None,
             llm_read_timeout=llm_read_timeout,
             tuning=tuning,
             setup_logs=tuple(setup_logs),
@@ -305,7 +307,7 @@ class RunController:
                 log(f"AI 辅助评估已启用（模型：{model_name}）")
             elif (
                 request.ai_requested
-                and not request.ai_api_key
+                and not has_model_credentials(request.ai_api_config, request.ai_api_key)
                 and not any(
                     message.startswith("加载 API 配置失败：")
                     for message in request.setup_logs

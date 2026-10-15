@@ -5,6 +5,8 @@ BOSS 简历筛选器 - 图形界面版本
 
 __version__ = "2.34"
 
+
+from codex_adapter import has_model_credentials
 import copy
 import json
 import logging
@@ -365,6 +367,7 @@ def _export_daily_candidate_actions_report(items, parent):
 
 # 服务商显示名称映射（内部键 -> 显示名称）
 PROVIDER_DISPLAY = {
+    "codex": "Codex（本机订阅）",
     "qwen": "通义千问 (Qwen)",
     "deepseek": "深度求索 (DeepSeek)",
     "kimi": "月之暗面 (Kimi)",
@@ -1830,6 +1833,8 @@ class BossFilterGUI:
 
     def _create_api_config_content_steps(self) -> Iterator[None]:
         """创建系统设置页面内容。"""
+        from codex_adapter import ADAPTER
+
         yield from gui_settings_page.build_settings_content_steps(
             self,
             UI_CONFIG,
@@ -1838,6 +1843,8 @@ class BossFilterGUI:
             traffic_light_base_size=TRAFFIC_LIGHT_BASE_SIZE,
             provider_display=PROVIDER_DISPLAY,
             display_to_key=DISPLAY_TO_KEY,
+            codex_status=ADAPTER.status,
+            codex_login=ADAPTER.login,
         )
 
     def load_api_config_to_ui(self, resolve_key=True):
@@ -2441,6 +2448,8 @@ class BossFilterGUI:
 
     def _read_runtime_api_key(self, provider: str, base_url: str = "") -> str:
         """Read a credential through the standalone or BOSS credential backend."""
+        if provider == "codex":
+            return ""
         api_key_getter = getattr(self, "_api_key_getter", None)
         if api_key_getter is not None:
             return str(api_key_getter(provider, base_url) or "")
@@ -2545,7 +2554,7 @@ class BossFilterGUI:
                 if (self.api_config.get("api_provider", ""), self.api_config.get("base_url", "")) != (provider, base_url):
                     return
                 self.api_config["api_key"] = current_key
-                if provider and not current_key:
+                if provider and not has_model_credentials(self.api_config, current_key):
                     self.api_config["needs_reconfigure"] = True
                     if hasattr(self, 'api_status_frame'):
                         self._update_api_status(
@@ -2826,6 +2835,9 @@ class BossFilterGUI:
                 status_display = "✓ 可用"
             else:
                 status_display = "未检测"
+            status_display = getattr(self, "_model_test_statuses", {}).get(
+                self._model_ref_key(model_config), status_display
+            )
             usage_tag = self._saved_model_usage_tag(model_config)
             self.model_list_tree.insert(
                 "", "end", values=(name, provider_display, status_display, base_url),
@@ -4539,7 +4551,7 @@ class BossFilterGUI:
         education_api_key = ""
         if getattr(self, "standalone_education", False):
             education_api_key = self._get_education_api_key(vision_config)
-            if not education_api_key:
+            if not has_model_credentials(vision_config, education_api_key):
                 messagebox.show_notice(
                     "需要配置模型",
                     headline="尚未找到当前模型的 API Key",
@@ -6527,8 +6539,8 @@ class BossFilterGUI:
             if model_configured:
                 try:
                     key_state = (
-                        "present"
-                        if self._get_api_key_cached(provider, base_url)
+                        "subscription" if provider == "codex" else "present"
+                        if has_model_credentials(api_config, self._get_api_key_cached(provider, base_url))
                         else "missing"
                     )
                 except Exception as exc:
@@ -7297,7 +7309,7 @@ class BossFilterGUI:
         self._update_api_status(text=status_text, foreground=self.colors['success'])
 
     def _update_api_status(self, text, foreground=None):
-        """更新 API 状态标签，同时清理之前的可点击标签；⏳ 进行状态期间显示忙碌光标。"""
+        """更新 API 状态文字，同时清理之前的可点击标签。"""
         # 清理之前的可点击标签
         for lbl in self._status_clickable_labels:
             lbl.destroy()
@@ -7307,13 +7319,6 @@ class BossFilterGUI:
         if foreground is not None:
             config["foreground"] = foreground
         self.api_status_label.config(**config)
-        # ⏳ 是测试连接 / 获取模型列表等耗时操作的统一进行标记，终态文案到达时恢复光标
-        root = getattr(self, 'root', None)
-        if root is not None:
-            try:
-                root.config(cursor='watch' if str(text).startswith("⏳") else '')
-            except tk.TclError:
-                pass
 
     def _is_relay_endpoint_for_timeout(self) -> bool:
         """判断当前 API 配置是否为中转服务（用于读取超时默认值）"""
@@ -7329,7 +7334,7 @@ class BossFilterGUI:
                 return  # 运行页已重建，旧标签随页面销毁
         except tk.TclError:
             return
-        has_key = bool(self.api_config.get("api_key"))
+        has_key = has_model_credentials(self.api_config, self.api_config.get("api_key"))
         has_model_config = bool(
             has_key
             and str(self.api_config.get("api_provider") or "").strip()
@@ -7371,7 +7376,7 @@ class BossFilterGUI:
         provider_display = self.PROVIDER_DISPLAY.get(provider_key, provider_key)
         saved_api_key = self._get_api_key_cached(provider_key, base_url)
 
-        if not saved_api_key:
+        if not has_model_credentials(model_config, saved_api_key):
             self._update_api_status(
                 text=f"⚠ {model_name} 缺少 API Key，请重新保存",
                 foreground=self.colors['warning'],
@@ -7471,7 +7476,9 @@ class BossFilterGUI:
         )
         self._update_api_status(text=status_text, foreground=self.colors['warning'])
         for entry in models_to_test:
-            self._set_model_list_item_status(entry["item_id"], "测试中...")
+            entry["connectivity_token"] = self._sync_model_test_state(
+                entry["model_config"], "testing", "测试中..."
+            )
 
         progress = {"done": 0, "success": 0, "fail": 0}
 
@@ -7479,7 +7486,7 @@ class BossFilterGUI:
             api_key = self._get_api_key_cached(
                 entry["provider_key"], entry["base_url"]
             )
-            if not api_key:
+            if not has_model_credentials(entry["model_config"], api_key):
                 result = {"status": "error", "msg": "API Key 未配置"}
             elif not entry["base_url"]:
                 result = {"status": "error", "msg": "Base URL 未配置"}
@@ -7511,6 +7518,41 @@ class BossFilterGUI:
             t = threading.Thread(target=_test_one, args=(entry,), daemon=True)
             t.start()
 
+    def _sync_model_test_state(self, model_ref, state, status_text, *, token=None):
+        """Synchronize one connection identity across assignment lights and saved rows."""
+        key = self._model_ref_key(model_ref)
+        if not hasattr(self, "_model_connectivity_tokens"):
+            self._model_connectivity_tokens = {}
+        if state == "testing":
+            token = object()
+            self._model_connectivity_tokens[key] = token
+        elif token is not None and self._model_connectivity_tokens.get(key) is not token:
+            return False
+        if not hasattr(self, "_model_test_statuses"):
+            self._model_test_statuses = {}
+        self._model_test_statuses[key] = status_text
+        if state != "testing":
+            if not hasattr(self, "_assigned_model_test_results"):
+                self._assigned_model_test_results = {}
+            self._assigned_model_test_results[key] = state
+        if getattr(self, "api_config", None):
+            for role in getattr(self, "_assigned_model_test_states", {}):
+                if self._model_ref_matches(model_ref, self._get_assigned_model_ref(role)):
+                    if state == "testing":
+                        tokens = getattr(self, "_assigned_model_test_tokens", {})
+                        tokens[role] = tokens.get(role, 0) + 1
+                    self._set_assigned_model_test_state(role, state)
+        tree = getattr(self, "model_list_tree", None)
+        if tree is not None:
+            for item_id in tree.get_children():
+                values = tree.item(item_id).get("values", ())
+                if len(values) >= 4 and self._model_ref_matches(model_ref, {
+                    "api_provider": self.DISPLAY_TO_KEY.get(values[1], values[1]),
+                    "base_url": values[3], "model": values[0],
+                }):
+                    self._set_model_list_item_status(item_id, status_text)
+        return token if state == "testing" else True
+
     def _set_model_list_item_status(self, item_id, status_text):
         """Update only the saved-model status cell."""
         if not hasattr(self, 'model_list_tree'):
@@ -7529,13 +7571,23 @@ class BossFilterGUI:
     def _apply_model_connectivity_result(self, entry, result, progress, total):
         """Apply one connectivity result on the Tk UI thread."""
         progress["done"] += 1
-        self._apply_assigned_model_test_result(entry, result)
         capability = result.get("capability", {})
+        status_text = (
+            ("✓ 可用" if result["status"] == "success" else "✗ 连接失败")
+            if capability.get("output_mode") == "vision_probe"
+            else (f"✓ {'可用' if capability.get('status') == 'compatible' else '兼容'} {result.get('time', 0):.1f}s"
+                  if result["status"] == "success" else f"✗ {result.get('msg', '未知错误')}")
+        )
+        if not self._sync_model_test_state(
+            entry["model_config"],
+            "success" if result["status"] == "success" else "error",
+            status_text, token=entry.get("connectivity_token"),
+        ):
+            return
         if capability.get("output_mode") == "vision_probe":
             message = capability.get("message", "")
             progress["success" if result["status"] == "success" else "fail"] += 1
             progress.setdefault("image_messages", []).append(message)
-            self._set_model_list_item_status(entry["item_id"], message)
             self._update_api_status(
                 text="；".join(progress["image_messages"]),
                 foreground=self.colors['success' if capability.get("vision_verified") and not progress["fail"] else 'warning'],
@@ -7544,12 +7596,6 @@ class BossFilterGUI:
         if result["status"] == "success":
             progress["success"] += 1
             capability = result.get("capability", {})
-            status = capability.get("status", "")
-            label = "可用" if status == "compatible" else "兼容"
-            elapsed = result.get("time", 0)
-            self._set_model_list_item_status(
-                entry["item_id"], f"✓ {label} {elapsed:.1f}s"
-            )
             self._save_capability_to_model(
                 entry["model_name"],
                 capability,
@@ -7559,8 +7605,6 @@ class BossFilterGUI:
             )
         else:
             progress["fail"] += 1
-            msg = result.get("msg", "未知错误")
-            self._set_model_list_item_status(entry["item_id"], f"✗ {msg}")
 
         if progress["done"] < total:
             self._update_api_status(
@@ -7681,12 +7725,14 @@ class BossFilterGUI:
                     foreground=self.colors['warning'],
                 )
                 return
-            if not api_key:
+            if provider != "codex" and not api_key:
                 self._update_api_status(
                     text="⚠ 请输入 API Key",
                     foreground=self.colors['warning'],
                 )
                 return
+            if provider == "codex":
+                api_key, base_url = "", "codex://local"
             if not base_url:
                 self._update_api_status(
                     text="⚠ 请输入 Base URL",
@@ -7702,7 +7748,7 @@ class BossFilterGUI:
                 base_url = normalized_base_url
                 self.api_base_url_var.set(base_url)
             # 按服务商 + Base URL 组合存储 API Key（区分同一服务商的不同接入方式）
-            if not self._save_runtime_api_key(provider, api_key, base_url):
+            if provider != "codex" and not self._save_runtime_api_key(provider, api_key, base_url):
                 raise RuntimeError("API Key 未能写入系统凭据存储，请检查系统凭据服务后重试")
             self._remember_api_key(provider, base_url, api_key)
 
@@ -7761,7 +7807,7 @@ class BossFilterGUI:
             if getattr(self, 'reconfig_card', None) and self.reconfig_card.winfo_exists():
                 self.reconfig_card.destroy()
                 self.reconfig_card = None
-            self._status_flash("模型配置已保存，API Key 已加密存储")
+            self._status_flash("Codex 模型已保存" if provider == "codex" else "模型配置已保存，API Key 已加密存储")
             self._test_added_models_vision(provider, base_url, outcome.models, api_key)
         except Exception as e:
             self._update_api_status(text=f"✗ 保存失败：{e}", foreground=self.colors['danger'])
@@ -7775,12 +7821,6 @@ class BossFilterGUI:
 
     def _test_selected_model_vision(self, model_config, *, force=False):
         """Check the exact selected identity, including the default-following route."""
-        if force:
-            for role in getattr(self, '_assigned_model_test_tokens', {}):
-                if self._model_ref_matches(model_config, self._get_assigned_model_ref(role)):
-                    self._assigned_model_test_tokens[role] += 1
-                    self._assigned_model_test_refs[role] = dict(model_config)
-                    self._set_assigned_model_test_state(role, "testing")
         self._test_added_models_vision(
             model_config.get("api_provider", ""), model_config.get("base_url", ""),
             (model_config.get("model", ""),), None, action="正在测试模型" if force else "模型已选择", force=force,
@@ -7792,16 +7832,18 @@ class BossFilterGUI:
 
         token = object()
         self._vision_probe_token = token
-        assigned_entries = []
-        for role, test_token in getattr(self, '_assigned_model_test_tokens', {}).items():
-            ref = self._get_assigned_model_ref(role)
-            if any(self._model_ref_matches(ref, {
-                "api_provider": provider, "base_url": base_url, "model": model,
-            }) for model in models):
-                assigned_entries.append({
-                    "assigned_role": role, "assigned_test_token": test_token,
-                    "assigned_model_ref": dict(ref),
-                })
+        connectivity_tokens = {}
+        if not hasattr(self, "_model_connectivity_tokens"):
+            self._model_connectivity_tokens = {}
+        for model in models:
+            ref = {"api_provider": provider, "base_url": base_url, "model": model}
+            if force:
+                connectivity_tokens[model] = self._sync_model_test_state(
+                    ref, "testing", "测试中..."
+                )
+            else:
+                connectivity_tokens[model] = object()
+                self._model_connectivity_tokens[self._model_ref_key(ref)] = connectivity_tokens[model]
         self._update_api_status(
             text=f"✓ {action}；正在用测试图片检测图片识别能力…",
             foreground=self.colors['warning'],
@@ -7826,19 +7868,22 @@ class BossFilterGUI:
                 (confirmed if supported else unknown).append(model)
 
             def finish():
-                if not hasattr(self, '_assigned_model_test_results'):
-                    self._assigned_model_test_results = {}
-                for config in live_connected:
-                    if not any(self._model_ref_matches(entry["assigned_model_ref"], config)
-                               for entry in assigned_entries):
-                        self._assigned_model_test_results.setdefault(self._model_ref_key(config), "success")
-                for entry in assigned_entries:
-                    if any(self._model_ref_matches(entry["assigned_model_ref"], config)
-                           for config in live_connected):
-                        self._apply_assigned_model_test_result(entry, {"status": "success"})
-                    elif force:
-                        self._apply_assigned_model_test_result(entry, {"status": "error"})
-                if getattr(self, '_vision_probe_token', None) is not token:
+                applied = False
+                for model in models:
+                    ref = {"api_provider": provider, "base_url": base_url, "model": model}
+                    connected = any(self._model_ref_matches(ref, config) for config in live_connected)
+                    if connected or force:
+                        status_text = (
+                            "✓ 可用" if connected
+                            else "✗ 连接尚未确认"
+                        )
+                        applied = self._sync_model_test_state(
+                            ref, "success" if connected else "error", status_text,
+                            token=connectivity_tokens.get(model),
+                        ) or applied
+                    elif self._model_connectivity_tokens.get(self._model_ref_key(ref)) is connectivity_tokens[model]:
+                        applied = True
+                if not applied or getattr(self, '_vision_probe_token', None) is not token:
                     return
                 parts = []
                 for model in confirmed:
@@ -7895,7 +7940,7 @@ class BossFilterGUI:
         provider_display = self.api_provider_var.get().strip()
         provider = self.DISPLAY_TO_KEY.get(provider_display, provider_display)
 
-        if not api_key:
+        if provider != "codex" and not api_key:
             messagebox.showwarning("警告", "请先输入 API Key")
             return
 
@@ -8144,9 +8189,21 @@ class BossFilterGUI:
         self.api_key_toggle_btn.configure(image=self.api_key_toggle_btn._icon_eye)
         self.api_key_show_var.set(False)
 
-    def _apply_api_connectivity_result(self, result, model):
+    def _apply_api_connectivity_result(self, result, model, model_ref=None, test_token=None):
         """Render one deterministic API connectivity result on the Tk thread."""
         capability = getattr(result, "capability", {})
+        if model_ref is not None:
+            status_text = (
+                ("✓ 可用" if result.successful else "✗ 连接失败")
+                if capability.get("output_mode") == "vision_probe"
+                else f"✓ 可用 {result.elapsed_seconds:.1f}s" if result.successful
+                else f"✗ {result.message or '连接失败'}"
+            )
+            if not self._sync_model_test_state(
+                model_ref, "success" if result.successful else "error", status_text,
+                token=test_token,
+            ):
+                return
         if capability.get("output_mode") == "vision_probe":
             self._update_api_status(
                 text=result.message,
@@ -8225,7 +8282,7 @@ class BossFilterGUI:
             provider_display,
         )
 
-        if not api_key:
+        if provider_key != "codex" and not api_key:
             self._update_api_status(
                 text="⚠ 请先输入 API Key",
                 foreground=self.colors["warning"],
@@ -8262,6 +8319,7 @@ class BossFilterGUI:
             "base_url": base_url,
             "model": model,
         }
+        test_token = self._sync_model_test_state(config, "testing", "测试中...")
 
         def test_thread():
             from vision_capability import probe_image_connectivity
@@ -8270,6 +8328,8 @@ class BossFilterGUI:
                 lambda result=result: self._apply_api_connectivity_result(
                     result,
                     model,
+                    config,
+                    test_token,
                 )
             )
 
@@ -9302,10 +9362,10 @@ class BossFilterGUI:
         if hasattr(self, "btn_save"):
             self.btn_save.state(['disabled'])
         self._set_parse_result_text("正在解析：使用本地规则提取岗位要求…", self.colors['warning'])
-        self._start_requirement_parse_progress(bool(ai_key), parse_id)
+        self._start_requirement_parse_progress(bool(ai_key) or ai_provider == "codex", parse_id)
         # 跟踪用户手动修改的字段，AI 增强时不覆盖
         self._dirty_fields = set()
-        self._ai_enhance_pending = bool(ai_key)
+        self._ai_enhance_pending = bool(ai_key) or ai_provider == "codex"
 
         def _worker():
             try:
@@ -9317,7 +9377,7 @@ class BossFilterGUI:
                 )
 
                 # 阶段 2：AI 增强（慢速，仅在有 key 时执行）
-                if ai_key:
+                if ai_key or ai_provider == "codex":
                     ai_result = self._build_ai_enhance_result(
                         requirement_text, regex_result["config"],
                         ai_provider, ai_base_url, ai_model, ai_key
@@ -12736,7 +12796,7 @@ class BossFilterGUI:
         api_key = self._get_api_key_cached(
             api_config.get("api_provider", ""), api_config.get("base_url", "")
         )
-        if not api_key:
+        if not has_model_credentials(api_config, api_key):
             messagebox.showwarning(
                 "API Key 缺失",
                 "请先在「模型配置」页配置 API Key。",
@@ -12924,7 +12984,7 @@ class BossFilterGUI:
                 base_url = api_config.get('base_url', '')
                 api_key = self._get_api_key_cached(provider_key, base_url)
 
-                if not api_key:
+                if not has_model_credentials(api_config, api_key):
                     def _no_key():
                         if _tree_item is not None:
                             try:
@@ -13145,7 +13205,7 @@ class BossFilterGUI:
                     )
                 )
                 return
-            if not api_key:
+            if not has_model_credentials(api_config, api_key):
                 self.run_on_ui(
                     lambda: callbacks.on_all_done(
                         summary,
@@ -13275,7 +13335,7 @@ class BossFilterGUI:
             api_config.get("api_provider", ""),
             api_config.get("base_url", ""),
         )
-        if not api_key:
+        if not has_model_credentials(api_config, api_key):
             return None
         config_snapshot = dict(api_config)
 
@@ -13339,10 +13399,10 @@ class BossFilterGUI:
         ai_enhance_available = bool(
             api_config.get("api_provider")
             and api_config.get("model")
-            and self._get_api_key_cached(
+            and has_model_credentials(api_config, self._get_api_key_cached(
                 api_config.get("api_provider", ""),
                 api_config.get("base_url", ""),
-            )
+            ))
         )
         ai_model_label = " / ".join(
             part
@@ -13557,7 +13617,7 @@ class BossFilterGUI:
             api_config.get("api_provider", ""),
             api_config.get("base_url", ""),
         )
-        if not api_key:
+        if not has_model_credentials(api_config, api_key):
             messagebox.show_notice(
                 "导入外部候选人",
                 headline=f"{name} 已完成导入",
@@ -13857,7 +13917,7 @@ class BossFilterGUI:
             api_config.get("api_provider", ""),
             api_config.get("base_url", ""),
         )
-        if not api_key:
+        if not has_model_credentials(api_config, api_key):
             messagebox.show_notice(
                 "编辑候选人信息",
                 headline=f"{name} 的信息已保存",
@@ -14131,7 +14191,7 @@ class BossFilterGUI:
         api_key = self._get_api_key_cached(
             api_config.get('api_provider', ''), api_config.get('base_url', '')
         )
-        if not api_key:
+        if not has_model_credentials(api_config, api_key):
             messagebox.showwarning("警告", "请先配置API Key")
             return
 

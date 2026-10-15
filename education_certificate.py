@@ -1,6 +1,8 @@
 """学历或学位证书识别（图片及扫描 PDF 走视觉模型 / 文字 PDF 走文本模型）与学信网字段校验。"""
 from __future__ import annotations
 
+from codex_adapter import call_codex, is_codex
+
 import base64
 import hashlib
 import io
@@ -1121,6 +1123,18 @@ def _invoke_model(
     故意不传 disable_thinking：证书与验证码是视觉识别任务，保留推理换识别质量
     （AI 评估、JD 解析等结构化任务已在各自调用方关闭推理）。
     """
+    if is_codex(config):
+        budget = _recognition_budget.get()
+        content = call_codex(config, messages, purpose="chsi_query_fields",
+            stop_event=budget[1] if budget else None, timeout=_remaining_recognition_time(timeout))
+        _remaining_recognition_time(timeout)
+        parsed = _extract_json_object(content)
+        if on_connected is not None:
+            on_connected()
+        if learn_vision:
+            from vision_capability import observe_image_recognition
+            observe_image_recognition(config, messages, parsed)
+        return parsed
     if not api_key:
         raise ValueError("当前模型未配置 API Key")
     if not config.get("base_url") or not config.get("model"):
