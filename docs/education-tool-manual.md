@@ -1,5 +1,7 @@
 # 学历与学位证书核验助手 — 操作说明书
 
+适用版本：v2.35。首次下载安装、Codex CLI 准备和换机配置见[安装使用说明](../DEPLOYMENT.md)。
+
 ## 1. 工具用途
 
 学历与学位证书核验助手是一款独立运行的 Windows 桌面工具，用于批量处理候选人毕业证书和学位证书：
@@ -10,7 +12,7 @@
 4. HR 使用手机扫码并人工确认最终查询结果；
 5. 检测到最终结果页后，批量保存统一规格的网页内容截图。
 
-工具与 BOSS 简历筛选器共用现行学历与学位核验实现，但模型配置、API Key 和截图目录偏好相互独立。
+工具与 BOSS 简历筛选器共用现行学历与学位核验实现和本机 Codex 登录，但模型配置、API Key 和截图目录偏好相互独立。
 
 ### 学历和学位分别查询
 
@@ -35,6 +37,8 @@
 
 普通用户下载 [EducationCertificateTool.exe](https://github.com/yaoyouzhong/boss-resume-filter/releases/latest/download/EducationCertificateTool.exe) 后双击启动，无需安装 Python 或 Anaconda。GitHub 下载较慢时，可从 [Gitee Release](https://gitee.com/yaoyouzhong/boss-resume-filter/releases) 下载同名文件。
 
+请放入当前用户可写的独立文件夹。使用 API 服务时直接配置模型；选择 Codex 本机订阅时，先按[官方安装说明](https://learn.chatgpt.com/docs/codex/cli)安装 CLI 并由本人完成 ChatGPT 登录，安装后重新打开本工具。
+
 源码开发或调试时，也可以在项目依赖安装完成后运行：
 
 ```bash
@@ -50,6 +54,8 @@ python education_tool.py
 ### 3.1 配置步骤
 
 使用 Codex 订阅时，先安装官方 Codex CLI，然后选择“Codex（本机订阅）”。点击订阅登录状态，可同时刷新状态与模型列表，或使用 ChatGPT 登录；无需输入 API Key 和 Base URL。在自动载入的模型下拉列表中选择模型，保存并选择当前识别模型后测试连接。模型列表不代表当前账号授权，登录、订阅额度和图片能力以实际测试结果为准；失败时不会自动切换其他服务。Codex 登录由本机官方 CLI 管理，与 BOSS 共用；两个工具的模型选择仍独立保存。
+
+连接测试会实际发送随机数字图，Codex 最长等待约 120 秒，不会读取你的证书用于测试。顶部指示灯和已保存模型列表同步显示连接状态，图片能力以测试按钮下方的说明为准。
 
 使用其他 API 服务时：
 

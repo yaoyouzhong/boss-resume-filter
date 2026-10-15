@@ -9,6 +9,8 @@ import json
 import os
 import sys
 import time
+import tempfile
+from unittest.mock import patch
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -217,7 +219,8 @@ def capture_widget(widget: tk.Widget, filename: str) -> None:
             h = widget.winfo_height()
             ImageGrab.grab(bbox=(x, y, x + w, y + h)).save(OUT_DIR / filename)
         else:
-            hwnd = widget.winfo_id()
+            # Tk exposes an inner HWND; PrintWindow needs the outer native window.
+            hwnd = win32gui.GetAncestor(widget.winfo_id(), win32con.GA_ROOT)
             left, top, right, bottom = win32gui.GetWindowRect(hwnd)
             width = right - left
             height = bottom - top
@@ -228,7 +231,8 @@ def capture_widget(widget: tk.Widget, filename: str) -> None:
             bitmap.CreateCompatibleBitmap(source_dc, width, height)
             memory_dc.SelectObject(bitmap)
             try:
-                ctypes.windll.user32.PrintWindow(hwnd, memory_dc.GetSafeHdc(), 2)
+                if not ctypes.windll.user32.PrintWindow(hwnd, memory_dc.GetSafeHdc(), 2):
+                    raise RuntimeError("PrintWindow failed; refusing an empty screenshot")
                 info = bitmap.GetInfo()
                 bits = bitmap.GetBitmapBits(True)
                 image = Image.frombuffer(
@@ -240,6 +244,12 @@ def capture_widget(widget: tk.Widget, filename: str) -> None:
                     0,
                     1,
                 )
+                client_x, client_y = win32gui.ClientToScreen(hwnd, (0, 0))
+                client = win32gui.GetClientRect(hwnd)
+                image = image.crop((client_x - left, client_y - top,
+                                    client_x - left + client[2], client_y - top + client[3]))
+                if all(low == high for low, high in image.getextrema()):
+                    raise RuntimeError("Captured window is blank; screenshot was not saved")
                 image.save(OUT_DIR / filename)
             finally:
                 win32gui.DeleteObject(bitmap.GetHandle())
@@ -294,7 +304,7 @@ def crop_maximized_result_columns(root: tk.Tk, tree: tk.Widget, filename: str) -
     image.crop(crop_box).save(image_path)
 
 
-def main() -> None:
+def generate() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     DEMO_DATA_PATH.write_text(json.dumps(build_demo_candidates(), ensure_ascii=False, indent=2), encoding="utf-8")
     DEMO_API_CONFIG_PATH.write_text(
@@ -333,6 +343,29 @@ def main() -> None:
     app.api_canvas.yview_moveto(1.0)
     capture_widget(root, "03-data-maintenance.png")
     app.api_canvas.yview_moveto(0.0)
+
+    # Real Tk controls with synthetic login/result state, never account credentials.
+    from api_connectivity import ModelConnectivityResult
+    codex_ref = {"api_provider": "codex", "base_url": "codex://local", "model": "gpt-6.1-sol"}
+    original_config = app.api_config
+    app.api_config = {**codex_ref, "saved_models": [dict(codex_ref)], "providers": {}, "fetched_models": {}}
+    app.api_provider_var.set(app.PROVIDER_DISPLAY["codex"])
+    app.on_api_provider_changed(None)
+    app.load_saved_models_to_tree()
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.05)
+    app._apply_api_connectivity_result(ModelConnectivityResult(
+        "limited", 1, "gpt-6.1-sol 连接成功；已验证支持图片识别。",
+        {"output_mode": "vision_probe", "connected": True, "vision_verified": True},
+    ), codex_ref["model"], codex_ref)
+    app.api_canvas.yview_moveto(0.0)
+    capture_widget(root, "03-codex-subscription.png")
+    app.api_config = original_config
+    app.api_provider_var.set(app.PROVIDER_DISPLAY[original_config["api_provider"]])
+    app.on_api_provider_changed(None)
+    app.load_saved_models_to_tree()
 
     app.show_page_run()
     app.job_combo["values"] = ["全部岗位", DEMO_JOB]
@@ -490,6 +523,28 @@ def main() -> None:
     capture_dialog(root, "发现新版本", "08-update-dialog.png")
 
     root.destroy()
+
+
+def main() -> None:
+    import codex_adapter
+    demo_status = {
+        "installed": True, "compatible": True, "login_in_progress": False,
+        "chatgpt_logged_in": True, "login_error": "",
+        "cached_model_suggestions": ["gpt-6.1-sol"],
+    }
+    with tempfile.TemporaryDirectory(prefix="boss-guide-v235-") as directory:
+        sandbox = Path(directory)
+        for name, filename in (
+            ("CONFIG_PATH", "jobs.json"), ("CONFIG_BACKUP_PATH", "jobs.bak"),
+            ("CONTACT_QUEUE_PATH", "queue.json"), ("RUN_PREFERENCES_PATH", "run.json"),
+        ):
+            setattr(gui_main, name, sandbox / filename)
+        with patch.object(codex_adapter.ADAPTER, "status", return_value=demo_status), \
+                patch.object(gui_main.BossFilterGUI, "_start_browser_auto_check"), \
+                patch.object(gui_main.BossFilterGUI, "_stop_browser_auto_check"), \
+                patch.object(gui_main.BossFilterGUI, "_schedule_api_key_resolution"), \
+                patch.object(gui_main.BossFilterGUI, "_schedule_run_page_api_key_check"):
+            generate()
 
 
 if __name__ == "__main__":
