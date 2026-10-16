@@ -65,7 +65,9 @@ python gui_main.py
 
 配置 AI 辅助评估使用的大模型。
 
-**服务商选择**：支持 qwen、deepseek、kimi、zhipu、minimax、xiaomi、stepfun、openai、anthropic、custom 等 10 种服务商
+**服务商选择**：支持 Codex（本机订阅）、qwen、deepseek、kimi、zhipu、minimax、xiaomi、stepfun、openai、anthropic、custom。
+
+**Codex 本机订阅**：先安装官方 Codex CLI，在服务商中选择“Codex（本机订阅）”。点击订阅登录状态，可同时刷新状态与模型列表，或使用 ChatGPT 登录；无需填写 API Key 和 Base URL。模型下拉列表自动读取本机缓存，保留已有模型选择。保存后，可分别设为默认 AI 模型或学历核验模型，并通过“测试连接”确认当前账号、模型和图片能力。登录成功不代表订阅额度充足或该模型可用；调用失败会显示原因，不会自动切换其他服务。支持岗位解析、候选人评估、简历画像及证书识别。
 
 **服务类型识别**：系统结合服务商和 Base URL 判断官方 API、官方套餐入口或中转服务；Token Plan、Coding Plan、Step Plan 等官方套餐仍显示为官方服务，服务商与地址不匹配或使用未知域名时才显示为中转/自定义服务
 

@@ -74,14 +74,22 @@ def show_model_catalog_dialog(
     dialog.protocol("WM_DELETE_WINDOW", _close_dialog)
 
     # 标题
-    title_text = f"{provider} - 可用模型 ({len(models)} 个)"
+    title_text = (
+        f"Codex - 模型列表 ({len(models)} 个)"
+        if provider_key == "codex"
+        else f"{provider} - 可用模型 ({len(models)} 个)"
+    )
     info_label = ttk.Label(dialog, text=title_text,
                            font=self.font_section,
                            style='Dialog.TLabel')
     info_label.pack(pady=(15, 0))
 
     # 过滤说明
-    filter_note = "已自动过滤 embedding、rerank、tts 等非聊天模型" if filtered_count > 0 else ""
+    filter_note = (
+        "来自本机缓存；模型可用性以测试连接为准。"
+        if provider_key == "codex"
+        else "已自动过滤 embedding、rerank、tts 等非聊天模型" if filtered_count > 0 else ""
+    )
     if filter_note:
         note_label = ttk.Label(dialog, text=filter_note,
                                font=(font_family, int(11 * self.font_scale)),
@@ -243,7 +251,7 @@ def show_model_catalog_dialog(
         ]
 
         test_base_url = base_url.strip()
-        if not api_key:
+        if provider_key != "codex" and not api_key:
             messagebox.showwarning("警告",
                 f"请先配置 {self.PROVIDER_DISPLAY.get(provider_key, provider)} 的 API Key",
                 parent=dialog)

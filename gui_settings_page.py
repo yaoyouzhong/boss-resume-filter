@@ -59,6 +59,8 @@ def build_settings_content_steps(
     traffic_light_base_size: int,
     provider_display: Mapping[str, str],
     display_to_key: Mapping[str, str],
+    codex_status=None,
+    codex_login=None,
 ) -> Iterator[None]:
     """Build settings controls without reading keys or performing external actions."""
     self = host
@@ -103,7 +105,7 @@ def build_settings_content_steps(
         api_container,
         "模型配置" if standalone else "系统设置",
         (
-            "配置学历证书识别所使用的模型；API Key 仅保存在当前用户的系统凭据中。"
+            "选择证书识别模型，支持 API 服务和 Codex 本机订阅。"
             if standalone else None
         ),
         trailing_builder=_build_education_navigation if standalone else build_section_directory,
@@ -295,15 +297,15 @@ def build_settings_content_steps(
 
     ttk.Label(row2, text="模型名称:", font=self.font_label, width=ui_config['label_width_model']).pack(side="left")
     self.api_model_var = tk.StringVar()
-    model_entry = ttk.Entry(
+    model_entry = ttk.Combobox(
         row2,
         textvariable=self.api_model_var,
         width=18,
         font=self.font_label,
-        style='SettingsModel.TEntry',
     )
     model_entry.pack(side="left", padx=(int(5 * self.dpi_scale * self.zoom_factor), int(10 * self.dpi_scale * self.zoom_factor)))
     self.input_support.bind_entry_context_menu(model_entry)
+    model_entry.bind("<<ComboboxSelected>>", lambda _event: setattr(self, '_pending_models_to_add', []))
 
     # 获取模型列表按钮
     icon_download_models = self.icons.button('download', self.colors['text_primary'])
@@ -363,6 +365,14 @@ def build_settings_content_steps(
     url_entry.pack(side="left", padx=(int(5 * self.dpi_scale * self.zoom_factor), 0))
     self.input_support.bind_entry_context_menu(url_entry)
 
+    from gui_codex_support import CodexSettingsPanel
+    self.codex_settings_panel = CodexSettingsPanel(
+        self, input_frame, row2, (row3, row4), btn_fetch,
+        status_reader=codex_status, login_starter=codex_login,
+        label_width=ui_config['label_width_provider'],
+        model_combo=model_entry,
+    )
+
     # 操作按钮行
     button_row = ttk.Frame(config_card, style='TFrame')
     button_row.pack(fill="x", padx=int(25 * self.dpi_scale * self.zoom_factor), pady=int(15 * self.dpi_scale * self.zoom_factor))
@@ -370,7 +380,7 @@ def build_settings_content_steps(
     icon_save_api = self.icons.button('save', '#FFFFFF')
     btn_save_api = ttk.Button(button_row, image=icon_save_api, text=" 保存模型", compound=tk.LEFT, command=self.save_api_config, style="Workbench.Primary.TButton")
     btn_save_api._icon_ref = icon_save_api
-    btn_save_api.pack(side="left", padx=(int(10 * self.dpi_scale * self.zoom_factor), int(5 * self.dpi_scale * self.zoom_factor)))
+    btn_save_api.pack(side="left", padx=(0, int(5 * self.dpi_scale * self.zoom_factor)))
     icon_search_test = self.icons.button('search', self.colors['text_primary'])
     btn_test = ttk.Button(button_row, image=icon_search_test, text=" 测试连接", compound=tk.LEFT, command=self.test_api_connection)
     btn_test._icon_ref = icon_search_test

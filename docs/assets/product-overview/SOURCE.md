@@ -1,12 +1,15 @@
-# 产品概览素材
+# v2.35 产品概览素材
 
-56 秒 / 1920×1080 / H.264 + AAC。
+56 秒 / 1920×1080 / 30fps / H.264 + AAC；约 5.2 MB。
 
-制作工程：boss-product-demo；界面来自本仓库 docs/assets/user-guide 的合成演示资料，配乐为代码原创，动作音效来自 guizang-product-video-skill 自带原创素材。无真实候选人资料。
+界面来自本仓库 `docs/assets/user-guide/generate_user_guide_screenshots.py` 渲染的实际 Tk 控件，使用隔离的合成岗位、候选人和证书资料，不包含真实候选人、凭据或浏览器登录资料。Codex 截图的登录与结果采用演示状态，不表示其他账号的授权；本轮真实连接调用另行验收。
 
-覆盖当前产品能力，不将全部功能表述为 v2.34 新增。30–38 秒介绍主程序证书核验，并补充说明独立核验助手。
+4–11 秒介绍 Codex 本机订阅；后续展示岗位配置、固定运行操作区、结果与复核、外部简历、证书核验、联系及统计。除 Codex 接入外，不将全部既有功能称为 v2.35 新增。35–42 秒说明扫码和最终核验由本人完成，并注明独立核验助手。
 
-README 内嵌视频附件由仓库维护者上传并确认在 GitHub 编辑器预览中正常播放：
-https://github.com/user-attachments/assets/233d381c-5179-4639-9886-69cbadd43027
+配乐由工程中的 `prepare.py` 代码原创，96 BPM；动作音效来自 guizang-product-video-skill 的原创素材，保留来源说明。已检查混音输入、独立音效轨、主音轨、时间对位与成片媒体结构，尚未进行真人试听。
 
-README 保留 GitHub Pages 播放入口和仓库内 MP4 下载，作为附件不可访问时的备用方式。
+可复现工程：[boss-product-video-source.zip](boss-product-video-source.zip)，包含方向文件、分镜、渲染代码、锁定依赖、截图和音效。原 v2.34 制作目录现场已不存在，本次重建工程并保留源码。
+
+候选分支的 GitHub Pages 播放器与仓库 MP4 已同步新版素材。新版视频已上传为 GitHub 附件，README 使用同一成片的内嵌播放器；公开主页随正式发布更新。
+
+附件地址：https://github.com/user-attachments/assets/ddffda3f-b444-44df-82ca-a8733fc03ac4

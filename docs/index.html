@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="BOSS 简历筛选器：本地优先的候选人获取、规则筛选、人工复核、联系跟进与招聘复盘工作台。">
+  <meta name="description" content="BOSS 简历筛选器 v2.35：支持 Codex 本机订阅与 API 服务的本地招聘工作台，覆盖筛选、复核、跟进和证书核验。">
   <meta name="theme-color" content="#081522">
   <meta property="og:type" content="website">
   <meta property="og:title" content="BOSS 简历筛选器｜有证据的招聘处理流程">
@@ -25,6 +25,7 @@
       <nav class="primary-nav" aria-label="页面导航">
         <a href="#workflow">工作流</a>
         <a href="#capabilities">能力</a>
+        <a href="#models">模型接入</a>
         <a href="#privacy">数据边界</a>
       </nav>
       <a class="nav-download" href="https://github.com/yaoyouzhong/boss-resume-filter/releases/latest">下载最新版</a>
@@ -34,11 +35,11 @@
   <main id="main">
     <section class="hero" id="top">
       <div class="hero-copy">
-        <p class="eyebrow">本地桌面招聘工作台 · Windows / macOS</p>
-        <h1>把候选人处理，<br>变成一条有证据的流程。</h1>
+        <p class="eyebrow">v2.35 · Windows / macOS 本地招聘工作台</p>
+        <h1>让招聘判断，<br>有证据可查。</h1>
         <p class="hero-lead">
           从 BOSS 推荐候选人和外部简历，到规则筛选、人工复核、联系跟进与岗位复盘；
-          每个结论保留分数、命中证据和处理状态，信息不足时回到人工判断。
+          每个结论保留分数、命中证据和处理状态，信息不足时回到人工判断。AI 可选择 API 服务或 Codex 本机订阅。
         </p>
         <div class="hero-actions" aria-label="主要操作">
           <a class="button button-primary" href="https://github.com/yaoyouzhong/boss-resume-filter/releases/latest/download/BOSS_ResumeFilter.exe">下载 Windows 版</a>
@@ -78,7 +79,7 @@
         </div>
         <div class="readiness">
           <span>运行准备</span>
-          <div><i class="signal signal-ok"></i>API Key <strong>已配置</strong></div>
+          <div><i class="signal signal-ok"></i>AI 模型 <strong>按需接入</strong></div>
           <div><i class="signal signal-warn"></i>Chrome <strong>待连接</strong></div>
           <div><i class="signal signal-ok"></i>本地数据 <strong>10 条</strong></div>
         </div>
@@ -95,7 +96,7 @@
       <div class="section-heading">
         <p class="eyebrow">产品概览</p>
         <h2>56 秒了解 BOSS 简历筛选器</h2>
-        <p>招聘工作台、岗位配置、筛选与 AI 评估、人工复核、证书核验、联系跟进、外部简历导入与招聘统计。画面使用演示数据。</p>
+        <p>从岗位配置、候选人筛选到人工复核、联系跟进和证书核验，加入 Codex 本机订阅与新版运行操作。画面来自实际程序，使用演示数据。</p>
       </div>
       <div class="demo-frame">
         <video controls playsinline preload="none"
@@ -179,12 +180,28 @@
       <p class="center-link"><a href="https://github.com/yaoyouzhong/boss-resume-filter/blob/master/docs/BOSS%E6%8B%9B%E8%81%98%E7%B3%BB%E7%BB%9F%E6%93%8D%E4%BD%9C%E8%AF%B4%E6%98%8E-%E5%9B%BE%E6%96%87%E7%89%88.md">查看完整图文使用手册</a></p>
     </section>
 
+    <section class="section models-section" id="models">
+      <div class="section-heading compact-heading">
+        <p class="eyebrow">v2.35 模型接入</p>
+        <h2>Codex 订阅与 API 服务</h2>
+        <p>通过本机官方 Codex CLI 使用 ChatGPT 登录，无需 API Key。岗位解析、简历评估、画像提取和证书图片识别可按任务选择模型。</p>
+      </div>
+      <figure class="product-screen">
+        <img src="assets/user-guide/03-codex-subscription.png" alt="实际程序的 Codex 本机订阅配置：登录、模型选择、用途指示灯和连接测试；使用演示资料" width="2063" height="1190" loading="lazy">
+        <figcaption>
+          <strong>登录、选择、测试</strong>
+          <span>主程序与独立核验助手共用本机登录，各自保存模型配置。账号额度、模型权限和图片能力以实际测试为准。</span>
+        </figcaption>
+      </figure>
+      <p class="center-link"><a href="https://github.com/yaoyouzhong/boss-resume-filter/blob/master/DEPLOYMENT.md">查看安装、首次配置和使用说明</a></p>
+    </section>
+
     <section class="section privacy-section" id="privacy">
       <div class="privacy-copy">
         <p class="eyebrow">数据边界</p>
         <h2>默认在本机完成，外部 AI 不是必经路径</h2>
         <p>
-          简历解析、规则筛选、候选人状态和备份默认保存在本机。启用 AI 能力时，界面显示模型和发送范围；API Key 保存在系统安全凭据中。
+          简历解析、规则筛选、候选人状态和备份默认保存在本机。启用 AI 能力时，界面显示模型和发送范围；API Key 保存在系统安全凭据中，Codex 登录由本机官方 CLI 管理。
         </p>
         <ul>
           <li>不会自动发送整库候选人数据、备份或 Chrome 登录状态。</li>
@@ -207,7 +224,7 @@
       <div>
         <p class="eyebrow">开始使用</p>
         <h2>先下载，再按图文手册完成第一次筛选。</h2>
-        <p>普通用户无需安装 Python。首次使用需要 Chrome，并保持 BOSS 账号已登录。</p>
+        <p>普通用户无需安装 Python。读取 BOSS 候选人需 Chrome 与 BOSS 登录；使用 Codex 订阅另需本机 CLI 和 ChatGPT 登录。</p>
       </div>
       <div class="download-actions">
         <a class="button button-light" href="https://github.com/yaoyouzhong/boss-resume-filter/releases/latest/download/BOSS_ResumeFilter.exe">Windows 安装包</a>
@@ -221,6 +238,7 @@
       <span>BOSS 简历筛选器</span>
     <nav aria-label="页脚导航">
       <a href="https://github.com/yaoyouzhong/boss-resume-filter">GitHub 仓库</a>
+      <a href="https://github.com/yaoyouzhong/boss-resume-filter/blob/master/DEPLOYMENT.md">安装使用说明</a>
       <a href="https://github.com/yaoyouzhong/boss-resume-filter/blob/master/DISCLAIMER.md">使用声明</a>
       <a href="https://github.com/yaoyouzhong/boss-resume-filter/blob/master/CHANGELOG.md">更新记录</a>
     </nav>

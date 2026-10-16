@@ -9,7 +9,7 @@ boss-resume-filter/
 ├── .github/              # GitHub 工作流、品牌资产、Issue/PR 模板和仓库社区配置
 ├── diagram/              # README 使用的可缩放数据流和架构图；每个主题单独子目录
 ├── docs/                 # GitHub Pages 产品首页、图文手册、演示截图和办公交付材料
-├── gui_main.py            # 图形界面主程序（v2.34）
+├── gui_main.py            # 图形界面主程序（v2.35）
 ├── bossmaster.py          # BOSS 扫描、筛选、联系和导出主程序
 ├── education_tool*.py     # 独立学历核验工具入口、配置与安全
 ├── *_controller.py        # 领域动作编排；不持有 Tk 控件
@@ -31,6 +31,8 @@ boss-resume-filter/
 ├── diagnostic_package.py  # 脱敏诊断包
 ├── llm_eval.py            # LLM 评估与评分
 ├── ai_adapter.py          # 多服务商 API 适配
+├── codex_adapter.py       # 本机 Codex 订阅登录、隔离文本/图片调用与取消
+├── codex_image_encoding.py # 本次输入图片的像素保留与元数据清理
 ├── api_connectivity.py    # DNS 与模型能力探测
 ├── model_catalog.py       # 模型目录与端点差异分析
 ├── browser_connection.py  # Chrome 页面分类与限时连接
@@ -157,6 +159,7 @@ boss-resume-filter/
 - `update_controller.py` 只编排定时检查、失败退避、持久提醒和共享下载状态，通过注入的检查、下载、存储、时钟和主线程投递回调执行；不得导入 Tk、`gui_main` 或自动触发安装。`update_store.py` 只原子保存本地 `.update_state.json`，包含更新偏好、版本提醒和重试时间，不包含候选人或凭据。`updater.py` 负责双源网络、安装包缓存/校验和用户确认后的安装；弹窗关闭不得终止控制器下载任务。
 - `browser_connection.py` 只执行浏览器 URL 分类、调试端口探测、限时页面读取和限时 DrissionPage 连接；不得导入 `tkinter`、`gui_main`、存储或业务扫描模块，不得启动/终止 Chrome、导航页面或更新 UI。
 - `gui_main.py` 可以向新模块单向委托；新模块禁止反向导入 `gui_main.py`。迁移期保留原 `BossFilterGUI` 方法作为薄兼容层，待调用方和测试迁移后再删除。
+- `codex_adapter.py` 只负责官方 CLI 发现、ChatGPT 登录状态、受控文本/图片任务、排队、重试与取消；不得读取或复制登录令牌、回退到 API，所有子进程必须经过 `subprocess_utils.py`。`gui_codex_support.py` 只负责订阅登录区的控件、状态展示与线程投递，状态读取与登录动作由宿主显式注入，不直接访问凭据、CLI 或业务数据。
 - `gui_*_page.py` 只负责指定页面的 Tk 控件构建和页面局部引用；不得读写业务数据、访问网络或导入 `gui_main`。迁移期通过显式 Host 协议注入回调，并由 `gui_main.py` 保留原页面属性别名。
 - `gui_candidate_*.py` 只负责候选人工作台弹窗的 Tk 控件、局部选择状态和事件绑定；候选人加载、状态诊断、业务动作和报告写盘必须通过显式回调留在 `gui_main.py`，不得导入存储、网络或 `gui_main`。
 - `gui_candidate_menus.py` 只消费宿主已计算的菜单状态和显式动作回调，负责候选人单选、批量及工作流右键菜单的 Tk 构建与弹出；候选人资格判断、联系门禁、状态更新和持久化必须留在 `gui_main.py`/纯业务模块。
@@ -362,7 +365,9 @@ API 兜底翻页连续 3 页无 DOM 命中时提前停止，避免无效请求�
 
 ### 支持的服务商
 
-通义千问 (Qwen)、DeepSeek、月之暗面 (Kimi)、智谱 (Zhipu)、MiniMax、小米 (Xiaomi)、阶跃星辰 (StepFun)、OpenAI、Anthropic (Claude)、自定义 (Custom)
+Codex（本机订阅）、通义千问 (Qwen)、DeepSeek、月之暗面 (Kimi)、智谱 (Zhipu)、MiniMax、小米 (Xiaomi)、阶跃星辰 (StepFun)、OpenAI、Anthropic (Claude)、自定义 (Custom)
+
+- Codex 订阅通过官方 CLI 的本机 ChatGPT 登录接入，BOSS 与独立核验工具共用登录状态，各自保存模型选择；不要求 API Key，不读取或复制令牌。支持招聘评估、岗位解析、简历画像及证书图片/PDF/验证码识别。模型建议来自本机缓存，不代表账号授权或可用性，需实际测试连接。任务使用临时目录和隔离配置，禁用工具、规则、插件与外部应用；只允许结构化文本结果，取消/超时终止本次进程。失败不得静默切换其他服务。
 
 ### 配置管理
 

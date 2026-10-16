@@ -79,7 +79,7 @@ CI 用 `.venv-ci`，本地打包用 `pack_venv`。`build.py` 中 babel locale-da
 
 当前 Windows 约 36.4MB，macOS ZIP/DMG 约 31-33MB。
 
-- **PIL**：精确 `--hidden-import` 仅收集 Image/ImageDraw/ImageTk，排除 `_avif`/`_webp`
+- **PIL**：精确收集图像、字体和 Tk 预览组件；保留 `WebPImagePlugin` / `_webp`，只排除不支持的 `_avif`
 - **babel locale-data**：自定义 hook（`pyinstaller-hooks/hook-babel.py`）排除全部 1086 个 locale .dat，按需添加 9 个（zh/en 系列）
 - **排除模块**：保留 `scipy`、`lxml.objectify` 等无运行期入口模块；`pandas` 不再是直接打包依赖，Excel 导出保持 `openpyxl` 直写；`numpy`/`numpy.libs` 仅为 openpyxl 可选支持和环境残留，打包时应排除；**不要排除** `sqlite3`（DataRecorder/DrissionPage 顶层依赖）、`lxml.html`（DrissionPage 顶层依赖）
 - **体积判断**：Windows `--onefile` 单文件 EXE 通常比 macOS `--onedir` 后的 ZIP/DMG 大；不要用 macOS 32MB 反推 Windows。当前 Windows EXE 约 36.4MB、macOS ZIP/DMG 约 31-33MB 属正常范围
@@ -88,7 +88,7 @@ CI 用 `.venv-ci`，本地打包用 `pack_venv`。`build.py` 中 babel locale-da
 ## Gitee Release 上传与校验
 
 - GitHub Actions 只完成严格门禁、双平台构建、GitHub tag、Draft Release 和附件校验，禁止连接 Gitee 大文件上传接口
-- 本机 `release_dispatch.py` 从 GitHub Draft 下载并校验 Windows/macOS 产物，再按 EXE→ZIP→DMG 串行镜像到 Gitee；任一失败立即停止
+- 本机 `release_dispatch.py` 按主规范校验并公开 GitHub，再以最多两路直连上传镜像到 Gitee；任一失败保留状态并停止，续跑复用已验证产物
 - 上传前比较远端附件和产物，同一提交断点续跑时复用已验证附件；GitHub 暂存完整时直接跳过 Actions；上传/下载超时 600s，4xx 不重试
 - 发布主流程只校验附件齐全和 size 与 GitHub 一致，不回下载大文件；需要逐文件 SHA256 时手动运行 `python build.py --verify-gitee-integrity X.Y.Z`
 - **Gitee Token**：正式发布和手工核验/补传都只使用本机同名环境变量；Actions 不保存也不读取 `GITEE_TOKEN`

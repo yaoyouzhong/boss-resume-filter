@@ -1,4 +1,6 @@
 """LLM-based candidate evaluation for BOSS resume screening."""
+
+from codex_adapter import call_codex, is_codex
 import json
 import logging
 import random
@@ -661,6 +663,17 @@ def _call_llm_api(messages: list, api_config: dict, api_key: str,
 
     Uses the provider-aware adapter and retries transient failures.
     """
+    if is_codex(api_config):
+        try:
+            content = call_codex(api_config, messages, purpose="candidate_evaluation", stop_event=stop_event)
+            parsed = _parse_response(content)
+            return LLMEvalResult(success=True, model=api_config.get("model", ""),
+                adjustment=parsed['adjustment'], reason=parsed['reason'],
+                hard_condition_verdict=parsed['hard_condition_verdict'],
+                hard_condition_findings=parsed['hard_condition_findings'],
+                dimension_scores=parsed.get('dimension_scores'))
+        except Exception as exc:
+            return LLMEvalResult(success=False, reason=str(exc), model=api_config.get("model", ""))
     try:
         import certifi
         verify_path = certifi.where()

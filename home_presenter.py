@@ -161,6 +161,8 @@ def api_key_display(*, model_configured: bool, key_state: str) -> StatusDisplay:
         )
     if key_state == "checking":
         return StatusDisplay("检测中", "neutral", "正在读取本机安全凭据")
+    if key_state == "subscription":
+        return StatusDisplay("已配置", "success", "Codex 本机订阅；登录和额度可在模型配置页检查")
     if key_state == "present":
         return StatusDisplay("已配置", "success", "本机安全凭据已保存")
     if key_state == "error":

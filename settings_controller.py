@@ -10,6 +10,7 @@ ModelConfig = dict[str, Any]
 
 
 PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
+    "codex": ("codex://local", "gpt-6.1-sol"),
     "qwen": ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
     "deepseek": ("https://api.deepseek.com", "deepseek-v4-pro"),
     "kimi": ("https://api.moonshot.ai/v1", "kimi-k2.6"),

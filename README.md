@@ -20,16 +20,16 @@
   · <a href="CHANGELOG.md">更新记录</a>
 </p>
 
-> 当前发布版本：v2.34 证书批量核验流程升级（版本号 v2.34）
+> 当前发布版本：v2.35 支持 Codex 本机订阅（版本号 v2.35）
 
 <h2 align="center">56 秒了解 BOSS 简历筛选器</h2>
 
-https://github.com/user-attachments/assets/233d381c-5179-4639-9886-69cbadd43027
+https://github.com/user-attachments/assets/ddffda3f-b444-44df-82ca-a8733fc03ac4
 
 <p align="center">
   <a href="https://yaoyouzhong.github.io/boss-resume-filter/#demo">备用播放入口</a>
   · <a href="docs/assets/product-overview/boss-product-overview.mp4?raw=1">下载高清 MP4</a>
-  · <sub>1080p · 演示数据 · 静音也可阅读</sub>
+  · <sub>v2.35 · 1080p · 演示数据 · 静音也可阅读</sub>
 </p>
 
 > **使用边界**：本项目不是 BOSS 直聘官方工具。浏览器自动化、候选人信息读取和联系功能可能触发平台风控、限流或账号限制；使用前请阅读完整的 [使用声明](DISCLAIMER.md)。
@@ -76,10 +76,12 @@ https://github.com/user-attachments/assets/233d381c-5179-4639-9886-69cbadd43027
 
 1. 登录 BOSS 直聘，并让程序连接 Chrome。
 2. 新建岗位，粘贴招聘需求并核对筛选条件。
-3. 如需 AI 辅助评估或证书识别，在「系统设置」中配置模型和 API Key。
+3. 如需 AI 辅助评估或证书识别，在「系统设置」中选择 API 服务或 Codex 本机订阅，并测试模型。
 4. 回到首页选择岗位，点击「开始筛选」。
 
 运行结果可在「筛选结果」中复核、联系和导出，在「数据统计」中查看岗位效果。程序启动后会自动检查更新。
+
+**使用 Codex 订阅**：额外安装本机官方 Codex CLI，选择“Codex（本机订阅）”，使用 ChatGPT 登录后选择并保存模型，无需填写 API Key。登录成功和模型列表不代表实际可用，需通过“测试连接”核验连接与图片能力。BOSS 与独立证书核验助手共用本机登录，各自保存模型选择。完整的安装、首次配置和排障步骤见[安装使用说明](DEPLOYMENT.md)。
 
 <details>
 <summary><strong>源码运行与命令行用法</strong></summary>
@@ -114,7 +116,7 @@ python bossmaster.py --greet --ai-eval
 python education_tool.py
 ```
 
-首次运行会进入“模型配置”，填写服务商、Base URL、模型名称和 API Key 后即可使用。独立工具与 BOSS 主程序共用现行学历与学位核验能力，但使用独立配置；API Key 保存在当前用户的系统凭据中，不写入配置文件或可执行文件。详细步骤见 [独立学历与学位证书核验助手操作说明](docs/education-tool-manual.md)。
+首次运行会进入“模型配置”，可选择 API 服务或 Codex 本机订阅。独立工具与 BOSS 主程序共用现行学历与学位核验能力和本机 Codex 登录，但分别保存模型与截图偏好；API Key 保存在当前用户的系统凭据中，不写入配置文件或可执行文件。详细步骤见 [独立学历与学位证书核验助手操作说明](docs/education-tool-manual.md)。
 
 运行中按 `Ctrl+C` 会保存当前进度；下次运行会跳过已经联系的候选人。
 
@@ -150,6 +152,8 @@ python education_tool.py
 
 ![系统设置与模型接入配置](docs/assets/user-guide/03-api-config-full.png)
 
+![Codex 本机订阅的登录、模型选择与连接测试](docs/assets/user-guide/03-codex-subscription.png)
+
 更多页面和完整操作步骤见 [图文使用手册](docs/BOSS招聘系统操作说明-图文版.md)。
 
 ## 筛选与联系原则
@@ -178,7 +182,7 @@ python education_tool.py
 | [更新记录](CHANGELOG.md) | 全部公开版本的功能和体验变化 |
 | [使用声明](DISCLAIMER.md) | 平台风控、账号、数据和使用责任边界 |
 | [安全策略](SECURITY.md) | 漏洞私密报告渠道、脱敏要求和安全支持范围 |
-| [部署说明](DEPLOYMENT.md) | 环境准备与部署方式 |
+| [安装使用说明](DEPLOYMENT.md) | 下载、首次配置、Codex 订阅、第一次筛选、证书核验与换机 |
 | [打包指南](PACKAGING.md) | Windows 和 macOS 安装包构建 |
 | [项目规范](AGENTS.md) | 模块职责、测试要求和交付流程 |
 
@@ -187,6 +191,18 @@ python education_tool.py
 ## 最近版本
 
 README 只保留最近三个版本的摘要；完整历史见 [CHANGELOG.md](CHANGELOG.md)。
+
+### v2.35 支持 Codex 本机订阅
+
+**新增功能**
+- **Codex 本机订阅**：支持使用本机 ChatGPT 登录接入 Codex，无需 API Key；可用于岗位解析、候选人与简历评估、简历画像及证书图片识别，并分别选择默认 AI 模型和学历核验模型。
+
+**体验优化**
+- **运行控制**：开始、停止、状态与进度固定显示，滚动查看日志时仍可操作；结束后保留结果摘要，并可直接进入筛选结果。
+- **结果与统计**：汇总卡片等宽居中，筛选结果统计卡支持整块点击及键盘打开明细；数据统计补充反馈样本与岗位复盘说明。
+- **页面与操作提示**：统一标题和按钮层级，岗位保存结果显示在操作旁，系统设置增加分区快速定位。
+- **证书操作**：突出当前可执行步骤，支持通过键盘旋转预览，长提示随窗口宽度调整显示。
+- **消息反馈**：错误和警告保留至关闭或被新消息替换，连续查看候选人提示时减少重复等待。
 
 ### v2.34 证书批量核验流程升级
 
@@ -220,16 +236,7 @@ README 只保留最近三个版本的摘要；完整历史见 [CHANGELOG.md](CHA
 - **证书识别中断**：修复部分模型因输出受限导致方向判断或字段识别中断的问题，并支持自动重试。
 - **PDF 手动旋转**：修复扫描 PDF 重新识别时未采用用户手动旋转方向的问题。
 
-### v2.33.2 模型图片能力检测与证书核验优化
-
-**新增功能**
-- **模型图片能力检测**：BOSS 主程序与独立核验助手在保存、切换或手动测试模型时检测图片识别能力，分别显示连接结果和图片测试结果；已验证的能力在重启后继续生效。
-
-**问题修复**
-- **证书编号复核**：不再仅因证书编号不足 18 位要求人工复核，减少对有效证书的误提示。
-- **核验提示显示**：修复多条中文提示在不同窗口宽度下换行不完整的问题。
-
-### v2.33.1 及更早版本
+### v2.33.2 及更早版本
 
 > 完整版本历史见 [CHANGELOG.md](CHANGELOG.md)
 
@@ -247,7 +254,7 @@ python tests/test_import.py
 
 ```text
 boss-resume-filter/
-├── gui_main.py            # 图形界面主程序（v2.34）
+├── gui_main.py            # 图形界面主程序（v2.35）
 ├── gui_*_page.py          # 首页、配置、运行、结果、统计、设置、学历页面
 ├── gui_candidate_*.py     # 候选人查看、复核、待办、菜单与状态表单
 ├── gui_*_support.py       # 导航、滚动、输入、反馈、控件和布局支持

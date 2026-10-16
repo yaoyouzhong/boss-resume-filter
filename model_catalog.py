@@ -61,6 +61,14 @@ def fetch_model_catalog(
     user_agent: str = USER_AGENT,
 ) -> ModelCatalogResponse:
     """Fetch one provider catalog without making inference requests."""
+    if provider == "codex":
+        from codex_adapter import ADAPTER, CODEX_ENDPOINT
+        state = ADAPTER.status()
+        if not state["compatible"] or not state["chatgpt_logged_in"]:
+            raise RuntimeError(state.get("login_error") or "请先安装兼容的 Codex CLI 并使用 ChatGPT 登录")
+        return ModelCatalogResponse(200, "本机缓存建议，实际可用性以测试连接为准",
+            {"data": [{"id": name} for name in state["cached_model_suggestions"]]},
+            CODEX_ENDPOINT, service_name="Codex 本机缓存（可用性待测试）")
     if has_endpoint_discovery(provider):
         resolution = discover_endpoint(
             provider,

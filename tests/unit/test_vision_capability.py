@@ -209,15 +209,22 @@ def test_selection_reuses_evidence_and_manual_test_invalidates_old_connection_re
         gui = BossFilterGUI.__new__(BossFilterGUI)
         gui.standalone_education = standalone
         gui._assigned_model_test_tokens = {"default": 4}
+        gui._assigned_model_test_states = {"default": "pending"}
+        gui.api_config = dict(CONFIG)
+        gui.colors = {"warning": "orange"}
+        gui._update_api_status = Mock()
         gui._assigned_model_test_refs = {"default": CONFIG}
         gui._get_assigned_model_ref = Mock(return_value=CONFIG)
         gui._set_assigned_model_test_state = Mock()
-        gui._test_added_models_vision = Mock()
-        gui._test_selected_model_vision(CONFIG)
+        original = gui._test_added_models_vision
+        gui._test_added_models_vision = Mock(wraps=original)
+        with patch("gui_main.threading.Thread"):
+            gui._test_selected_model_vision(CONFIG)
         assert gui._assigned_model_test_tokens["default"] == 4
         gui._set_assigned_model_test_state.assert_not_called()
         assert gui._test_added_models_vision.call_args.kwargs["force"] is False
-        gui._test_selected_model_vision(CONFIG, force=True)
+        with patch("gui_main.threading.Thread"):
+            gui._test_selected_model_vision(CONFIG, force=True)
         assert gui._assigned_model_test_tokens["default"] == 5
         gui._set_assigned_model_test_state.assert_called_once_with("default", "testing")
         assert gui._test_added_models_vision.call_args.kwargs["force"] is True
