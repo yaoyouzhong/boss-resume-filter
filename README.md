@@ -24,14 +24,7 @@
 
 <h2 align="center">56 秒了解 BOSS 简历筛选器</h2>
 
-**v2.35 新版概览**：[在产品主页直接播放](https://yaoyouzhong.github.io/boss-resume-filter/#demo)，或[下载新版高清 MP4](docs/assets/product-overview/boss-product-overview.mp4?raw=1)。新增 Codex 本机订阅片段，并同步展示当前程序界面。
-
-<details>
-<summary>上一版产品概览（v2.34）</summary>
-
-https://github.com/user-attachments/assets/233d381c-5179-4639-9886-69cbadd43027
-
-</details>
+https://github.com/user-attachments/assets/ddffda3f-b444-44df-82ca-a8733fc03ac4
 
 <p align="center">
   <a href="https://yaoyouzhong.github.io/boss-resume-filter/#demo">备用播放入口</a>

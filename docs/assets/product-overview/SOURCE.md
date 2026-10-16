@@ -10,4 +10,6 @@
 
 可复现工程：[boss-product-video-source.zip](boss-product-video-source.zip)，包含方向文件、分镜、渲染代码、锁定依赖、截图和音效。原 v2.34 制作目录现场已不存在，本次重建工程并保留源码。
 
-GitHub Pages 播放器与仓库 MP4 已同步新版素材。README 将新版播放入口与上一版内嵌附件明确区分；新版 GitHub 视频附件链接需上传后补齐，不能把旧附件当成新成片。
+候选分支的 GitHub Pages 播放器与仓库 MP4 已同步新版素材。新版视频已上传为 GitHub 附件，README 使用同一成片的内嵌播放器；公开主页随正式发布更新。
+
+附件地址：https://github.com/user-attachments/assets/ddffda3f-b444-44df-82ca-a8733fc03ac4
