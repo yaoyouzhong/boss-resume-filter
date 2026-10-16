@@ -1,35 +1,35 @@
 {
-  "version": "2.34",
-  "release_date": "2026-09-15",
+  "version": "2.35",
+  "release_date": "2026-10-16",
   "downloads": {
-    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.34/BOSS_ResumeFilter.exe",
-    "education_windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.34/EducationCertificateTool.exe",
-    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.34/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.34/BOSS_ResumeFilter.dmg"
+    "windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.35/BOSS_ResumeFilter.exe",
+    "education_windows": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.35/EducationCertificateTool.exe",
+    "macos": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.35/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://github.com/yaoyouzhong/boss-resume-filter/releases/download/v2.35/BOSS_ResumeFilter.dmg"
   },
   "assets": {
     "macos_dmg": {
-      "size": 26725354,
-      "sha256": "76364a67ff3e851025c5cd4a54f11fe16b43e8bb12dd501253ef097427085533"
+      "size": 26799395,
+      "sha256": "f71bd1d1b9cfc36a3a9021b43869b43070c70926c859abf90d71339609ad3fb5"
     },
     "windows": {
-      "size": 29652720,
-      "sha256": "25fb92e1b108309480cc5d3e20f453caf6aeabd6905f1dd35a0259864ab90310"
+      "size": 29733558,
+      "sha256": "70678284dddb5dfc5bead4959110c3f4c360282363d3e37073ae7dc9b54a3d68"
     },
     "macos": {
-      "size": 27866517,
-      "sha256": "90bde9f76646aff80ea37f5475bc02f8ca32dcd2413503fbef9019673cc7bc7a"
+      "size": 27988742,
+      "sha256": "00369c63c89f81f962276ec4efebc2e832a4bd02d1e9d32f927743e76799c73d"
     },
     "education_windows": {
-      "size": 25774914,
-      "sha256": "f67ff68d32d706c8271782cb6c0e84556510881f182e7d9014acdb7c45ca7d86"
+      "size": 25851917,
+      "sha256": "466ac5a5d60253d22b25f2cbd7383ab7b64a9b70355ba3caaa03f989ba7b5fdc"
     }
   },
-  "release_notes": "### 新增功能\n\n- **分批验证与补交**：优先提交已就绪证书，待核对记录不再阻塞其他记录；核对完成后可继续补交，自动跳过已提交及已完成记录。\n- **重复证书提醒**：按证书类型和编号提示疑似重复，保留记录供核对，修改或移除后自动更新提醒。\n- **识别停止**：识别时可直接在第 1 步按钮停止本轮识别，保留已完成结果。\n\n### 体验优化\n\n- **关键信息优先识别**：优先识别学历与学位证书的姓名、编号和类型，学校、专业不清晰时留空，减少附属信息反复识别带来的等待。\n- **人工复核与修改保护**：明确提示需要核对的关键信息，重新识别保留人工修正值，并提示差异。\n- **识别等待控制**：显示识别阶段和耗时，限制单份证书的累计等待时间，超时后可人工填写或重新识别。\n- **队列与流程操作**：支持 Ctrl+A 全选和所选记录批量识别、验证；简化三步按钮，识别提示统一中文并支持展开查看，优化操作区间距及截图提示。\n- **连续核验与页面恢复**：多批提交复用同一 Chrome，长时间等待扫码时持续检查结果，短暂连接故障自动尝试恢复；页面关闭后可重新提交未完成记录。\n\n### 问题修复\n\n- **结果与证书对应**：加强结果页和截图的姓名、编号及证书类型检查，修改关键信息后解除旧页面关联，避免沿用不对应的结果。",
+  "release_notes": "### 新增功能\n\n- **Codex 本机订阅**：支持使用本机 ChatGPT 登录接入 Codex，无需 API Key；可用于岗位解析、候选人与简历评估、简历画像及证书图片识别，并分别选择默认 AI 模型和学历核验模型。\n\n### 体验优化\n\n- **运行控制**：开始、停止、状态与进度固定显示，滚动查看日志时仍可操作；结束后保留结果摘要，并可直接进入筛选结果。\n- **结果与统计**：汇总卡片等宽居中，筛选结果统计卡支持整块点击及键盘打开明细；数据统计补充反馈样本与岗位复盘说明。\n- **页面与操作提示**：统一标题和按钮层级，岗位保存结果显示在操作旁，系统设置增加分区快速定位。\n- **证书操作**：突出当前可执行步骤，支持通过键盘旋转预览，长提示随窗口宽度调整显示。\n- **消息反馈**：错误和警告保留至关闭或被新消息替换，连续查看候选人提示时减少重复等待。",
   "downloads_cn": {
-    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.34/BOSS_ResumeFilter.exe",
-    "education_windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.34/EducationCertificateTool.exe",
-    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.34/BOSS_ResumeFilter_mac.zip",
-    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.34/BOSS_ResumeFilter.dmg"
+    "windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.35/BOSS_ResumeFilter.exe",
+    "education_windows": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.35/EducationCertificateTool.exe",
+    "macos": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.35/BOSS_ResumeFilter_mac.zip",
+    "macos_dmg": "https://gitee.com/yaoyouzhong/boss-resume-filter/releases/download/v2.35/BOSS_ResumeFilter.dmg"
   }
 }
