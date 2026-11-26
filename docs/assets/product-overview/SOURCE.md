@@ -1,6 +1,8 @@
 # v2.35 产品概览素材
 
-56 秒 / 1920×1080 / 30fps / H.264 + AAC；约 5.2 MB。
+56 秒 / 1920×1080 / 30fps / H.264 + AAC；约 6.0 MB。
+
+2026-11-26 重新制作取景：沿用归档的 9 张演示界面截图、功能文案和配乐，改为顶部讲解、下方完整窗口。取消图片负偏移、放大推近及遮罩擦入；窗口或弹窗等比适配，四边及原图中的底部操作区完整保留。主页播放器使用 `object-fit: contain`。窗口内部原有的滚动区域保持真实状态，本次不拼接未显示的滚动内容。
 
 界面来自本仓库 `docs/assets/user-guide/generate_user_guide_screenshots.py` 渲染的实际 Tk 控件，使用隔离的合成岗位、候选人和证书资料，不包含真实候选人、凭据或浏览器登录资料。Codex 截图的登录与结果采用演示状态，不表示其他账号的授权；本轮真实连接调用另行验收。
 
@@ -8,8 +10,8 @@
 
 配乐由工程中的 `prepare.py` 代码原创，96 BPM；动作音效来自 guizang-product-video-skill 的原创素材，保留来源说明。已检查混音输入、独立音效轨、主音轨、时间对位与成片媒体结构，尚未进行真人试听。
 
-可复现工程：[boss-product-video-source.zip](boss-product-video-source.zip)，包含方向文件、分镜、渲染代码、锁定依赖、截图和音效。原 v2.34 制作目录现场已不存在，本次重建工程并保留源码。
+可复现工程：[boss-product-video-source.zip](boss-product-video-source.zip)，包含方向文件、分镜、渲染代码、锁定依赖、截图、音效及验证报告。`verify-framing.mjs` 已检查全片 1,680 帧，9 张截图均无额外裁切、比例失真或讲解遮挡；已目视审阅成片 2fps 联系表、全部 10 个转场的 10fps 条带和完整尺寸关键帧。主页在 1280px 桌面宽度与 390px 手机宽度下均完成本地加载、播放与定位验证，页面无横向溢出。首帧为完整标题卡。
 
-候选分支的 GitHub Pages 播放器与仓库 MP4 已同步新版素材。新版视频已上传为 GitHub 附件，README 使用同一成片的内嵌播放器；公开主页随正式发布更新。
+本目录 MP4、封面与源码包使用本次重制版本。README 的 GitHub 附件是此前上传的旧版，附件地址与仓库中的 MP4 是独立资源；重新上传附件及公开主页更新需在交付时另行完成，不能仅替换本地文件就视为已经上线。
 
-附件地址：https://github.com/user-attachments/assets/ddffda3f-b444-44df-82ca-a8733fc03ac4
+历史附件地址：https://github.com/user-attachments/assets/ddffda3f-b444-44df-82ca-a8733fc03ac4
