@@ -24,12 +24,12 @@
 
 <h2 align="center">56 秒了解 BOSS 简历筛选器</h2>
 
-[![BOSS 简历筛选器宣传视频封面：招聘处理，回到证据；点击播放](docs/assets/product-overview/poster.jpg)](https://yaoyouzhong.github.io/boss-resume-filter/#demo)
+[![BOSS 简历筛选器宣传视频封面：规则筛选、AI 辅助、人工复核与联系跟进；点击播放](docs/assets/product-overview/poster.jpg)](https://yaoyouzhong.github.io/boss-resume-filter/#demo)
 
 <p align="center">
   <a href="https://yaoyouzhong.github.io/boss-resume-filter/#demo">点击封面或此处播放</a>
   · <a href="docs/assets/product-overview/boss-product-overview.mp4?raw=1">下载高清 MP4</a>
-  · <sub>v2.35 · 1080p · 演示数据 · 静音也可阅读</sub>
+  · <sub>1080p · 演示数据 · 静音也可阅读</sub>
 </p>
 
 > **使用边界**：本项目不是 BOSS 直聘官方工具。浏览器自动化、候选人信息读取和联系功能可能触发平台风控、限流或账号限制；使用前请阅读完整的 [使用声明](DISCLAIMER.md)。
