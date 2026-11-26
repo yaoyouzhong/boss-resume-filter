@@ -12,6 +12,6 @@
 
 可复现工程：[boss-product-video-source.zip](boss-product-video-source.zip)，包含方向文件、分镜、渲染代码、锁定依赖、截图、音效及验证报告。`verify-framing.mjs` 已检查全片 1,680 帧，9 张截图均无额外裁切、比例失真或讲解遮挡；已目视审阅成片 2fps 联系表、全部 10 个转场的 10fps 条带和完整尺寸关键帧。主页在 1280px 桌面宽度与 390px 手机宽度下均完成本地加载、播放与定位验证，页面无横向溢出。首帧为完整标题卡。
 
-本目录 MP4、封面与源码包使用本次重制版本。README 的 GitHub 附件是此前上传的旧版，附件地址与仓库中的 MP4 是独立资源；重新上传附件及公开主页更新需在交付时另行完成，不能仅替换本地文件就视为已经上线。
+本目录 MP4、封面与源码包使用本次重制版本。README 与产品主页共用本目录 MP4 和封面：README 显式显示可点击的 `poster.jpg`，点击进入产品主页播放，高清下载也指向同一份仓库 MP4，不再引用独立上传的 GitHub 旧视频附件。这样未播放时仍有完整封面，后续替换视频时也不会遗漏另一份附件。
 
-历史附件地址：https://github.com/user-attachments/assets/ddffda3f-b444-44df-82ca-a8733fc03ac4
+GitHub Markdown 渲染接口会移除自定义 `<video>` 及其 `poster` 属性，因此 README 使用实际图片链接作为封面，播放器由产品主页提供。已通过 GitHub Markdown 渲染核验图片与播放链接保留。
