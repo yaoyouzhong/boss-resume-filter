@@ -24,7 +24,7 @@
 
 <h2 align="center">56 秒了解 BOSS 简历筛选器</h2>
 
-[![BOSS 简历筛选器宣传视频封面：规则筛选、AI 辅助、人工复核与联系跟进；点击播放](docs/assets/product-overview/poster.jpg)](https://yaoyouzhong.github.io/boss-resume-filter/#demo)
+[![BOSS 简历筛选器宣传视频封面：省时省力，更快、更准地筛选候选人；点击播放](docs/assets/product-overview/poster.jpg)](https://yaoyouzhong.github.io/boss-resume-filter/#demo)
 
 <p align="center">
   <a href="https://yaoyouzhong.github.io/boss-resume-filter/#demo">点击封面或此处播放</a>
