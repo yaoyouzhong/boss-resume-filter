@@ -196,11 +196,27 @@ h3 {
   font-weight: 700;
 }
 
+.hero h1 {
+  margin-bottom: 18px;
+}
+
+.hero-tagline {
+  margin-bottom: 22px;
+  font-size: clamp(22px, 2.3vw, 30px);
+  font-weight: 700;
+  line-height: 1.5;
+}
+
 .hero-lead {
   max-width: 650px;
   margin-bottom: 32px;
   color: var(--muted);
   font-size: 18px;
+}
+
+.supporting-capabilities {
+  margin-block: 24px 0;
+  color: var(--muted);
 }
 
 .hero-actions,
